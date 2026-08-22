@@ -292,13 +292,17 @@ class _OfferCardState extends ConsumerState<OfferCard> {
                             ),
                           ),
                           const SizedBox(width: 5),
-                          const Text(
-                            'EXCLUSIVE JOB OFFER',
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w900,
-                              color: Color(0xFF92400E),
-                              letterSpacing: 0.4,
+                          const Flexible(
+                            child: Text(
+                              'EXCLUSIVE JOB OFFER',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w900,
+                                color: Color(0xFF92400E),
+                                letterSpacing: 0.4,
+                              ),
                             ),
                           ),
                         ],

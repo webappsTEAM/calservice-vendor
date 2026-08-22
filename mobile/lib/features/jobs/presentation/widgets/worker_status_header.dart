@@ -91,12 +91,14 @@ class WorkerStatusHeader extends ConsumerWidget {
                               ),
                             ),
                             const SizedBox(width: 4),
-                            StatusChip(
-                              status: hasActiveJob ? 'busy' : (isOnline ? 'online' : 'offline'),
-                              label: hasActiveJob
-                                  ? 'ON JOB'
-                                  : (isOnline ? 'AVAILABLE' : 'OFFLINE'),
-                              dense: true,
+                            Flexible(
+                              child: StatusChip(
+                                status: hasActiveJob ? 'busy' : (isOnline ? 'online' : 'offline'),
+                                label: hasActiveJob
+                                    ? 'ON JOB'
+                                    : (isOnline ? 'AVAILABLE' : 'OFFLINE'),
+                                dense: true,
+                              ),
                             ),
                           ],
                         ),

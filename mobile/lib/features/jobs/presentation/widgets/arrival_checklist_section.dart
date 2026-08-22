@@ -232,18 +232,19 @@ class _ArrivalChecklistSectionState extends ConsumerState<ArrivalChecklistSectio
             alignment: WrapAlignment.spaceBetween,
             crossAxisAlignment: WrapCrossAlignment.center,
             spacing: AppSpacing.sm,
-            runSpacing: 4,
+            runSpacing: 6,
             children: [
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   const Icon(Icons.verified_user_outlined, size: 18, color: AppColors.primary),
                   const SizedBox(width: AppSpacing.sm),
-                  // Flexible so the label can wrap/ellipsize instead of
-                  // overflowing on narrow screens or at large font scales.
-                  Flexible(
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 220),
                     child: Text(
                       'ARRIVAL & VERIFICATION CHECKLIST',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                       style: Theme.of(context).textTheme.labelSmall?.copyWith(
                         color: AppColors.textPrimary,
                         fontWeight: FontWeight.w700,
@@ -671,9 +672,12 @@ class _LockedCard extends StatelessWidget {
                 children: [
                   const Icon(Icons.lock_outline_rounded, size: 16, color: Color(0xFF64748B)),
                   const SizedBox(width: AppSpacing.xs),
-                  Flexible(
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 220),
                     child: Text(
                       title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Color(0xFF475569)),
                     ),
                   ),
