@@ -2949,14 +2949,14 @@ export function EmployeeDashboardPage() {
                               </span>
                             </div>
                           ) : (
-                            (selectedJob.payment?.payment_status === 'PAID' || selectedJob.payment_status === 'paid' || selectedJob.payment_status === 'collected') ? (
+                            (selectedJob.payment?.payment_status === 'PAID' || selectedJob.payment_status === 'paid' || selectedJob.payment_status === 'collected' || selectedJob.payment?.payment_status === 'CASH_PENDING' || selectedJob.payment_status === 'cash_pending') ? (
                               <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between">
                                 <div className="flex items-center gap-2">
                                   <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                                   <div>
                                     <span className="text-xs font-bold text-emerald-900">Cash Payment Confirmed & Collected</span>
                                     <p className="text-[11px] text-emerald-700">
-                                      Amount: <strong className="font-mono">₹{selectedJob.payment?.amount_paid || selectedJob.payment?.amount_due || selectedJob.total_amount}</strong> • Received by Technician
+                                      Amount: <strong className="font-mono">₹{selectedJob.payment?.amount_paid || selectedJob.payment?.amount_received || selectedJob.payment?.amount_due || selectedJob.total_amount}</strong> • Received by Technician
                                     </p>
                                   </div>
                                 </div>

@@ -1703,6 +1703,7 @@ class WorkforceJobCashCollectView(APIView):
                 "payment_status": "PAID",
                 "job_status": job.status,
                 "amount_due": str(pmt.amount_due),
+                "amount_paid": str(pmt.amount_paid),
                 "amount_received": str(amt_received),
                 "change_returned": str(change_returned),
             }, status=status.HTTP_200_OK)
@@ -2330,7 +2331,7 @@ def run_automatic_dispatch(job, excluded_employee_ids=None):
     return dispatch_job(job, exclude_employee_ids=excluded_employee_ids)
 
 
-from workforce_api.services.workload import ACTIVE_WORKLOAD_STATUSES
+from workforce_api.services.workload import ACTIVE_WORKLOAD_STATUSES, supersede_other_offers_for_employee
 
 
 class WorkforceJobAcceptOfferView(APIView):
