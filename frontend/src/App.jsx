@@ -51,6 +51,9 @@ import { EmployeeWalletTransactionsPage } from './pages/employee/wallet/Employee
 import { EmployeeWalletWithdrawalsPage } from './pages/employee/wallet/EmployeeWalletWithdrawalsPage.jsx';
 import { EmployeePayoutAccountsPage } from './pages/employee/wallet/EmployeePayoutAccountsPage.jsx';
 
+// Employee Estimates & Quotations
+import EmployeeEstimatesPage from './pages/employee/estimates/EmployeeEstimatesPage.jsx';
+
 // Admin Wallet Pages
 import { WalletDashboardPage } from './pages/admin/wallet/WalletDashboardPage.jsx';
 import { WalletTransactionsPage } from './pages/admin/wallet/WalletTransactionsPage.jsx';
@@ -160,6 +163,8 @@ export function App() {
             <Route index element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="dashboard" element={<EmployeeDashboardPage />} />
             <Route path="jobs" element={<EmployeeDashboardPage />} />
+            <Route path="estimates" element={<EmployeeEstimatesPage />} />
+            <Route path="estimates/:id" element={<EmployeeEstimatesPage />} />
             <Route path="schedule" element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="attendance" element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="leave" element={<Navigate to="/workforce/employee/dashboard" replace />} />

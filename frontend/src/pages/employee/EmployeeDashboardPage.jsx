@@ -79,7 +79,9 @@ import {
   Star,
   Download,
   ExternalLink,
+  Calculator,
 } from 'lucide-react';
+import QuotationBuilderModal from '../../components/estimates/QuotationBuilderModal.jsx';
 
 /**
  * Real-time Countdown Badge for Offer Expiration & 5-Minute Cancellation Window
@@ -267,6 +269,7 @@ export function EmployeeDashboardPage() {
     is_complete: false,
   });
   const [otpInput, setOtpInput] = useState('');
+  const [isQuotationModalOpen, setIsQuotationModalOpen] = useState(false);
 
   // ── Automatic Geofence Arrival Event Listener (Telemetry handled by EmployeeRuntimeProvider) ──
   useEffect(() => {
@@ -2228,9 +2231,17 @@ export function EmployeeDashboardPage() {
                       >
                         {/* Top: Job Ref + Live Status Badge */}
                         <div className="flex items-center justify-between text-[11px] mb-1">
-                          <span className="font-mono font-bold text-blue-600">
-                            {job.request_id || `SR-${job.id}`}
-                          </span>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-mono font-bold text-blue-600">
+                              {job.request_id || `SR-${job.id}`}
+                            </span>
+                            {(job.is_estimation || job.pricing_mode === 'QUOTATION') && (
+                              <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-800 flex items-center gap-1">
+                                <Calculator className="w-2.5 h-2.5" />
+                                <span>ESTIMATION REQUIRED</span>
+                              </span>
+                            )}
+                          </div>
                           <StatusBadge status={presentation?.badgeStatus} label={presentation?.badgeLabel} size="xs" />
                         </div>
 
@@ -2738,15 +2749,61 @@ export function EmployeeDashboardPage() {
                                   Pre-Service Verification Complete!
                                 </h4>
                                 <p className="text-[10px] text-emerald-700 mt-0.5">
-                                  All arrival, OTP, and presence identity verified. Starting work automatically...
+                                  {(selectedJob.is_estimation || selectedJob.pricing_mode === 'QUOTATION')
+                                    ? 'On-site presence & identity verified. You may now perform measurements and draft the quotation.'
+                                    : 'All arrival, OTP, and presence identity verified. Starting work automatically...'}
                                 </p>
                               </div>
                               <div className="px-3 py-1.5 bg-emerald-100 border border-emerald-300 text-emerald-800 font-bold rounded text-xs flex items-center gap-1.5 shrink-0 justify-center">
                                 <span className="w-2 h-2 rounded-full bg-emerald-600 animate-ping" />
-                                <span>{actionLoading === selectedJob.id ? 'Clocking In...' : 'Auto Clock-In Active'}</span>
+                                <span>{(selectedJob.is_estimation || selectedJob.pricing_mode === 'QUOTATION') ? 'Inspection Active' : actionLoading === selectedJob.id ? 'Clocking In...' : 'Auto Clock-In Active'}</span>
                               </div>
                             </div>
                           ) : null}
+
+                          {/* ── COMMERCIAL ESTIMATION & QUOTATION WORKFLOW CARD ── */}
+                          {(selectedJob.is_estimation || selectedJob.pricing_mode === 'QUOTATION') && (
+                            <div className="p-4 bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/60 rounded-xl space-y-3">
+                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                <div className="flex items-start gap-2.5">
+                                  <div className="p-2 rounded-lg bg-indigo-600 text-white shrink-0 mt-0.5 shadow-sm">
+                                    <Calculator className="w-4 h-4" />
+                                  </div>
+                                  <div>
+                                    <div className="flex items-center gap-2">
+                                      <h4 className="text-xs font-bold text-indigo-950 dark:text-indigo-200">
+                                        Commercial Quotation Workflow
+                                      </h4>
+                                      {selectedJob.active_quote_number && (
+                                        <span className="text-[10px] font-mono font-bold bg-indigo-100 dark:bg-indigo-900 text-indigo-800 dark:text-indigo-300 px-2 py-0.5 rounded">
+                                          {selectedJob.active_quote_number}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-[11px] text-indigo-700 dark:text-indigo-300 mt-0.5">
+                                      {preServiceState.is_complete || selectedJob.can_create_quote
+                                        ? 'Site inspection unlocked. Record dimensions, select rate-card items, and deliver formal quote to customer.'
+                                        : 'Complete Step 1 Arrival and Step 2 OTP/Selfie verification above to unlock Quotation Builder.'}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => setIsQuotationModalOpen(true)}
+                                  disabled={!preServiceState.is_complete && !selectedJob.can_create_quote}
+                                  className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm shrink-0 ${
+                                    preServiceState.is_complete || selectedJob.can_create_quote
+                                      ? 'bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer hover:shadow-indigo-500/20'
+                                      : 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
+                                  }`}
+                                >
+                                  <Calculator className="w-3.5 h-3.5" />
+                                  <span>{selectedJob.active_quote_number ? 'Open Quotation Builder' : 'Draft Quotation'}</span>
+                                </button>
+                              </div>
+                            </div>
+                          )}
                         </div>
 
                       )}
@@ -3723,6 +3780,19 @@ export function EmployeeDashboardPage() {
             }
           }}
         />
+
+        {/* Estimation & Commercial Quotation Builder Modal */}
+        {isQuotationModalOpen && selectedJob && (
+          <QuotationBuilderModal
+            job={selectedJob}
+            quoteId={selectedJob.active_quote_id}
+            isOpen={isQuotationModalOpen}
+            onClose={() => setIsQuotationModalOpen(false)}
+            onQuoteSaved={() => {
+              loadDashboard({ silent: true });
+            }}
+          />
+        )}
       </div>
     </AppShell >
   );

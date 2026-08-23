@@ -70,6 +70,15 @@ from .serializers import (
     WorkforceJobFeedbackSerializer,
     JobPaymentSerializer,
     PaymentCollectionEventSerializer,
+    WorkforceRateCardSerializer,
+    WorkforceQuoteItemSerializer,
+    WorkforceQuoteMeasurementSerializer,
+    WorkforceQuotePhotoSerializer,
+    WorkforcePaintingQuoteSerializer,
+    WorkforceMasonQuoteSerializer,
+    WorkforceQuoteListSerializer,
+    WorkforceQuoteDetailSerializer,
+    WorkforceCustomerQuoteSerializer,
 )
 from .models import (
     WorkforceEmployeeSchedule,
@@ -96,6 +105,22 @@ from .models import (
     WorkforceJobLifecycleEvent,
     JobTrackingSession,
     JobLocationPoint,
+    WorkforceRateCard,
+    WorkforceQuote,
+    WorkforceQuoteItem,
+    WorkforceQuoteMeasurement,
+    WorkforceQuotePhoto,
+    WorkforcePaintingQuote,
+    WorkforceMasonQuote,
+)
+from .services.quotation_service import (
+    can_create_quote,
+    recalculate_quote_totals,
+    send_quote_to_customer,
+    record_customer_decision,
+    create_revised_quote_version,
+    convert_accepted_quote_to_work_booking,
+    admin_clear_mason_structural,
 )
 from time_tracking.models import TimeLog, Break
 from time_tracking.serializers import TimeLogSerializer
@@ -7824,6 +7849,626 @@ class WorkforcePublicSupportInquiryView(APIView):
             "submitted_at": submitted_at,
             "message": "Your support inquiry has been successfully submitted to Caldim Engineering Operations Desk. A ticket has been logged and our team will respond shortly.",
         }, status=status.HTTP_201_CREATED)
+
+
+# ─── 33. Estimation & Quotation API Views ──────────────────────────────────────
+
+class WorkforceEstimationGateView(APIView):
+    """
+    GET /api/workforce/jobs/<pk>/estimation-gate/
+    Authoritative backend check determining if all 4 pre-service verification gates are complete
+    to allow creating/drafting quotations.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return Response({"error": "Job not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        is_allowed, details = can_create_quote(job)
+        return Response({
+            "job_id": job.id,
+            "request_id": job.request_id,
+            "is_estimation": job.is_estimation,
+            "can_create_quote": is_allowed,
+            **details,
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceRateCardListView(APIView):
+    """
+    GET /api/workforce/rate-cards/
+    Returns active rate card entries for building quotation line items.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        category = request.query_params.get("category", "").strip().lower()
+        service_name = request.query_params.get("service", "").strip()
+
+        qs = WorkforceRateCard.objects.filter(is_active=True)
+        if category:
+            qs = qs.filter(service_category__icontains=category)
+        if service_name:
+            qs = qs.filter(service_name__icontains=service_name)
+
+        serializer = WorkforceRateCardSerializer(qs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class WorkforceQuoteListView(APIView):
+    """
+    GET /api/workforce/quotes/
+    List quotations with status tab filters.
+
+    POST /api/workforce/quotes/
+    Create a new quotation draft for an estimation job.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        emp = getattr(user, "employee_profile", None)
+        company = getattr(user, "company", None) or (emp.company if emp else None)
+
+        qs = WorkforceQuote.objects.all()
+        if not is_admin_role(user):
+            if emp:
+                qs = qs.filter(Q(technician=emp) | Q(job__assigned_employee=emp))
+            elif company:
+                qs = qs.filter(company=company)
+            else:
+                qs = qs.filter(customer=user)
+        elif company:
+            qs = qs.filter(company=company)
+
+        # Tab filtering
+        tab = request.query_params.get("tab", "").strip().lower()
+        status_filter = request.query_params.get("status", "").strip().upper()
+        job_id = request.query_params.get("job_id")
+
+        if job_id:
+            qs = qs.filter(job_id=job_id)
+
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        elif tab and tab != "all":
+            tab_map = {
+                "draft": [WorkforceQuote.Status.DRAFT],
+                "pending_review": [WorkforceQuote.Status.PENDING_REVIEW],
+                "sent": [WorkforceQuote.Status.SENT_TO_CUSTOMER],
+                "accepted": [WorkforceQuote.Status.CUSTOMER_ACCEPTED],
+                "changes_requested": [WorkforceQuote.Status.CHANGES_REQUESTED],
+                "declined": [WorkforceQuote.Status.DECLINED],
+                "expired": [WorkforceQuote.Status.EXPIRED],
+                "converted": [WorkforceQuote.Status.CONVERTED],
+                "conversion_pending": [WorkforceQuote.Status.CONVERSION_PENDING],
+            }
+            if tab in tab_map:
+                qs = qs.filter(status__in=tab_map[tab])
+
+        search = request.query_params.get("search", "").strip()
+        if search:
+            qs = qs.filter(
+                Q(quote_number__icontains=search) |
+                Q(title__icontains=search) |
+                Q(service_name__icontains=search) |
+                Q(job__customer_name__icontains=search)
+            )
+
+        serializer = WorkforceQuoteListSerializer(qs.select_related("job", "technician", "customer"), many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        user = request.user
+        emp = getattr(user, "employee_profile", None)
+        job_id = request.data.get("job_id")
+
+        if not job_id:
+            return Response({"error": "job_id is required to create a quotation.", "code": "JOB_ID_REQUIRED"}, status=status.HTTP_400_BAD_REQUEST)
+
+        job = ServiceRequest.objects.filter(id=job_id).first()
+        if not job:
+            return Response({"error": "Job not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Verification Gate Check
+        allowed, details = can_create_quote(job)
+        if not allowed and not is_admin_role(user):
+            return Response({
+                "error": "Cannot create quotation: Pre-service verification checks are incomplete.",
+                "code": "ESTIMATION_VERIFICATION_INCOMPLETE",
+                "details": details,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        title = request.data.get("title") or f"Quotation for {job.issue_title or 'Service'}"
+        description = request.data.get("description", "")
+        service_category = request.data.get("service_category") or job.service_category
+        service_name = request.data.get("service_name") or job.issue_title
+        inspection_fee = request.data.get("inspection_fee", 0.0)
+
+        with transaction.atomic():
+            quote = WorkforceQuote.objects.create(
+                job=job,
+                technician=emp or job.assigned_employee,
+                company=job.company,
+                customer=job.customer,
+                title=title,
+                description=description,
+                service_category=service_category,
+                service_name=service_name,
+                inspection_fee=inspection_fee,
+                status=WorkforceQuote.Status.DRAFT,
+            )
+
+            # Check if initial painting or mason data provided
+            if "painting_details" in request.data:
+                pd = request.data["painting_details"]
+                WorkforcePaintingQuote.objects.create(
+                    quote=quote,
+                    property_type=pd.get("property_type", "Apartment"),
+                    rooms_detail=pd.get("rooms_detail", []),
+                    area_sqft=pd.get("area_sqft", 0.0),
+                    surface_condition=pd.get("surface_condition", "Good"),
+                    existing_paint_condition=pd.get("existing_paint_condition", "Old Emulsion"),
+                    paint_type=pd.get("paint_type"),
+                    brand_grade=pd.get("brand_grade", "Asian Paints / Berger"),
+                    number_of_coats=pd.get("number_of_coats", 2),
+                    requires_putty=pd.get("requires_putty", False),
+                    requires_priming=pd.get("requires_priming", False),
+                    crack_treatment=pd.get("crack_treatment", False),
+                    waterproofing_needed=pd.get("waterproofing_needed", False),
+                    scaffolding_required=pd.get("scaffolding_required", False),
+                    color_code=pd.get("color_code", ""),
+                    notes=pd.get("notes", ""),
+                )
+            elif "mason_details" in request.data:
+                md = request.data["mason_details"]
+                WorkforceMasonQuote.objects.create(
+                    quote=quote,
+                    work_type=md.get("work_type"),
+                    length=md.get("length"),
+                    width=md.get("width"),
+                    height=md.get("height"),
+                    area_sqft=md.get("area_sqft", 0.0),
+                    estimated_duration_days=md.get("estimated_duration_days", 1),
+                    requires_demolition=md.get("requires_demolition", False),
+                    debris_disposal_included=md.get("debris_disposal_included", False),
+                    structural_impact=md.get("structural_impact", "NONE"),
+                    access_difficulty=md.get("access_difficulty", "Standard"),
+                    labour_count=md.get("labour_count", 2),
+                    materials_needed=md.get("materials_needed", []),
+                    notes=md.get("notes", ""),
+                )
+                if md.get("structural_impact") in ["SUSPECTED_STRUCTURAL", "STRUCTURAL"]:
+                    quote.structural_impact = md.get("structural_impact")
+                    quote.save(update_fields=["structural_impact"])
+
+        serializer = WorkforceQuoteDetailSerializer(quote)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class WorkforceQuoteDetailView(APIView):
+    """
+    GET /api/workforce/quotes/<pk>/
+    PUT / PATCH /api/workforce/quotes/<pk>/
+    DELETE /api/workforce/quotes/<pk>/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _get_quote(self, request, pk):
+        user = request.user
+        emp = getattr(user, "employee_profile", None)
+        qs = WorkforceQuote.objects.filter(pk=pk)
+        if not is_admin_role(user):
+            if emp:
+                qs = qs.filter(Q(technician=emp) | Q(job__assigned_employee=emp))
+            else:
+                qs = qs.filter(customer=user)
+        return qs.first()
+
+    def get(self, request, pk):
+        quote = self._get_quote(request, pk)
+        if not quote:
+            return Response({"error": "Quote not found or access denied.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+        serializer = WorkforceQuoteDetailSerializer(quote)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def patch(self, request, pk):
+        quote = self._get_quote(request, pk)
+        if not quote:
+            return Response({"error": "Quote not found or access denied.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        if quote.status not in [WorkforceQuote.Status.DRAFT, WorkforceQuote.Status.PENDING_REVIEW, WorkforceQuote.Status.CHANGES_REQUESTED]:
+            return Response({
+                "error": f"Cannot edit quote in status '{quote.status}'. Only DRAFT quotes can be edited.",
+                "code": "QUOTE_IMMUTABLE",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        data = request.data
+        if "title" in data:
+            quote.title = data["title"]
+        if "description" in data:
+            quote.description = data["description"]
+        if "inspection_fee_adjusted" in data:
+            quote.inspection_fee_adjusted = Decimal(str(data["inspection_fee_adjusted"]))
+        if "structural_impact" in data:
+            quote.structural_impact = data["structural_impact"]
+
+        quote.save()
+        recalculate_quote_totals(quote)
+
+        serializer = WorkforceQuoteDetailSerializer(quote)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def delete(self, request, pk):
+        quote = self._get_quote(request, pk)
+        if not quote:
+            return Response({"error": "Quote not found or access denied.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        if quote.status != WorkforceQuote.Status.DRAFT:
+            return Response({"error": "Only DRAFT quotations can be deleted.", "code": "CANNOT_DELETE"}, status=status.HTTP_400_BAD_REQUEST)
+
+        quote.delete()
+        return Response({"success": True, "message": "Draft quotation deleted."}, status=status.HTTP_200_OK)
+
+
+class WorkforceQuoteItemBulkView(APIView):
+    """
+    POST /api/workforce/quotes/<pk>/items/bulk/
+    Synchronizes line items in bulk and triggers authoritative total recalculation.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        quote = WorkforceQuote.objects.filter(pk=pk).first()
+        if not quote:
+            return Response({"error": "Quote not found.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        if quote.status not in [WorkforceQuote.Status.DRAFT, WorkforceQuote.Status.PENDING_REVIEW, WorkforceQuote.Status.CHANGES_REQUESTED]:
+            return Response({"error": "Cannot modify items for a sent or finalized quotation.", "code": "QUOTE_LOCKED"}, status=status.HTTP_400_BAD_REQUEST)
+
+        items_data = request.data.get("items", [])
+        if not isinstance(items_data, list):
+            return Response({"error": "items must be a list of line item objects.", "code": "INVALID_ITEMS"}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            quote.items.all().delete()
+            for idx, item in enumerate(items_data):
+                WorkforceQuoteItem.objects.create(
+                    quote=quote,
+                    section=item.get("section", "MATERIAL"),
+                    name=item.get("name", f"Item #{idx+1}"),
+                    description=item.get("description", ""),
+                    item_type=item.get("item_type", "item"),
+                    quantity=Decimal(str(item.get("quantity", 1))),
+                    unit=item.get("unit", "sqft"),
+                    unit_price=Decimal(str(item.get("unit_price", 0))),
+                    tax_rate=Decimal(str(item.get("tax_rate", 18.0))),
+                    discount_amount=Decimal(str(item.get("discount_amount", 0))),
+                    material_source=item.get("material_source", "CALTRACK"),
+                    is_customer_supplied=item.get("is_customer_supplied", False),
+                    warranty_applicable=item.get("warranty_applicable", True),
+                    notes=item.get("notes", ""),
+                    sort_order=item.get("sort_order", idx),
+                )
+
+            recalculate_quote_totals(quote)
+
+        serializer = WorkforceQuoteDetailSerializer(quote)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class WorkforceQuoteMeasurementsBulkView(APIView):
+    """
+    POST /api/workforce/quotes/<pk>/measurements/bulk/
+    Bulk updates on-site dimensional measurements.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        quote = WorkforceQuote.objects.filter(pk=pk).first()
+        if not quote:
+            return Response({"error": "Quote not found.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        measurements = request.data.get("measurements", [])
+        with transaction.atomic():
+            quote.measurements.all().delete()
+            for m in measurements:
+                WorkforceQuoteMeasurement.objects.create(
+                    quote=quote,
+                    name=m.get("name", "Measurement"),
+                    measurement_type=m.get("measurement_type", "area"),
+                    length=m.get("length"),
+                    width=m.get("width"),
+                    height=m.get("height"),
+                    area=m.get("area"),
+                    quantity=m.get("quantity", 1.0),
+                    unit=m.get("unit", "sqft"),
+                    notes=m.get("notes", ""),
+                )
+
+        serializer = WorkforceQuoteDetailSerializer(quote)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class WorkforceQuoteInspectionView(APIView):
+    """
+    POST /api/workforce/quotes/<pk>/inspection/
+    Saves Painting or Mason inspection parameters.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        quote = WorkforceQuote.objects.filter(pk=pk).first()
+        if not quote:
+            return Response({"error": "Quote not found.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        data = request.data
+        with transaction.atomic():
+            if "painting" in str(quote.service_category).lower() or "painting_details" in data:
+                pd = data.get("painting_details", data)
+                p_obj, _ = WorkforcePaintingQuote.objects.get_or_create(quote=quote)
+                p_obj.property_type = pd.get("property_type", p_obj.property_type)
+                p_obj.rooms_detail = pd.get("rooms_detail", p_obj.rooms_detail)
+                p_obj.area_sqft = pd.get("area_sqft", p_obj.area_sqft)
+                p_obj.surface_condition = pd.get("surface_condition", p_obj.surface_condition)
+                p_obj.existing_paint_condition = pd.get("existing_paint_condition", p_obj.existing_paint_condition)
+                p_obj.paint_type = pd.get("paint_type", p_obj.paint_type)
+                p_obj.brand_grade = pd.get("brand_grade", p_obj.brand_grade)
+                p_obj.number_of_coats = pd.get("number_of_coats", p_obj.number_of_coats)
+                p_obj.requires_putty = pd.get("requires_putty", p_obj.requires_putty)
+                p_obj.requires_priming = pd.get("requires_priming", p_obj.requires_priming)
+                p_obj.crack_treatment = pd.get("crack_treatment", p_obj.crack_treatment)
+                p_obj.waterproofing_needed = pd.get("waterproofing_needed", p_obj.waterproofing_needed)
+                p_obj.scaffolding_required = pd.get("scaffolding_required", p_obj.scaffolding_required)
+                p_obj.color_code = pd.get("color_code", p_obj.color_code)
+                p_obj.notes = pd.get("notes", p_obj.notes)
+                p_obj.save()
+
+            if "mason" in str(quote.service_category).lower() or "mason_details" in data:
+                md = data.get("mason_details", data)
+                m_obj, _ = WorkforceMasonQuote.objects.get_or_create(quote=quote)
+                m_obj.work_type = md.get("work_type", m_obj.work_type)
+                m_obj.length = md.get("length", m_obj.length)
+                m_obj.width = md.get("width", m_obj.width)
+                m_obj.height = md.get("height", m_obj.height)
+                m_obj.area_sqft = md.get("area_sqft", m_obj.area_sqft)
+                m_obj.estimated_duration_days = md.get("estimated_duration_days", m_obj.estimated_duration_days)
+                m_obj.requires_demolition = md.get("requires_demolition", m_obj.requires_demolition)
+                m_obj.debris_disposal_included = md.get("debris_disposal_included", m_obj.debris_disposal_included)
+                m_obj.structural_impact = md.get("structural_impact", m_obj.structural_impact)
+                m_obj.access_difficulty = md.get("access_difficulty", m_obj.access_difficulty)
+                m_obj.labour_count = md.get("labour_count", m_obj.labour_count)
+                m_obj.materials_needed = md.get("materials_needed", m_obj.materials_needed)
+                m_obj.notes = md.get("notes", m_obj.notes)
+                m_obj.save()
+
+                if m_obj.structural_impact in ["SUSPECTED_STRUCTURAL", "STRUCTURAL"]:
+                    quote.structural_impact = m_obj.structural_impact
+                    quote.save(update_fields=["structural_impact"])
+
+        serializer = WorkforceQuoteDetailSerializer(quote)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class WorkforceQuoteSendView(APIView):
+    """
+    POST /api/workforce/quotes/<pk>/send/
+    Sends quotation to customer, freezing amounts, creating decision token, and enforcing structural gates.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        try:
+            quote = send_quote_to_customer(pk, actor=request.user)
+            serializer = WorkforceQuoteDetailSerializer(quote)
+            return Response({
+                "success": True,
+                "message": f"Quotation {quote.quote_number} successfully sent to customer.",
+                "quote": serializer.data,
+            }, status=status.HTTP_200_OK)
+        except ValidationError as ve:
+            return Response({
+                "error": str(ve.message if hasattr(ve, 'message') else ve),
+                "code": "QUOTE_SEND_BLOCKED",
+            }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as ex:
+            return Response({"error": str(ex), "code": "QUOTE_SEND_FAILED"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class WorkforceQuoteReviseView(APIView):
+    """
+    POST /api/workforce/quotes/<pk>/revise/
+    Creates a new draft version (e.g. V2) when revisions are requested.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        quote = WorkforceQuote.objects.filter(pk=pk).first()
+        if not quote:
+            return Response({"error": "Quote not found.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        notes = request.data.get("notes", "Revision requested")
+        new_quote = create_revised_quote_version(quote, notes=notes)
+        serializer = WorkforceQuoteDetailSerializer(new_quote)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class WorkforceCustomerQuoteDetailView(APIView):
+    """
+    GET /api/workforce/customer/quote-token/<token>/
+    GET /api/workforce/customer/quotes/<pk>/
+    Sanitized public or customer-authenticated quotation retrieval.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, token=None, pk=None):
+        if token:
+            quote = WorkforceQuote.objects.filter(decision_token=token).first()
+        elif pk:
+            quote = WorkforceQuote.objects.filter(pk=pk).first()
+        else:
+            token_param = request.query_params.get("token")
+            quote = WorkforceQuote.objects.filter(decision_token=token_param).first() if token_param else None
+
+        if not quote:
+            return Response({"error": "Quotation not found or invalid token.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = WorkforceCustomerQuoteSerializer(quote)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class WorkforceCustomerQuoteDecideView(APIView):
+    """
+    POST /api/workforce/customer/quote-token/<token>/decide/
+    POST /api/workforce/customer/quotes/<pk>/decide/
+    Customer acceptance, decline, or revision request.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, token=None, pk=None):
+        action = request.data.get("action")
+        notes = request.data.get("notes", "")
+        reason = request.data.get("reason", "")
+
+        if token:
+            quote = WorkforceQuote.objects.filter(decision_token=token).first()
+        elif pk:
+            quote = WorkforceQuote.objects.filter(pk=pk).first()
+        else:
+            token_param = request.query_params.get("token") or request.data.get("token")
+            quote = WorkforceQuote.objects.filter(decision_token=token_param).first() if token_param else None
+
+        if not quote:
+            return Response({"error": "Quotation not found or invalid token.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            updated_quote, result_obj = record_customer_decision(
+                quote_id=quote.id,
+                action=action,
+                notes=notes,
+                reason=reason,
+                token=token,
+                actor=request.user if request.user.is_authenticated else None,
+            )
+
+            resp_data = {
+                "success": True,
+                "quote_number": updated_quote.quote_number,
+                "status": updated_quote.status,
+                "decision": updated_quote.customer_decision,
+            }
+
+            if str(action).upper() == "ACCEPT" and result_obj:
+                resp_data["work_job_id"] = result_obj.id
+                resp_data["work_job_request_id"] = result_obj.request_id
+                resp_data["message"] = "Quotation accepted! Your work service booking has been created and dispatched."
+            elif str(action).upper() == "DECLINE":
+                resp_data["message"] = "Quotation declined. Thank you for your feedback."
+            elif str(action).upper() == "REQUEST_CHANGES" and result_obj:
+                resp_data["message"] = f"Change request recorded. Revised quotation version v{result_obj.quote_version} is being prepared."
+                resp_data["new_version"] = result_obj.quote_version
+
+            return Response(resp_data, status=status.HTTP_200_OK)
+
+        except ValidationError as ve:
+            return Response({"error": str(ve.message if hasattr(ve, 'message') else ve), "code": "DECISION_FAILED"}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as ex:
+            logger.error("Decision failed on quote %s: %s", quote.id, ex, exc_info=True)
+            return Response({"error": str(ex), "code": "SERVER_ERROR"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class WorkforceAdminQuoteClearanceView(APIView):
+    """
+    POST /api/workforce/admin/quotes/<pk>/clear-structural/
+    Admin clearance endpoint for mason quotes with suspected structural damage.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsWorkforceAdmin]
+
+    def post(self, request, pk):
+        approved = request.data.get("approved", True)
+        notes = request.data.get("notes", "")
+
+        try:
+            quote = admin_clear_mason_structural(pk, request.user, approved=approved, notes=notes)
+            serializer = WorkforceQuoteDetailSerializer(quote)
+            return Response({
+                "success": True,
+                "message": f"Structural clearance {'approved' if approved else 'rejected'} for Quote {quote.quote_number}.",
+                "quote": serializer.data,
+            }, status=status.HTTP_200_OK)
+        except Exception as ex:
+            return Response({"error": str(ex), "code": "CLEARANCE_FAILED"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class WorkforceAdminQuoteMetricsView(APIView):
+    """
+    GET /api/workforce/admin/quotes/metrics/
+    Quotation KPI metrics for Vendor / Admin dashboard.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsWorkforceAdmin]
+
+    def get(self, request):
+        user = request.user
+        company = getattr(user, "company", None)
+        qs = WorkforceQuote.objects.all()
+        if company:
+            qs = qs.filter(company=company)
+
+        total_quotes = qs.count()
+        draft_quotes = qs.filter(status=WorkforceQuote.Status.DRAFT).count()
+        sent_quotes = qs.filter(status=WorkforceQuote.Status.SENT_TO_CUSTOMER).count()
+        accepted_quotes = qs.filter(status__in=[WorkforceQuote.Status.CUSTOMER_ACCEPTED, WorkforceQuote.Status.CONVERTED]).count()
+        converted_quotes = qs.filter(status=WorkforceQuote.Status.CONVERTED).count()
+        declined_quotes = qs.filter(status=WorkforceQuote.Status.DECLINED).count()
+        pending_review = qs.filter(status=WorkforceQuote.Status.PENDING_REVIEW).count()
+
+        conversion_rate = round((accepted_quotes / total_quotes * 100), 1) if total_quotes > 0 else 0.0
+
+        accepted_sums = qs.filter(status__in=[WorkforceQuote.Status.CUSTOMER_ACCEPTED, WorkforceQuote.Status.CONVERTED]).aggregate(
+            total_rev=models.Sum("total_amount"),
+            avg_val=models.Avg("total_amount")
+        )
+
+        return Response({
+            "total_quotes": total_quotes,
+            "draft_quotes": draft_quotes,
+            "sent_quotes": sent_quotes,
+            "accepted_quotes": accepted_quotes,
+            "converted_count": converted_quotes,
+            "converted_quotes": converted_quotes,
+            "declined_quotes": declined_quotes,
+            "pending_review": pending_review,
+            "conversion_rate_percent": conversion_rate,
+            "total_accepted_revenue": accepted_sums.get("total_rev") or 0.0,
+            "average_quote_value": round(accepted_sums.get("avg_val") or 0.0, 2),
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceAdminQuoteRetryConversionView(APIView):
+    """
+    POST /api/workforce/admin/quotes/<pk>/retry-conversion/
+    Safely retries work booking conversion for quotes stuck in CONVERSION_PENDING.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsWorkforceAdmin]
+
+    def post(self, request, pk):
+        quote = WorkforceQuote.objects.filter(pk=pk).first()
+        if not quote:
+            return Response({"error": "Quote not found.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            work_job = convert_accepted_quote_to_work_booking(quote, actor=request.user)
+            return Response({
+                "success": True,
+                "message": f"Quote {quote.quote_number} successfully converted to Work ServiceRequest #{work_job.id}.",
+                "work_job_id": work_job.id,
+                "work_job_request_id": work_job.request_id,
+            }, status=status.HTTP_200_OK)
+        except Exception as ex:
+            return Response({"error": str(ex), "code": "CONVERSION_RETRY_FAILED"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 
 
