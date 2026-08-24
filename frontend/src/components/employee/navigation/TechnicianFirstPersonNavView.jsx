@@ -10,7 +10,7 @@
  *    and ✕ Exit / 🔀 Route Overview controls.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   X,
   Shuffle,
@@ -21,8 +21,7 @@ import {
   Maximize2,
   Minimize2,
   CheckCircle2,
-  ChevronUp,
-  ChevronDown,
+  Navigation,
 } from 'lucide-react';
 import { TechnicianFirstPersonMap } from './TechnicianFirstPersonMap.jsx';
 import { useTechnicianNavigation } from './useTechnicianNavigation.js';
@@ -53,6 +52,7 @@ export function TechnicianFirstPersonNavView({
     displayDistanceText,
     displayEtaText,
     arrivalClockText,
+    navigationState,
     isFollowMode,
     setIsFollowMode,
     isRecalculating,
@@ -98,7 +98,7 @@ export function TechnicianFirstPersonNavView({
   return (
     <div
       id="caltrack-first-person-nav-screen"
-      className={`w-full bg-slate-950 text-slate-900 transition-all font-sans select-none ${
+      className={`w-full bg-slate-950 text-slate-900 font-sans select-none ${
         isFullscreen
           ? 'fixed inset-0 z-[9999] w-screen h-screen flex flex-col'
           : 'relative rounded-2xl overflow-hidden shadow-2xl border border-slate-800 flex flex-col h-[520px] sm:h-[600px]'
@@ -118,10 +118,19 @@ export function TechnicianFirstPersonNavView({
             <div className="min-w-0 flex flex-col justify-center">
               {isRecalculating ? (
                 <span className="text-amber-200 animate-pulse text-lg font-bold">Recalculating route...</span>
+              ) : navigationState === 'ARRIVED' ? (
+                <div className="text-xl sm:text-2xl font-black text-emerald-300 leading-tight truncate">
+                  Arrived at Customer Location
+                </div>
               ) : (
                 <div className="text-xl sm:text-2xl font-black text-white leading-tight truncate">
                   {roadPrefix ? <span className="font-normal text-teal-100/90 text-lg mr-1.5">{roadPrefix}</span> : null}
                   <span>{roadName}</span>
+                </div>
+              )}
+              {distanceToNextManeuverText && navigationState !== 'ARRIVED' && !isRecalculating && (
+                <div className="text-xs font-semibold text-teal-200 mt-0.5">
+                  In {distanceToNextManeuverText}
                 </div>
               )}
             </div>
@@ -150,8 +159,8 @@ export function TechnicianFirstPersonNavView({
         </div>
 
         {/* Attached Sub-Pill: "Then ↰" */}
-        {upcomingPreview && !isRecalculating && (
-          <div className="mt-1 ml-4 px-4 py-1.5 bg-[#00473F] text-white text-xs font-black rounded-b-2xl shadow-lg border-x border-b border-[#003831] flex items-center gap-1.5 animate-fadeIn">
+        {upcomingPreview && !isRecalculating && navigationState !== 'ARRIVED' && (
+          <div className="mt-1 ml-4 px-4 py-1.5 bg-[#00473F] text-white text-xs font-black rounded-b-2xl shadow-lg border-x border-b border-[#003831] flex items-center gap-1.5">
             <span className="opacity-90">Then</span>
             <span className="text-base leading-none">{upcomingPreview.symbol}</span>
           </div>
@@ -180,7 +189,7 @@ export function TechnicianFirstPersonNavView({
       </div>
 
       {/* ── 3. Bottom White Curved Navigation Sheet ── */}
-      <div className="relative z-30 bg-white text-slate-900 rounded-t-3xl shadow-[0_-10px_30px_rgba(0,0,0,0.18)] border-t border-slate-100 flex flex-col transition-all">
+      <div className="relative z-30 bg-white text-slate-900 rounded-t-3xl shadow-[0_-10px_30px_rgba(0,0,0,0.18)] border-t border-slate-100 flex flex-col">
         {/* Drag / Expand Handle */}
         <button
           type="button"
@@ -205,14 +214,14 @@ export function TechnicianFirstPersonNavView({
           {/* Center Trip Metrics: Large Green ETA + Distance/Clock */}
           <div className="flex flex-col items-center justify-center text-center">
             <div className="text-2xl sm:text-3xl font-black text-emerald-600 leading-none tracking-tight">
-              {displayEtaText}
+              {displayEtaText !== '--' ? displayEtaText : 'Navigating'}
             </div>
             <div className="text-xs sm:text-sm font-semibold text-slate-500 mt-1">
-              {displayDistanceText && arrivalClockText
+              {displayDistanceText !== '--' && arrivalClockText
                 ? `${displayDistanceText} • ${arrivalClockText}`
-                : displayDistanceText
-                ? `${displayDistanceText} • Calculating...`
-                : 'Calculating route...'}
+                : displayDistanceText !== '--'
+                ? displayDistanceText
+                : 'Routing to customer...'}
             </div>
           </div>
 
@@ -233,7 +242,7 @@ export function TechnicianFirstPersonNavView({
 
         {/* Expandable Customer Details Drawer */}
         {isSheetExpanded && (
-          <div className="px-6 pb-4 pt-2 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fadeIn">
+          <div className="px-6 pb-4 pt-2 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
                 <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0" />

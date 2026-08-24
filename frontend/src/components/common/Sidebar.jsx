@@ -24,6 +24,7 @@ import {
   CreditCard,
   ReceiptText,
   Activity,
+  Calculator,
 } from 'lucide-react';
 
 export function Sidebar({ onCloseMobile = () => {} }) {
@@ -387,6 +388,14 @@ export function Sidebar({ onCloseMobile = () => {} }) {
               >
                 <Briefcase className="w-3.5 h-3.5 text-blue-500" />
                 <span>Jobs</span>
+              </NavLink>
+              <NavLink
+                to="/workforce/employee/estimates"
+                onClick={onCloseMobile}
+                className={navItemClass}
+              >
+                <Calculator className="w-3.5 h-3.5 text-indigo-500" />
+                <span>Estimates</span>
               </NavLink>
               <NavLink
                 to="/workforce/employee/performance"

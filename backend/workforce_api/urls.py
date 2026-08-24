@@ -108,6 +108,20 @@ from .views import (
     WorkforceAdminLocationToggleView,
     WorkforceAdminLocationAssignEmployeeView,
     WorkforcePublicSupportInquiryView,
+    WorkforceEstimationGateView,
+    WorkforceRateCardListView,
+    WorkforceQuoteListView,
+    WorkforceQuoteDetailView,
+    WorkforceQuoteItemBulkView,
+    WorkforceQuoteMeasurementsBulkView,
+    WorkforceQuoteInspectionView,
+    WorkforceQuoteSendView,
+    WorkforceQuoteReviseView,
+    WorkforceCustomerQuoteDetailView,
+    WorkforceCustomerQuoteDecideView,
+    WorkforceAdminQuoteClearanceView,
+    WorkforceAdminQuoteMetricsView,
+    WorkforceAdminQuoteRetryConversionView,
 )
 
 
@@ -295,6 +309,24 @@ urlpatterns = [
     # Admin: Authorized Location management extensions
     path("admin/locations/<int:pk>/toggle/", WorkforceAdminLocationToggleView.as_view(), name="workforce-admin-location-toggle"),
     path("admin/locations/<int:pk>/assign/", WorkforceAdminLocationAssignEmployeeView.as_view(), name="workforce-admin-location-assign"),
+
+    # ── Estimation & Commercial Quotation Engine ──────────────────────────────
+    path("jobs/<int:pk>/estimation-gate/", WorkforceEstimationGateView.as_view(), name="workforce-job-estimation-gate"),
+    path("rate-cards/", WorkforceRateCardListView.as_view(), name="workforce-rate-cards"),
+    path("quotes/", WorkforceQuoteListView.as_view(), name="workforce-quotes"),
+    path("quotes/<int:pk>/", WorkforceQuoteDetailView.as_view(), name="workforce-quote-detail"),
+    path("quotes/<int:pk>/items/bulk/", WorkforceQuoteItemBulkView.as_view(), name="workforce-quote-items-bulk"),
+    path("quotes/<int:pk>/measurements/bulk/", WorkforceQuoteMeasurementsBulkView.as_view(), name="workforce-quote-measurements-bulk"),
+    path("quotes/<int:pk>/inspection/", WorkforceQuoteInspectionView.as_view(), name="workforce-quote-inspection"),
+    path("quotes/<int:pk>/send/", WorkforceQuoteSendView.as_view(), name="workforce-quote-send"),
+    path("quotes/<int:pk>/revise/", WorkforceQuoteReviseView.as_view(), name="workforce-quote-revise"),
+    path("customer/quote-token/<str:token>/", WorkforceCustomerQuoteDetailView.as_view(), name="workforce-customer-quote-token"),
+    path("customer/quote-token/<str:token>/decide/", WorkforceCustomerQuoteDecideView.as_view(), name="workforce-customer-quote-token-decide"),
+    path("customer/quotes/<int:pk>/", WorkforceCustomerQuoteDetailView.as_view(), name="workforce-customer-quote-detail"),
+    path("customer/quotes/<int:pk>/decide/", WorkforceCustomerQuoteDecideView.as_view(), name="workforce-customer-quote-decide"),
+    path("admin/quotes/metrics/", WorkforceAdminQuoteMetricsView.as_view(), name="workforce-admin-quote-metrics"),
+    path("admin/quotes/<int:pk>/clear-structural/", WorkforceAdminQuoteClearanceView.as_view(), name="workforce-admin-quote-clear-structural"),
+    path("admin/quotes/<int:pk>/retry-conversion/", WorkforceAdminQuoteRetryConversionView.as_view(), name="workforce-admin-quote-retry-conversion"),
 ]
 
 
