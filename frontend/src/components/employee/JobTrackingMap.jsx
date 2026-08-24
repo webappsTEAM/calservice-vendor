@@ -17,7 +17,7 @@
  *  - Zero manual arrival buttons (100% backend automatic geofence evaluation).
  */
 
-import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useMemo, useCallback, useContext } from 'react';
 import {
   MapPin,
   Navigation,
@@ -38,7 +38,7 @@ import {
   LocateFixed,
 } from 'lucide-react';
 import { getGPSPosition } from '../../hooks/useGPSPosition.js';
-import { apiUpdateLocationFull } from '../../api/workforceService.js';
+import { EmployeeRuntimeContext } from '../../context/EmployeeRuntimeContext.jsx';
 import { loadMapsApi } from '../../utils/loadGoogleMaps.js';
 import { TechnicianNavigationView } from './navigation/TechnicianNavigationView.jsx';
 
@@ -80,6 +80,7 @@ export function JobTrackingMap({
     );
   }
 
+  const employeeRuntime = useContext(EmployeeRuntimeContext);
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
   const techMarkerRef = useRef(null);
@@ -618,29 +619,27 @@ export function JobTrackingMap({
     if (isRefreshingGps) return;
     setIsRefreshingGps(true);
     try {
-      const pos = await getGPSPosition(true);
-      const { latitude, longitude, accuracy } = pos.coords;
-      await apiUpdateLocationFull(latitude, longitude, accuracy);
-      const newCoords = {
-        latitude,
-        longitude,
-        accuracy,
-        updated_at: new Date().toISOString(),
-      };
-      setLiveTechCoords(newCoords);
-      window.dispatchEvent(
-        new CustomEvent('workforce:location-updated', {
-          detail: {
-            latitude,
-            longitude,
-            accuracy,
-            timestamp: Date.now(),
-            source: 'manual_fix',
-          },
-        })
-      );
-      if (custLat != null && custLon != null) {
-        updateRoadRoute(latitude, longitude, custLat, custLon, true);
+      if (employeeRuntime?.scanCurrentLocation) {
+        const loc = await employeeRuntime.scanCurrentLocation();
+        if (loc && loc.latitude && loc.longitude) {
+          setLiveTechCoords(loc);
+          if (custLat != null && custLon != null) {
+            updateRoadRoute(loc.latitude, loc.longitude, custLat, custLon, true);
+          }
+        }
+      } else {
+        const pos = await getGPSPosition(true);
+        const { latitude, longitude, accuracy } = pos.coords;
+        const newCoords = {
+          latitude,
+          longitude,
+          accuracy,
+          updated_at: new Date().toISOString(),
+        };
+        setLiveTechCoords(newCoords);
+        if (custLat != null && custLon != null) {
+          updateRoadRoute(latitude, longitude, custLat, custLon, true);
+        }
       }
     } catch (_) {
     } finally {

@@ -3,10 +3,18 @@
  *
  * True First-Person Course-Up Navigation Map for CalTrack Technicians.
  * Matches Google Maps Navigation experience with:
+ *  - Explicit Navigation Camera State Machine:
+ *      * ROUTE_PREVIEW
+ *      * ACTIVE_NAVIGATION
+ *      * MANUAL_INTERACTION
+ *      * RECENTERING
+ *      * ARRIVAL
  *  - Course-Up Bearing Rotation following real device GPS movement heading.
- *  - Navigation Camera Offset (technician situated in lower 25% of viewport).
- *  - Smooth 60fps requestAnimationFrame position & heading interpolation.
- *  - Speedometer dial (km/h from device GPS).
+ *  - Forward Camera Offset (technician situated in lower 25-30% of viewport).
+ *  - Persistent Map and Marker instances (zero remounts / recreation).
+ *  - Smooth 60fps requestAnimationFrame position & heading marker interpolation.
+ *  - Controlled camera follow on GPS fixes (zero 60fps camera thrashing).
+ *  - Speedometer dial (km/h from device GPS + displacement fallback).
  *  - Magnetic compass rose with North-pointing needle (Course-Up / North-Up toggle).
  *  - Follow-Mode auto-tracking with 1-click Resume Navigation.
  */
@@ -23,7 +31,16 @@ import { createNavigationPuckIcon } from './navigationPuckMarker.js';
 import { formatSpeedKmh, calculateCompassRotation, interpolateShortestAngle } from './speedAndCompassUtils.js';
 import { interpolatePosition } from './navigationUtils.js';
 
-const ANIMATION_DURATION_MS = 900; // 900ms smooth gliding interpolation between GPS fixes
+const ANIMATION_DURATION_MS = 450; // Responsive, snappy gliding interpolation between GPS fixes
+const NAVIGATION_ZOOM = 18.5;
+
+export const CAMERA_STATE = {
+  ROUTE_PREVIEW: 'ROUTE_PREVIEW',
+  ACTIVE_NAVIGATION: 'ACTIVE_NAVIGATION',
+  MANUAL_INTERACTION: 'MANUAL_INTERACTION',
+  RECENTERING: 'RECENTERING',
+  ARRIVAL: 'ARRIVAL',
+};
 
 export function TechnicianFirstPersonMap({
   job,
@@ -48,42 +65,54 @@ export function TechnicianFirstPersonMap({
   const custMarkerRef = useRef(null);
   const geofenceCircleRef = useRef(null);
   const directionsRendererRef = useRef(null);
-  const infoWindowRef = useRef(null);
 
-  // Animation refs
+  // Authoritative Camera Controller State Machine Ref
+  const cameraStateRef = useRef(
+    cameraMode === 'overview' ? CAMERA_STATE.ROUTE_PREVIEW : CAMERA_STATE.ACTIVE_NAVIGATION
+  );
+
+  // Animation refs (strictly for marker rendering)
   const animFrameRef = useRef(null);
   const animStartTimeRef = useRef(0);
   const startPosRef = useRef(null);
   const targetPosRef = useRef(null);
   const currentPosRef = useRef(null);
-  const currentHeadingRef = useRef(heading);
-  const targetHeadingRef = useRef(heading);
+  const currentHeadingRef = useRef(heading || 0);
+  const targetHeadingRef = useRef(heading || 0);
+  const lastCameraHeadingRef = useRef(heading || 0);
 
   const [apiLoaded, setApiLoaded] = useState(false);
   const [mapReady, setMapReady] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
 
-  const apiKey = import.meta.env.VITE_GOOGLE_MAPS_KEY;
+  const apiKey = import.meta.env.VITE_GOOGLE_MAPS_KEY || import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 
   // Load Google Maps API Script
   useEffect(() => {
+    let mounted = true;
     if (!apiKey) return;
     loadMapsApi(apiKey)
-      .then(() => setApiLoaded(true))
+      .then(() => {
+        if (mounted) setApiLoaded(true);
+      })
       .catch((err) => console.warn('[NAV_MAP_LOAD_ERROR]', err));
+    return () => {
+      mounted = false;
+    };
   }, [apiKey]);
 
-  // Compute forward-looking navigation camera center (offsets ~35m behind vehicle along heading vector)
-  const computeNavigationCenter = useCallback((lat, lng, headingDeg = 0, zoom = 18.5) => {
-    if (!mapRef.current || lat == null || lng == null) return { lat, lng };
+  // Compute forward-looking navigation camera center (offsets ~38m ahead along heading vector)
+  // Placing the vehicle at the lower 25-30% of the viewport so the upcoming road is clearly visible
+  const computeNavigationCenter = useCallback((lat, lng, headingDeg = 0) => {
+    if (lat == null || lng == null) return { lat, lng };
 
-    const offsetDistanceMeters = 38; // Places vehicle in lower 25% of viewport
+    const offsetDistanceMeters = 38; // Places vehicle in lower 25-30% of viewport
     const earthRadius = 6371000;
     const headingRad = ((headingDeg || 0) * Math.PI) / 180;
 
-    // Move backward (opposite of heading vector)
-    const deltaLat = (-offsetDistanceMeters * Math.cos(headingRad)) / earthRadius * (180 / Math.PI);
-    const deltaLng = (-offsetDistanceMeters * Math.sin(headingRad)) / (earthRadius * Math.cos((lat * Math.PI) / 180)) * (180 / Math.PI);
+    // Shift camera FORWARD along heading vector
+    const deltaLat = (offsetDistanceMeters * Math.cos(headingRad)) / earthRadius * (180 / Math.PI);
+    const deltaLng = (offsetDistanceMeters * Math.sin(headingRad)) / (earthRadius * Math.cos((lat * Math.PI) / 180)) * (180 / Math.PI);
 
     return {
       lat: lat + deltaLat,
@@ -91,7 +120,7 @@ export function TechnicianFirstPersonMap({
     };
   }, []);
 
-  // Initialize Map
+  // 1. Initialize Map Instance (Created Exactly Once per Mount)
   useEffect(() => {
     if (!apiLoaded || !mapContainerRef.current || mapRef.current) return;
     if (!window.google?.maps?.Map) return;
@@ -103,13 +132,14 @@ export function TechnicianFirstPersonMap({
 
       const map = new google.maps.Map(mapContainerRef.current, {
         center: { lat: initialLat, lng: initialLng },
-        zoom: 18,
+        zoom: NAVIGATION_ZOOM,
         tilt: 45, // Perspective navigation tilt
-        heading: isCourseUp ? heading : 0,
+        heading: isCourseUp ? (heading || 0) : 0,
         mapTypeControl: false,
         streetViewControl: false,
         fullscreenControl: false,
         zoomControl: false, // Clean navigation canvas
+        gestureHandling: 'greedy', // Seamless mobile touch navigation
         styles: [
           { featureType: 'poi', elementType: 'labels', stylers: [{ visibility: 'off' }] },
           { featureType: 'transit', elementType: 'labels', stylers: [{ visibility: 'off' }] },
@@ -117,29 +147,29 @@ export function TechnicianFirstPersonMap({
       });
 
       mapRef.current = map;
-      infoWindowRef.current = new google.maps.InfoWindow();
 
-      // Pause follow mode on user manual drag or zoom gesture
+      // Detect user manual gestures -> Transition to MANUAL_INTERACTION
       map.addListener('dragstart', () => {
+        cameraStateRef.current = CAMERA_STATE.MANUAL_INTERACTION;
         if (onFollowModeChange) onFollowModeChange(false);
       });
-      // Track whether the next zoom_changed is user-initiated (not from our camera code)
       let userZoomPending = false;
       map.addListener('mousedown', () => { userZoomPending = true; });
       map.addListener('touchstart', () => { userZoomPending = true; }, { passive: true });
       map.addListener('zoom_changed', () => {
         if (userZoomPending) {
           userZoomPending = false;
+          cameraStateRef.current = CAMERA_STATE.MANUAL_INTERACTION;
           if (onFollowModeChange) onFollowModeChange(false);
         }
       });
       map.addListener('dragend', () => { userZoomPending = false; });
 
-      // Directions Renderer
+      // Directions Renderer (Strictly preserves viewport during navigation)
       const directionsRenderer = new google.maps.DirectionsRenderer({
         map,
         suppressMarkers: true, // Use custom puck & customer pins
-        preserveViewport: true, // Keep navigation camera in control
+        preserveViewport: true, // NEVER allow Directions to override navigation camera
         polylineOptions: {
           strokeColor: '#2563EB', // Electric Blue road route
           strokeWeight: 7,
@@ -148,124 +178,103 @@ export function TechnicianFirstPersonMap({
       });
       directionsRendererRef.current = directionsRenderer;
 
-      // 1. Customer Destination Marker
-      if (custLat != null && custLon != null) {
-        const custPos = { lat: custLat, lng: custLon };
-
-        const customerPinSvg = {
-          url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
-            <svg xmlns="http://www.w3.org/2000/svg" width="46" height="54" viewBox="0 0 46 54">
-              <defs>
-                <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-                  <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#000000" flood-opacity="0.4"/>
-                </filter>
-              </defs>
-              <g filter="url(#shadow)">
-                <path d="M23 0C10.3 0 0 10.3 0 23c0 15.2 20.4 30.1 21.3 30.8a2.5 2.5 0 0 0 3.4 0C25.6 53.1 46 38.2 46 23 46 10.3 35.7 0 23 0z" fill="#DC2626" stroke="#FFFFFF" stroke-width="2.5"/>
-                <circle cx="23" cy="21" r="14" fill="#FFFFFF"/>
-                <path d="M23 12l-8 7v9h5v-6h6v6h5v-9l-8-7z" fill="#DC2626"/>
-              </g>
-            </svg>
-          `)}`,
-          scaledSize: new google.maps.Size(42, 50),
-          anchor: new google.maps.Point(21, 50),
-        };
-
-        const custMarker = new google.maps.Marker({
-          position: custPos,
-          map,
-          title: `Customer Site: ${job?.address || 'Destination'}`,
-          icon: customerPinSvg,
-          zIndex: 100,
-        });
-        custMarkerRef.current = custMarker;
-
-        // 2. Geofence Circle
-        const circle = new google.maps.Circle({
-          map,
-          center: custPos,
-          radius: geofenceRadius,
-          strokeColor: '#10B981',
-          strokeOpacity: 0.8,
-          strokeWeight: 2,
-          fillColor: '#10B981',
-          fillOpacity: 0.12,
-          zIndex: 10,
-        });
-        geofenceCircleRef.current = circle;
-      }
-
-      // 3. Technician Navigation Puck Marker
-      if (technicianLocation?.latitude != null && technicianLocation?.longitude != null) {
-        const techPos = { lat: technicianLocation.latitude, lng: technicianLocation.longitude };
-        currentPosRef.current = techPos;
-        targetPosRef.current = techPos;
-        currentHeadingRef.current = heading;
-
-        const puckMarker = new google.maps.Marker({
-          position: techPos,
-          map,
-          title: 'You (Technician)',
-          icon: createNavigationPuckIcon(heading, 56),
-          zIndex: 300,
-        });
-        puckMarkerRef.current = puckMarker;
-
-        // Position initial camera
-        const navCenter = computeNavigationCenter(techPos.lat, techPos.lng, heading, 18);
-        map.setCenter(navCenter);
-      }
-
       setMapReady(true);
     } catch (err) {
       console.warn('[NAV_MAP_INIT_ERROR]', err);
     }
-  }, [apiLoaded, computeNavigationCenter, custLat, custLon, geofenceRadius, heading, isCourseUp, job, onFollowModeChange, technicianLocation]);
+  }, [apiLoaded, custLat, custLon, heading, isCourseUp, onFollowModeChange, technicianLocation?.latitude, technicianLocation?.longitude]);
 
-  // Synchronize Google Directions Result onto map
+  // 2. Customer Destination Marker & Geofence Circle (Persistent)
+  useEffect(() => {
+    if (!mapReady || !mapRef.current || custLat == null || custLon == null || !window.google?.maps) return;
+    const google = window.google;
+    const custPos = { lat: custLat, lng: custLon };
+
+    if (!custMarkerRef.current) {
+      const customerPinSvg = {
+        url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
+          <svg xmlns="http://www.w3.org/2000/svg" width="46" height="54" viewBox="0 0 46 54">
+            <defs>
+              <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+                <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#000000" flood-opacity="0.4"/>
+              </filter>
+            </defs>
+            <g filter="url(#shadow)">
+              <path d="M23 0C10.3 0 0 10.3 0 23c0 15.2 20.4 30.1 21.3 30.8a2.5 2.5 0 0 0 3.4 0C25.6 53.1 46 38.2 46 23 46 10.3 35.7 0 23 0z" fill="#DC2626" stroke="#FFFFFF" stroke-width="2.5"/>
+              <circle cx="23" cy="21" r="14" fill="#FFFFFF"/>
+              <path d="M23 12l-8 7v9h5v-6h6v6h5v-9l-8-7z" fill="#DC2626"/>
+            </g>
+          </svg>
+        `)}`,
+        scaledSize: new google.maps.Size(42, 50),
+        anchor: new google.maps.Point(21, 50),
+      };
+
+      custMarkerRef.current = new google.maps.Marker({
+        position: custPos,
+        map: mapRef.current,
+        title: `Customer Site: ${job?.address || 'Destination'}`,
+        icon: customerPinSvg,
+        zIndex: 100,
+      });
+    } else {
+      custMarkerRef.current.setPosition(custPos);
+    }
+
+    if (!geofenceCircleRef.current) {
+      geofenceCircleRef.current = new google.maps.Circle({
+        map: mapRef.current,
+        center: custPos,
+        radius: geofenceRadius || 250,
+        strokeColor: '#10B981',
+        strokeOpacity: 0.8,
+        strokeWeight: 2,
+        fillColor: '#10B981',
+        fillOpacity: 0.12,
+        zIndex: 10,
+      });
+    } else {
+      geofenceCircleRef.current.setCenter(custPos);
+      geofenceCircleRef.current.setRadius(geofenceRadius || 250);
+    }
+  }, [mapReady, custLat, custLon, geofenceRadius, job?.address]);
+
+  // 3. Technician Navigation Puck Marker Creation (Persistent)
+  useEffect(() => {
+    if (!mapReady || !mapRef.current || technicianLocation?.latitude == null || technicianLocation?.longitude == null || !window.google?.maps) return;
+    const google = window.google;
+    const techPos = { lat: technicianLocation.latitude, lng: technicianLocation.longitude };
+
+    if (!puckMarkerRef.current) {
+      currentPosRef.current = techPos;
+      startPosRef.current = techPos;
+      targetPosRef.current = techPos;
+      currentHeadingRef.current = heading || 0;
+
+      puckMarkerRef.current = new google.maps.Marker({
+        position: techPos,
+        map: mapRef.current,
+        title: 'You (Technician)',
+        icon: createNavigationPuckIcon(heading || 0, 56),
+        zIndex: 300,
+      });
+
+      // Initial Camera Centering in ACTIVE_NAVIGATION mode
+      if (cameraStateRef.current === CAMERA_STATE.ACTIVE_NAVIGATION) {
+        const navCenter = computeNavigationCenter(techPos.lat, techPos.lng, heading || 0);
+        mapRef.current.setCenter(navCenter);
+      }
+    }
+  }, [computeNavigationCenter, heading, mapReady, technicianLocation?.latitude, technicianLocation?.longitude]);
+
+  // 4. Synchronize Google Directions Result onto map (Does NOT reset camera or zoom)
   useEffect(() => {
     if (directionsRendererRef.current && directionsResult) {
       directionsRendererRef.current.setDirections(directionsResult);
     }
   }, [directionsResult]);
 
-  // Respond to cameraMode, isFullscreen, or isCourseUp changes
-  useEffect(() => {
-    if (!mapRef.current || !window.google?.maps) return;
-    const google = window.google;
-
-    // Trigger map resize on fullscreen transition
-    setTimeout(() => {
-      if (mapRef.current) {
-        google.maps.event.trigger(mapRef.current, 'resize');
-        if (cameraMode === 'driving' && currentPosRef.current) {
-          mapRef.current.setTilt(45);
-          mapRef.current.setZoom(18.5);
-          if (typeof mapRef.current.setHeading === 'function') {
-            mapRef.current.setHeading(isCourseUp ? currentHeadingRef.current : 0);
-          }
-          const navCenter = computeNavigationCenter(
-            currentPosRef.current.lat,
-            currentPosRef.current.lng,
-            isCourseUp ? currentHeadingRef.current : 0,
-            18.5
-          );
-          mapRef.current.panTo(navCenter);
-        } else if (cameraMode === 'overview' && custLat != null && currentPosRef.current) {
-          mapRef.current.setTilt(0);
-          if (typeof mapRef.current.setHeading === 'function') {
-            mapRef.current.setHeading(0);
-          }
-          const bounds = new google.maps.LatLngBounds();
-          bounds.extend({ lat: custLat, lng: custLon });
-          bounds.extend(currentPosRef.current);
-          mapRef.current.fitBounds(bounds, { top: 120, right: 60, bottom: 120, left: 60 });
-        }
-      }
-    }, 100);
-  }, [cameraMode, computeNavigationCenter, custLat, custLon, isCourseUp, isFullscreen]);
-
-  // Smooth 60fps Bike/Puck Animation loop using requestAnimationFrame
+  // 5. Smooth 60fps Puck Marker Animation loop (Marker ONLY, zero camera thrashing)
   const animateStep = useCallback((timestamp) => {
     if (!animStartTimeRef.current) animStartTimeRef.current = timestamp;
     const elapsed = timestamp - animStartTimeRef.current;
@@ -281,20 +290,6 @@ export function TechnicianFirstPersonMap({
         puckMarkerRef.current.setPosition(new window.google.maps.LatLng(interpolatedPos.lat, interpolatedPos.lng));
         puckMarkerRef.current.setIcon(createNavigationPuckIcon(interpolatedHeading, 56));
       }
-
-      // Smooth camera follow in driving mode
-      if (isFollowMode && cameraMode === 'driving' && mapRef.current) {
-        if (isCourseUp && typeof mapRef.current.setHeading === 'function') {
-          mapRef.current.setHeading(interpolatedHeading);
-        }
-        const navCenter = computeNavigationCenter(
-          interpolatedPos.lat,
-          interpolatedPos.lng,
-          isCourseUp ? interpolatedHeading : 0,
-          18.5
-        );
-        mapRef.current.panTo(navCenter);
-      }
     }
 
     if (progress < 1) {
@@ -303,55 +298,116 @@ export function TechnicianFirstPersonMap({
       currentHeadingRef.current = targetHeadingRef.current;
       animStartTimeRef.current = 0;
     }
-  }, [cameraMode, computeNavigationCenter, isCourseUp, isFollowMode]);
+  }, []);
 
-  // Trigger animation whenever incoming GPS coordinates or heading change
+  // 6. Handle Incoming GPS telemetry update (Triggers marker interpolation & controlled camera update)
   useEffect(() => {
     if (!mapReady || technicianLocation?.latitude == null || technicianLocation?.longitude == null) return;
     const newTarget = { lat: technicianLocation.latitude, lng: technicianLocation.longitude };
+    const newHeading = heading ?? currentHeadingRef.current;
 
-    targetHeadingRef.current = heading ?? currentHeadingRef.current;
+    targetHeadingRef.current = newHeading;
 
     if (!currentPosRef.current) {
       currentPosRef.current = newTarget;
       startPosRef.current = newTarget;
       targetPosRef.current = newTarget;
-      if (puckMarkerRef.current) {
+      if (puckMarkerRef.current && window.google?.maps) {
         puckMarkerRef.current.setPosition(new window.google.maps.LatLng(newTarget.lat, newTarget.lng));
-        puckMarkerRef.current.setIcon(createNavigationPuckIcon(targetHeadingRef.current, 56));
+        puckMarkerRef.current.setIcon(createNavigationPuckIcon(newHeading, 56));
       }
-      return;
+    } else {
+      startPosRef.current = { ...currentPosRef.current };
+      targetPosRef.current = newTarget;
+      animStartTimeRef.current = 0;
+
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = requestAnimationFrame(animateStep);
     }
 
-    startPosRef.current = { ...currentPosRef.current };
-    targetPosRef.current = newTarget;
-    animStartTimeRef.current = 0;
+    // Authoritative Camera Controller: follow only in ACTIVE_NAVIGATION mode
+    if (cameraStateRef.current === CAMERA_STATE.ACTIVE_NAVIGATION && mapRef.current) {
+      const speed = technicianLocation?.speed || technicianLocation?.derived_speed || 0;
+      const isMoving = speed >= 0.4;
 
-    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-    animFrameRef.current = requestAnimationFrame(animateStep);
+      // Apply heading rotation if supported and moving
+      if (isCourseUp && isMoving && typeof mapRef.current.setHeading === 'function') {
+        const headingDiff = Math.abs(newHeading - lastCameraHeadingRef.current);
+        if (headingDiff >= 3) {
+          lastCameraHeadingRef.current = newHeading;
+          mapRef.current.setHeading(newHeading);
+        }
+      }
+
+      const navCenter = computeNavigationCenter(newTarget.lat, newTarget.lng, isCourseUp ? newHeading : 0);
+      mapRef.current.panTo(navCenter);
+    }
 
     return () => {
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
-  }, [animateStep, heading, mapReady, technicianLocation]);
+  }, [animateStep, computeNavigationCenter, heading, isCourseUp, mapReady, technicianLocation]);
 
-  // Manual Recentering / Resume Follow in Driving View
+  // 7. Camera State Machine Transition: Respond to cameraMode and Fullscreen transitions
+  useEffect(() => {
+    if (!mapRef.current || !window.google?.maps) return;
+    const google = window.google;
+
+    // Trigger map resize on fullscreen transition
+    setTimeout(() => {
+      if (!mapRef.current) return;
+      google.maps.event.trigger(mapRef.current, 'resize');
+
+      if (cameraMode === 'overview' && custLat != null && currentPosRef.current) {
+        // Transition to ROUTE_PREVIEW mode
+        cameraStateRef.current = CAMERA_STATE.ROUTE_PREVIEW;
+        mapRef.current.setTilt(0);
+        if (typeof mapRef.current.setHeading === 'function') {
+          mapRef.current.setHeading(0);
+        }
+        const bounds = new google.maps.LatLngBounds();
+        bounds.extend({ lat: custLat, lng: custLon });
+        bounds.extend(currentPosRef.current);
+        mapRef.current.fitBounds(bounds, { top: 120, right: 60, bottom: 120, left: 60 });
+      } else if (cameraMode === 'driving') {
+        // Transition back to ACTIVE_NAVIGATION mode
+        cameraStateRef.current = CAMERA_STATE.ACTIVE_NAVIGATION;
+        if (currentPosRef.current) {
+          mapRef.current.setTilt(45);
+          mapRef.current.setZoom(NAVIGATION_ZOOM);
+          if (typeof mapRef.current.setHeading === 'function') {
+            mapRef.current.setHeading(isCourseUp ? currentHeadingRef.current : 0);
+          }
+          const navCenter = computeNavigationCenter(
+            currentPosRef.current.lat,
+            currentPosRef.current.lng,
+            isCourseUp ? currentHeadingRef.current : 0
+          );
+          mapRef.current.panTo(navCenter);
+        }
+      }
+    }, 80);
+  }, [cameraMode, computeNavigationCenter, custLat, custLon, isCourseUp, isFullscreen]);
+
+  // Manual Recentering: Smoothly restores ACTIVE_NAVIGATION riding camera
   const handleRecenter = () => {
+    cameraStateRef.current = CAMERA_STATE.RECENTERING;
     if (onFollowModeChange) onFollowModeChange(true);
     if (onCameraModeChange) onCameraModeChange('driving');
+
     if (mapRef.current && currentPosRef.current) {
       mapRef.current.setTilt(45);
-      mapRef.current.setZoom(18.5);
+      mapRef.current.setZoom(NAVIGATION_ZOOM);
       if (isCourseUp && typeof mapRef.current.setHeading === 'function') {
         mapRef.current.setHeading(currentHeadingRef.current);
       }
       const navCenter = computeNavigationCenter(
         currentPosRef.current.lat,
         currentPosRef.current.lng,
-        isCourseUp ? currentHeadingRef.current : 0,
-        18.5
+        isCourseUp ? currentHeadingRef.current : 0
       );
       mapRef.current.panTo(navCenter);
+      cameraStateRef.current = CAMERA_STATE.ACTIVE_NAVIGATION;
     }
   };
 
@@ -366,8 +422,8 @@ export function TechnicianFirstPersonMap({
     }
   };
 
-  // Speed calculation from device GPS
-  const speedObj = formatSpeedKmh(technicianLocation?.speed);
+  // Speed calculation with fallback to displacement-derived velocity
+  const speedObj = formatSpeedKmh(technicianLocation?.speed, technicianLocation?.derived_speed);
   const compassNeedleRotation = calculateCompassRotation(isCourseUp ? (heading || 0) : 0);
 
   return (
@@ -376,7 +432,7 @@ export function TechnicianFirstPersonMap({
       <div ref={mapContainerRef} className="w-full h-full min-h-full" />
 
       {/* ── 1. Floating Speedometer Dial (Bottom-Left) ── */}
-      <div className="absolute left-4 bottom-6 z-20">
+      <div className="absolute left-4 bottom-6 z-20 pointer-events-auto">
         <div className="w-16 h-16 rounded-full bg-white/95 backdrop-blur-md shadow-2xl border-2 border-slate-200 flex flex-col items-center justify-center text-slate-900 select-none">
           <span className="text-xl font-black leading-none tracking-tight">
             {speedObj.text}
@@ -388,7 +444,7 @@ export function TechnicianFirstPersonMap({
       </div>
 
       {/* ── 2. Floating Action Controls Column (Right Side) ── */}
-      <div className="absolute right-4 bottom-6 z-20 flex flex-col items-center gap-3">
+      <div className="absolute right-4 bottom-6 z-20 flex flex-col items-center gap-3 pointer-events-auto">
         {/* Compass Rose Widget (North needle) */}
         <button
           type="button"
@@ -444,10 +500,10 @@ export function TechnicianFirstPersonMap({
         </button>
       </div>
 
-      {/* ── 3. Recenter / Follow Button (appears only when follow mode is off) ── */}
+      {/* ── 3. Recenter / Follow Button (appears only when follow mode is paused) ── */}
       {(!isFollowMode || cameraMode === 'overview') && (
         <div
-          className="absolute right-4 z-30 animate-[scalein_0.18s_ease-out]"
+          className="absolute right-4 z-30 animate-[scalein_0.18s_ease-out] pointer-events-auto"
           style={{ bottom: 'calc(1.5rem + 232px)' /* sits 8px above the controls column */ }}
         >
           <button
@@ -470,7 +526,7 @@ export function TechnicianFirstPersonMap({
 
       {/* ── 4. Real GPS Accuracy Indicator ── */}
       {technicianLocation?.accuracy != null && (
-        <div className="absolute left-4 top-4 z-10 px-2.5 py-1 bg-slate-900/80 backdrop-blur-xs text-white text-[10px] font-bold rounded-full border border-white/10 flex items-center gap-1.5 shadow-sm">
+        <div className="absolute left-4 top-4 z-10 px-2.5 py-1 bg-slate-900/80 backdrop-blur-xs text-white text-[10px] font-bold rounded-full border border-white/10 flex items-center gap-1.5 shadow-sm select-none">
           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
           <span>GPS ±{Math.round(technicianLocation.accuracy)}m</span>
         </div>

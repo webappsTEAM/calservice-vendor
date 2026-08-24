@@ -3,6 +3,7 @@ workforce-app/backend/workforce_api/models.py
 Relational database models for Workforce Scheduling, Skills, Compliance, Notifications, Events, Payroll, and Reports.
 """
 import uuid
+import django
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
@@ -431,8 +432,12 @@ class WorkforceJobOffer(models.Model):
         ordering = ["-offered_at"]
         constraints = [
             models.CheckConstraint(
-                check=models.Q(wave_number__gte=1, wave_number__lte=6),
-                name="valid_wave_number_1_to_6",
+                **{
+                    ("condition" if django.VERSION >= (6, 0) else "check"): models.Q(
+                        wave_number__gte=1, wave_number__lte=6
+                    ),
+                    "name": "valid_wave_number_1_to_6",
+                }
             ),
             models.UniqueConstraint(
                 fields=["job", "employee"],
@@ -1048,6 +1053,19 @@ class JobTrackingSession(models.Model):
     last_captured_at = models.DateTimeField(null=True, blank=True)
     last_received_at = models.DateTimeField(null=True, blank=True)
 
+    # Derived tracking state (computed and stored on each GPS update)
+    # movement_status: MOVING | STATIONARY | UNKNOWN
+    movement_status = models.CharField(max_length=20, default="UNKNOWN", blank=True)
+    # geofence_status: OUTSIDE | APPROACHING | ARRIVING | ARRIVED
+    geofence_status = models.CharField(max_length=20, default="OUTSIDE", blank=True)
+    # Previous valid point for movement detection
+    prev_latitude = models.FloatField(null=True, blank=True)
+    prev_longitude = models.FloatField(null=True, blank=True)
+    prev_captured_at = models.DateTimeField(null=True, blank=True)
+    # Realtime event throttle: tracks when last JOB_LOCATION_UPDATE was emitted
+    last_event_emitted_at = models.DateTimeField(null=True, blank=True)
+    last_event_state_key = models.CharField(max_length=60, blank=True, default="")
+
     # Consecutive arrival confirmation tracking
     consecutive_arrival_fixes = models.IntegerField(default=0)
     last_fix_lat = models.FloatField(null=True, blank=True)
@@ -1061,8 +1079,8 @@ class JobTrackingSession(models.Model):
         db_table = "workforce_job_tracking_session"
         ordering = ["-created_at"]
         indexes = [
-            models.Index(fields=["job", "status"]),
-            models.Index(fields=["employee", "status"]),
+            models.Index(fields=["job", "status"], name="wf_ts_job_status_idx"),
+            models.Index(fields=["employee", "status"], name="wf_ts_emp_status_idx"),
         ]
         constraints = [
             models.UniqueConstraint(
@@ -1110,8 +1128,9 @@ class JobLocationPoint(models.Model):
         db_table = "workforce_job_location_point"
         ordering = ["tracking_session", "sequence_number", "created_at"]
         indexes = [
-            models.Index(fields=["tracking_session", "created_at"]),
-            models.Index(fields=["job", "created_at"]),
+            models.Index(fields=["tracking_session", "created_at"], name="wf_lp_session_time_idx"),
+            models.Index(fields=["job", "created_at"], name="wf_lp_job_time_idx"),
+            models.Index(fields=["job", "employee", "captured_at"], name="wf_lp_job_emp_cap_idx"),
         ]
 
     def __str__(self):

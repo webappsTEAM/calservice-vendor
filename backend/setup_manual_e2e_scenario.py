@@ -35,11 +35,12 @@ def setup_manual_scenario():
     print("=" * 70)
 
     # 1. Company
-    company = Company.objects.filter(id=1).first()
+    company = Company.objects.first()
     if not company:
-        company, _ = Company.objects.get_or_create(
-            id=1,
-            defaults={"name": "CalTrack Premier Home Services", "is_active": True}
+        company = Company.objects.create(
+            company_name="CalTrack Premier Home Services",
+            slug="caltrack-premier",
+            is_active=True,
         )
 
     # 2. Customer User

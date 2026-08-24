@@ -2491,16 +2491,30 @@ class WorkforceJobAcceptOfferView(APIView):
                 }
             )
 
-            # Activate JobTrackingSession
-            JobTrackingSession.objects.update_or_create(
+            # Activate JobTrackingSession safely
+            active_session = JobTrackingSession.objects.select_for_update().filter(
                 job=job_obj,
-                employee=emp_obj,
-                company=job_obj.company,
-                defaults={
-                    "status": JobTrackingSession.SessionStatus.ACTIVE,
-                    "ended_at": None,
-                }
-            )
+                status=JobTrackingSession.SessionStatus.ACTIVE,
+            ).first()
+
+            if active_session:
+                if active_session.employee_id != emp_obj.id:
+                    active_session.status = JobTrackingSession.SessionStatus.CANCELLED
+                    active_session.ended_at = now
+                    active_session.save(update_fields=["status", "ended_at", "updated_at"])
+                    JobTrackingSession.objects.create(
+                        job=job_obj,
+                        employee=emp_obj,
+                        company=job_obj.company,
+                        status=JobTrackingSession.SessionStatus.ACTIVE,
+                    )
+            else:
+                JobTrackingSession.objects.create(
+                    job=job_obj,
+                    employee=emp_obj,
+                    company=job_obj.company,
+                    status=JobTrackingSession.SessionStatus.ACTIVE,
+                )
 
             # Log immutable lifecycle audit event
             WorkforceJobLifecycleEvent.objects.create(
@@ -4357,13 +4371,72 @@ class WorkforceFleetMapView(APIView):
         return Response(fleet, status=status.HTTP_200_OK)
 
 
+def _compute_movement_status(speed, dist_moved_m, elapsed_s, acc_m=None):
+    """
+    Determines whether the technician is MOVING, STATIONARY, or UNKNOWN.
+    Considers GPS sensor speed, calculated displacement speed, and time interval.
+    """
+    if speed is not None:
+        try:
+            sp = float(speed)
+            if sp >= 1.2:
+                return "MOVING"
+            elif sp < 0.4:
+                return "STATIONARY"
+        except (ValueError, TypeError):
+            pass
+
+    if dist_moved_m is not None and elapsed_s is not None and elapsed_s > 0:
+        calc_speed = dist_moved_m / elapsed_s
+        if dist_moved_m >= 12.0 and calc_speed >= 1.0:
+            return "MOVING"
+        elif dist_moved_m < 6.0 and elapsed_s >= 5.0:
+            return "STATIONARY"
+
+    return "UNKNOWN"
+
+
+def _compute_geofence_status(dist_m, job_status, geofence_passed=False):
+    """
+    Calculates spatial arrival state relative to customer destination:
+    ARRIVED | ARRIVING (<=250m) | APPROACHING (<=1000m) | OUTSIDE (>1000m)
+    """
+    if geofence_passed or str(job_status).lower() in ["arrived", "in_progress", "completed"]:
+        return "ARRIVED"
+    if dist_m is not None:
+        if dist_m <= 250.0:
+            return "ARRIVING"
+        elif dist_m <= 1000.0:
+            return "APPROACHING"
+    return "OUTSIDE"
+
+
+def _compute_freshness_state(age_seconds):
+    """
+    Classifies GPS telemetry freshness:
+    LIVE (<=5s) | UPDATING (<=15s) | DELAYED (<=30s) | STALE (<=60s) | LOCATION_LOST (>60s)
+    """
+    if age_seconds is None:
+        return "LOCATION_LOST"
+    if age_seconds <= 5.0:
+        return "LIVE"
+    elif age_seconds <= 15.0:
+        return "UPDATING"
+    elif age_seconds <= 30.0:
+        return "DELAYED"
+    elif age_seconds <= 60.0:
+        return "STALE"
+    return "LOCATION_LOST"
+
+
 class WorkforceLocationUpdateView(APIView):
     """
-    Receives real device GPS coordinates from an online employee.
+    Receives real device GPS coordinates from an online technician.
     Stores latitude, longitude, accuracy, speed, heading, and timestamp in User.last_known_location.
     Protects against out-of-order and future packets.
-    Maintains active JobTrackingSession with throttled JobLocationPoint persistence.
-    Evaluates 2 consecutive GPS fixes within 300m geofence separated by >=3s or >10m movement for automatic arrival.
+    Maintains active JobTrackingSession with movement detection, geofence status, and throttled JobLocationPoint persistence.
+    Evaluates 2 consecutive GPS fixes within 250m geofence separated by >=2s for automatic arrival.
+    Publishes enriched real-time JOB_LOCATION_UPDATE events to the shared customer stream.
     """
     permission_classes = [IsApprovedTechnician]
 
@@ -4414,15 +4487,15 @@ class WorkforceLocationUpdateView(APIView):
                 if parsed:
                     if timezone.is_naive(parsed):
                         parsed = timezone.make_aware(parsed)
-                    # Protect against future timestamps (>10s ahead of server)
-                    if parsed > now + timedelta(seconds=10):
+                    # Protect against future timestamps (>30s ahead of server)
+                    if parsed > now + timedelta(seconds=30):
                         captured_dt = now
                     else:
                         captured_dt = parsed
             except Exception:
                 captured_dt = now
 
-        # Out-of-order packet protection (query fresh DB state):
+        # Out-of-order packet protection and velocity jump safety check (query fresh DB state):
         user_db = User.objects.filter(id=user.id).only("last_known_location").first()
         last_known = (user_db.last_known_location if user_db else user.last_known_location) or {}
         if last_known.get("captured_at"):
@@ -4440,6 +4513,26 @@ class WorkforceLocationUpdateView(APIView):
                             "location": last_known,
                             "ignored": True,
                         }, status=status.HTTP_200_OK)
+
+                    # Velocity jump safety check against previous fix
+                    prev_lat = last_known.get("latitude")
+                    prev_lng = last_known.get("longitude")
+                    if prev_lat is not None and prev_lng is not None:
+                        delta_s = (captured_dt - last_dt).total_seconds()
+                        if delta_s > 0:
+                            from time_tracking.geo import haversine_distance
+                            jump_dist_m = haversine_distance(float(prev_lat), float(prev_lng), lat_f, lng_f)
+                            # Implausible speed check: > 55 m/s (~198 km/h) over > 200m displacement
+                            effective_speed = jump_dist_m / delta_s
+                            if effective_speed > 55.0 and jump_dist_m > 200.0:
+                                logger.warning(
+                                    f"[IMPLAUSIBLE_GPS_JUMP_REJECTED] User #{user.id} jumped {jump_dist_m:.1f}m in {delta_s:.1f}s ({effective_speed * 3.6:.1f} km/h)."
+                                )
+                                return Response({
+                                    "message": "Implausible GPS jump rejected by velocity safety filter.",
+                                    "location": last_known,
+                                    "jump_rejected": True,
+                                }, status=status.HTTP_200_OK)
             except Exception as parse_err:
                 logger.debug(f"[OUT_OF_ORDER_CHECK_ERROR] {parse_err}")
 
@@ -4452,19 +4545,37 @@ class WorkforceLocationUpdateView(APIView):
             except (ValueError, TypeError):
                 pass
 
+        speed_f = None
+        if speed is not None:
+            try:
+                sp_val = float(speed)
+                if sp_val >= 0:
+                    speed_f = sp_val
+            except (ValueError, TypeError):
+                pass
+
+        heading_f = None
+        if heading is not None:
+            try:
+                hd_val = float(heading)
+                if 0.0 <= hd_val <= 360.0:
+                    heading_f = hd_val
+            except (ValueError, TypeError):
+                pass
+
         location_data = {
             "latitude": round(lat_f, 7),
             "longitude": round(lng_f, 7),
             "accuracy": round(acc_f, 2) if acc_f is not None else None,
-            "speed": round(float(speed), 2) if speed is not None else None,
-            "heading": round(float(heading), 1) if heading is not None else None,
+            "speed": round(speed_f, 2) if speed_f is not None else None,
+            "heading": round(heading_f, 1) if heading_f is not None else None,
             "captured_at": captured_dt.isoformat(),
             "updated_at": now.isoformat(),
         }
         user.last_known_location = location_data
         user.save(update_fields=["last_known_location"])
 
-        # ── Automatic Real GPS Arrival & Geofence Evaluation (Zero-Admin Intervention) ──
+        # ── Automatic Real GPS Arrival & Geofence Evaluation ──
         from service_requests.models import ServiceRequest, EmployeeJob
         from workforce_api.models import PreServiceVerification, JobTrackingSession, JobLocationPoint, WorkforceEventLog
         from time_tracking.geo import haversine_distance
@@ -4495,23 +4606,70 @@ class WorkforceLocationUpdateView(APIView):
                 cust_lon = float(job.longitude)
                 dist_m = haversine_distance(lat_f, lng_f, cust_lat, cust_lon)
 
-                # Get or create active JobTrackingSession
-                session, _ = JobTrackingSession.objects.get_or_create(
-                    job=job,
-                    employee=emp,
-                    company=emp.company,
-                    status=JobTrackingSession.SessionStatus.ACTIVE,
+                # Atomic get-or-create active tracking session (enforces single active session per job)
+                with transaction.atomic():
+                    session = JobTrackingSession.objects.select_for_update().filter(
+                        job=job,
+                        status=JobTrackingSession.SessionStatus.ACTIVE,
+                    ).first()
+
+                    if not session:
+                        session = JobTrackingSession.objects.create(
+                            job=job,
+                            employee=emp,
+                            company=emp.company,
+                            status=JobTrackingSession.SessionStatus.ACTIVE,
+                        )
+                    elif session.employee_id != emp.id:
+                        session.status = JobTrackingSession.SessionStatus.CANCELLED
+                        session.ended_at = now
+                        session.save(update_fields=["status", "ended_at", "updated_at"])
+                        session = JobTrackingSession.objects.create(
+                            job=job,
+                            employee=emp,
+                            company=emp.company,
+                            status=JobTrackingSession.SessionStatus.ACTIVE,
+                        )
+
+                # Movement detection calculation
+                dist_moved = None
+                elapsed_since_prev = None
+                if session.last_latitude is not None and session.last_longitude is not None and session.last_captured_at:
+                    dist_moved = haversine_distance(lat_f, lng_f, session.last_latitude, session.last_longitude)
+                    prev_cap = session.last_captured_at
+                    if timezone.is_naive(prev_cap):
+                        prev_cap = timezone.make_aware(prev_cap)
+                    elapsed_since_prev = max(0.0, (captured_dt - prev_cap).total_seconds())
+
+                movement_st = _compute_movement_status(
+                    speed=speed_f,
+                    dist_moved_m=dist_moved,
+                    elapsed_s=elapsed_since_prev,
+                    acc_m=acc_f
                 )
 
-                # Update session latest telemetry
+                # Geofence status calculation
+                is_currently_arrived = bool(
+                    job.status in ["arrived", "in_progress", "completed"] or
+                    session.consecutive_arrival_fixes >= 2
+                )
+                geofence_st = _compute_geofence_status(dist_m, job.status, is_currently_arrived)
+
+                # Save previous point before updating current
+                if session.last_latitude is not None and session.last_longitude is not None:
+                    session.prev_latitude = session.last_latitude
+                    session.prev_longitude = session.last_longitude
+                    session.prev_captured_at = session.last_captured_at
+
                 session.last_latitude = lat_f
                 session.last_longitude = lng_f
                 session.last_accuracy = acc_f
-                session.last_speed = float(speed) if speed is not None else None
-                session.last_heading = float(heading) if heading is not None else None
+                session.last_speed = speed_f
+                session.last_heading = heading_f
                 session.last_captured_at = captured_dt
                 session.last_received_at = now
-                session.save()
+                session.movement_status = movement_st
+                session.geofence_status = geofence_st
 
                 # Throttled persistence of JobLocationPoint
                 should_record_point = False
@@ -4534,14 +4692,14 @@ class WorkforceLocationUpdateView(APIView):
                         latitude=lat_f,
                         longitude=lng_f,
                         accuracy=acc_f,
-                        speed=float(speed) if speed is not None else None,
-                        heading=float(heading) if heading is not None else None,
+                        speed=speed_f,
+                        heading=heading_f,
                         captured_at=captured_dt,
                         sequence_number=seq_num,
                     )
 
                 # ── Consecutive-Fix Automatic Arrival Evaluation ──
-                gps_age_s = (now - captured_dt).total_seconds()
+                gps_age_s = max(0.0, (now - captured_dt).total_seconds())
                 is_fix_valid = (
                     dist_m <= ARRIVAL_RADIUS_METERS
                     and (acc_f is None or acc_f <= ARRIVAL_MAX_ACCURACY_METERS)
@@ -4555,14 +4713,12 @@ class WorkforceLocationUpdateView(APIView):
                         session.last_fix_lat = lat_f
                         session.last_fix_lon = lng_f
                         session.last_fix_time = now
-                        session.save()
                         logger.info(f"[ARRIVAL_FIX_1] Job #{job.id} Fix 1/2 inside {dist_m:.1f}m (acc={acc_f}m, age={gps_age_s:.1f}s).")
                     else:
                         # Fix #2 evaluation: enforce server-verified temporal separation
                         time_since_fix1 = (now - session.last_fix_time).total_seconds()
                         movement_since_fix1 = haversine_distance(lat_f, lng_f, session.last_fix_lat, session.last_fix_lon) if (session.last_fix_lat and session.last_fix_lon) else 0
 
-                        # Reject sub-millisecond callback bursts even with GPS noise/jitter
                         has_temporal_separation = (
                             time_since_fix1 >= ARRIVAL_MIN_CONFIRMATION_INTERVAL_SECONDS
                             or (time_since_fix1 >= 1.0 and movement_since_fix1 >= 5.0)
@@ -4630,7 +4786,8 @@ class WorkforceLocationUpdateView(APIView):
                                     EmployeeJob.objects.filter(service_request=locked_job, employee=emp).update(status="ARRIVED")
 
                                     session.consecutive_arrival_fixes = 2
-                                    session.save()
+                                    session.geofence_status = "ARRIVED"
+                                    geofence_st = "ARRIVED"
 
                                     create_notification(
                                         recipient=user,
@@ -4650,34 +4807,56 @@ class WorkforceLocationUpdateView(APIView):
                 else:
                     if dist_m > ARRIVAL_RADIUS_METERS + 50.0:
                         session.consecutive_arrival_fixes = 0
-                    session.save()
 
-                # Publish real-time event for customer tracking stream
-                if job.customer:
+                # Single authoritative save per session
+                session.save()
+
+                # Realtime event publication with throttling & enrichment
+                current_state_key = f"{job.status}:{geofence_st}:{movement_st}"
+                time_since_last_event = (now - session.last_event_emitted_at).total_seconds() if session.last_event_emitted_at else 999.0
+                should_emit_event = (
+                    session.last_event_emitted_at is None
+                    or session.last_event_state_key != current_state_key
+                    or (dist_moved is not None and dist_moved >= 15.0)
+                    or time_since_last_event >= 8.0
+                )
+
+                if job.customer and should_emit_event:
                     try:
+                        freshness_st = _compute_freshness_state(gps_age_s)
                         WorkforceEventLog.objects.create(
                             user=job.customer,
                             event_type="JOB_LOCATION_UPDATE",
                             payload={
                                 "type": "JOB_LOCATION_UPDATE",
                                 "job_id": job.id,
+                                "company_id": job.company_id,
                                 "employee_id": emp.id,
                                 "employee_name": user.get_full_name() or user.username,
                                 "employee_location": {
                                     "latitude": round(lat_f, 7),
                                     "longitude": round(lng_f, 7),
                                     "accuracy": round(acc_f, 2) if acc_f is not None else None,
-                                    "speed": round(float(speed), 2) if speed is not None else None,
-                                    "heading": round(float(heading), 1) if heading is not None else None,
+                                    "speed": round(speed_f, 2) if speed_f is not None else None,
+                                    "heading": round(heading_f, 1) if heading_f is not None else None,
                                     "captured_at": captured_dt.isoformat(),
                                     "updated_at": now.isoformat(),
                                 },
                                 "status": job.status.upper(),
                                 "distance_m": round(dist_m, 1),
+                                "distance_km": round(dist_m / 1000.0, 2),
+                                "movement_status": movement_st,
+                                "geofence_status": geofence_st,
+                                "freshness_state": freshness_st,
+                                "age_seconds": round(gps_age_s, 1),
+                                "geofence_passed": bool(job.status == "arrived" or session.consecutive_arrival_fixes >= 2),
                             }
                         )
-                    except Exception:
-                        pass
+                        session.last_event_emitted_at = now
+                        session.last_event_state_key = current_state_key
+                        session.save(update_fields=["last_event_emitted_at", "last_event_state_key"])
+                    except Exception as ev_err:
+                        logger.error(f"[EVENT_EMIT_ERROR] Error creating WorkforceEventLog for job #{job.id}: {ev_err}")
             except Exception as e:
                 logger.error(f"[LOCATION_UPDATE_ERROR] Error evaluating Job #{job.id}: {e}", exc_info=True)
 
@@ -4697,7 +4876,7 @@ class WorkforceLocationUpdateView(APIView):
 
 class WorkforceJobLiveTrackingView(APIView):
     """
-    Returns live tracking coordinates and metadata for an assigned job.
+    Returns live tracking coordinates and comprehensive metadata for an assigned job.
     Accessible to:
       1. The authorized customer who owns the booking
       2. The assigned technician
@@ -4753,6 +4932,9 @@ class WorkforceJobLiveTrackingView(APIView):
                 },
                 "assigned_technician": None,
                 "distance_m": None,
+                "distance_km": None,
+                "movement_status": "STATIONARY" if job.status == "completed" else "UNKNOWN",
+                "geofence_status": "ARRIVED" if job.status == "completed" else "OUTSIDE",
                 "geofence_passed": True if job.status == "completed" else False,
                 "freshness_state": "FINDING_NEW_PROFESSIONAL" if job.status == "redispatching" else "LOCATION_LOST",
                 "age_seconds": None,
@@ -4762,6 +4944,8 @@ class WorkforceJobLiveTrackingView(APIView):
         tech_loc = None
         age_seconds = None
         freshness_state = "LOCATION_LOST"
+        movement_status = "UNKNOWN"
+        geofence_status = "OUTSIDE"
 
         # Authoritative: Read active JobTrackingSession first
         from workforce_api.models import JobTrackingSession
@@ -4774,30 +4958,22 @@ class WorkforceJobLiveTrackingView(APIView):
             tech_loc = {
                 "latitude": float(active_session.last_latitude),
                 "longitude": float(active_session.last_longitude),
-                "accuracy": float(active_session.last_accuracy or 0),
-                "speed": float(active_session.last_speed or 0),
-                "heading": float(active_session.last_heading or 0),
+                "accuracy": float(active_session.last_accuracy) if active_session.last_accuracy is not None else None,
+                "speed": float(active_session.last_speed) if active_session.last_speed is not None else None,
+                "heading": float(active_session.last_heading) if active_session.last_heading is not None else None,
                 "captured_at": active_session.last_captured_at.isoformat() if active_session.last_captured_at else None,
                 "received_at": active_session.last_received_at.isoformat() if active_session.last_received_at else None,
             }
+            movement_status = active_session.movement_status or "UNKNOWN"
+            geofence_status = active_session.geofence_status or "OUTSIDE"
             cap_dt = active_session.last_captured_at or active_session.last_received_at
             if cap_dt:
                 if timezone.is_naive(cap_dt):
                     cap_dt = timezone.make_aware(cap_dt)
                 age_seconds = max(0.0, round((now - cap_dt).total_seconds(), 1))
-                if age_seconds <= 5.0:
-                    freshness_state = "LIVE"
-                elif age_seconds <= 15.0:
-                    freshness_state = "UPDATING"
-                elif age_seconds <= 30.0:
-                    freshness_state = "DELAYED"
-                elif age_seconds <= 60.0:
-                    freshness_state = "STALE"
-                else:
-                    freshness_state = "LOCATION_LOST"
+                freshness_state = _compute_freshness_state(age_seconds)
         elif tech and tech.user and tech.user.last_known_location:
             tech_loc = tech.user.last_known_location
-            # Calculate freshness state fallback
             cap_str = tech_loc.get("captured_at") or tech_loc.get("updated_at")
             if cap_str:
                 try:
@@ -4807,20 +4983,12 @@ class WorkforceJobLiveTrackingView(APIView):
                         if timezone.is_naive(loc_dt):
                             loc_dt = timezone.make_aware(loc_dt)
                         age_seconds = max(0.0, round((now - loc_dt).total_seconds(), 1))
-                        if age_seconds <= 5.0:
-                            freshness_state = "LIVE"
-                        elif age_seconds <= 15.0:
-                            freshness_state = "UPDATING"
-                        elif age_seconds <= 30.0:
-                            freshness_state = "DELAYED"
-                        elif age_seconds <= 60.0:
-                            freshness_state = "STALE"
-                        else:
-                            freshness_state = "LOCATION_LOST"
+                        freshness_state = _compute_freshness_state(age_seconds)
                 except Exception:
                     pass
 
         distance_m = None
+        distance_km = None
         if tech_loc and tech_loc.get("latitude") and tech_loc.get("longitude") and cust_lat and cust_lon:
             try:
                 from time_tracking.geo import haversine_distance
@@ -4830,6 +4998,7 @@ class WorkforceJobLiveTrackingView(APIView):
                     cust_lat,
                     cust_lon
                 ), 1)
+                distance_km = round(distance_m / 1000.0, 2)
             except Exception:
                 pass
 
@@ -4838,6 +5007,9 @@ class WorkforceJobLiveTrackingView(APIView):
             from workforce_api.models import PreServiceVerification
             verification = PreServiceVerification.objects.filter(job=job).first()
         geofence_passed = bool(verification and verification.geofence_passed)
+
+        if geofence_passed or job.status == "arrived":
+            geofence_status = "ARRIVED"
 
         # Include Work Start OTP only for authorized customer / admin when unverified
         start_otp = None
@@ -4851,7 +5023,7 @@ class WorkforceJobLiveTrackingView(APIView):
             tech_photo = profile_img.url if hasattr(profile_img, "url") else str(profile_img or "")
             tech_rating = getattr(tech, "rating", None)
 
-        logger.info(f"[MAP_RECONCILIATION] job_id={job.id} freshness_state={freshness_state} distance_m={distance_m} age_seconds={age_seconds}")
+        logger.info(f"[MAP_RECONCILIATION] job_id={job.id} freshness_state={freshness_state} movement_status={movement_status} geofence_status={geofence_status} distance_m={distance_m} age_seconds={age_seconds}")
 
         return Response({
             "job_id": job.id,
@@ -4875,6 +5047,9 @@ class WorkforceJobLiveTrackingView(APIView):
             "technician_rating": tech_rating,
             "start_otp": start_otp,
             "distance_m": distance_m,
+            "distance_km": distance_km,
+            "movement_status": movement_status,
+            "geofence_status": geofence_status,
             "geofence_passed": geofence_passed,
             "geofence_radius_meters": 250.0,
             "freshness_state": freshness_state,

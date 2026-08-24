@@ -97,16 +97,30 @@ export function computeCrossTrackDistanceMeters(point, lineStart, lineEnd) {
 }
 
 /**
- * Formats a distance in meters into human-readable navigation text.
- * < 1000m -> "120 m"
- * >= 1000m -> "2.4 km"
+ * Formats a distance in meters into standardized human-readable navigation text.
+ * Standards:
+ *  - < 1 km: "231 m", "578 m", "999 m"
+ *  - 1–10 km: "1.20 km", "1.70 km", "2.45 km", "8.01 km"
+ *  - > 10 km: "12.0 km", "13.0 km", "20.5 km", "22.0 km"
  */
 export function formatDistance(meters) {
   if (meters == null || isNaN(meters)) return '--';
   const m = Math.round(meters);
   if (m < 50) return 'Arriving now';
   if (m < 1000) return `${m} m`;
-  return `${(m / 1000).toFixed(1)} km`;
+  const km = m / 1000;
+  if (km <= 10) return `${km.toFixed(2)} km`;
+  return `${km.toFixed(1)} km`;
+}
+
+/** Explicit alias for road route distance remaining */
+export function formatRoadDistance(meters) {
+  return formatDistance(meters);
+}
+
+/** Explicit alias for straight-line Haversine GPS distance */
+export function formatGpsDistance(meters) {
+  return formatDistance(meters);
 }
 
 /**
