@@ -145,7 +145,12 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name='vendorcommissionconfig',
-            constraint=models.CheckConstraint(check=models.Q(('commission_rate__gte', Decimal('0.0000')), ('commission_rate__lte', Decimal('1.0000'))), name='vcc_valid_commission_rate'),
+            constraint=models.CheckConstraint(
+                **{
+                    ("condition" if getattr(django, "VERSION", (5, 0)) >= (6, 0) else "check"): models.Q(('commission_rate__gte', Decimal('0.0000')), ('commission_rate__lte', Decimal('1.0000'))),
+                    "name": 'vcc_valid_commission_rate',
+                }
+            ),
         ),
         migrations.AddIndex(
             model_name='vendorwalletwithdrawal',

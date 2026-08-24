@@ -32,9 +32,7 @@ import {
   apiGetNotifications,
   apiMarkNotificationRead,
   apiClearNotifications,
-  apiUpdateLocationFull,
 } from '../../api/workforceService.js';
-import { getGPSPosition } from '../../hooks/useGPSPosition.js';
 
 export function TopHeader({ onToggleSidebar = () => {} }) {
   const { user, logout, togglePresence, isAdmin, isEmployee, registrationStatus } = useAuth();
@@ -74,55 +72,14 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
     };
   }, [showNotifMenu]);
 
-  // Location Scan State
-  const [localLocState, setLocalLocState] = useState('idle'); // 'idle' | 'locating' | 'success' | 'error'
-  const [localLocCoords, setLocalLocCoords] = useState(() => {
-    const loc = user?.last_known_location;
-    if (loc?.latitude && loc?.longitude) {
-      return { latitude: Number(loc.latitude), longitude: Number(loc.longitude), accuracy: loc.accuracy || null };
-    }
-    return null;
-  });
-
-  const localHandleScanCurrentLocation = async () => {
-    if (localLocState === 'locating') return;
-    setLocalLocState('locating');
-    try {
-      const pos = await getGPSPosition(true);
-      const { latitude, longitude, accuracy, speed, heading } = pos.coords;
-      const captured_at = new Date(pos.timestamp || Date.now()).toISOString();
-      await apiUpdateLocationFull(latitude, longitude, accuracy, speed, heading, captured_at);
-      setLocalLocCoords({
-        latitude,
-        longitude,
-        accuracy,
-        timestamp: pos.timestamp || Date.now(),
-      });
-      setLocalLocState('success');
-      window.dispatchEvent(
-        new CustomEvent('workforce:location-updated', {
-          detail: {
-            latitude,
-            longitude,
-            accuracy,
-            speed,
-            heading,
-            captured_at,
-            timestamp: pos.timestamp || Date.now(),
-            source: 'header_scan',
-          },
-        })
-      );
-      setTimeout(() => setLocalLocState('idle'), 2500);
-    } catch (_) {
-      setLocalLocState('error');
-      setTimeout(() => setLocalLocState('idle'), 3000);
-    }
-  };
-
-  const locCoords = employeeRuntime?.liveLocation || localLocCoords;
-  const locState = employeeRuntime?.locationState || localLocState;
-  const handleScanCurrentLocation = employeeRuntime ? employeeRuntime.scanCurrentLocation : localHandleScanCurrentLocation;
+  // Location telemetry consumed authoritatively from EmployeeRuntimeProvider
+  const locCoords = employeeRuntime?.liveLocation || (user?.last_known_location ? {
+    latitude: Number(user.last_known_location.latitude),
+    longitude: Number(user.last_known_location.longitude),
+    accuracy: user.last_known_location.accuracy || null,
+  } : null);
+  const locState = employeeRuntime?.locationState || 'idle';
+  const handleScanCurrentLocation = employeeRuntime?.scanCurrentLocation || (() => {});
 
   // Background notification polling for Admin users ONLY (Employee notifications are centralized in EmployeeRuntimeProvider)
   useEffect(() => {

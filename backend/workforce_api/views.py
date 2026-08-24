@@ -70,6 +70,15 @@ from .serializers import (
     WorkforceJobFeedbackSerializer,
     JobPaymentSerializer,
     PaymentCollectionEventSerializer,
+    WorkforceRateCardSerializer,
+    WorkforceQuoteItemSerializer,
+    WorkforceQuoteMeasurementSerializer,
+    WorkforceQuotePhotoSerializer,
+    WorkforcePaintingQuoteSerializer,
+    WorkforceMasonQuoteSerializer,
+    WorkforceQuoteListSerializer,
+    WorkforceQuoteDetailSerializer,
+    WorkforceCustomerQuoteSerializer,
 )
 from .models import (
     WorkforceEmployeeSchedule,
@@ -96,6 +105,22 @@ from .models import (
     WorkforceJobLifecycleEvent,
     JobTrackingSession,
     JobLocationPoint,
+    WorkforceRateCard,
+    WorkforceQuote,
+    WorkforceQuoteItem,
+    WorkforceQuoteMeasurement,
+    WorkforceQuotePhoto,
+    WorkforcePaintingQuote,
+    WorkforceMasonQuote,
+)
+from .services.quotation_service import (
+    can_create_quote,
+    recalculate_quote_totals,
+    send_quote_to_customer,
+    record_customer_decision,
+    create_revised_quote_version,
+    convert_accepted_quote_to_work_booking,
+    admin_clear_mason_structural,
 )
 from time_tracking.models import TimeLog, Break
 from time_tracking.serializers import TimeLogSerializer
@@ -2466,16 +2491,30 @@ class WorkforceJobAcceptOfferView(APIView):
                 }
             )
 
-            # Activate JobTrackingSession
-            JobTrackingSession.objects.update_or_create(
+            # Activate JobTrackingSession safely
+            active_session = JobTrackingSession.objects.select_for_update().filter(
                 job=job_obj,
-                employee=emp_obj,
-                company=job_obj.company,
-                defaults={
-                    "status": JobTrackingSession.SessionStatus.ACTIVE,
-                    "ended_at": None,
-                }
-            )
+                status=JobTrackingSession.SessionStatus.ACTIVE,
+            ).first()
+
+            if active_session:
+                if active_session.employee_id != emp_obj.id:
+                    active_session.status = JobTrackingSession.SessionStatus.CANCELLED
+                    active_session.ended_at = now
+                    active_session.save(update_fields=["status", "ended_at", "updated_at"])
+                    JobTrackingSession.objects.create(
+                        job=job_obj,
+                        employee=emp_obj,
+                        company=job_obj.company,
+                        status=JobTrackingSession.SessionStatus.ACTIVE,
+                    )
+            else:
+                JobTrackingSession.objects.create(
+                    job=job_obj,
+                    employee=emp_obj,
+                    company=job_obj.company,
+                    status=JobTrackingSession.SessionStatus.ACTIVE,
+                )
 
             # Log immutable lifecycle audit event
             WorkforceJobLifecycleEvent.objects.create(
@@ -4332,13 +4371,72 @@ class WorkforceFleetMapView(APIView):
         return Response(fleet, status=status.HTTP_200_OK)
 
 
+def _compute_movement_status(speed, dist_moved_m, elapsed_s, acc_m=None):
+    """
+    Determines whether the technician is MOVING, STATIONARY, or UNKNOWN.
+    Considers GPS sensor speed, calculated displacement speed, and time interval.
+    """
+    if speed is not None:
+        try:
+            sp = float(speed)
+            if sp >= 1.2:
+                return "MOVING"
+            elif sp < 0.4:
+                return "STATIONARY"
+        except (ValueError, TypeError):
+            pass
+
+    if dist_moved_m is not None and elapsed_s is not None and elapsed_s > 0:
+        calc_speed = dist_moved_m / elapsed_s
+        if dist_moved_m >= 12.0 and calc_speed >= 1.0:
+            return "MOVING"
+        elif dist_moved_m < 6.0 and elapsed_s >= 5.0:
+            return "STATIONARY"
+
+    return "UNKNOWN"
+
+
+def _compute_geofence_status(dist_m, job_status, geofence_passed=False):
+    """
+    Calculates spatial arrival state relative to customer destination:
+    ARRIVED | ARRIVING (<=250m) | APPROACHING (<=1000m) | OUTSIDE (>1000m)
+    """
+    if geofence_passed or str(job_status).lower() in ["arrived", "in_progress", "completed"]:
+        return "ARRIVED"
+    if dist_m is not None:
+        if dist_m <= 250.0:
+            return "ARRIVING"
+        elif dist_m <= 1000.0:
+            return "APPROACHING"
+    return "OUTSIDE"
+
+
+def _compute_freshness_state(age_seconds):
+    """
+    Classifies GPS telemetry freshness:
+    LIVE (<=5s) | UPDATING (<=15s) | DELAYED (<=30s) | STALE (<=60s) | LOCATION_LOST (>60s)
+    """
+    if age_seconds is None:
+        return "LOCATION_LOST"
+    if age_seconds <= 5.0:
+        return "LIVE"
+    elif age_seconds <= 15.0:
+        return "UPDATING"
+    elif age_seconds <= 30.0:
+        return "DELAYED"
+    elif age_seconds <= 60.0:
+        return "STALE"
+    return "LOCATION_LOST"
+
+
 class WorkforceLocationUpdateView(APIView):
     """
-    Receives real device GPS coordinates from an online employee.
+    Receives real device GPS coordinates from an online technician.
     Stores latitude, longitude, accuracy, speed, heading, and timestamp in User.last_known_location.
     Protects against out-of-order and future packets.
-    Maintains active JobTrackingSession with throttled JobLocationPoint persistence.
-    Evaluates 2 consecutive GPS fixes within 300m geofence separated by >=3s or >10m movement for automatic arrival.
+    Maintains active JobTrackingSession with movement detection, geofence status, and throttled JobLocationPoint persistence.
+    Evaluates 2 consecutive GPS fixes within 250m geofence separated by >=2s for automatic arrival.
+    Publishes enriched real-time JOB_LOCATION_UPDATE events to the shared customer stream.
     """
     permission_classes = [IsApprovedTechnician]
 
@@ -4389,15 +4487,15 @@ class WorkforceLocationUpdateView(APIView):
                 if parsed:
                     if timezone.is_naive(parsed):
                         parsed = timezone.make_aware(parsed)
-                    # Protect against future timestamps (>10s ahead of server)
-                    if parsed > now + timedelta(seconds=10):
+                    # Protect against future timestamps (>30s ahead of server)
+                    if parsed > now + timedelta(seconds=30):
                         captured_dt = now
                     else:
                         captured_dt = parsed
             except Exception:
                 captured_dt = now
 
-        # Out-of-order packet protection (query fresh DB state):
+        # Out-of-order packet protection and velocity jump safety check (query fresh DB state):
         user_db = User.objects.filter(id=user.id).only("last_known_location").first()
         last_known = (user_db.last_known_location if user_db else user.last_known_location) or {}
         if last_known.get("captured_at"):
@@ -4415,6 +4513,26 @@ class WorkforceLocationUpdateView(APIView):
                             "location": last_known,
                             "ignored": True,
                         }, status=status.HTTP_200_OK)
+
+                    # Velocity jump safety check against previous fix
+                    prev_lat = last_known.get("latitude")
+                    prev_lng = last_known.get("longitude")
+                    if prev_lat is not None and prev_lng is not None:
+                        delta_s = (captured_dt - last_dt).total_seconds()
+                        if delta_s > 0:
+                            from time_tracking.geo import haversine_distance
+                            jump_dist_m = haversine_distance(float(prev_lat), float(prev_lng), lat_f, lng_f)
+                            # Implausible speed check: > 55 m/s (~198 km/h) over > 200m displacement
+                            effective_speed = jump_dist_m / delta_s
+                            if effective_speed > 55.0 and jump_dist_m > 200.0:
+                                logger.warning(
+                                    f"[IMPLAUSIBLE_GPS_JUMP_REJECTED] User #{user.id} jumped {jump_dist_m:.1f}m in {delta_s:.1f}s ({effective_speed * 3.6:.1f} km/h)."
+                                )
+                                return Response({
+                                    "message": "Implausible GPS jump rejected by velocity safety filter.",
+                                    "location": last_known,
+                                    "jump_rejected": True,
+                                }, status=status.HTTP_200_OK)
             except Exception as parse_err:
                 logger.debug(f"[OUT_OF_ORDER_CHECK_ERROR] {parse_err}")
 
@@ -4427,19 +4545,37 @@ class WorkforceLocationUpdateView(APIView):
             except (ValueError, TypeError):
                 pass
 
+        speed_f = None
+        if speed is not None:
+            try:
+                sp_val = float(speed)
+                if sp_val >= 0:
+                    speed_f = sp_val
+            except (ValueError, TypeError):
+                pass
+
+        heading_f = None
+        if heading is not None:
+            try:
+                hd_val = float(heading)
+                if 0.0 <= hd_val <= 360.0:
+                    heading_f = hd_val
+            except (ValueError, TypeError):
+                pass
+
         location_data = {
             "latitude": round(lat_f, 7),
             "longitude": round(lng_f, 7),
             "accuracy": round(acc_f, 2) if acc_f is not None else None,
-            "speed": round(float(speed), 2) if speed is not None else None,
-            "heading": round(float(heading), 1) if heading is not None else None,
+            "speed": round(speed_f, 2) if speed_f is not None else None,
+            "heading": round(heading_f, 1) if heading_f is not None else None,
             "captured_at": captured_dt.isoformat(),
             "updated_at": now.isoformat(),
         }
         user.last_known_location = location_data
         user.save(update_fields=["last_known_location"])
 
-        # ── Automatic Real GPS Arrival & Geofence Evaluation (Zero-Admin Intervention) ──
+        # ── Automatic Real GPS Arrival & Geofence Evaluation ──
         from service_requests.models import ServiceRequest, EmployeeJob
         from workforce_api.models import PreServiceVerification, JobTrackingSession, JobLocationPoint, WorkforceEventLog
         from time_tracking.geo import haversine_distance
@@ -4470,23 +4606,70 @@ class WorkforceLocationUpdateView(APIView):
                 cust_lon = float(job.longitude)
                 dist_m = haversine_distance(lat_f, lng_f, cust_lat, cust_lon)
 
-                # Get or create active JobTrackingSession
-                session, _ = JobTrackingSession.objects.get_or_create(
-                    job=job,
-                    employee=emp,
-                    company=emp.company,
-                    status=JobTrackingSession.SessionStatus.ACTIVE,
+                # Atomic get-or-create active tracking session (enforces single active session per job)
+                with transaction.atomic():
+                    session = JobTrackingSession.objects.select_for_update().filter(
+                        job=job,
+                        status=JobTrackingSession.SessionStatus.ACTIVE,
+                    ).first()
+
+                    if not session:
+                        session = JobTrackingSession.objects.create(
+                            job=job,
+                            employee=emp,
+                            company=emp.company,
+                            status=JobTrackingSession.SessionStatus.ACTIVE,
+                        )
+                    elif session.employee_id != emp.id:
+                        session.status = JobTrackingSession.SessionStatus.CANCELLED
+                        session.ended_at = now
+                        session.save(update_fields=["status", "ended_at", "updated_at"])
+                        session = JobTrackingSession.objects.create(
+                            job=job,
+                            employee=emp,
+                            company=emp.company,
+                            status=JobTrackingSession.SessionStatus.ACTIVE,
+                        )
+
+                # Movement detection calculation
+                dist_moved = None
+                elapsed_since_prev = None
+                if session.last_latitude is not None and session.last_longitude is not None and session.last_captured_at:
+                    dist_moved = haversine_distance(lat_f, lng_f, session.last_latitude, session.last_longitude)
+                    prev_cap = session.last_captured_at
+                    if timezone.is_naive(prev_cap):
+                        prev_cap = timezone.make_aware(prev_cap)
+                    elapsed_since_prev = max(0.0, (captured_dt - prev_cap).total_seconds())
+
+                movement_st = _compute_movement_status(
+                    speed=speed_f,
+                    dist_moved_m=dist_moved,
+                    elapsed_s=elapsed_since_prev,
+                    acc_m=acc_f
                 )
 
-                # Update session latest telemetry
+                # Geofence status calculation
+                is_currently_arrived = bool(
+                    job.status in ["arrived", "in_progress", "completed"] or
+                    session.consecutive_arrival_fixes >= 2
+                )
+                geofence_st = _compute_geofence_status(dist_m, job.status, is_currently_arrived)
+
+                # Save previous point before updating current
+                if session.last_latitude is not None and session.last_longitude is not None:
+                    session.prev_latitude = session.last_latitude
+                    session.prev_longitude = session.last_longitude
+                    session.prev_captured_at = session.last_captured_at
+
                 session.last_latitude = lat_f
                 session.last_longitude = lng_f
                 session.last_accuracy = acc_f
-                session.last_speed = float(speed) if speed is not None else None
-                session.last_heading = float(heading) if heading is not None else None
+                session.last_speed = speed_f
+                session.last_heading = heading_f
                 session.last_captured_at = captured_dt
                 session.last_received_at = now
-                session.save()
+                session.movement_status = movement_st
+                session.geofence_status = geofence_st
 
                 # Throttled persistence of JobLocationPoint
                 should_record_point = False
@@ -4509,14 +4692,14 @@ class WorkforceLocationUpdateView(APIView):
                         latitude=lat_f,
                         longitude=lng_f,
                         accuracy=acc_f,
-                        speed=float(speed) if speed is not None else None,
-                        heading=float(heading) if heading is not None else None,
+                        speed=speed_f,
+                        heading=heading_f,
                         captured_at=captured_dt,
                         sequence_number=seq_num,
                     )
 
                 # ── Consecutive-Fix Automatic Arrival Evaluation ──
-                gps_age_s = (now - captured_dt).total_seconds()
+                gps_age_s = max(0.0, (now - captured_dt).total_seconds())
                 is_fix_valid = (
                     dist_m <= ARRIVAL_RADIUS_METERS
                     and (acc_f is None or acc_f <= ARRIVAL_MAX_ACCURACY_METERS)
@@ -4530,14 +4713,12 @@ class WorkforceLocationUpdateView(APIView):
                         session.last_fix_lat = lat_f
                         session.last_fix_lon = lng_f
                         session.last_fix_time = now
-                        session.save()
                         logger.info(f"[ARRIVAL_FIX_1] Job #{job.id} Fix 1/2 inside {dist_m:.1f}m (acc={acc_f}m, age={gps_age_s:.1f}s).")
                     else:
                         # Fix #2 evaluation: enforce server-verified temporal separation
                         time_since_fix1 = (now - session.last_fix_time).total_seconds()
                         movement_since_fix1 = haversine_distance(lat_f, lng_f, session.last_fix_lat, session.last_fix_lon) if (session.last_fix_lat and session.last_fix_lon) else 0
 
-                        # Reject sub-millisecond callback bursts even with GPS noise/jitter
                         has_temporal_separation = (
                             time_since_fix1 >= ARRIVAL_MIN_CONFIRMATION_INTERVAL_SECONDS
                             or (time_since_fix1 >= 1.0 and movement_since_fix1 >= 5.0)
@@ -4605,7 +4786,8 @@ class WorkforceLocationUpdateView(APIView):
                                     EmployeeJob.objects.filter(service_request=locked_job, employee=emp).update(status="ARRIVED")
 
                                     session.consecutive_arrival_fixes = 2
-                                    session.save()
+                                    session.geofence_status = "ARRIVED"
+                                    geofence_st = "ARRIVED"
 
                                     create_notification(
                                         recipient=user,
@@ -4625,34 +4807,56 @@ class WorkforceLocationUpdateView(APIView):
                 else:
                     if dist_m > ARRIVAL_RADIUS_METERS + 50.0:
                         session.consecutive_arrival_fixes = 0
-                    session.save()
 
-                # Publish real-time event for customer tracking stream
-                if job.customer:
+                # Single authoritative save per session
+                session.save()
+
+                # Realtime event publication with throttling & enrichment
+                current_state_key = f"{job.status}:{geofence_st}:{movement_st}"
+                time_since_last_event = (now - session.last_event_emitted_at).total_seconds() if session.last_event_emitted_at else 999.0
+                should_emit_event = (
+                    session.last_event_emitted_at is None
+                    or session.last_event_state_key != current_state_key
+                    or (dist_moved is not None and dist_moved >= 15.0)
+                    or time_since_last_event >= 8.0
+                )
+
+                if job.customer and should_emit_event:
                     try:
+                        freshness_st = _compute_freshness_state(gps_age_s)
                         WorkforceEventLog.objects.create(
                             user=job.customer,
                             event_type="JOB_LOCATION_UPDATE",
                             payload={
                                 "type": "JOB_LOCATION_UPDATE",
                                 "job_id": job.id,
+                                "company_id": job.company_id,
                                 "employee_id": emp.id,
                                 "employee_name": user.get_full_name() or user.username,
                                 "employee_location": {
                                     "latitude": round(lat_f, 7),
                                     "longitude": round(lng_f, 7),
                                     "accuracy": round(acc_f, 2) if acc_f is not None else None,
-                                    "speed": round(float(speed), 2) if speed is not None else None,
-                                    "heading": round(float(heading), 1) if heading is not None else None,
+                                    "speed": round(speed_f, 2) if speed_f is not None else None,
+                                    "heading": round(heading_f, 1) if heading_f is not None else None,
                                     "captured_at": captured_dt.isoformat(),
                                     "updated_at": now.isoformat(),
                                 },
                                 "status": job.status.upper(),
                                 "distance_m": round(dist_m, 1),
+                                "distance_km": round(dist_m / 1000.0, 2),
+                                "movement_status": movement_st,
+                                "geofence_status": geofence_st,
+                                "freshness_state": freshness_st,
+                                "age_seconds": round(gps_age_s, 1),
+                                "geofence_passed": bool(job.status == "arrived" or session.consecutive_arrival_fixes >= 2),
                             }
                         )
-                    except Exception:
-                        pass
+                        session.last_event_emitted_at = now
+                        session.last_event_state_key = current_state_key
+                        session.save(update_fields=["last_event_emitted_at", "last_event_state_key"])
+                    except Exception as ev_err:
+                        logger.error(f"[EVENT_EMIT_ERROR] Error creating WorkforceEventLog for job #{job.id}: {ev_err}")
             except Exception as e:
                 logger.error(f"[LOCATION_UPDATE_ERROR] Error evaluating Job #{job.id}: {e}", exc_info=True)
 
@@ -4672,7 +4876,7 @@ class WorkforceLocationUpdateView(APIView):
 
 class WorkforceJobLiveTrackingView(APIView):
     """
-    Returns live tracking coordinates and metadata for an assigned job.
+    Returns live tracking coordinates and comprehensive metadata for an assigned job.
     Accessible to:
       1. The authorized customer who owns the booking
       2. The assigned technician
@@ -4728,6 +4932,9 @@ class WorkforceJobLiveTrackingView(APIView):
                 },
                 "assigned_technician": None,
                 "distance_m": None,
+                "distance_km": None,
+                "movement_status": "STATIONARY" if job.status == "completed" else "UNKNOWN",
+                "geofence_status": "ARRIVED" if job.status == "completed" else "OUTSIDE",
                 "geofence_passed": True if job.status == "completed" else False,
                 "freshness_state": "FINDING_NEW_PROFESSIONAL" if job.status == "redispatching" else "LOCATION_LOST",
                 "age_seconds": None,
@@ -4737,6 +4944,8 @@ class WorkforceJobLiveTrackingView(APIView):
         tech_loc = None
         age_seconds = None
         freshness_state = "LOCATION_LOST"
+        movement_status = "UNKNOWN"
+        geofence_status = "OUTSIDE"
 
         # Authoritative: Read active JobTrackingSession first
         from workforce_api.models import JobTrackingSession
@@ -4749,30 +4958,22 @@ class WorkforceJobLiveTrackingView(APIView):
             tech_loc = {
                 "latitude": float(active_session.last_latitude),
                 "longitude": float(active_session.last_longitude),
-                "accuracy": float(active_session.last_accuracy or 0),
-                "speed": float(active_session.last_speed or 0),
-                "heading": float(active_session.last_heading or 0),
+                "accuracy": float(active_session.last_accuracy) if active_session.last_accuracy is not None else None,
+                "speed": float(active_session.last_speed) if active_session.last_speed is not None else None,
+                "heading": float(active_session.last_heading) if active_session.last_heading is not None else None,
                 "captured_at": active_session.last_captured_at.isoformat() if active_session.last_captured_at else None,
                 "received_at": active_session.last_received_at.isoformat() if active_session.last_received_at else None,
             }
+            movement_status = active_session.movement_status or "UNKNOWN"
+            geofence_status = active_session.geofence_status or "OUTSIDE"
             cap_dt = active_session.last_captured_at or active_session.last_received_at
             if cap_dt:
                 if timezone.is_naive(cap_dt):
                     cap_dt = timezone.make_aware(cap_dt)
                 age_seconds = max(0.0, round((now - cap_dt).total_seconds(), 1))
-                if age_seconds <= 5.0:
-                    freshness_state = "LIVE"
-                elif age_seconds <= 15.0:
-                    freshness_state = "UPDATING"
-                elif age_seconds <= 30.0:
-                    freshness_state = "DELAYED"
-                elif age_seconds <= 60.0:
-                    freshness_state = "STALE"
-                else:
-                    freshness_state = "LOCATION_LOST"
+                freshness_state = _compute_freshness_state(age_seconds)
         elif tech and tech.user and tech.user.last_known_location:
             tech_loc = tech.user.last_known_location
-            # Calculate freshness state fallback
             cap_str = tech_loc.get("captured_at") or tech_loc.get("updated_at")
             if cap_str:
                 try:
@@ -4782,20 +4983,12 @@ class WorkforceJobLiveTrackingView(APIView):
                         if timezone.is_naive(loc_dt):
                             loc_dt = timezone.make_aware(loc_dt)
                         age_seconds = max(0.0, round((now - loc_dt).total_seconds(), 1))
-                        if age_seconds <= 5.0:
-                            freshness_state = "LIVE"
-                        elif age_seconds <= 15.0:
-                            freshness_state = "UPDATING"
-                        elif age_seconds <= 30.0:
-                            freshness_state = "DELAYED"
-                        elif age_seconds <= 60.0:
-                            freshness_state = "STALE"
-                        else:
-                            freshness_state = "LOCATION_LOST"
+                        freshness_state = _compute_freshness_state(age_seconds)
                 except Exception:
                     pass
 
         distance_m = None
+        distance_km = None
         if tech_loc and tech_loc.get("latitude") and tech_loc.get("longitude") and cust_lat and cust_lon:
             try:
                 from time_tracking.geo import haversine_distance
@@ -4805,6 +4998,7 @@ class WorkforceJobLiveTrackingView(APIView):
                     cust_lat,
                     cust_lon
                 ), 1)
+                distance_km = round(distance_m / 1000.0, 2)
             except Exception:
                 pass
 
@@ -4813,6 +5007,9 @@ class WorkforceJobLiveTrackingView(APIView):
             from workforce_api.models import PreServiceVerification
             verification = PreServiceVerification.objects.filter(job=job).first()
         geofence_passed = bool(verification and verification.geofence_passed)
+
+        if geofence_passed or job.status == "arrived":
+            geofence_status = "ARRIVED"
 
         # Include Work Start OTP only for authorized customer / admin when unverified
         start_otp = None
@@ -4826,7 +5023,7 @@ class WorkforceJobLiveTrackingView(APIView):
             tech_photo = profile_img.url if hasattr(profile_img, "url") else str(profile_img or "")
             tech_rating = getattr(tech, "rating", None)
 
-        logger.info(f"[MAP_RECONCILIATION] job_id={job.id} freshness_state={freshness_state} distance_m={distance_m} age_seconds={age_seconds}")
+        logger.info(f"[MAP_RECONCILIATION] job_id={job.id} freshness_state={freshness_state} movement_status={movement_status} geofence_status={geofence_status} distance_m={distance_m} age_seconds={age_seconds}")
 
         return Response({
             "job_id": job.id,
@@ -4850,6 +5047,9 @@ class WorkforceJobLiveTrackingView(APIView):
             "technician_rating": tech_rating,
             "start_otp": start_otp,
             "distance_m": distance_m,
+            "distance_km": distance_km,
+            "movement_status": movement_status,
+            "geofence_status": geofence_status,
             "geofence_passed": geofence_passed,
             "geofence_radius_meters": 250.0,
             "freshness_state": freshness_state,
@@ -7824,6 +8024,626 @@ class WorkforcePublicSupportInquiryView(APIView):
             "submitted_at": submitted_at,
             "message": "Your support inquiry has been successfully submitted to Caldim Engineering Operations Desk. A ticket has been logged and our team will respond shortly.",
         }, status=status.HTTP_201_CREATED)
+
+
+# ─── 33. Estimation & Quotation API Views ──────────────────────────────────────
+
+class WorkforceEstimationGateView(APIView):
+    """
+    GET /api/workforce/jobs/<pk>/estimation-gate/
+    Authoritative backend check determining if all 4 pre-service verification gates are complete
+    to allow creating/drafting quotations.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return Response({"error": "Job not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        is_allowed, details = can_create_quote(job)
+        return Response({
+            "job_id": job.id,
+            "request_id": job.request_id,
+            "is_estimation": job.is_estimation,
+            "can_create_quote": is_allowed,
+            **details,
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceRateCardListView(APIView):
+    """
+    GET /api/workforce/rate-cards/
+    Returns active rate card entries for building quotation line items.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        category = request.query_params.get("category", "").strip().lower()
+        service_name = request.query_params.get("service", "").strip()
+
+        qs = WorkforceRateCard.objects.filter(is_active=True)
+        if category:
+            qs = qs.filter(service_category__icontains=category)
+        if service_name:
+            qs = qs.filter(service_name__icontains=service_name)
+
+        serializer = WorkforceRateCardSerializer(qs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class WorkforceQuoteListView(APIView):
+    """
+    GET /api/workforce/quotes/
+    List quotations with status tab filters.
+
+    POST /api/workforce/quotes/
+    Create a new quotation draft for an estimation job.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        emp = getattr(user, "employee_profile", None)
+        company = getattr(user, "company", None) or (emp.company if emp else None)
+
+        qs = WorkforceQuote.objects.all()
+        if not is_admin_role(user):
+            if emp:
+                qs = qs.filter(Q(technician=emp) | Q(job__assigned_employee=emp))
+            elif company:
+                qs = qs.filter(company=company)
+            else:
+                qs = qs.filter(customer=user)
+        elif company:
+            qs = qs.filter(company=company)
+
+        # Tab filtering
+        tab = request.query_params.get("tab", "").strip().lower()
+        status_filter = request.query_params.get("status", "").strip().upper()
+        job_id = request.query_params.get("job_id")
+
+        if job_id:
+            qs = qs.filter(job_id=job_id)
+
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        elif tab and tab != "all":
+            tab_map = {
+                "draft": [WorkforceQuote.Status.DRAFT],
+                "pending_review": [WorkforceQuote.Status.PENDING_REVIEW],
+                "sent": [WorkforceQuote.Status.SENT_TO_CUSTOMER],
+                "accepted": [WorkforceQuote.Status.CUSTOMER_ACCEPTED],
+                "changes_requested": [WorkforceQuote.Status.CHANGES_REQUESTED],
+                "declined": [WorkforceQuote.Status.DECLINED],
+                "expired": [WorkforceQuote.Status.EXPIRED],
+                "converted": [WorkforceQuote.Status.CONVERTED],
+                "conversion_pending": [WorkforceQuote.Status.CONVERSION_PENDING],
+            }
+            if tab in tab_map:
+                qs = qs.filter(status__in=tab_map[tab])
+
+        search = request.query_params.get("search", "").strip()
+        if search:
+            qs = qs.filter(
+                Q(quote_number__icontains=search) |
+                Q(title__icontains=search) |
+                Q(service_name__icontains=search) |
+                Q(job__customer_name__icontains=search)
+            )
+
+        serializer = WorkforceQuoteListSerializer(qs.select_related("job", "technician", "customer"), many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        user = request.user
+        emp = getattr(user, "employee_profile", None)
+        job_id = request.data.get("job_id")
+
+        if not job_id:
+            return Response({"error": "job_id is required to create a quotation.", "code": "JOB_ID_REQUIRED"}, status=status.HTTP_400_BAD_REQUEST)
+
+        job = ServiceRequest.objects.filter(id=job_id).first()
+        if not job:
+            return Response({"error": "Job not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Verification Gate Check
+        allowed, details = can_create_quote(job)
+        if not allowed and not is_admin_role(user):
+            return Response({
+                "error": "Cannot create quotation: Pre-service verification checks are incomplete.",
+                "code": "ESTIMATION_VERIFICATION_INCOMPLETE",
+                "details": details,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        title = request.data.get("title") or f"Quotation for {job.issue_title or 'Service'}"
+        description = request.data.get("description", "")
+        service_category = request.data.get("service_category") or job.service_category
+        service_name = request.data.get("service_name") or job.issue_title
+        inspection_fee = request.data.get("inspection_fee", 0.0)
+
+        with transaction.atomic():
+            quote = WorkforceQuote.objects.create(
+                job=job,
+                technician=emp or job.assigned_employee,
+                company=job.company,
+                customer=job.customer,
+                title=title,
+                description=description,
+                service_category=service_category,
+                service_name=service_name,
+                inspection_fee=inspection_fee,
+                status=WorkforceQuote.Status.DRAFT,
+            )
+
+            # Check if initial painting or mason data provided
+            if "painting_details" in request.data:
+                pd = request.data["painting_details"]
+                WorkforcePaintingQuote.objects.create(
+                    quote=quote,
+                    property_type=pd.get("property_type", "Apartment"),
+                    rooms_detail=pd.get("rooms_detail", []),
+                    area_sqft=pd.get("area_sqft", 0.0),
+                    surface_condition=pd.get("surface_condition", "Good"),
+                    existing_paint_condition=pd.get("existing_paint_condition", "Old Emulsion"),
+                    paint_type=pd.get("paint_type"),
+                    brand_grade=pd.get("brand_grade", "Asian Paints / Berger"),
+                    number_of_coats=pd.get("number_of_coats", 2),
+                    requires_putty=pd.get("requires_putty", False),
+                    requires_priming=pd.get("requires_priming", False),
+                    crack_treatment=pd.get("crack_treatment", False),
+                    waterproofing_needed=pd.get("waterproofing_needed", False),
+                    scaffolding_required=pd.get("scaffolding_required", False),
+                    color_code=pd.get("color_code", ""),
+                    notes=pd.get("notes", ""),
+                )
+            elif "mason_details" in request.data:
+                md = request.data["mason_details"]
+                WorkforceMasonQuote.objects.create(
+                    quote=quote,
+                    work_type=md.get("work_type"),
+                    length=md.get("length"),
+                    width=md.get("width"),
+                    height=md.get("height"),
+                    area_sqft=md.get("area_sqft", 0.0),
+                    estimated_duration_days=md.get("estimated_duration_days", 1),
+                    requires_demolition=md.get("requires_demolition", False),
+                    debris_disposal_included=md.get("debris_disposal_included", False),
+                    structural_impact=md.get("structural_impact", "NONE"),
+                    access_difficulty=md.get("access_difficulty", "Standard"),
+                    labour_count=md.get("labour_count", 2),
+                    materials_needed=md.get("materials_needed", []),
+                    notes=md.get("notes", ""),
+                )
+                if md.get("structural_impact") in ["SUSPECTED_STRUCTURAL", "STRUCTURAL"]:
+                    quote.structural_impact = md.get("structural_impact")
+                    quote.save(update_fields=["structural_impact"])
+
+        serializer = WorkforceQuoteDetailSerializer(quote)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class WorkforceQuoteDetailView(APIView):
+    """
+    GET /api/workforce/quotes/<pk>/
+    PUT / PATCH /api/workforce/quotes/<pk>/
+    DELETE /api/workforce/quotes/<pk>/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _get_quote(self, request, pk):
+        user = request.user
+        emp = getattr(user, "employee_profile", None)
+        qs = WorkforceQuote.objects.filter(pk=pk)
+        if not is_admin_role(user):
+            if emp:
+                qs = qs.filter(Q(technician=emp) | Q(job__assigned_employee=emp))
+            else:
+                qs = qs.filter(customer=user)
+        return qs.first()
+
+    def get(self, request, pk):
+        quote = self._get_quote(request, pk)
+        if not quote:
+            return Response({"error": "Quote not found or access denied.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+        serializer = WorkforceQuoteDetailSerializer(quote)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def patch(self, request, pk):
+        quote = self._get_quote(request, pk)
+        if not quote:
+            return Response({"error": "Quote not found or access denied.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        if quote.status not in [WorkforceQuote.Status.DRAFT, WorkforceQuote.Status.PENDING_REVIEW, WorkforceQuote.Status.CHANGES_REQUESTED]:
+            return Response({
+                "error": f"Cannot edit quote in status '{quote.status}'. Only DRAFT quotes can be edited.",
+                "code": "QUOTE_IMMUTABLE",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        data = request.data
+        if "title" in data:
+            quote.title = data["title"]
+        if "description" in data:
+            quote.description = data["description"]
+        if "inspection_fee_adjusted" in data:
+            quote.inspection_fee_adjusted = Decimal(str(data["inspection_fee_adjusted"]))
+        if "structural_impact" in data:
+            quote.structural_impact = data["structural_impact"]
+
+        quote.save()
+        recalculate_quote_totals(quote)
+
+        serializer = WorkforceQuoteDetailSerializer(quote)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def delete(self, request, pk):
+        quote = self._get_quote(request, pk)
+        if not quote:
+            return Response({"error": "Quote not found or access denied.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        if quote.status != WorkforceQuote.Status.DRAFT:
+            return Response({"error": "Only DRAFT quotations can be deleted.", "code": "CANNOT_DELETE"}, status=status.HTTP_400_BAD_REQUEST)
+
+        quote.delete()
+        return Response({"success": True, "message": "Draft quotation deleted."}, status=status.HTTP_200_OK)
+
+
+class WorkforceQuoteItemBulkView(APIView):
+    """
+    POST /api/workforce/quotes/<pk>/items/bulk/
+    Synchronizes line items in bulk and triggers authoritative total recalculation.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        quote = WorkforceQuote.objects.filter(pk=pk).first()
+        if not quote:
+            return Response({"error": "Quote not found.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        if quote.status not in [WorkforceQuote.Status.DRAFT, WorkforceQuote.Status.PENDING_REVIEW, WorkforceQuote.Status.CHANGES_REQUESTED]:
+            return Response({"error": "Cannot modify items for a sent or finalized quotation.", "code": "QUOTE_LOCKED"}, status=status.HTTP_400_BAD_REQUEST)
+
+        items_data = request.data.get("items", [])
+        if not isinstance(items_data, list):
+            return Response({"error": "items must be a list of line item objects.", "code": "INVALID_ITEMS"}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            quote.items.all().delete()
+            for idx, item in enumerate(items_data):
+                WorkforceQuoteItem.objects.create(
+                    quote=quote,
+                    section=item.get("section", "MATERIAL"),
+                    name=item.get("name", f"Item #{idx+1}"),
+                    description=item.get("description", ""),
+                    item_type=item.get("item_type", "item"),
+                    quantity=Decimal(str(item.get("quantity", 1))),
+                    unit=item.get("unit", "sqft"),
+                    unit_price=Decimal(str(item.get("unit_price", 0))),
+                    tax_rate=Decimal(str(item.get("tax_rate", 18.0))),
+                    discount_amount=Decimal(str(item.get("discount_amount", 0))),
+                    material_source=item.get("material_source", "CALTRACK"),
+                    is_customer_supplied=item.get("is_customer_supplied", False),
+                    warranty_applicable=item.get("warranty_applicable", True),
+                    notes=item.get("notes", ""),
+                    sort_order=item.get("sort_order", idx),
+                )
+
+            recalculate_quote_totals(quote)
+
+        serializer = WorkforceQuoteDetailSerializer(quote)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class WorkforceQuoteMeasurementsBulkView(APIView):
+    """
+    POST /api/workforce/quotes/<pk>/measurements/bulk/
+    Bulk updates on-site dimensional measurements.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        quote = WorkforceQuote.objects.filter(pk=pk).first()
+        if not quote:
+            return Response({"error": "Quote not found.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        measurements = request.data.get("measurements", [])
+        with transaction.atomic():
+            quote.measurements.all().delete()
+            for m in measurements:
+                WorkforceQuoteMeasurement.objects.create(
+                    quote=quote,
+                    name=m.get("name", "Measurement"),
+                    measurement_type=m.get("measurement_type", "area"),
+                    length=m.get("length"),
+                    width=m.get("width"),
+                    height=m.get("height"),
+                    area=m.get("area"),
+                    quantity=m.get("quantity", 1.0),
+                    unit=m.get("unit", "sqft"),
+                    notes=m.get("notes", ""),
+                )
+
+        serializer = WorkforceQuoteDetailSerializer(quote)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class WorkforceQuoteInspectionView(APIView):
+    """
+    POST /api/workforce/quotes/<pk>/inspection/
+    Saves Painting or Mason inspection parameters.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        quote = WorkforceQuote.objects.filter(pk=pk).first()
+        if not quote:
+            return Response({"error": "Quote not found.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        data = request.data
+        with transaction.atomic():
+            if "painting" in str(quote.service_category).lower() or "painting_details" in data:
+                pd = data.get("painting_details", data)
+                p_obj, _ = WorkforcePaintingQuote.objects.get_or_create(quote=quote)
+                p_obj.property_type = pd.get("property_type", p_obj.property_type)
+                p_obj.rooms_detail = pd.get("rooms_detail", p_obj.rooms_detail)
+                p_obj.area_sqft = pd.get("area_sqft", p_obj.area_sqft)
+                p_obj.surface_condition = pd.get("surface_condition", p_obj.surface_condition)
+                p_obj.existing_paint_condition = pd.get("existing_paint_condition", p_obj.existing_paint_condition)
+                p_obj.paint_type = pd.get("paint_type", p_obj.paint_type)
+                p_obj.brand_grade = pd.get("brand_grade", p_obj.brand_grade)
+                p_obj.number_of_coats = pd.get("number_of_coats", p_obj.number_of_coats)
+                p_obj.requires_putty = pd.get("requires_putty", p_obj.requires_putty)
+                p_obj.requires_priming = pd.get("requires_priming", p_obj.requires_priming)
+                p_obj.crack_treatment = pd.get("crack_treatment", p_obj.crack_treatment)
+                p_obj.waterproofing_needed = pd.get("waterproofing_needed", p_obj.waterproofing_needed)
+                p_obj.scaffolding_required = pd.get("scaffolding_required", p_obj.scaffolding_required)
+                p_obj.color_code = pd.get("color_code", p_obj.color_code)
+                p_obj.notes = pd.get("notes", p_obj.notes)
+                p_obj.save()
+
+            if "mason" in str(quote.service_category).lower() or "mason_details" in data:
+                md = data.get("mason_details", data)
+                m_obj, _ = WorkforceMasonQuote.objects.get_or_create(quote=quote)
+                m_obj.work_type = md.get("work_type", m_obj.work_type)
+                m_obj.length = md.get("length", m_obj.length)
+                m_obj.width = md.get("width", m_obj.width)
+                m_obj.height = md.get("height", m_obj.height)
+                m_obj.area_sqft = md.get("area_sqft", m_obj.area_sqft)
+                m_obj.estimated_duration_days = md.get("estimated_duration_days", m_obj.estimated_duration_days)
+                m_obj.requires_demolition = md.get("requires_demolition", m_obj.requires_demolition)
+                m_obj.debris_disposal_included = md.get("debris_disposal_included", m_obj.debris_disposal_included)
+                m_obj.structural_impact = md.get("structural_impact", m_obj.structural_impact)
+                m_obj.access_difficulty = md.get("access_difficulty", m_obj.access_difficulty)
+                m_obj.labour_count = md.get("labour_count", m_obj.labour_count)
+                m_obj.materials_needed = md.get("materials_needed", m_obj.materials_needed)
+                m_obj.notes = md.get("notes", m_obj.notes)
+                m_obj.save()
+
+                if m_obj.structural_impact in ["SUSPECTED_STRUCTURAL", "STRUCTURAL"]:
+                    quote.structural_impact = m_obj.structural_impact
+                    quote.save(update_fields=["structural_impact"])
+
+        serializer = WorkforceQuoteDetailSerializer(quote)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class WorkforceQuoteSendView(APIView):
+    """
+    POST /api/workforce/quotes/<pk>/send/
+    Sends quotation to customer, freezing amounts, creating decision token, and enforcing structural gates.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        try:
+            quote = send_quote_to_customer(pk, actor=request.user)
+            serializer = WorkforceQuoteDetailSerializer(quote)
+            return Response({
+                "success": True,
+                "message": f"Quotation {quote.quote_number} successfully sent to customer.",
+                "quote": serializer.data,
+            }, status=status.HTTP_200_OK)
+        except ValidationError as ve:
+            return Response({
+                "error": str(ve.message if hasattr(ve, 'message') else ve),
+                "code": "QUOTE_SEND_BLOCKED",
+            }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as ex:
+            return Response({"error": str(ex), "code": "QUOTE_SEND_FAILED"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class WorkforceQuoteReviseView(APIView):
+    """
+    POST /api/workforce/quotes/<pk>/revise/
+    Creates a new draft version (e.g. V2) when revisions are requested.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        quote = WorkforceQuote.objects.filter(pk=pk).first()
+        if not quote:
+            return Response({"error": "Quote not found.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        notes = request.data.get("notes", "Revision requested")
+        new_quote = create_revised_quote_version(quote, notes=notes)
+        serializer = WorkforceQuoteDetailSerializer(new_quote)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class WorkforceCustomerQuoteDetailView(APIView):
+    """
+    GET /api/workforce/customer/quote-token/<token>/
+    GET /api/workforce/customer/quotes/<pk>/
+    Sanitized public or customer-authenticated quotation retrieval.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, token=None, pk=None):
+        if token:
+            quote = WorkforceQuote.objects.filter(decision_token=token).first()
+        elif pk:
+            quote = WorkforceQuote.objects.filter(pk=pk).first()
+        else:
+            token_param = request.query_params.get("token")
+            quote = WorkforceQuote.objects.filter(decision_token=token_param).first() if token_param else None
+
+        if not quote:
+            return Response({"error": "Quotation not found or invalid token.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = WorkforceCustomerQuoteSerializer(quote)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class WorkforceCustomerQuoteDecideView(APIView):
+    """
+    POST /api/workforce/customer/quote-token/<token>/decide/
+    POST /api/workforce/customer/quotes/<pk>/decide/
+    Customer acceptance, decline, or revision request.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, token=None, pk=None):
+        action = request.data.get("action")
+        notes = request.data.get("notes", "")
+        reason = request.data.get("reason", "")
+
+        if token:
+            quote = WorkforceQuote.objects.filter(decision_token=token).first()
+        elif pk:
+            quote = WorkforceQuote.objects.filter(pk=pk).first()
+        else:
+            token_param = request.query_params.get("token") or request.data.get("token")
+            quote = WorkforceQuote.objects.filter(decision_token=token_param).first() if token_param else None
+
+        if not quote:
+            return Response({"error": "Quotation not found or invalid token.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            updated_quote, result_obj = record_customer_decision(
+                quote_id=quote.id,
+                action=action,
+                notes=notes,
+                reason=reason,
+                token=token,
+                actor=request.user if request.user.is_authenticated else None,
+            )
+
+            resp_data = {
+                "success": True,
+                "quote_number": updated_quote.quote_number,
+                "status": updated_quote.status,
+                "decision": updated_quote.customer_decision,
+            }
+
+            if str(action).upper() == "ACCEPT" and result_obj:
+                resp_data["work_job_id"] = result_obj.id
+                resp_data["work_job_request_id"] = result_obj.request_id
+                resp_data["message"] = "Quotation accepted! Your work service booking has been created and dispatched."
+            elif str(action).upper() == "DECLINE":
+                resp_data["message"] = "Quotation declined. Thank you for your feedback."
+            elif str(action).upper() == "REQUEST_CHANGES" and result_obj:
+                resp_data["message"] = f"Change request recorded. Revised quotation version v{result_obj.quote_version} is being prepared."
+                resp_data["new_version"] = result_obj.quote_version
+
+            return Response(resp_data, status=status.HTTP_200_OK)
+
+        except ValidationError as ve:
+            return Response({"error": str(ve.message if hasattr(ve, 'message') else ve), "code": "DECISION_FAILED"}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as ex:
+            logger.error("Decision failed on quote %s: %s", quote.id, ex, exc_info=True)
+            return Response({"error": str(ex), "code": "SERVER_ERROR"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class WorkforceAdminQuoteClearanceView(APIView):
+    """
+    POST /api/workforce/admin/quotes/<pk>/clear-structural/
+    Admin clearance endpoint for mason quotes with suspected structural damage.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsWorkforceAdmin]
+
+    def post(self, request, pk):
+        approved = request.data.get("approved", True)
+        notes = request.data.get("notes", "")
+
+        try:
+            quote = admin_clear_mason_structural(pk, request.user, approved=approved, notes=notes)
+            serializer = WorkforceQuoteDetailSerializer(quote)
+            return Response({
+                "success": True,
+                "message": f"Structural clearance {'approved' if approved else 'rejected'} for Quote {quote.quote_number}.",
+                "quote": serializer.data,
+            }, status=status.HTTP_200_OK)
+        except Exception as ex:
+            return Response({"error": str(ex), "code": "CLEARANCE_FAILED"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class WorkforceAdminQuoteMetricsView(APIView):
+    """
+    GET /api/workforce/admin/quotes/metrics/
+    Quotation KPI metrics for Vendor / Admin dashboard.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsWorkforceAdmin]
+
+    def get(self, request):
+        user = request.user
+        company = getattr(user, "company", None)
+        qs = WorkforceQuote.objects.all()
+        if company:
+            qs = qs.filter(company=company)
+
+        total_quotes = qs.count()
+        draft_quotes = qs.filter(status=WorkforceQuote.Status.DRAFT).count()
+        sent_quotes = qs.filter(status=WorkforceQuote.Status.SENT_TO_CUSTOMER).count()
+        accepted_quotes = qs.filter(status__in=[WorkforceQuote.Status.CUSTOMER_ACCEPTED, WorkforceQuote.Status.CONVERTED]).count()
+        converted_quotes = qs.filter(status=WorkforceQuote.Status.CONVERTED).count()
+        declined_quotes = qs.filter(status=WorkforceQuote.Status.DECLINED).count()
+        pending_review = qs.filter(status=WorkforceQuote.Status.PENDING_REVIEW).count()
+
+        conversion_rate = round((accepted_quotes / total_quotes * 100), 1) if total_quotes > 0 else 0.0
+
+        accepted_sums = qs.filter(status__in=[WorkforceQuote.Status.CUSTOMER_ACCEPTED, WorkforceQuote.Status.CONVERTED]).aggregate(
+            total_rev=models.Sum("total_amount"),
+            avg_val=models.Avg("total_amount")
+        )
+
+        return Response({
+            "total_quotes": total_quotes,
+            "draft_quotes": draft_quotes,
+            "sent_quotes": sent_quotes,
+            "accepted_quotes": accepted_quotes,
+            "converted_count": converted_quotes,
+            "converted_quotes": converted_quotes,
+            "declined_quotes": declined_quotes,
+            "pending_review": pending_review,
+            "conversion_rate_percent": conversion_rate,
+            "total_accepted_revenue": accepted_sums.get("total_rev") or 0.0,
+            "average_quote_value": round(accepted_sums.get("avg_val") or 0.0, 2),
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceAdminQuoteRetryConversionView(APIView):
+    """
+    POST /api/workforce/admin/quotes/<pk>/retry-conversion/
+    Safely retries work booking conversion for quotes stuck in CONVERSION_PENDING.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsWorkforceAdmin]
+
+    def post(self, request, pk):
+        quote = WorkforceQuote.objects.filter(pk=pk).first()
+        if not quote:
+            return Response({"error": "Quote not found.", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            work_job = convert_accepted_quote_to_work_booking(quote, actor=request.user)
+            return Response({
+                "success": True,
+                "message": f"Quote {quote.quote_number} successfully converted to Work ServiceRequest #{work_job.id}.",
+                "work_job_id": work_job.id,
+                "work_job_request_id": work_job.request_id,
+            }, status=status.HTTP_200_OK)
+        except Exception as ex:
+            return Response({"error": str(ex), "code": "CONVERSION_RETRY_FAILED"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 
 
