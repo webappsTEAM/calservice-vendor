@@ -83,6 +83,7 @@ from .views import (
     WorkforceJobLiveTrackingView,
     WorkforceJobTimelineView,
     WorkforceReportsView,
+    WorkforceDatabaseTelemetryView,
     WorkforceLatencyAuditView,
     WorkforceVerificationSuiteView,
     WorkforceEmployeeProfileMeView,
@@ -246,7 +247,8 @@ urlpatterns = [
     # Reports Engine (Phase 27)
     path("reports/", WorkforceReportsView.as_view(), name="workforce-reports"),
 
-    # Performance & Latency Audit
+    # Performance & Database Telemetry Audit
+    path("admin/database-telemetry/", WorkforceDatabaseTelemetryView.as_view(), name="workforce-admin-database-telemetry"),
     path("audit-latency/", WorkforceLatencyAuditView.as_view(), name="workforce-audit-latency"),
 
     # Automated Test Verification Suite

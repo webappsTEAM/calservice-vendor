@@ -346,6 +346,20 @@ class MeView(APIView):
 
             reg_status = get_employee_registration_status(emp or user)
 
+            # Include employee presence/availability in /auth/me/ response so that the
+            # frontend AuthProvider does NOT need a separate sequential call to
+            # /workforce/onboarding/me/ during auth initialization.
+            last_known_location = None
+            is_online = False
+            live_availability = "offline"
+
+            if emp:
+                is_online = bool(getattr(emp, "is_online", False))
+                live_availability = getattr(emp, "current_availability", "offline") or "offline"
+                raw_loc = getattr(user, "last_known_location", None)
+                if isinstance(raw_loc, dict) and raw_loc.get("latitude") and raw_loc.get("longitude"):
+                    last_known_location = raw_loc
+
             return Response({
                 "id": user.id,
                 "username": user.username,
@@ -358,6 +372,10 @@ class MeView(APIView):
                 "is_superuser": getattr(user, "is_superuser", False),
                 "employee_id": getattr(emp, "employee_id", None) if emp else None,
                 "registration_status": reg_status,
+                # Presence & location (for AuthProvider initialization — avoids second API call)
+                "is_online": is_online,
+                "live_availability": live_availability,
+                "last_known_location": last_known_location,
             }, status=status.HTTP_200_OK)
         except (OperationalError, DatabaseError) as db_err:
             logger.error("Database error in MeView: %s", str(db_err), exc_info=True)

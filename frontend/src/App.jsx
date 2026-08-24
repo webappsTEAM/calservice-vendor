@@ -43,6 +43,7 @@ import { AdminJobsPage } from './pages/admin/AdminJobsPage.jsx';
 import { AdminOperationsPage } from './pages/admin/AdminOperationsPage.jsx';
 import { AdminReportsPage } from './pages/admin/AdminReportsPage.jsx';
 import { AdminSkillsPage } from './pages/admin/AdminSkillsPage.jsx';
+import { AdminDatabaseMonitoringPage } from './pages/admin/AdminDatabaseMonitoringPage.jsx';
 import { CustomerTrackingPage } from './pages/customer/CustomerTrackingPage.jsx';
 
 // Employee Wallet Pages
@@ -266,6 +267,22 @@ export function App() {
             element={
               <AdminRoute>
                 <AdminReportsPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/monitoring/database-egress"
+            element={
+              <AdminRoute>
+                <AdminDatabaseMonitoringPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/database-monitoring"
+            element={
+              <AdminRoute>
+                <AdminDatabaseMonitoringPage />
               </AdminRoute>
             }
           />

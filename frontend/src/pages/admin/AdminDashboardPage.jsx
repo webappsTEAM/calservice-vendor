@@ -23,6 +23,7 @@ import {
   Calendar,
   Layers,
   FileCheck,
+  Activity,
 } from 'lucide-react';
 
 export function AdminDashboardPage() {
@@ -172,6 +173,13 @@ export function AdminDashboardPage() {
           subtitle="Real-time personnel monitoring, dossier verifications, and dynamic dispatch"
           actions={
             <div className="flex items-center gap-2">
+              <Link
+                to="/workforce/admin/monitoring/database-egress"
+                className="px-3 py-1.5 rounded border border-blue-200 bg-blue-50 hover:bg-blue-100 text-xs font-semibold text-blue-700 shadow-sm transition-colors inline-flex items-center gap-1.5"
+              >
+                <Activity className="w-3.5 h-3.5 text-blue-600" />
+                <span>Database & Egress</span>
+              </Link>
               <button
                 onClick={loadData}
                 className="px-3 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-sm transition-colors"

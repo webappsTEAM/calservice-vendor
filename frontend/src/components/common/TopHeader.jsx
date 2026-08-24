@@ -25,6 +25,7 @@ import {
   Square,
   X,
   CheckCheck,
+  Activity,
 } from 'lucide-react';
 
 import { Modal } from '../enterprise/Modal.jsx';
@@ -135,6 +136,7 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
     let pollInterval = null;
 
     const fetchNotifs = async () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       try {
         const res = await apiGetNotifications();
         if (!isCancelled && res) {
@@ -746,6 +748,16 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                           <Settings className="w-3.5 h-3.5 text-slate-400" />
                           <span>Settings</span>
                         </Link>
+                        {isAdmin && (
+                          <Link
+                            to="/workforce/admin/monitoring/database-egress"
+                            onClick={() => setShowUserMenu(false)}
+                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 text-blue-700 flex items-center gap-2 transition-colors font-semibold"
+                          >
+                            <Activity className="w-3.5 h-3.5 text-blue-600" />
+                            <span>Database & Egress</span>
+                          </Link>
+                        )}
                       </div>
 
                       <button

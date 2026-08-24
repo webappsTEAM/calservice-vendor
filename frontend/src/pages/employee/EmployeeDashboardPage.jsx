@@ -342,6 +342,7 @@ export function EmployeeDashboardPage() {
     }
     let isCancelled = false;
     const interval = setInterval(async () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       try {
         const res = await apiGetPreServiceStatus(selectedJob.id);
         if (!isCancelled && res?.geofence_passed) {

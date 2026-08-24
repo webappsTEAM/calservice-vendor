@@ -23,6 +23,7 @@ import {
   ArrowDownCircle,
   CreditCard,
   ReceiptText,
+  Activity,
 } from 'lucide-react';
 
 export function Sidebar({ onCloseMobile = () => {} }) {
@@ -34,6 +35,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
     workforce: false,
     operations: false,
     finance: false,
+    monitoring: false,
     myWork: false,
     profile: false,
     earnings: false,
@@ -211,6 +213,34 @@ export function Sidebar({ onCloseMobile = () => {} }) {
                 >
                   <CreditCard className="w-3.5 h-3.5 text-slate-400" />
                   <span>Bank Accounts</span>
+                </NavLink>
+              </div>
+            )}
+          </div>
+
+          {/* Group 4: MONITORING */}
+          <div>
+            <button
+              type="button"
+              onClick={() => toggleSection('monitoring')}
+              className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider hover:text-slate-600 transition-colors"
+            >
+              <span>Monitoring</span>
+              {collapsed.monitoring ? (
+                <ChevronRight className="w-3 h-3" />
+              ) : (
+                <ChevronDown className="w-3 h-3" />
+              )}
+            </button>
+            {!collapsed.monitoring && (
+              <div className="mt-1 space-y-0.5 pl-1">
+                <NavLink
+                  to="/workforce/admin/monitoring/database-egress"
+                  onClick={onCloseMobile}
+                  className={navItemClass}
+                >
+                  <Activity className="w-3.5 h-3.5 text-blue-500" />
+                  <span>Database & Egress</span>
                 </NavLink>
               </div>
             )}

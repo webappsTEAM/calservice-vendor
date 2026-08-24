@@ -113,6 +113,7 @@ export function CustomerTrackingPage() {
     // Polling interval (5s)
     pollTimerRef.current = setInterval(() => {
       if (!isMounted) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       // Stop polling if completed or cancelled
       setTrackingData((currentData) => {
         const status = (currentData?.status || '').toLowerCase();

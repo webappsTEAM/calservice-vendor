@@ -14,6 +14,16 @@ import os
 import sys
 import time
 
+# PRODUCTION SAFETY GUARD
+# This script connects to Supabase via the live Django ORM configuration.
+# It MUST NOT run without explicit opt-in to prevent accidental production load.
+_allow = os.environ.get("ALLOW_REMOTE_STRESS_TEST", "").strip().lower()
+if _allow != "true":
+    print("\n[BLOCKED] stress_test_core_runtime.py uses the live Django/Supabase DB.")
+    print("To authorise execution: set ALLOW_REMOTE_STRESS_TEST=true")
+    print("Never run stress tests against production without explicit approval.\n")
+    raise SystemExit(1)
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)

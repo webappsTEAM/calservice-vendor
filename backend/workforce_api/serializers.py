@@ -39,6 +39,66 @@ class WorkforceOnboardingDraftSerializer(serializers.Serializer):
     draft_data = serializers.DictField(required=True)
 
 
+class WorkforceEmployeeProfileListSerializer(serializers.ModelSerializer):
+    """
+    Lightweight list serializer for the applications list endpoint.
+    Reads only JSONB bank_details (in-memory) — zero extra DB queries per row.
+    Per-row WorkforceEmployeeDocument queries are deliberately excluded here;
+    they are available on the detail endpoint via WorkforceEmployeeProfileSerializer.
+    """
+    user_id = serializers.IntegerField(source="user.id", read_only=True)
+    username = serializers.CharField(source="user.username", read_only=True)
+    first_name = serializers.CharField(source="user.first_name", read_only=True)
+    last_name = serializers.CharField(source="user.last_name", read_only=True)
+    email = serializers.CharField(source="user.email", read_only=True)
+    mobile_number = serializers.CharField(source="user.mobile_number", read_only=True)
+    phone = serializers.CharField(source="user.phone", read_only=True)
+    company_id = serializers.IntegerField(source="company.id", read_only=True)
+    company_name = serializers.CharField(source="company.company_name", read_only=True)
+    registration_status = serializers.SerializerMethodField()
+    all_requested_services = serializers.SerializerMethodField()
+    documents_status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Employee
+        fields = [
+            "id",
+            "user_id",
+            "employee_id",
+            "username",
+            "first_name",
+            "last_name",
+            "email",
+            "mobile_number",
+            "phone",
+            "company_id",
+            "company_name",
+            "is_active",
+            "registration_status",
+            "all_requested_services",
+            "documents_status",
+            "created_at",
+        ]
+
+    def get_registration_status(self, obj):
+        ob = (obj.bank_details or {}).get("onboarding", {})
+        raw = str(ob.get("status", "not_started")).strip().lower()
+        from workforce_api.services.registration import VALID_REGISTRATION_STATUSES, REGISTRATION_STATUS_NOT_STARTED
+        return raw if raw in VALID_REGISTRATION_STATUSES else REGISTRATION_STATUS_NOT_STARTED
+
+    def get_all_requested_services(self, obj):
+        ob = (obj.bank_details or {}).get("onboarding", {})
+        return ob.get("services", [])
+
+    def get_documents_status(self, obj):
+        """
+        Returns only the JSONB-stored document map — no DB query.
+        Document records from WorkforceEmployeeDocument are available on the detail endpoint.
+        """
+        ob = (obj.bank_details or {}).get("onboarding", {})
+        return dict(ob.get("documents", {}))
+
+
 class WorkforceEmployeeProfileSerializer(serializers.ModelSerializer):
     user_id = serializers.IntegerField(source="user.id", read_only=True)
     username = serializers.CharField(source="user.username", read_only=True)
@@ -395,6 +455,58 @@ class PaymentCollectionEventSerializer(serializers.ModelSerializer):
         if obj.actor_user:
             return obj.actor_user.get_full_name() or obj.actor_user.username
         return "System"
+
+
+class WorkforceJobListSerializer(serializers.ModelSerializer):
+    """
+    Lightweight read-only DTO for admin job list pages.
+
+    Returns only what a job row card needs:
+      - identity (id, request_id, status, priority)
+      - customer display (customer_name, phone)
+      - service info (service_category, issue_title)
+      - location (address)
+      - scheduling (preferred_date, preferred_time)
+      - financials (total_amount, payment_status, payment_method)
+      - assignment (assigned_employee_name)
+      - timestamps (created_at, updated_at)
+
+    Does NOT include: cart_data, description, extensions, payments,
+    offer details, wave details, proofs, lifecycle events.
+
+    This replaces the full WorkforceJobSerializer in the admin list path,
+    reducing per-job payload from ~4 KB to ~400 bytes.
+    """
+    assigned_employee_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ServiceRequest
+        fields = [
+            "id",
+            "request_id",
+            "customer_name",
+            "phone",
+            "email",
+            "service_category",
+            "issue_title",
+            "status",
+            "priority",
+            "address",
+            "preferred_date",
+            "preferred_time",
+            "total_amount",
+            "payment_status",
+            "payment_method",
+            "assigned_employee_name",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_assigned_employee_name(self, obj):
+        emp = obj.assigned_employee
+        if emp and hasattr(emp, "user"):
+            return emp.user.get_full_name() or emp.user.username
+        return None
 
 
 class WorkforceJobSerializer(serializers.ModelSerializer):

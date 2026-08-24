@@ -549,6 +549,12 @@ export async function apiGetReport(reportType = 'employee', filters = {}) {
   return await apiRequest(`/workforce/reports/?${params.toString()}`);
 }
 
+export async function apiGetDatabaseTelemetry(params = {}) {
+  const query = new URLSearchParams(params).toString();
+  const endpoint = query ? `/workforce/admin/database-telemetry/?${query}` : '/workforce/admin/database-telemetry/';
+  return await apiRequest(endpoint);
+}
+
 // ── Leave Management (Phase 19) ────────────────────────────────────────────────
 
 export async function apiGetLeaves() {
