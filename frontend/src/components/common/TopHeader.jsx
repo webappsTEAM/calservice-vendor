@@ -304,8 +304,8 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
     }
   };
 
-  const isOnline = Boolean(user?.isOnline);
-  const isBusy = user?.availability === 'busy';
+  const isOnline = Boolean(employeeRuntime ? employeeRuntime.isOnline : user?.isOnline);
+  const isBusy = isEmployee ? Boolean(employeeRuntime?.hasActiveJob) : user?.availability === 'busy';
 
   return (
     <>

@@ -592,7 +592,8 @@ export function useLocationTracker(
       clearBackoffTimer();
       retryAttemptRef.current = 0;
       lastPositionRef.current = null;
-      lastReportedTimeRef.current = 0;
+      lastReportedBackendPosRef.current = null;
+      lastReportedBackendTimeRef.current = 0;
       return;
     }
 

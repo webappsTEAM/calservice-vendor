@@ -84,25 +84,39 @@ EXPLICIT_SERVICE_ALIASES = {
     "full house cleaning": {"full house cleaning", "cleaning", "deep cleaning", "house cleaning"},
     "sofa cleaning": {"sofa cleaning", "cleaning", "couch cleaning"},
     "two wheeler": {"two wheeler", "bike", "scooter", "motorcycle", "bike repair", "two wheeler repair"},
-    "goods and transport": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting", "commercial transport"},
-    "goods transport": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting", "commercial transport"},
-    "transport": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting"},
-    "packers and movers": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "goods and transport"},
-    "packers movers": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "goods and transport"},
-    "packer and mover": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "goods and transport"},
-    "truck": {"truck", "packer and mover", "packers and movers", "logistics", "shifting", "goods and transport", "goods transport", "transport", "relocation"},
+    "goods and transport": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting", "commercial transport", "packers and movers", "packer and mover", "packers movers", "packer mover", "house shifting", "home shifting", "office shifting", "mini truck", "tempo", "goods transport truck", "goods transport two wheeler", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
+    "goods transport": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting", "commercial transport", "packers and movers", "packer and mover", "packers movers", "packer mover", "house shifting", "home shifting", "office shifting", "mini truck", "tempo", "goods transport truck", "goods transport two wheeler", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
+    "goods transport truck": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting", "commercial transport", "packers and movers", "packer and mover", "packers movers", "packer mover", "house shifting", "home shifting", "office shifting", "mini truck", "tempo", "goods transport truck", "goods transport two wheeler", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
+    "goods transport two wheeler": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting", "commercial transport", "packers and movers", "packer and mover", "packers movers", "packer mover", "house shifting", "home shifting", "office shifting", "mini truck", "tempo", "goods transport truck", "goods transport two wheeler", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
+    "transport": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting", "commercial transport", "packers and movers", "packer and mover", "packers movers", "packer mover", "house shifting", "home shifting", "office shifting", "mini truck", "tempo", "goods transport truck", "goods transport two wheeler", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
+    "logistics": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting", "commercial transport", "packers and movers", "packer and mover", "packers movers", "packer mover", "house shifting", "home shifting", "office shifting", "mini truck", "tempo", "goods transport truck", "goods transport two wheeler", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
+    "packers and movers": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "cargo", "mini truck", "tempo", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
+    "packers movers": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "cargo", "mini truck", "tempo", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
+    "packer and mover": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "cargo", "mini truck", "tempo", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
+    "packer mover": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "cargo", "mini truck", "tempo", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
+    "packers": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "cargo", "mini truck", "tempo", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
+    "movers": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "cargo", "mini truck", "tempo", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
+    "packer": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "cargo", "mini truck", "tempo", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
+    "mover": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "cargo", "mini truck", "tempo", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
+    "shifting": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "relocation services", "shifting services"},
+    "relocation": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "relocation services", "shifting services"},
+    "house shifting": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "relocation services", "shifting services"},
+    "home shifting": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "relocation services", "shifting services"},
+    "office shifting": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "relocation services", "shifting services"},
+    "truck": {"truck", "packer and mover", "packers and movers", "packers movers", "packer mover", "logistics", "shifting", "goods and transport", "goods transport", "transport", "relocation", "mini truck", "tempo"},
 }
 
 
 def normalize_service_name(name: str) -> str:
     """
     Normalizes service names by lowercasing, replacing dashes, underscores,
-    unicode hyphens, and ampersands with standard words.
+    slashes, unicode hyphens, pluses, and ampersands with standard words.
     """
     if not name:
         return ""
     s = str(name).lower()
     s = s.replace("—", " ").replace("–", " ").replace("-", " ").replace("_", " ")
+    s = s.replace("/", " ").replace("\\", " ").replace("+", " and ")
     s = s.replace("&", " and ")
     return " ".join(s.split())
 
@@ -433,11 +447,10 @@ def get_eligible_candidates(
         )
     )
 
-    if not job_obj.company_id:
-        logger.warning(f"[DISPATCH_COMPANY_MISSING] Job #{job_obj.id} lacks an associated company/vendor tenant.")
-        return []
-
-    candidates_qs = candidates_qs.filter(company_id=job_obj.company_id)
+    if job_obj.company_id:
+        candidates_qs = candidates_qs.filter(company_id=job_obj.company_id)
+    else:
+        candidates_qs = candidates_qs.filter(company__is_active=True)
 
     # Exclude candidates who have already received or rejected/cancelled an offer for this job
     previous_offers = set(
@@ -497,10 +510,19 @@ def get_eligible_candidates(
             logger.info(f"[DISPATCH_REJECT] job={job_obj.id} employee={emp.id} reason=OUTSIDE_AUTOMATIC_WAVES distance_km={dist_km}")
             continue
 
-        # Check eligibility against service_category, then issue_title
+        # Check eligibility against service_category, issue_title, and cart_data items
         is_eligible, reason, gate_results = check_candidate_eligibility(emp, job_obj.service_category, check_workload=check_workload)
         if not is_eligible and job_obj.issue_title:
             is_eligible, reason, gate_results = check_candidate_eligibility(emp, job_obj.issue_title, check_workload=check_workload)
+        if not is_eligible and job_obj.cart_data and isinstance(job_obj.cart_data, list):
+            for cart_item in job_obj.cart_data:
+                if isinstance(cart_item, dict):
+                    cand_svc = cart_item.get("service_name") or cart_item.get("category") or cart_item.get("title") or cart_item.get("name")
+                    if cand_svc:
+                        cand_elig, _, _ = check_candidate_eligibility(emp, str(cand_svc), check_workload=check_workload)
+                        if cand_elig:
+                            is_eligible = True
+                            break
 
         if not is_eligible:
             logger.info(f"[DISPATCH_REJECT] job={job_obj.id} employee={emp.id} reason={reason}")
@@ -771,19 +793,20 @@ def dispatch_next_candidate(job_id_or_obj) -> Tuple[bool, str]:
     return dispatch_job(job_id_or_obj)
 
 
-def expire_and_reassign_offers() -> int:
+def expire_and_reassign_offers(company_id=None, limit: int = 50) -> int:
     """
     Scans for expired job offers in OFFERED state, marks them EXPIRED,
     and automatically triggers next wave dispatch for jobs whose wave has completed.
     Returns the count of expired offers handled.
     """
     now = timezone.now()
-    expired_offers = list(
-        WorkforceJobOffer.objects.filter(
-            status=WorkforceJobOffer.Status.OFFERED,
-            expires_at__lte=now,
-        ).select_related("job")
+    qs = WorkforceJobOffer.objects.filter(
+        status=WorkforceJobOffer.Status.OFFERED,
+        expires_at__lte=now,
     )
+    if company_id:
+        qs = qs.filter(job__company_id=company_id)
+    expired_offers = list(qs.select_related("job")[:limit])
 
     if not expired_offers:
         return 0
@@ -828,7 +851,7 @@ def dispatch_pending_jobs(company_id=None, limit: int = 50) -> Dict[str, Any]:
     4. Evaluates proximity and dispatches pending jobs.
     """
     # 1. Sweep expired offers first
-    expired_count = expire_and_reassign_offers()
+    expired_count = expire_and_reassign_offers(company_id=company_id, limit=limit)
 
     now = timezone.now()
     qs = ServiceRequest.objects.filter(

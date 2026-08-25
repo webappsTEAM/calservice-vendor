@@ -375,13 +375,18 @@ class ServiceRequest(models.Model):
             from workforce_api.models import JobPayment
             pmt = getattr(self, "payment_record", None) or JobPayment.objects.filter(job=self).first()
             if pmt:
-                if pmt.payment_status == JobPayment.PaymentStatus.PENDING and pmt.payment_method == JobPayment.PaymentMethod.CASH_ON_SERVICE:
-                    pending_dependencies.append("Cash on service payment collection is required before closing job.")
-                elif pmt.payment_status not in [JobPayment.PaymentStatus.PAID, "PAID", "paid", JobPayment.PaymentStatus.CASH_PENDING]:
+                if pmt.payment_method == JobPayment.PaymentMethod.CASH_ON_SERVICE:
+                    if not pmt.is_cash_collected or pmt.payment_status not in [JobPayment.PaymentStatus.PAID, "PAID", "paid"]:
+                        pending_dependencies.append("Cash on service payment collection is required before closing job.")
+                elif pmt.payment_status not in [JobPayment.PaymentStatus.PAID, "PAID", "paid"]:
                     pending_dependencies.append(f"Payment is in '{pmt.payment_status}' state (must be PAID before closing job).")
             else:
+                is_cash = (self.payment_method or "").lower() in ["cash", "cod", "cash_on_service", "cash_on_delivery"]
                 if str(self.payment_status).lower() not in ["paid", "collected"]:
-                    pending_dependencies.append(f"Payment status is '{self.payment_status}' (must be PAID before closing job).")
+                    if is_cash:
+                        pending_dependencies.append("Cash on service payment collection is required before closing job.")
+                    else:
+                        pending_dependencies.append(f"Payment status is '{self.payment_status}' (must be PAID before closing job).")
         except Exception as e:
             pending_dependencies.append(f"Payment verification failed: {str(e)}")
 

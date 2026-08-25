@@ -130,7 +130,7 @@ function CountdownBadge({ targetTime, serverTimeOffset = 0, prefix = '', expired
 }
 
 export function EmployeeDashboardPage() {
-  const { user, employee, togglePresence, logout, isAuthenticated } = useAuth();
+  const { user, employee, togglePresence, refreshProfile, logout, isAuthenticated } = useAuth();
   const {
     activeJobs,
     completedJobs,
@@ -733,7 +733,17 @@ export function EmployeeDashboardPage() {
           setCashAmountReceived(String(finishedJob.payment?.amount_due || finishedJob.total_amount || ''));
           setSuccessMsg('After-service proof submitted! Please collect customer payment.');
         } else {
+          setSelectedJob(null);
           setSuccessMsg('After-service proof submitted! Job is COMPLETED.');
+          if (typeof refreshActiveJobs === 'function') {
+            await refreshActiveJobs({ force: true });
+          }
+          if (typeof refreshCompletedJobs === 'function') {
+            await refreshCompletedJobs({ silent: true });
+          }
+          if (typeof refreshProfile === 'function') {
+            refreshProfile(true);
+          }
         }
         await loadDashboard();
         setTimeout(() => setSuccessMsg(''), 5000);
@@ -755,40 +765,19 @@ export function EmployeeDashboardPage() {
         setError('');
         const res = await apiCollectJobCash(targetJob.id, amtDue);
 
-        // Optimistically & authoritatively synchronize selectedJob and allJobs
-        const updatedStatus = res.job_status || 'completed';
-        const updatedPaymentStatus = res.payment_status ? res.payment_status.toLowerCase() : 'paid';
-
-        setSelectedJob(prev => (prev && prev.id === targetJob.id ? {
-          ...prev,
-          status: updatedStatus,
-          payment_status: updatedPaymentStatus,
-          payment: {
-            ...(prev.payment || {}),
-            payment_status: 'PAID',
-            amount_paid: String(amtDue),
-            amount_due: String(amtDue),
-            cash_collected_at: new Date().toISOString(),
-          }
-        } : prev));
-
-        setAllJobs(prev => prev.map(j => j.id === targetJob.id ? {
-          ...j,
-          status: updatedStatus,
-          payment_status: updatedPaymentStatus,
-          payment: {
-            ...(j.payment || {}),
-            payment_status: 'PAID',
-            amount_paid: String(amtDue),
-          }
-        } : j));
-
+        setSelectedJob(null);
         setCashModalJob(null);
         setCashAmountReceived('');
         setSuccessMsg(res.message || 'Cash payment collected and confirmed! Job is COMPLETED.');
 
         if (typeof refreshActiveJobs === 'function') {
-          refreshActiveJobs({ force: true });
+          await refreshActiveJobs({ force: true });
+        }
+        if (typeof refreshCompletedJobs === 'function') {
+          await refreshCompletedJobs({ silent: true });
+        }
+        if (typeof refreshProfile === 'function') {
+          refreshProfile(true);
         }
         await loadDashboard();
         setTimeout(() => setSuccessMsg(''), 4000);

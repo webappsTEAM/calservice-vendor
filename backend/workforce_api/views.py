@@ -1255,9 +1255,12 @@ class WorkforcePresenceStatusView(APIView):
         if not emp:
             return Response({"is_online": False, "availability": "offline"}, status=status.HTTP_200_OK)
 
+        from workforce_api.services.workload import reconcile_employee_availability
+        live_avail = reconcile_employee_availability(emp)
+
         return Response({
             "is_online": emp.is_online,
-            "availability": emp.current_availability,
+            "availability": live_avail,
             "registration_status": (emp.bank_details or {}).get("onboarding", {}).get("status", "not_started"),
         }, status=status.HTTP_200_OK)
 
@@ -1315,7 +1318,7 @@ class WorkforceJobListView(APIView):
                 emp_job_sr_ids = list(EmployeeJob.objects.filter(
                     employee=emp
                 ).exclude(
-                    status__in=["REJECTED", "CANCELLED"]
+                    status__in=["REJECTED", "CANCELLED", "COMPLETED", "EMPLOYEE_CANCELLED"]
                 ).values_list("service_request_id", flat=True))
             except Exception:
                 emp_job_sr_ids = []
@@ -1353,7 +1356,7 @@ class WorkforceJobListView(APIView):
                 ).exclude(status__in=["completed", "cancelled"])
 
             if emp.company:
-                qs = qs.filter(company=emp.company)
+                qs = qs.filter(Q(company=emp.company) | Q(company__isnull=True) | Q(assigned_employee=emp) | Q(id__in=offered_job_ids))
 
             qs = qs.select_related("customer", "assigned_employee", "assigned_employee__user", "company")
             qs = qs.distinct().order_by("-updated_at", "-created_at")
@@ -1732,16 +1735,7 @@ class WorkforceJobCashCollectView(APIView):
                     job.save(update_fields=["status"])
 
             if job.status in ["proof_submitted", "in_progress"]:
-                try:
-                    apply_transition(job, "completed", actor=request.user)
-                except ValidationError as ve:
-                    logger.warning("apply_transition validation on cash collect for job #%s: %s, updating directly", job.id, ve)
-                    job.status = "completed"
-                    job.save(update_fields=["status"])
-                except Exception as e:
-                    logger.exception("Unexpected error completing job #%s after cash collection: %s", job.id, e)
-                    job.status = "completed"
-                    job.save(update_fields=["status"])
+                apply_transition(job, "completed", actor=request.user)
 
             # Reconcile availability
             from workforce_api.services.workload import reconcile_employee_availability
@@ -2407,7 +2401,7 @@ class WorkforceJobAcceptOfferView(APIView):
                 return Response({"error": "Employee profile not found.", "code": "PROFILE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
             # Cross-company tenant isolation check
-            if not emp_obj.company_id or not job_obj.company_id or emp_obj.company_id != job_obj.company_id:
+            if job_obj.company_id and emp_obj.company_id and emp_obj.company_id != job_obj.company_id:
                 return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
             # Prevent duplicate acceptance by the same employee on the same job (Idempotent success)
@@ -2489,7 +2483,11 @@ class WorkforceJobAcceptOfferView(APIView):
 
             job_obj.assigned_employee = emp_obj
             job_obj.status = "accepted"
-            job_obj.save(update_fields=["assigned_employee", "status", "updated_at"])
+            update_flds = ["assigned_employee", "status", "updated_at"]
+            if not job_obj.company_id and emp_obj.company_id:
+                job_obj.company = emp_obj.company
+                update_flds.append("company")
+            job_obj.save(update_fields=update_flds)
 
             # Atomically mark employee availability as BUSY
             emp_obj.current_availability = "busy"

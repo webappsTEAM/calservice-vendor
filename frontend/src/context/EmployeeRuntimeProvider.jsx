@@ -99,10 +99,14 @@ export function EmployeeRuntimeProvider({ children }) {
   const hasActiveJob = useMemo(() => {
     return activeJobs.some((j) => {
       const st = (j.status || j.job_status || '').toLowerCase();
-      const isAssigned = Boolean(j.is_assigned_to_current_employee || j.assigned_employee_id === user?.id);
+      const isAssigned = Boolean(
+        j.is_assigned_to_current_employee ||
+        j.assigned_employee_id === user?.employee_id ||
+        j.assigned_employee_id === user?.id
+      );
       return isAssigned && ACTIVE_QUEUE_STATUSES.includes(st);
     });
-  }, [activeJobs, user?.id]);
+  }, [activeJobs, user?.id, user?.employee_id]);
 
   const incomingOffers = useMemo(() => {
     const currentNow = Date.now() + (serverTimeOffset || 0);
@@ -228,15 +232,31 @@ export function EmployeeRuntimeProvider({ children }) {
             const currentOffer = validOffers[0] || null;
 
             setSelectedJob((prev) => {
+              const findActiveJob = () =>
+                jobsData.find((j) => {
+                  const st = (j.status || j.job_status || '').toLowerCase();
+                  const isAssigned = Boolean(
+                    j.is_assigned_to_current_employee ||
+                    j.assigned_employee_id === user?.employee_id ||
+                    j.assigned_employee_id === user?.id
+                  );
+                  return isAssigned && ACTIVE_QUEUE_STATUSES.includes(st);
+                });
+
               if (!prev) {
                 if (currentOffer) return currentOffer;
-                const active = jobsData.find((j) =>
-                  ACTIVE_QUEUE_STATUSES.includes((j.status || j.job_status || '').toLowerCase())
-                );
-                return active || jobsData[0] || null;
+                return findActiveJob() || jobsData[0] || null;
               }
               const updated = jobsData.find((j) => j.id === prev.id);
-              return updated || prev;
+              if (updated) {
+                const st = (updated.status || updated.job_status || '').toLowerCase();
+                if (ACTIVE_QUEUE_STATUSES.includes(st)) {
+                  return updated;
+                }
+              }
+              // If prev was completed or removed from active queue, pick next active job or offer or null
+              if (currentOffer) return currentOffer;
+              return findActiveJob() || jobsData[0] || null;
             });
             return jobsData;
           }
@@ -606,15 +626,36 @@ export function EmployeeRuntimeProvider({ children }) {
 
       const promise = (async () => {
         try {
-          const loc = liveLocation || (await scanCurrentLocation());
-          const res = await apiClockIn({
-            lat: loc.latitude,
-            lon: loc.longitude,
-            accuracy: loc.accuracy,
-            timestamp: loc.timestamp || Date.now(),
+          let loc = liveLocation;
+          if (!loc?.latitude || !loc?.longitude) {
+            try {
+              loc = await scanCurrentLocation();
+            } catch (_e) {
+              console.warn('[EmployeeRuntime] scanCurrentLocation error during autoClockIn:', _e);
+            }
+          }
+          if (!loc?.latitude || !loc?.longitude) {
+            if (user?.last_known_location?.latitude && user?.last_known_location?.longitude) {
+              loc = {
+                latitude: Number(user.last_known_location.latitude),
+                longitude: Number(user.last_known_location.longitude),
+                accuracy: user.last_known_location.accuracy || 10,
+              };
+            }
+          }
+
+          const payload = {
             address: options.address || 'GPS Verified Site Arrival',
             job_id: jobId,
-          });
+          };
+          if (loc?.latitude && loc?.longitude) {
+            payload.lat = loc.latitude;
+            payload.lon = loc.longitude;
+            payload.accuracy = loc.accuracy || 10;
+            payload.timestamp = loc.timestamp || Date.now();
+          }
+
+          const res = await apiClockIn(payload);
           await refreshActiveJobs({ force: true });
           return res;
         } finally {
@@ -625,7 +666,7 @@ export function EmployeeRuntimeProvider({ children }) {
       inFlightClockInRef.current = promise;
       return promise;
     },
-    [liveLocation, scanCurrentLocation, refreshActiveJobs]
+    [liveLocation, user?.last_known_location, scanCurrentLocation, refreshActiveJobs]
   );
 
   // ── 10. Explicit Clock-In Readiness State Engine ───────────────────────────

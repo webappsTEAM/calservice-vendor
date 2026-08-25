@@ -354,8 +354,9 @@ class MeView(APIView):
             live_availability = "offline"
 
             if emp:
+                from workforce_api.services.workload import reconcile_employee_availability
+                live_availability = reconcile_employee_availability(emp)
                 is_online = bool(getattr(emp, "is_online", False))
-                live_availability = getattr(emp, "current_availability", "offline") or "offline"
                 raw_loc = getattr(user, "last_known_location", None)
                 if isinstance(raw_loc, dict) and raw_loc.get("latitude") and raw_loc.get("longitude"):
                     last_known_location = raw_loc

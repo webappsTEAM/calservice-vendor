@@ -62,6 +62,7 @@ export function OnboardingWizardPage() {
 
   const [currentStep, setCurrentStep] = useState(1);
   const [catalog, setCatalog] = useState([]);
+  const isLocked = Boolean(user?.onboarding_locked || normalizedStatus === 'approved' || normalizedStatus === 'submitted' || normalizedStatus === 'under_review');
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
@@ -343,9 +344,9 @@ export function OnboardingWizardPage() {
                   key={s.id}
                   type="button"
                   onClick={() => {
-                    if (isLocked || s.id < currentStep) setCurrentStep(s.id);
+                    if (s.id <= currentStep) setCurrentStep(s.id);
                   }}
-                  disabled={!isLocked && s.id > currentStep}
+                  disabled={s.id > currentStep}
                   className={`flex-1 py-1 px-2 border-b-2 flex items-center justify-center gap-1.5 transition-colors ${
                     isCurrent
                       ? 'border-blue-600 text-blue-700 font-bold'
