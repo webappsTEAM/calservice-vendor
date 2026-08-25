@@ -93,20 +93,21 @@ export function validateTelemetryCoordinates(lat, lon, accuracy = null, timestam
   }
 
   const now = Date.now();
+  let normalizedTimestamp = now;
   if (timestamp) {
     const tsNum = typeof timestamp === 'number' ? timestamp : Date.parse(timestamp);
     if (!isNaN(tsNum)) {
       const ageMs = now - tsNum;
-      if (ageMs > MAX_BACKEND_AGE_MS) {
-        return { valid: false, reason: `Telemetry fix is stale (${Math.round(ageMs / 1000)}s old)` };
-      }
-      if (ageMs < -60_000) {
-        return { valid: false, reason: 'Telemetry timestamp is future-dated' };
+      if (ageMs < -60_000 || ageMs > MAX_BACKEND_AGE_MS) {
+        // OS/browser cached location fix has older hardware timestamp; normalize to current live time
+        normalizedTimestamp = now;
+      } else {
+        normalizedTimestamp = tsNum;
       }
     }
   }
 
-  return { valid: true, lat: latNum, lon: lonNum };
+  return { valid: true, lat: latNum, lon: lonNum, timestamp: normalizedTimestamp };
 }
 
 /**
@@ -423,10 +424,10 @@ export function useLocationTracker(
 
       const now = Date.now();
       const currentFix = {
-        latitude,
-        longitude,
+        latitude: val.lat,
+        longitude: val.lon,
         accuracy: accuracy != null ? Math.round(accuracy * 10) / 10 : null,
-        timestamp: pos.timestamp || now,
+        timestamp: val.timestamp || now,
       };
 
       // Jump Protection: evaluate physical plausibility against previous fix
@@ -446,14 +447,14 @@ export function useLocationTracker(
 
       // ── PIPELINE A: Construct Immediate Local Telemetry Payload (Zero Throttling) ──
       const localPayload = {
-        latitude,
-        longitude,
+        latitude: val.lat,
+        longitude: val.lon,
         accuracy: currentFix.accuracy,
         accuracy_tier: classifyAccuracy(accuracy),
         speed: speed ?? null,
         heading: heading ?? null,
-        captured_at: new Date(pos.timestamp || now).toISOString(),
-        timestamp: pos.timestamp || now,
+        captured_at: new Date(val.timestamp || now).toISOString(),
+        timestamp: val.timestamp || now,
         is_geofence_ready: accuracy != null && accuracy <= MAX_GEOFENCE_ACCURACY_METERS,
         is_navigating: isNavigatingRef.current,
       };

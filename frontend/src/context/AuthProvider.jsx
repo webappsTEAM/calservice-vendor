@@ -137,17 +137,33 @@ export function AuthProvider({ children }) {
     return res;
   }, [refreshProfile]);
 
-  const logout = useCallback(async () => {
-    // 1. Send authenticated logout request to backend so technician is marked OFFLINE in database
+  const logout = useCallback(async (options = {}) => {
+    // High-priority check: An employee cannot sign out while ONLINE
+    if (!options?.skipOnlineCheck && user?.isEmployee && (user?.isOnline || employee?.is_online)) {
+      const err = new Error('You are currently ONLINE. Please switch your status to OFFLINE before signing out.');
+      err.code = 'CANNOT_LOGOUT_WHILE_ONLINE';
+      err.status = 400;
+      throw err;
+    }
+
+    // 1. Send authenticated logout request to backend
     try {
       await apiWorkforceLogout();
-    } catch (_) {}
+    } catch (err) {
+      if (err?.code === 'CANNOT_LOGOUT_WHILE_ONLINE' || err?.data?.code === 'CANNOT_LOGOUT_WHILE_ONLINE' || err?.status === 400) {
+        const errorMsg = err?.data?.error || err?.message || 'You are currently ONLINE. Please switch your status to OFFLINE before signing out.';
+        const blockErr = new Error(errorMsg);
+        blockErr.code = 'CANNOT_LOGOUT_WHILE_ONLINE';
+        blockErr.status = 400;
+        throw blockErr;
+      }
+    }
 
     // 2. Set flash logout notification in sessionStorage for display on the login page
     try {
       if (typeof sessionStorage !== 'undefined') {
         sessionStorage.setItem('wf_logout_notification', JSON.stringify({
-          message: 'Signed out successfully. Technician presence set to OFFLINE.',
+          message: 'Signed out successfully. Technician presence is OFFLINE.',
           timestamp: Date.now(),
         }));
       }
@@ -164,7 +180,7 @@ export function AuthProvider({ children }) {
     }
     setUser(null);
     setEmployee(null);
-  }, []);
+  }, [user, employee]);
 
   const togglePresence = useCallback(async (desiredOnlineState = null) => {
     try {

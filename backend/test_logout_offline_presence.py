@@ -52,11 +52,28 @@ class LogoutOfflinePresenceTests(TestCase):
             current_availability="available",
         )
 
-    def test_logout_sets_technician_offline_in_database(self):
-        """Authenticated logout sets is_online=False and current_availability='offline' in DB"""
+    def test_logout_blocked_when_online(self):
+        """When technician is ONLINE, POST /api/auth/logout/ must return 400 and block sign out"""
         self.emp.refresh_from_db()
         self.assertTrue(self.emp.is_online)
-        self.assertEqual(self.emp.current_availability, "available")
+
+        req = self.factory.post("/api/auth/logout/")
+        force_authenticate(req, user=self.user)
+        resp = LogoutView.as_view()(req)
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data.get("code"), "CANNOT_LOGOUT_WHILE_ONLINE")
+        self.assertIn("switch your status to OFFLINE", resp.data.get("error"))
+
+        # Confirm DB still has technician ONLINE
+        self.emp.refresh_from_db()
+        self.assertTrue(self.emp.is_online, "Employee must remain ONLINE in database when logout is blocked")
+
+    def test_logout_succeeds_when_offline(self):
+        """When technician is OFFLINE, POST /api/auth/logout/ succeeds (200 OK) and clears session"""
+        self.emp.is_online = False
+        self.emp.current_availability = "offline"
+        self.emp.save(update_fields=["is_online", "current_availability"])
 
         req = self.factory.post("/api/auth/logout/")
         force_authenticate(req, user=self.user)
@@ -64,12 +81,10 @@ class LogoutOfflinePresenceTests(TestCase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertFalse(resp.data.get("is_online"))
-        self.assertEqual(resp.data.get("availability"), "offline")
 
         # Verify database persistence
         self.emp.refresh_from_db()
-        self.assertFalse(self.emp.is_online, "Employee must be marked is_online=False in database upon logout")
-        self.assertEqual(self.emp.current_availability, "offline", "Employee availability must be reconciled to offline in DB")
+        self.assertFalse(self.emp.is_online)
         self.assertIsNotNone(self.emp.last_logout_at, "last_logout_at must be populated on logout")
 
         # Verify PresenceLog record

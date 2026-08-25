@@ -399,6 +399,18 @@ class LogoutView(APIView):
         user = request.user
         emp = getattr(user, "employee_profile", None) if (user and user.is_authenticated) else None
 
+        # Requirement: When technician is ONLINE, prevent sign-out and notify user to go OFFLINE first
+        if emp and emp.is_online:
+            return Response(
+                {
+                    "error": "You are currently ONLINE. Please switch your status to OFFLINE before signing out.",
+                    "code": "CANNOT_LOGOUT_WHILE_ONLINE",
+                    "is_online": True,
+                    "availability": emp.current_availability,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         if emp:
             try:
                 from django.utils import timezone
@@ -406,9 +418,8 @@ class LogoutView(APIView):
                 from workforce_api.services.workload import reconcile_employee_availability
 
                 now = timezone.now()
-                emp.is_online = False
                 emp.last_logout_at = now
-                emp.save(update_fields=["is_online", "last_logout_at", "updated_at"])
+                emp.save(update_fields=["last_logout_at", "updated_at"])
                 reconcile_employee_availability(emp)
 
                 try:
@@ -427,15 +438,14 @@ class LogoutView(APIView):
                 except Exception:
                     pass
 
-                logger.info(f"[LOGOUT_PRESENCE_OFFLINE] Employee #{emp.id} ({user.username}) marked OFFLINE on logout.")
+                logger.info(f"[LOGOUT_PRESENCE] Employee #{emp.id} ({user.username}) signed out while OFFLINE.")
             except Exception as e:
-                logger.error(f"[LOGOUT_PRESENCE_ERR] Failed to mark employee offline on logout: {e}")
+                logger.error(f"[LOGOUT_PRESENCE_ERR] Failed to log employee logout: {e}")
 
         response = Response({
-            "message": "Logged out successfully. Technician status set to OFFLINE.",
+            "message": "Logged out successfully.",
             "is_online": False,
             "availability": "offline",
-            "notification": "You have been logged out and your status has been set to OFFLINE."
         }, status=status.HTTP_200_OK)
         response.delete_cookie("qt_access")
         response.delete_cookie("qt_refresh")

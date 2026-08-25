@@ -764,8 +764,8 @@ export function EmployeeRuntimeProvider({ children }) {
   }, [scheduleCoalescedRefresh, syncNotifications]);
 
   const handleRealtimeAuthFailure = useCallback(() => {
-    logout();
-  }, [logout]);
+    console.warn('[Realtime SSE] Realtime connection interrupted; continuing REST polling.');
+  }, []);
 
   const { connectionState: realtimeConnectionState } = useRealtimeStream({
     enabled: Boolean(isAuthenticated && isApprovedEmployee && isOnline),
