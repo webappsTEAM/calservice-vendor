@@ -80,6 +80,8 @@ import {
   Download,
   ExternalLink,
   Calculator,
+  Power,
+  Loader2,
 } from 'lucide-react';
 import QuotationBuilderModal from '../../components/estimates/QuotationBuilderModal.jsx';
 
@@ -130,7 +132,7 @@ function CountdownBadge({ targetTime, serverTimeOffset = 0, prefix = '', expired
 }
 
 export function EmployeeDashboardPage() {
-  const { user, employee, togglePresence, refreshProfile, logout, isAuthenticated } = useAuth();
+  const { user, employee, togglePresence: authTogglePresence, refreshProfile, logout, isAuthenticated } = useAuth();
   const {
     activeJobs,
     completedJobs,
@@ -147,6 +149,9 @@ export function EmployeeDashboardPage() {
     autoClockIn,
     getClockInReadiness,
     gpsState,
+    isOnline: runtimeIsOnline,
+    presenceState,
+    togglePresence: runtimeTogglePresence,
   } = useEmployeeRuntime();
 
   const location = useLocation();
@@ -200,7 +205,7 @@ export function EmployeeDashboardPage() {
     return activeJobs;
   }, [jobQueueTab, completedJobs, allJobs, activeJobs]);
 
-  const isOnline = Boolean(user?.isOnline || employee?.is_online);
+  const isOnline = Boolean(runtimeIsOnline ?? employee?.is_online ?? user?.isOnline ?? user?.is_online ?? profile?.is_online);
   const isClockedIn = Boolean(timeTracking?.is_clocked_in);
   const isBreak = timeTracking?.shift_status === 'on_break';
 
@@ -214,6 +219,7 @@ export function EmployeeDashboardPage() {
 
   const [isLoading, setIsLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(null);
+  const [isTogglingOnline, setIsTogglingOnline] = useState(false);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
@@ -677,12 +683,24 @@ export function EmployeeDashboardPage() {
         setError(`Cannot go offline while actively working on ${activeJobRef}. Please complete or cancel the active job first.`);
         return;
       }
+      if (isTogglingOnline) return;
+
       try {
+        setIsTogglingOnline(true);
         setError('');
-        await togglePresence();
-        await loadDashboard();
+        const toggleFn = runtimeTogglePresence || authTogglePresence;
+        const res = await toggleFn();
+        setSuccessMsg(res?.is_online ? 'You are now ONLINE and ready to receive dispatches.' : 'You are now OFFLINE.');
+        setTimeout(() => setSuccessMsg(''), 3500);
+        if (res?.is_online && scanCurrentLocation) {
+          scanCurrentLocation().catch(() => {});
+        }
+        await refreshActiveJobs({ silent: true }).catch(() => {});
+        await loadDashboard().catch(() => {});
       } catch (err) {
         setError(err.message || 'Failed to toggle availability.');
+      } finally {
+        setIsTogglingOnline(false);
       }
     };
 
@@ -1039,21 +1057,47 @@ export function EmployeeDashboardPage() {
             <div className="flex items-center gap-2 flex-wrap self-end sm:self-auto">
               <button
                 type="button"
+                id="employee-dashboard-presence-toggle-btn"
                 onClick={handleToggleOnline}
-                disabled={hasActiveJob}
+                disabled={hasActiveJob || isTogglingOnline}
                 title={
                   hasActiveJob
                     ? `Locked Online: Currently active on assignment (${activeJobs[0]?.request_id || 'active job'})`
-                    : (isOnline ? 'Click to go OFFLINE' : 'Click to go ONLINE')
+                    : isTogglingOnline
+                      ? 'Updating availability status...'
+                      : (isOnline ? 'Click to switch status to OFFLINE' : 'Click to switch status to ONLINE')
                 }
-                className={`px-3.5 py-1.5 rounded text-xs font-bold transition-colors shadow-sm ${hasActiveJob
+                className={`inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded text-xs font-bold transition-all shadow-sm select-none ${
+                  hasActiveJob
                     ? 'bg-blue-50 text-blue-800 border border-blue-200 cursor-not-allowed opacity-90'
-                    : isOnline
-                      ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300'
-                      : 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                  }`}
+                    : isTogglingOnline
+                      ? 'bg-slate-200 text-slate-500 border border-slate-300 cursor-wait opacity-80'
+                      : isOnline
+                        ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 active:bg-slate-300 cursor-pointer shadow-sm'
+                        : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white cursor-pointer shadow'
+                }`}
               >
-                {hasActiveJob ? 'BUSY • ON ACTIVE JOB' : (isOnline ? 'GO OFFLINE' : 'GO ONLINE')}
+                {isTogglingOnline ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-500" />
+                    <span>UPDATING...</span>
+                  </>
+                ) : hasActiveJob ? (
+                  <>
+                    <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                    <span>BUSY • ON ACTIVE JOB</span>
+                  </>
+                ) : isOnline ? (
+                  <>
+                    <Power className="w-3.5 h-3.5 text-slate-600" />
+                    <span>GO OFFLINE</span>
+                  </>
+                ) : (
+                  <>
+                    <Power className="w-3.5 h-3.5 text-white" />
+                    <span>GO ONLINE</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

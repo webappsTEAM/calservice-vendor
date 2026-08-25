@@ -282,13 +282,15 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
 
   const handlePresenceToggle = async () => {
     if (registrationStatus !== 'approved') return;
-    if (user?.availability === 'busy') {
+    if (user?.availability === 'busy' || employeeRuntime?.hasActiveJob) {
       alert('Cannot change availability or go offline while actively working on an assigned job.');
       return;
     }
+    if (isToggling) return;
     try {
       setIsToggling(true);
-      await togglePresence();
+      const toggleFn = employeeRuntime?.togglePresence || togglePresence;
+      await toggleFn();
     } catch (err) {
       alert(err.message || 'Failed to toggle availability status');
     } finally {
@@ -360,34 +362,43 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
+                      id="topheader-presence-toggle-btn"
                       onClick={handlePresenceToggle}
                       disabled={isToggling || isBusy}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold border transition-all ${
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold border transition-all select-none ${
                         isBusy
                           ? 'bg-blue-500/20 text-blue-300 border-blue-500/40 cursor-not-allowed'
-                          : isOnline
-                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30'
-                            : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
+                          : isToggling
+                            ? 'bg-slate-800 text-slate-400 border-slate-700 cursor-wait opacity-80'
+                            : isOnline
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30 active:bg-emerald-500/40 cursor-pointer shadow-sm'
+                              : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700 hover:text-slate-200 active:bg-slate-900 cursor-pointer shadow-sm'
                       }`}
                       title={
                         isBusy
                           ? 'Locked Online: You are actively working on an assigned job (BUSY).'
-                          : isOnline
-                            ? 'You are ONLINE. Click to go OFFLINE'
-                            : 'You are OFFLINE. Click to go ONLINE'
+                          : isToggling
+                            ? 'Updating status...'
+                            : isOnline
+                              ? 'You are ONLINE. Click to go OFFLINE'
+                              : 'You are OFFLINE. Click to go ONLINE'
                       }
                     >
-                      <span
-                        className={`w-2 h-2 rounded-full ${
-                          isBusy
-                            ? 'bg-blue-400 animate-pulse'
-                            : isOnline
-                              ? 'bg-emerald-400 animate-pulse'
-                              : 'bg-slate-500'
-                        }`}
-                      />
-                      <span className="text-[11px] uppercase font-bold">
-                        {isBusy ? 'ON JOB (BUSY)' : isOnline ? 'ONLINE' : 'OFFLINE'}
+                      {isToggling ? (
+                        <Loader2 className="w-3 h-3 animate-spin text-slate-400" />
+                      ) : (
+                        <span
+                          className={`w-2 h-2 rounded-full ${
+                            isBusy
+                              ? 'bg-blue-400 animate-pulse'
+                              : isOnline
+                                ? 'bg-emerald-400 animate-pulse'
+                                : 'bg-slate-500'
+                          }`}
+                        />
+                      )}
+                      <span className="text-[11px] uppercase font-bold tracking-tight">
+                        {isBusy ? 'ON JOB (BUSY)' : isToggling ? 'UPDATING...' : isOnline ? 'ONLINE' : 'OFFLINE'}
                       </span>
                       <Power className="w-3 h-3 ml-0.5 opacity-70" />
                     </button>
