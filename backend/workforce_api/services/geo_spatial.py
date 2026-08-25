@@ -21,7 +21,7 @@ EARTH_RADIUS_METERS: float = 6371000.0
 LATITUDE_KM_APPROX: float = 111.32
 
 # Production Constants
-ADMIN_DISPATCH_RADIUS_KM: float = 20.0
+ADMIN_DISPATCH_RADIUS_KM: float = 50.0
 MAX_DISPATCH_RADIUS_KM: float = 20.0
 MAX_GPS_AGE_SECONDS: int = 120
 DISTANCE_TOLERANCE_KM: float = 0.005  # 5 meters numerical precision buffer for boundary testing
@@ -137,14 +137,14 @@ def get_spatial_bounding_box(
 
 def classify_wave(distance_km: float) -> Optional[int]:
     """
-    Authoritative sequential distance wave classifier (Phase 1):
+    Authoritative sequential distance wave classifier (Phase 1 & Phase 2):
       Wave 1: 0.0 to 1.0 km (0 <= d <= 1.0)
       Wave 2: >1.0 to 2.0 km (1.0 < d <= 2.0)
       Wave 3: >2.0 to 5.0 km (2.0 < d <= 5.0)
       Wave 4: >5.0 to 10.0 km (5.0 < d <= 10.0)
       Wave 5: >10.0 to 15.0 km (10.0 < d <= 15.0)
       Wave 6: >15.0 to 20.0 km (15.0 < d <= 20.0)
-      > 20.0 km: None (strictly outside automatic dispatch)
+      > 20.0 km: None (outside automatic dispatch boundary)
 
     Uses exact mathematical floating-point comparison without pre-rounding.
     """
@@ -191,7 +191,6 @@ def get_distance_band(distance_km: float) -> str:
 def is_within_automatic_radius(distance_km: float) -> bool:
     """
     Strictly checks if distance is within the 20.0 km automatic dispatch boundary.
-    No numerical tolerance expansion is applied to extend the business radius.
     """
     if distance_km is None:
         return False

@@ -2,9 +2,26 @@
 workforce-app/backend/service_requests/models.py
 ServiceRequest model pointing to shared Supabase table service_requests_servicerequest (managed=False).
 """
+import threading
 from django.conf import settings
 from django.db import models
 from common.models import CompanyScopedManager
+
+_dispatch_suppression = threading.local()
+
+
+class suppress_dispatch_hook:
+    """
+    Context manager to prevent nested/recursive post-commit dispatch triggers
+    when internal dispatch engine components update ServiceRequest records.
+    """
+    def __enter__(self):
+        self._prev = getattr(_dispatch_suppression, "active", False)
+        _dispatch_suppression.active = True
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        _dispatch_suppression.active = self._prev
 
 SERVICE_CATEGORIES = [
     ("hvac", "HVAC & Air Conditioning"),
@@ -287,31 +304,43 @@ class ServiceRequest(models.Model):
         return is_quotation_service(name=self.issue_title, category=self.service_category)
 
     @property
-    def is_work_job(self):
-        """Authoritative check if this ServiceRequest is an Actual Work Job converted from quotation."""
-        return str(self.request_kind).upper() == "WORK"
-
-    @property
     def pricing_mode(self):
         if self.is_estimation:
             return "QUOTATION"
         return "FIXED"
 
     def save(self, *args, **kwargs):
-        is_new = self.pk is None
+        skip_dispatch = kwargs.pop("skip_dispatch", False)
         if not self.request_id:
             self.request_id = _generate_request_id()
         super().save(*args, **kwargs)
 
-        if is_new and self.status in ["new_request", "confirmed", "draft"]:
-            try:
-                from workforce_api.services.automatic_dispatch import dispatch_job
-                dispatch_job(self)
-            except Exception as e:
+        # Post-commit dispatch trigger: fires AFTER the transaction successfully commits.
+        # This decouples dispatch from booking persistence — a dispatch failure will
+        # never roll back or raise an exception during customer booking creation.
+        # Triggers for all unassigned bookings in DISPATCHABLE_STATUSES (both new bookings and status updates).
+        # Recursion guard: Internal dispatch mutations (suppress_dispatch_hook or _skip_dispatch) will NOT re-trigger dispatch.
+        from workforce_api.services.automatic_dispatch import DISPATCHABLE_STATUSES
+        is_suppressed = getattr(_dispatch_suppression, "active", False) or getattr(self, "_skip_dispatch", False) or skip_dispatch
+        if not is_suppressed and self.status in DISPATCHABLE_STATUSES and self.assigned_employee_id is None:
+            _job_id = self.pk
+
+            def _post_commit_dispatch():
                 import logging
-                logging.getLogger("workforce.dispatch").exception(
-                    f"[AUTO_DISPATCH_TRIGGER_FAILED] Failed to trigger automatic dispatch for Job #{self.id}: {e}"
-                )
+                _log = logging.getLogger("workforce.dispatch")
+                try:
+                    from workforce_api.services.automatic_dispatch import reconcile_booking_for_dispatch
+                    from service_requests.models import ServiceRequest as _SR
+                    _job = _SR.objects.filter(pk=_job_id).first()
+                    if _job:
+                        reconcile_booking_for_dispatch(_job)
+                except Exception as _exc:
+                    _log.exception(
+                        f"[AUTO_DISPATCH_TRIGGER_FAILED] Post-commit dispatch failed for Job #{_job_id}: {_exc}"
+                    )
+
+            from django.db import transaction
+            transaction.on_commit(_post_commit_dispatch)
 
 
 

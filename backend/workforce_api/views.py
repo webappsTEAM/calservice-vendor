@@ -1299,14 +1299,7 @@ class WorkforceJobListView(APIView):
             from workforce_api.models import WorkforceJobOffer, WorkforceJobLifecycleEvent, WorkforceWorkExtension, JobPayment
             from workforce_api.services.workload import ACTIVE_QUEUE_STATUSES, WORKLOAD_OCCUPIED_STATUSES
 
-            # Lazy sweep: Mark overdue offers for this employee as EXPIRED
-            WorkforceJobOffer.objects.filter(
-                employee=emp,
-                status=WorkforceJobOffer.Status.OFFERED,
-                expires_at__lte=now,
-            ).update(status=WorkforceJobOffer.Status.EXPIRED)
-
-            # Read valid, unexpired offers exclusively for this employee (visible even if currently busy)
+            # Pure read-only: Read valid, unexpired offers exclusively for this employee (visible even if currently busy)
             offered_job_ids = list(WorkforceJobOffer.objects.filter(
                 employee=emp,
                 status=WorkforceJobOffer.Status.OFFERED,
@@ -2374,10 +2367,10 @@ class WorkforceDispatchAssignView(APIView):
 def run_automatic_dispatch(job, excluded_employee_ids=None):
     """
     Delegates to authoritative automatic dispatch service:
-    workforce_api.services.automatic_dispatch.dispatch_job
+    workforce_api.services.automatic_dispatch.reconcile_booking_for_dispatch
     """
-    from workforce_api.services.automatic_dispatch import dispatch_job
-    return dispatch_job(job, exclude_employee_ids=excluded_employee_ids)
+    from workforce_api.services.automatic_dispatch import reconcile_booking_for_dispatch
+    return reconcile_booking_for_dispatch(job, exclude_employee_ids=excluded_employee_ids)
 
 
 from workforce_api.services.workload import ACTIVE_WORKLOAD_STATUSES, supersede_other_offers_for_employee
@@ -2930,8 +2923,8 @@ class WorkforceJobTechnicianCancelView(APIView):
 
             # 7. Automatic redispatch to next eligible candidate, excluding this technician
             try:
-                from workforce_api.services.automatic_dispatch import dispatch_job
-                dispatch_job(job, exclude_employee_ids=[emp.id])
+                from workforce_api.services.automatic_dispatch import reconcile_booking_for_dispatch
+                reconcile_booking_for_dispatch(job, exclude_employee_ids=[emp.id])
             except Exception as e:
                 logger.error(f"[REDISPATCH_ERROR] Failed to auto-dispatch job #{job.id} after tech cancellation: {e}")
 
@@ -2955,14 +2948,14 @@ class WorkforceJobRejectOfferView(APIView):
         if not emp:
             return Response({"error": "Employee profile not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if not emp.company_id or not job.company_id or emp.company_id != job.company_id:
+        if job.company_id and emp.company_id and emp.company_id != job.company_id:
             return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         reason = request.data.get("reason", "Technician declined offer.").strip()
 
         from service_requests.models import EmployeeJob
         from workforce_api.models import WorkforceEventLog, WorkforceJobOffer
-        from workforce_api.services.automatic_dispatch import dispatch_job, sweep_job_expired_offers
+        from workforce_api.services.automatic_dispatch import reconcile_booking_for_dispatch, sweep_job_expired_offers
 
         with transaction.atomic():
             offer = WorkforceJobOffer.objects.select_for_update().filter(
@@ -3010,9 +3003,9 @@ class WorkforceJobRejectOfferView(APIView):
             msg = "Offer declined. Active candidates remain in current wave."
             logger.info(f"[DISPATCH_WAVE_HOLD] Job #{job.id}: Employee #{emp.id} declined, wave peers remain active.")
         else:
-            # All candidates in current wave are declined or expired -> advance to next wave!
+            # All candidates in current wave are declined or expired -> advance to next wave via canonical reconciliation!
             logger.info(f"[DISPATCH_WAVE_EXHAUSTED] Job #{job.id}: All wave candidates declined/expired. Advancing to next wave.")
-            success, msg = dispatch_job(job)
+            success, msg = reconcile_booking_for_dispatch(job)
 
         return Response({
             "message": f"Job offer declined. Dispatch status: {msg}",
@@ -4888,10 +4881,13 @@ class WorkforceLocationUpdateView(APIView):
             except Exception as e:
                 logger.error(f"[LOCATION_UPDATE_ERROR] Error evaluating Job #{job.id}: {e}", exc_info=True)
 
-        # NOTE: reconsider_jobs_for_employee is intentionally NOT called here.
-        # Automatic dispatch reconsideration is triggered by event-driven flows
-        # (job creation, explicit dispatch triggers) and the SSE stream lifecycle.
-        # Calling it on every GPS ping was a primary source of excess Supabase egress.
+        # Immediate reconciliation trigger for online technician on fresh GPS telemetry
+        if emp and emp.is_active and emp.is_online and emp.current_availability == "available":
+            try:
+                from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
+                reconsider_jobs_for_employee(emp)
+            except Exception as loc_recon_err:
+                logger.debug(f"[LOCATION_UPDATE_RECON_ERR] {loc_recon_err}")
 
         return Response({
             "message": "Live GPS coordinates updated.",
