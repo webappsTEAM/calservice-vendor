@@ -49,6 +49,10 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
   const [selectedNotifIds, setSelectedNotifIds] = useState(new Set());
   const [isClearing, setIsClearing] = useState(false);
   const [globalSearch, setGlobalSearch] = useState('');
+  const [logoutBlockedModal, setLogoutBlockedModal] = useState(false);
+  const [logoutBlockedError, setLogoutBlockedError] = useState('');
+  const [isSwitchingOffAndLoggingOut, setIsSwitchingOffAndLoggingOut] = useState(false);
+  const [presenceWarningModal, setPresenceWarningModal] = useState({ open: false, title: '', message: '' });
   const notifRef = useRef(null);
 
   const notifications = employeeRuntime ? employeeRuntime.notifications : localNotifications;
@@ -275,22 +279,67 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
   };
 
   const handleLogout = async () => {
+    setShowUserMenu(false);
+    setLogoutBlockedError('');
+    const currentlyOnline = Boolean(employeeRuntime ? employeeRuntime.isOnline : (user?.isOnline || user?.is_online));
+    if (isEmployee && currentlyOnline) {
+      setLogoutBlockedModal(true);
+      return;
+    }
 
-    await logout();
-    navigate('/workforce/login');
+    try {
+      await logout();
+      navigate('/workforce/login');
+    } catch (err) {
+      if (err.code === 'CANNOT_LOGOUT_WHILE_ONLINE' || err.message?.includes('ONLINE')) {
+        setLogoutBlockedModal(true);
+      } else {
+        setPresenceWarningModal({
+          open: true,
+          title: 'Sign Out Failed',
+          message: err.message || 'Unable to sign out at this moment. Please retry.',
+        });
+      }
+    }
+  };
+
+  const handleForceOfflineAndLogout = async () => {
+    try {
+      setIsSwitchingOffAndLoggingOut(true);
+      setLogoutBlockedError('');
+      const toggleFn = employeeRuntime?.togglePresence || togglePresence;
+      await toggleFn(false);
+      await logout({ skipOnlineCheck: true });
+      setLogoutBlockedModal(false);
+      navigate('/workforce/login');
+    } catch (err) {
+      setLogoutBlockedError(err.message || 'Failed to switch offline and sign out.');
+    } finally {
+      setIsSwitchingOffAndLoggingOut(false);
+    }
   };
 
   const handlePresenceToggle = async () => {
     if (registrationStatus !== 'approved') return;
-    if (user?.availability === 'busy') {
-      alert('Cannot change availability or go offline while actively working on an assigned job.');
+    if (user?.availability === 'busy' || employeeRuntime?.hasActiveJob) {
+      setPresenceWarningModal({
+        open: true,
+        title: 'Active Job Assignment In Progress',
+        message: 'Cannot change availability or go offline while actively working on an assigned job. Please complete or cancel your active assignment first.',
+      });
       return;
     }
+    if (isToggling) return;
     try {
       setIsToggling(true);
-      await togglePresence();
+      const toggleFn = employeeRuntime?.togglePresence || togglePresence;
+      await toggleFn();
     } catch (err) {
-      alert(err.message || 'Failed to toggle availability status');
+      setPresenceWarningModal({
+        open: true,
+        title: 'Availability Update Failed',
+        message: err.message || 'Failed to toggle availability status. Please check your network and retry.',
+      });
     } finally {
       setIsToggling(false);
     }
@@ -360,34 +409,43 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
+                      id="topheader-presence-toggle-btn"
                       onClick={handlePresenceToggle}
                       disabled={isToggling || isBusy}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold border transition-all ${
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold border transition-all select-none ${
                         isBusy
                           ? 'bg-blue-500/20 text-blue-300 border-blue-500/40 cursor-not-allowed'
-                          : isOnline
-                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30'
-                            : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
+                          : isToggling
+                            ? 'bg-slate-800 text-slate-400 border-slate-700 cursor-wait opacity-80'
+                            : isOnline
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30 active:bg-emerald-500/40 cursor-pointer shadow-sm'
+                              : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700 hover:text-slate-200 active:bg-slate-900 cursor-pointer shadow-sm'
                       }`}
                       title={
                         isBusy
                           ? 'Locked Online: You are actively working on an assigned job (BUSY).'
-                          : isOnline
-                            ? 'You are ONLINE. Click to go OFFLINE'
-                            : 'You are OFFLINE. Click to go ONLINE'
+                          : isToggling
+                            ? 'Updating status...'
+                            : isOnline
+                              ? 'You are ONLINE. Click to go OFFLINE'
+                              : 'You are OFFLINE. Click to go ONLINE'
                       }
                     >
-                      <span
-                        className={`w-2 h-2 rounded-full ${
-                          isBusy
-                            ? 'bg-blue-400 animate-pulse'
-                            : isOnline
-                              ? 'bg-emerald-400 animate-pulse'
-                              : 'bg-slate-500'
-                        }`}
-                      />
-                      <span className="text-[11px] uppercase font-bold">
-                        {isBusy ? 'ON JOB (BUSY)' : isOnline ? 'ONLINE' : 'OFFLINE'}
+                      {isToggling ? (
+                        <Loader2 className="w-3 h-3 animate-spin text-slate-400" />
+                      ) : (
+                        <span
+                          className={`w-2 h-2 rounded-full ${
+                            isBusy
+                              ? 'bg-blue-400 animate-pulse'
+                              : isOnline
+                                ? 'bg-emerald-400 animate-pulse'
+                                : 'bg-slate-500'
+                          }`}
+                        />
+                      )}
+                      <span className="text-[11px] uppercase font-bold tracking-tight">
+                        {isBusy ? 'ON JOB (BUSY)' : isToggling ? 'UPDATING...' : isOnline ? 'ONLINE' : 'OFFLINE'}
                       </span>
                       <Power className="w-3 h-3 ml-0.5 opacity-70" />
                     </button>
@@ -773,6 +831,95 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
           <p className="text-[11px] text-slate-500">
             For technical support, contact your Workforce Operations administrator.
           </p>
+        </div>
+      </Modal>
+
+      {/* ── SIGN OUT BLOCKED MODAL (WHEN ONLINE) ── */}
+      <Modal
+        isOpen={logoutBlockedModal}
+        onClose={() => setLogoutBlockedModal(false)}
+        title="Sign Out Blocked — Status is ONLINE"
+        maxWidth="max-w-md"
+      >
+        <div className="p-5 space-y-4 text-xs">
+          <div className="p-3.5 rounded-lg border border-amber-200 bg-amber-50 text-amber-900 flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-bold text-sm text-amber-950">You Are Currently ONLINE</p>
+              <p className="text-amber-800 text-[11px] leading-relaxed">
+                Workforce protocol requires technicians to be <strong>OFFLINE</strong> before signing out. This ensures dispatch systems do not assign offers to an inactive session.
+              </p>
+            </div>
+          </div>
+
+          <p className="text-slate-600 text-[11px]">
+            Please switch your status to <strong>OFFLINE</strong> first, or click below to automatically switch to OFFLINE and complete sign out.
+          </p>
+
+          {logoutBlockedError && (
+            <div className="p-2.5 rounded border border-rose-200 bg-rose-50 text-rose-700 text-xs font-semibold">
+              {logoutBlockedError}
+            </div>
+          )}
+
+          <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+            <button
+              type="button"
+              onClick={() => setLogoutBlockedModal(false)}
+              className="px-3 py-1.5 rounded text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
+            >
+              Stay Online / Cancel
+            </button>
+            <button
+              type="button"
+              id="modal-switch-offline-signout-btn"
+              disabled={isSwitchingOffAndLoggingOut}
+              onClick={handleForceOfflineAndLogout}
+              className="px-3.5 py-1.5 rounded text-xs font-bold bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+            >
+              {isSwitchingOffAndLoggingOut ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Switching Offline...</span>
+                </>
+              ) : (
+                <>
+                  <Power className="w-3.5 h-3.5" />
+                  <span>Switch to OFFLINE & Sign Out</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ── PRESENCE / AVAILABILITY WARNING MODAL ── */}
+      <Modal
+        isOpen={presenceWarningModal.open}
+        onClose={() => setPresenceWarningModal({ open: false, title: '', message: '' })}
+        title={presenceWarningModal.title || 'Availability Notification'}
+        maxWidth="max-w-md"
+      >
+        <div className="p-5 space-y-4 text-xs">
+          <div className="p-3.5 rounded-lg border border-amber-200 bg-amber-50 text-amber-900 flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-bold text-sm text-amber-950">{presenceWarningModal.title}</p>
+              <p className="text-amber-800 text-[11px] leading-relaxed">
+                {presenceWarningModal.message}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end pt-2 border-t border-slate-100">
+            <button
+              type="button"
+              onClick={() => setPresenceWarningModal({ open: false, title: '', message: '' })}
+              className="px-4 py-1.5 rounded text-xs font-semibold bg-slate-900 text-white hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              OK, Understood
+            </button>
+          </div>
         </div>
       </Modal>
     </>

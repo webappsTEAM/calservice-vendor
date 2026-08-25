@@ -137,7 +137,39 @@ export function AuthProvider({ children }) {
     return res;
   }, [refreshProfile]);
 
-  const logout = useCallback(async () => {
+  const logout = useCallback(async (options = {}) => {
+    // High-priority check: An employee cannot sign out while ONLINE
+    if (!options?.skipOnlineCheck && user?.isEmployee && (user?.isOnline || employee?.is_online)) {
+      const err = new Error('You are currently ONLINE. Please switch your status to OFFLINE before signing out.');
+      err.code = 'CANNOT_LOGOUT_WHILE_ONLINE';
+      err.status = 400;
+      throw err;
+    }
+
+    // 1. Send authenticated logout request to backend
+    try {
+      await apiWorkforceLogout();
+    } catch (err) {
+      if (err?.code === 'CANNOT_LOGOUT_WHILE_ONLINE' || err?.data?.code === 'CANNOT_LOGOUT_WHILE_ONLINE' || err?.status === 400) {
+        const errorMsg = err?.data?.error || err?.message || 'You are currently ONLINE. Please switch your status to OFFLINE before signing out.';
+        const blockErr = new Error(errorMsg);
+        blockErr.code = 'CANNOT_LOGOUT_WHILE_ONLINE';
+        blockErr.status = 400;
+        throw blockErr;
+      }
+    }
+
+    // 2. Set flash logout notification in sessionStorage for display on the login page
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem('wf_logout_notification', JSON.stringify({
+          message: 'Signed out successfully. Technician presence is OFFLINE.',
+          timestamp: Date.now(),
+        }));
+      }
+    } catch (_) {}
+
+    // 3. Clear auth tokens and state
     clearAuthTokens();
     if (typeof BroadcastChannel !== 'undefined') {
       try {
@@ -146,35 +178,38 @@ export function AuthProvider({ children }) {
         channel.close();
       } catch (_) {}
     }
-    try {
-      await apiWorkforceLogout();
-    } catch (_) {}
     setUser(null);
     setEmployee(null);
-  }, []);
+  }, [user, employee]);
 
   const togglePresence = useCallback(async (desiredOnlineState = null) => {
     try {
       const res = await apiTogglePresence(desiredOnlineState);
-      if (user) {
-        setUser(prev => ({
+      setUser(prev => {
+        if (!prev) return prev;
+        return {
           ...prev,
-          isOnline: res.is_online,
+          isOnline: Boolean(res.is_online),
+          is_online: Boolean(res.is_online),
           availability: res.availability,
-        }));
-      }
-      if (employee) {
-        setEmployee(prev => ({
-          ...prev,
-          is_online: res.is_online,
           live_availability: res.availability,
-        }));
-      }
+        };
+      });
+      setEmployee(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          isOnline: Boolean(res.is_online),
+          is_online: Boolean(res.is_online),
+          availability: res.availability,
+          live_availability: res.availability,
+        };
+      });
       return res;
     } catch (e) {
       throw e;
     }
-  }, [user, employee]);
+  }, []);
 
   // Cross-tab Session Sync using BroadcastChannel
   useEffect(() => {

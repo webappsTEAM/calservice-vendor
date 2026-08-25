@@ -396,7 +396,57 @@ class LogoutView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        response = Response({"message": "Logged out successfully."}, status=status.HTTP_200_OK)
+        user = request.user
+        emp = getattr(user, "employee_profile", None) if (user and user.is_authenticated) else None
+
+        # Requirement: When technician is ONLINE, prevent sign-out and notify user to go OFFLINE first
+        if emp and emp.is_online:
+            return Response(
+                {
+                    "error": "You are currently ONLINE. Please switch your status to OFFLINE before signing out.",
+                    "code": "CANNOT_LOGOUT_WHILE_ONLINE",
+                    "is_online": True,
+                    "availability": emp.current_availability,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if emp:
+            try:
+                from django.utils import timezone
+                from employees.models import PresenceLog
+                from workforce_api.services.workload import reconcile_employee_availability
+
+                now = timezone.now()
+                emp.last_logout_at = now
+                emp.save(update_fields=["last_logout_at", "updated_at"])
+                reconcile_employee_availability(emp)
+
+                try:
+                    open_log = PresenceLog.objects.filter(employee=emp, logout_at__isnull=True).order_by("-id").first()
+                    if open_log:
+                        open_log.logout_at = now
+                        if open_log.login_at:
+                            open_log.duration_seconds = max(0, int((now - open_log.login_at).total_seconds()))
+                        open_log.save()
+                    else:
+                        PresenceLog.objects.create(
+                            employee=emp,
+                            company=emp.company,
+                            logout_at=now,
+                        )
+                except Exception:
+                    pass
+
+                logger.info(f"[LOGOUT_PRESENCE] Employee #{emp.id} ({user.username}) signed out while OFFLINE.")
+            except Exception as e:
+                logger.error(f"[LOGOUT_PRESENCE_ERR] Failed to log employee logout: {e}")
+
+        response = Response({
+            "message": "Logged out successfully.",
+            "is_online": False,
+            "availability": "offline",
+        }, status=status.HTTP_200_OK)
         response.delete_cookie("qt_access")
         response.delete_cookie("qt_refresh")
         return response

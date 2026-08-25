@@ -1,4 +1,4 @@
-﻿/**
+/**
  * useRealtimeStream.js
  * Hardened SSE (Server-Sent Events) hook with:
  * 1. Generation-tracked connection lifecycle (immune to React rerenders and StrictMode replay)
@@ -132,8 +132,8 @@ export function useRealtimeStream({ enabled = true, onEvent = null, onReconcile 
                 reconnectTimerRef.current = setTimeout(() => { if (isMountedRef.current && enabled) connect(); }, delay);
                 isConnectingRef.current = false; return;
               }
-              console.warn('[Realtime SESSION EXPIRED] Refresh token rejected (401). Stopping realtime.');
-              setConnectionState(SSE_STATE.DISCONNECTED); clearAuthTokens(); isConnectingRef.current = false;
+              console.warn('[Realtime SESSION PAUSED] Token refresh deferred. Pausing realtime stream.');
+              setConnectionState(SSE_STATE.DISCONNECTED); isConnectingRef.current = false;
               if (onAuthFailureRef.current) onAuthFailureRef.current(); return;
             }
           } catch (refErr) {
@@ -144,8 +144,8 @@ export function useRealtimeStream({ enabled = true, onEvent = null, onReconcile 
               reconnectTimerRef.current = setTimeout(() => { if (isMountedRef.current && enabled) connect(); }, delay);
               isConnectingRef.current = false; return;
             }
-            console.warn('[Realtime SESSION EXPIRED] Error refreshing token:', refErr);
-            setConnectionState(SSE_STATE.DISCONNECTED); clearAuthTokens(); isConnectingRef.current = false;
+            console.warn('[Realtime SESSION PAUSED] Token refresh exception:', refErr);
+            setConnectionState(SSE_STATE.DISCONNECTED); isConnectingRef.current = false;
             if (onAuthFailureRef.current) onAuthFailureRef.current(); return;
           }
         }
@@ -204,8 +204,8 @@ export function useRealtimeStream({ enabled = true, onEvent = null, onReconcile 
                 console.warn(`[Realtime SSE] Token refresh hit 503 DB shortage. Retrying in ${delay}ms...`);
                 reconnectTimerRef.current = setTimeout(() => { if (isMountedRef.current && enabled) connect(); }, delay); return;
               }
-              console.warn('[Realtime SESSION EXPIRED] Refresh token expired or rejected (401). Stopping retries.');
-              setConnectionState(SSE_STATE.DISCONNECTED); clearAuthTokens(); if (onAuthFailureRef.current) onAuthFailureRef.current(); return;
+              console.warn('[Realtime SESSION PAUSED] Token refresh deferred. Pausing realtime stream.');
+              setConnectionState(SSE_STATE.DISCONNECTED); if (onAuthFailureRef.current) onAuthFailureRef.current(); return;
             }
           } catch (_) {
             isRefreshingAuthRef.current = false;
@@ -213,8 +213,8 @@ export function useRealtimeStream({ enabled = true, onEvent = null, onReconcile 
               failureCountRef.current += 1; const delay = getBackoffDelay(failureCountRef.current);
               reconnectTimerRef.current = setTimeout(() => { if (isMountedRef.current && enabled) connect(); }, delay); return;
             }
-            console.warn('[Realtime SESSION EXPIRED] Exception during token refresh.');
-            setConnectionState(SSE_STATE.DISCONNECTED); clearAuthTokens(); if (onAuthFailureRef.current) onAuthFailureRef.current(); return;
+            console.warn('[Realtime SESSION PAUSED] Exception during token refresh.');
+            setConnectionState(SSE_STATE.DISCONNECTED); if (onAuthFailureRef.current) onAuthFailureRef.current(); return;
           }
         }
       };
