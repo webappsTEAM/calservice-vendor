@@ -79,7 +79,9 @@ import {
   Star,
   Download,
   ExternalLink,
+  Calculator,
 } from 'lucide-react';
+import QuotationBuilderModal from '../../components/estimates/QuotationBuilderModal.jsx';
 
 /**
  * Real-time Countdown Badge for Offer Expiration & 5-Minute Cancellation Window
@@ -128,7 +130,7 @@ function CountdownBadge({ targetTime, serverTimeOffset = 0, prefix = '', expired
 }
 
 export function EmployeeDashboardPage() {
-  const { user, employee, togglePresence, logout, isAuthenticated } = useAuth();
+  const { user, employee, togglePresence, refreshProfile, logout, isAuthenticated } = useAuth();
   const {
     activeJobs,
     completedJobs,
@@ -267,6 +269,7 @@ export function EmployeeDashboardPage() {
     is_complete: false,
   });
   const [otpInput, setOtpInput] = useState('');
+  const [isQuotationModalOpen, setIsQuotationModalOpen] = useState(false);
 
   // ── Automatic Geofence Arrival Event Listener (Telemetry handled by EmployeeRuntimeProvider) ──
   useEffect(() => {
@@ -342,6 +345,7 @@ export function EmployeeDashboardPage() {
     }
     let isCancelled = false;
     const interval = setInterval(async () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       try {
         const res = await apiGetPreServiceStatus(selectedJob.id);
         if (!isCancelled && res?.geofence_passed) {
@@ -729,7 +733,17 @@ export function EmployeeDashboardPage() {
           setCashAmountReceived(String(finishedJob.payment?.amount_due || finishedJob.total_amount || ''));
           setSuccessMsg('After-service proof submitted! Please collect customer payment.');
         } else {
+          setSelectedJob(null);
           setSuccessMsg('After-service proof submitted! Job is COMPLETED.');
+          if (typeof refreshActiveJobs === 'function') {
+            await refreshActiveJobs({ force: true });
+          }
+          if (typeof refreshCompletedJobs === 'function') {
+            await refreshCompletedJobs({ silent: true });
+          }
+          if (typeof refreshProfile === 'function') {
+            refreshProfile(true);
+          }
         }
         await loadDashboard();
         setTimeout(() => setSuccessMsg(''), 5000);
@@ -751,40 +765,19 @@ export function EmployeeDashboardPage() {
         setError('');
         const res = await apiCollectJobCash(targetJob.id, amtDue);
 
-        // Optimistically & authoritatively synchronize selectedJob and allJobs
-        const updatedStatus = res.job_status || 'completed';
-        const updatedPaymentStatus = res.payment_status ? res.payment_status.toLowerCase() : 'paid';
-
-        setSelectedJob(prev => (prev && prev.id === targetJob.id ? {
-          ...prev,
-          status: updatedStatus,
-          payment_status: updatedPaymentStatus,
-          payment: {
-            ...(prev.payment || {}),
-            payment_status: 'PAID',
-            amount_paid: String(amtDue),
-            amount_due: String(amtDue),
-            cash_collected_at: new Date().toISOString(),
-          }
-        } : prev));
-
-        setAllJobs(prev => prev.map(j => j.id === targetJob.id ? {
-          ...j,
-          status: updatedStatus,
-          payment_status: updatedPaymentStatus,
-          payment: {
-            ...(j.payment || {}),
-            payment_status: 'PAID',
-            amount_paid: String(amtDue),
-          }
-        } : j));
-
+        setSelectedJob(null);
         setCashModalJob(null);
         setCashAmountReceived('');
         setSuccessMsg(res.message || 'Cash payment collected and confirmed! Job is COMPLETED.');
 
         if (typeof refreshActiveJobs === 'function') {
-          refreshActiveJobs({ force: true });
+          await refreshActiveJobs({ force: true });
+        }
+        if (typeof refreshCompletedJobs === 'function') {
+          await refreshCompletedJobs({ silent: true });
+        }
+        if (typeof refreshProfile === 'function') {
+          refreshProfile(true);
         }
         await loadDashboard();
         setTimeout(() => setSuccessMsg(''), 4000);
@@ -2228,9 +2221,17 @@ export function EmployeeDashboardPage() {
                       >
                         {/* Top: Job Ref + Live Status Badge */}
                         <div className="flex items-center justify-between text-[11px] mb-1">
-                          <span className="font-mono font-bold text-blue-600">
-                            {job.request_id || `SR-${job.id}`}
-                          </span>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-mono font-bold text-blue-600">
+                              {job.request_id || `SR-${job.id}`}
+                            </span>
+                            {(job.is_estimation || job.pricing_mode === 'QUOTATION') && (
+                              <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-800 flex items-center gap-1">
+                                <Calculator className="w-2.5 h-2.5" />
+                                <span>ESTIMATION REQUIRED</span>
+                              </span>
+                            )}
+                          </div>
                           <StatusBadge status={presentation?.badgeStatus} label={presentation?.badgeLabel} size="xs" />
                         </div>
 
@@ -2738,15 +2739,61 @@ export function EmployeeDashboardPage() {
                                   Pre-Service Verification Complete!
                                 </h4>
                                 <p className="text-[10px] text-emerald-700 mt-0.5">
-                                  All arrival, OTP, and presence identity verified. Starting work automatically...
+                                  {(selectedJob.is_estimation || selectedJob.pricing_mode === 'QUOTATION')
+                                    ? 'On-site presence & identity verified. You may now perform measurements and draft the quotation.'
+                                    : 'All arrival, OTP, and presence identity verified. Starting work automatically...'}
                                 </p>
                               </div>
                               <div className="px-3 py-1.5 bg-emerald-100 border border-emerald-300 text-emerald-800 font-bold rounded text-xs flex items-center gap-1.5 shrink-0 justify-center">
                                 <span className="w-2 h-2 rounded-full bg-emerald-600 animate-ping" />
-                                <span>{actionLoading === selectedJob.id ? 'Clocking In...' : 'Auto Clock-In Active'}</span>
+                                <span>{(selectedJob.is_estimation || selectedJob.pricing_mode === 'QUOTATION') ? 'Inspection Active' : actionLoading === selectedJob.id ? 'Clocking In...' : 'Auto Clock-In Active'}</span>
                               </div>
                             </div>
                           ) : null}
+
+                          {/* ── COMMERCIAL ESTIMATION & QUOTATION WORKFLOW CARD ── */}
+                          {(selectedJob.is_estimation || selectedJob.pricing_mode === 'QUOTATION') && (
+                            <div className="p-4 bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/60 rounded-xl space-y-3">
+                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                <div className="flex items-start gap-2.5">
+                                  <div className="p-2 rounded-lg bg-indigo-600 text-white shrink-0 mt-0.5 shadow-sm">
+                                    <Calculator className="w-4 h-4" />
+                                  </div>
+                                  <div>
+                                    <div className="flex items-center gap-2">
+                                      <h4 className="text-xs font-bold text-indigo-950 dark:text-indigo-200">
+                                        Commercial Quotation Workflow
+                                      </h4>
+                                      {selectedJob.active_quote_number && (
+                                        <span className="text-[10px] font-mono font-bold bg-indigo-100 dark:bg-indigo-900 text-indigo-800 dark:text-indigo-300 px-2 py-0.5 rounded">
+                                          {selectedJob.active_quote_number}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-[11px] text-indigo-700 dark:text-indigo-300 mt-0.5">
+                                      {preServiceState.is_complete || selectedJob.can_create_quote
+                                        ? 'Site inspection unlocked. Record dimensions, select rate-card items, and deliver formal quote to customer.'
+                                        : 'Complete Step 1 Arrival and Step 2 OTP/Selfie verification above to unlock Quotation Builder.'}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => setIsQuotationModalOpen(true)}
+                                  disabled={!preServiceState.is_complete && !selectedJob.can_create_quote}
+                                  className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm shrink-0 ${
+                                    preServiceState.is_complete || selectedJob.can_create_quote
+                                      ? 'bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer hover:shadow-indigo-500/20'
+                                      : 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
+                                  }`}
+                                >
+                                  <Calculator className="w-3.5 h-3.5" />
+                                  <span>{selectedJob.active_quote_number ? 'Open Quotation Builder' : 'Draft Quotation'}</span>
+                                </button>
+                              </div>
+                            </div>
+                          )}
                         </div>
 
                       )}
@@ -2949,14 +2996,14 @@ export function EmployeeDashboardPage() {
                               </span>
                             </div>
                           ) : (
-                            (selectedJob.payment?.payment_status === 'PAID' || selectedJob.payment_status === 'paid' || selectedJob.payment_status === 'collected') ? (
+                            (selectedJob.payment?.payment_status === 'PAID' || selectedJob.payment_status === 'paid' || selectedJob.payment_status === 'collected' || selectedJob.payment?.payment_status === 'CASH_PENDING' || selectedJob.payment_status === 'cash_pending') ? (
                               <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between">
                                 <div className="flex items-center gap-2">
                                   <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                                   <div>
                                     <span className="text-xs font-bold text-emerald-900">Cash Payment Confirmed & Collected</span>
                                     <p className="text-[11px] text-emerald-700">
-                                      Amount: <strong className="font-mono">₹{selectedJob.payment?.amount_paid || selectedJob.payment?.amount_due || selectedJob.total_amount}</strong> • Received by Technician
+                                      Amount: <strong className="font-mono">₹{selectedJob.payment?.amount_paid || selectedJob.payment?.amount_received || selectedJob.payment?.amount_due || selectedJob.total_amount}</strong> • Received by Technician
                                     </p>
                                   </div>
                                 </div>
@@ -3723,6 +3770,19 @@ export function EmployeeDashboardPage() {
             }
           }}
         />
+
+        {/* Estimation & Commercial Quotation Builder Modal */}
+        {isQuotationModalOpen && selectedJob && (
+          <QuotationBuilderModal
+            job={selectedJob}
+            quoteId={selectedJob.active_quote_id}
+            isOpen={isQuotationModalOpen}
+            onClose={() => setIsQuotationModalOpen(false)}
+            onQuoteSaved={() => {
+              loadDashboard({ silent: true });
+            }}
+          />
+        )}
       </div>
     </AppShell >
   );

@@ -57,6 +57,7 @@ export function CustomerTrackingPage() {
     fetchTracking(false);
     if (!isTerminal) {
       pollTimerRef.current = setInterval(() => {
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
         fetchTracking(true);
       }, 5000);
     }

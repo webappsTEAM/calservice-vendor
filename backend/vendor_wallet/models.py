@@ -14,6 +14,7 @@ Withdrawal rules (self-service, no admin approval):
   - Available balance ≥ INR 5,000 (MIN_WITHDRAWAL_AMOUNT constant)
 """
 from decimal import Decimal
+import django
 
 from django.db import models
 from django.utils import timezone
@@ -87,9 +88,13 @@ class EmployeeCommissionConfig(models.Model):
         ]
         constraints = [
             models.CheckConstraint(
-                check=models.Q(employee_earn_rate__gte=Decimal("0.0000"))
-                    & models.Q(employee_earn_rate__lte=Decimal("1.0000")),
-                name="ecc_valid_earn_rate",
+                **{
+                    ("condition" if django.VERSION >= (6, 0) else "check"): (
+                        models.Q(employee_earn_rate__gte=Decimal("0.0000"))
+                        & models.Q(employee_earn_rate__lte=Decimal("1.0000"))
+                    ),
+                    "name": "ecc_valid_earn_rate",
+                }
             ),
         ]
 

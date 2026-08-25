@@ -70,8 +70,10 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name="workforcejoboffer",
             constraint=models.CheckConstraint(
-                check=models.Q(("wave_number__gte", 1), ("wave_number__lte", 6)),
-                name="valid_wave_number_1_to_6",
+                **{
+                    ("condition" if getattr(django, "VERSION", (5, 0)) >= (6, 0) else "check"): models.Q(("wave_number__gte", 1), ("wave_number__lte", 6)),
+                    "name": "valid_wave_number_1_to_6",
+                }
             ),
         ),
         migrations.AddConstraint(

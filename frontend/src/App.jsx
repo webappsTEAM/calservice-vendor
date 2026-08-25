@@ -43,6 +43,7 @@ import { AdminJobsPage } from './pages/admin/AdminJobsPage.jsx';
 import { AdminOperationsPage } from './pages/admin/AdminOperationsPage.jsx';
 import { AdminReportsPage } from './pages/admin/AdminReportsPage.jsx';
 import { AdminSkillsPage } from './pages/admin/AdminSkillsPage.jsx';
+import { AdminDatabaseMonitoringPage } from './pages/admin/AdminDatabaseMonitoringPage.jsx';
 import { CustomerTrackingPage } from './pages/customer/CustomerTrackingPage.jsx';
 
 // Employee Wallet Pages
@@ -50,6 +51,9 @@ import { EmployeeWalletDashboardPage } from './pages/employee/wallet/EmployeeWal
 import { EmployeeWalletTransactionsPage } from './pages/employee/wallet/EmployeeWalletTransactionsPage.jsx';
 import { EmployeeWalletWithdrawalsPage } from './pages/employee/wallet/EmployeeWalletWithdrawalsPage.jsx';
 import { EmployeePayoutAccountsPage } from './pages/employee/wallet/EmployeePayoutAccountsPage.jsx';
+
+// Employee Estimates & Quotations
+import EmployeeEstimatesPage from './pages/employee/estimates/EmployeeEstimatesPage.jsx';
 
 // Admin Wallet Pages
 import { WalletDashboardPage } from './pages/admin/wallet/WalletDashboardPage.jsx';
@@ -160,6 +164,8 @@ export function App() {
             <Route index element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="dashboard" element={<EmployeeDashboardPage />} />
             <Route path="jobs" element={<EmployeeDashboardPage />} />
+            <Route path="estimates" element={<EmployeeEstimatesPage />} />
+            <Route path="estimates/:id" element={<EmployeeEstimatesPage />} />
             <Route path="schedule" element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="attendance" element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="leave" element={<Navigate to="/workforce/employee/dashboard" replace />} />
@@ -266,6 +272,22 @@ export function App() {
             element={
               <AdminRoute>
                 <AdminReportsPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/monitoring/database-egress"
+            element={
+              <AdminRoute>
+                <AdminDatabaseMonitoringPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/database-monitoring"
+            element={
+              <AdminRoute>
+                <AdminDatabaseMonitoringPage />
               </AdminRoute>
             }
           />

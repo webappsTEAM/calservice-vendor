@@ -5,7 +5,6 @@ import {
   apiWorkforceLogin,
   apiWorkforceSignup,
   apiWorkforceLogout,
-  apiGetOnboardingProfile,
   apiTogglePresence,
 } from '../api/workforceService.js';
 import {
@@ -34,22 +33,13 @@ export function AuthProvider({ children }) {
           return null;
         }
 
+        // Single API call: /auth/me/ now returns presence, availability, and
+        // last_known_location inline — no separate sequential onboarding profile call needed.
         const me = await apiFetchMe();
 
         if (me && me.username) {
           const isAdmin = ['admin', 'manager'].includes((me.role || '').toLowerCase()) || Boolean(me.is_superuser);
-          let empData = null;
-
-          if (!isAdmin) {
-            try {
-              empData = await apiGetOnboardingProfile();
-            } catch (_) {
-              // Non-admin user without onboarding record
-            }
-          }
-
-          const isEmployee = Boolean(empData) || (me.role || '').toLowerCase() === 'employee';
-          const computedRole = isAdmin ? (me.role || 'admin').toLowerCase() : (isEmployee ? 'employee' : (me.role || 'employee').toLowerCase());
+          const isEmployee = !isAdmin && (me.role || '').toLowerCase() === 'employee';
 
           const u = {
             id: me.id,
@@ -57,18 +47,20 @@ export function AuthProvider({ children }) {
             email: me.email || '',
             firstName: me.first_name || '',
             lastName: me.last_name || '',
-            role: computedRole,
+            role: isAdmin ? (me.role || 'admin').toLowerCase() : 'employee',
             companyId: me.company,
             companyName: me.company_name || '',
             isAdmin: isAdmin,
-            isEmployee: isEmployee,
-            registrationStatus: empData ? (empData.registration_status || 'not_started') : (isAdmin ? 'approved' : 'not_started'),
-            isOnline: empData ? Boolean(empData.is_online) : false,
-            availability: empData ? (empData.live_availability || 'offline') : 'offline',
+            isEmployee: isEmployee || !isAdmin,
+            registrationStatus: me.registration_status || (isAdmin ? 'approved' : 'not_started'),
+            isOnline: Boolean(me.is_online),
+            availability: me.live_availability || 'offline',
+            last_known_location: me.last_known_location || null,
           };
 
           setUser(u);
-          setEmployee(empData);
+          // Keep employee state for pages that still read it directly
+          setEmployee(me.employee_id ? { is_online: me.is_online, live_availability: me.live_availability } : null);
           return u;
         } else {
           clearAuthTokens();

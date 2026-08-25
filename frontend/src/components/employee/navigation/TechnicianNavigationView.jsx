@@ -25,11 +25,12 @@ export function TechnicianNavigationView({
   onLocationReport,
   onExitNavigation,
 }) {
-  const status = job?.status;
+  const status = (job?.status || job?.job_status || '').toLowerCase();
 
   switch (status) {
     case 'accepted':
     case 'on_the_way':
+    case 'en_route':
       return (
         <TechnicianFirstPersonNavView
           job={job}

@@ -32,6 +32,7 @@ import {
   computeGpsState,
   haversineMetres,
   MAX_GEOFENCE_ACCURACY_METERS,
+  classifyAccuracy,
 } from '../hooks/useGPSPosition.js';
 import { useRealtimeStream } from '../hooks/useRealtimeStream.js';
 
@@ -98,10 +99,14 @@ export function EmployeeRuntimeProvider({ children }) {
   const hasActiveJob = useMemo(() => {
     return activeJobs.some((j) => {
       const st = (j.status || j.job_status || '').toLowerCase();
-      const isAssigned = Boolean(j.is_assigned_to_current_employee || j.assigned_employee_id === user?.id);
+      const isAssigned = Boolean(
+        j.is_assigned_to_current_employee ||
+        j.assigned_employee_id === user?.employee_id ||
+        j.assigned_employee_id === user?.id
+      );
       return isAssigned && ACTIVE_QUEUE_STATUSES.includes(st);
     });
-  }, [activeJobs, user?.id]);
+  }, [activeJobs, user?.id, user?.employee_id]);
 
   const incomingOffers = useMemo(() => {
     const currentNow = Date.now() + (serverTimeOffset || 0);
@@ -227,15 +232,31 @@ export function EmployeeRuntimeProvider({ children }) {
             const currentOffer = validOffers[0] || null;
 
             setSelectedJob((prev) => {
+              const findActiveJob = () =>
+                jobsData.find((j) => {
+                  const st = (j.status || j.job_status || '').toLowerCase();
+                  const isAssigned = Boolean(
+                    j.is_assigned_to_current_employee ||
+                    j.assigned_employee_id === user?.employee_id ||
+                    j.assigned_employee_id === user?.id
+                  );
+                  return isAssigned && ACTIVE_QUEUE_STATUSES.includes(st);
+                });
+
               if (!prev) {
                 if (currentOffer) return currentOffer;
-                const active = jobsData.find((j) =>
-                  ACTIVE_QUEUE_STATUSES.includes((j.status || j.job_status || '').toLowerCase())
-                );
-                return active || jobsData[0] || null;
+                return findActiveJob() || jobsData[0] || null;
               }
               const updated = jobsData.find((j) => j.id === prev.id);
-              return updated || prev;
+              if (updated) {
+                const st = (updated.status || updated.job_status || '').toLowerCase();
+                if (ACTIVE_QUEUE_STATUSES.includes(st)) {
+                  return updated;
+                }
+              }
+              // If prev was completed or removed from active queue, pick next active job or offer or null
+              if (currentOffer) return currentOffer;
+              return findActiveJob() || jobsData[0] || null;
             });
             return jobsData;
           }
@@ -423,38 +444,45 @@ export function EmployeeRuntimeProvider({ children }) {
 
   const isUpdatingLocationRef = useRef(false);
 
-  const handlePositionChange = useCallback(async (payload) => {
+  const handlePositionChange = useCallback(async (localPayload, backendPayload) => {
+    if (!localPayload) return;
+
+    // ── PIPELINE A: Immediate Local Navigation & UI (Zero Delay, No Network) ──
     const newLoc = {
-      latitude: payload.latitude,
-      longitude: payload.longitude,
-      accuracy: payload.accuracy,
-      speed: payload.speed,
-      heading: payload.heading,
-      timestamp: payload.timestamp || Date.now(),
-      captured_at: payload.captured_at || new Date().toISOString(),
+      latitude: localPayload.latitude,
+      longitude: localPayload.longitude,
+      accuracy: localPayload.accuracy,
+      speed: localPayload.speed,
+      heading: localPayload.heading,
+      timestamp: localPayload.timestamp || Date.now(),
+      captured_at: localPayload.captured_at || new Date().toISOString(),
     };
     setLiveLocation(newLoc);
     setPresenceState('ONLINE_GPS_LIVE');
-    setGpsState(payload.is_geofence_ready ? GPS_STATE.GEOFENCE_READY : GPS_STATE.LIVE);
+    setGpsState(localPayload.is_geofence_ready ? GPS_STATE.GEOFENCE_READY : GPS_STATE.LIVE);
 
+    // Dispatch local UI event immediately so navigation map responds with zero latency
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('workforce:location-updated', {
+          detail: { ...newLoc, source: 'session_watcher' },
+        })
+      );
+    }
+
+    // ── PIPELINE B: Backend Telemetry Persistence (Throttled, Asynchronous, Non-Blocking) ──
+    if (!backendPayload) return;
     if (isUpdatingLocationRef.current) return;
     isUpdatingLocationRef.current = true;
     try {
       await apiUpdateLocationFull(
-        payload.latitude,
-        payload.longitude,
-        payload.accuracy,
-        payload.speed,
-        payload.heading,
-        payload.captured_at
+        backendPayload.latitude,
+        backendPayload.longitude,
+        backendPayload.accuracy,
+        backendPayload.speed,
+        backendPayload.heading,
+        backendPayload.captured_at
       );
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(
-          new CustomEvent('workforce:location-updated', {
-            detail: { ...newLoc, source: 'session_watcher' },
-          })
-        );
-      }
     } catch (_) {
     } finally {
       isUpdatingLocationRef.current = false;
@@ -462,17 +490,60 @@ export function EmployeeRuntimeProvider({ children }) {
   }, []);
 
   const handleLocationError = useCallback((err) => {
-    console.warn('[EmployeeRuntime] Location tracker warning:', err);
-    setPresenceState((prev) => (prev === 'OFFLINE' ? 'OFFLINE' : 'ONLINE_LOCATION_PENDING'));
-    const state = computeGpsState(null, 0, true, err);
-    setGpsState(state);
+    if (err?.code === 1) {
+      setGpsState(GPS_STATE.DENIED);
+      setPresenceState('ONLINE_GPS_ERROR');
+    } else {
+      setGpsState(GPS_STATE.TIMEOUT);
+      setPresenceState('ONLINE_GPS_ERROR');
+    }
   }, []);
 
-  // Mount single continuous GPS watcher for online authenticated employee
+  const isNavigating = useMemo(() => {
+    if (!selectedJob) return false;
+    const st = (selectedJob.status || selectedJob.job_status || '').toLowerCase();
+    return ['accepted', 'on_the_way', 'en_route'].includes(st);
+  }, [selectedJob]);
+
+  // Dynamic movement status
+  const movementStatus = useMemo(() => {
+    if (!liveLocation) return 'UNKNOWN';
+    if (liveLocation.speed != null && liveLocation.speed >= 1.2) return 'MOVING';
+    if (liveLocation.speed != null && liveLocation.speed < 0.4) return 'STATIONARY';
+    return 'UNKNOWN';
+  }, [liveLocation]);
+
+  // Dynamic freshness state
+  const freshnessState = useMemo(() => {
+    if (!liveLocation?.captured_at) return 'LOCATION_LOST';
+    const ageSeconds = (Date.now() - new Date(liveLocation.captured_at).getTime()) / 1000;
+    if (ageSeconds <= 5) return 'LIVE';
+    if (ageSeconds <= 15) return 'UPDATING';
+    if (ageSeconds <= 30) return 'DELAYED';
+    if (ageSeconds <= 60) return 'STALE';
+    return 'LOCATION_LOST';
+  }, [liveLocation]);
+
+  // Dynamic geofence status relative to selected job
+  const geofenceStatus = useMemo(() => {
+    if (!selectedJob || !liveLocation?.latitude || !liveLocation?.longitude) return 'OUTSIDE';
+    const custLat = Number(selectedJob.latitude);
+    const custLng = Number(selectedJob.longitude);
+    if (isNaN(custLat) || isNaN(custLng)) return 'OUTSIDE';
+    const distM = haversineMetres(liveLocation.latitude, liveLocation.longitude, custLat, custLng);
+    const st = (selectedJob.status || selectedJob.job_status || '').toLowerCase();
+    if (st === 'arrived' || distM <= 250) return 'ARRIVED';
+    if (distM <= 500) return 'ARRIVING';
+    if (distM <= 1000) return 'APPROACHING';
+    return 'OUTSIDE';
+  }, [selectedJob, liveLocation]);
+
+  // Mount single continuous GPS watcher for online authenticated employee (with adaptive transmission mode)
   useLocationTracker(
     Boolean(isAuthenticated && isApprovedEmployee && isOnline),
     handlePositionChange,
-    handleLocationError
+    handleLocationError,
+    { isNavigating }
   );
 
   const scanCurrentLocation = useCallback(async () => {
@@ -555,15 +626,36 @@ export function EmployeeRuntimeProvider({ children }) {
 
       const promise = (async () => {
         try {
-          const loc = liveLocation || (await scanCurrentLocation());
-          const res = await apiClockIn({
-            lat: loc.latitude,
-            lon: loc.longitude,
-            accuracy: loc.accuracy,
-            timestamp: loc.timestamp || Date.now(),
+          let loc = liveLocation;
+          if (!loc?.latitude || !loc?.longitude) {
+            try {
+              loc = await scanCurrentLocation();
+            } catch (_e) {
+              console.warn('[EmployeeRuntime] scanCurrentLocation error during autoClockIn:', _e);
+            }
+          }
+          if (!loc?.latitude || !loc?.longitude) {
+            if (user?.last_known_location?.latitude && user?.last_known_location?.longitude) {
+              loc = {
+                latitude: Number(user.last_known_location.latitude),
+                longitude: Number(user.last_known_location.longitude),
+                accuracy: user.last_known_location.accuracy || 10,
+              };
+            }
+          }
+
+          const payload = {
             address: options.address || 'GPS Verified Site Arrival',
             job_id: jobId,
-          });
+          };
+          if (loc?.latitude && loc?.longitude) {
+            payload.lat = loc.latitude;
+            payload.lon = loc.longitude;
+            payload.accuracy = loc.accuracy || 10;
+            payload.timestamp = loc.timestamp || Date.now();
+          }
+
+          const res = await apiClockIn(payload);
           await refreshActiveJobs({ force: true });
           return res;
         } finally {
@@ -574,7 +666,7 @@ export function EmployeeRuntimeProvider({ children }) {
       inFlightClockInRef.current = promise;
       return promise;
     },
-    [liveLocation, scanCurrentLocation, refreshActiveJobs]
+    [liveLocation, user?.last_known_location, scanCurrentLocation, refreshActiveJobs]
   );
 
   // ── 10. Explicit Clock-In Readiness State Engine ───────────────────────────
@@ -739,7 +831,7 @@ export function EmployeeRuntimeProvider({ children }) {
       serverTimeOffset,
       getServerTimeNow: () => Date.now() + (serverTimeOffset || 0),
 
-      // Location & Presence State Machine
+      // Location & Presence Canonical Runtime Telemetry Object
       presenceState,
       gpsState,
       isOnline,
@@ -748,6 +840,18 @@ export function EmployeeRuntimeProvider({ children }) {
       isLocationPending,
       dispatchReady: isOnline && isGpsLive,
       liveLocation,
+      latitude: liveLocation?.latitude ?? null,
+      longitude: liveLocation?.longitude ?? null,
+      accuracy: liveLocation?.accuracy ?? null,
+      accuracyTier: liveLocation?.accuracy_tier || classifyAccuracy(liveLocation?.accuracy),
+      speed: liveLocation?.speed ?? null,
+      heading: liveLocation?.heading ?? null,
+      capturedAt: liveLocation?.captured_at ?? null,
+      receivedAt: liveLocation?.timestamp ? new Date(liveLocation.timestamp).toISOString() : null,
+      serverTime: Date.now() + (serverTimeOffset || 0),
+      movementStatus,
+      freshnessState,
+      geofenceStatus,
       locationState: isGpsGeofenceReady ? 'ready' : isGpsLive ? 'live' : isLocationPending ? 'locating' : 'idle',
       scanCurrentLocation,
       togglePresence: togglePresenceFast,
@@ -778,6 +882,7 @@ export function EmployeeRuntimeProvider({ children }) {
       jobsError,
       refreshActiveJobs,
       refreshCompletedJobs,
+      serverTimeOffset,
       presenceState,
       gpsState,
       isOnline,
@@ -785,6 +890,9 @@ export function EmployeeRuntimeProvider({ children }) {
       isGpsGeofenceReady,
       isLocationPending,
       liveLocation,
+      movementStatus,
+      freshnessState,
+      geofenceStatus,
       scanCurrentLocation,
       togglePresenceFast,
       autoClockIn,

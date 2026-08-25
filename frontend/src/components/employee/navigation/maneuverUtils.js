@@ -294,3 +294,16 @@ export function getUpcomingManeuverPreview(steps = [], activeIndex = 0) {
     fullPreview: `Then ${nextStep.instruction}`,
   };
 }
+
+/**
+ * Dynamically computes the total remaining road distance across all upcoming steps.
+ */
+export function computeRemainingRoadDistanceMeters(steps = [], activeStepIndex = 0, distanceToNextTurn = 0) {
+  if (!steps || steps.length === 0) return null;
+  let remaining = Math.max(0, distanceToNextTurn);
+  for (let i = activeStepIndex + 1; i < steps.length; i++) {
+    remaining += steps[i]?.stepDistanceMeters || 0;
+  }
+  return Math.round(remaining);
+}
+

@@ -207,7 +207,12 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name='employeecommissionconfig',
-            constraint=models.CheckConstraint(check=models.Q(('employee_earn_rate__gte', Decimal('0.0000')), ('employee_earn_rate__lte', Decimal('1.0000'))), name='ecc_valid_earn_rate'),
+            constraint=models.CheckConstraint(
+                **{
+                    ("condition" if getattr(django, "VERSION", (5, 0)) >= (6, 0) else "check"): models.Q(('employee_earn_rate__gte', Decimal('0.0000')), ('employee_earn_rate__lte', Decimal('1.0000'))),
+                    "name": 'ecc_valid_earn_rate',
+                }
+            ),
         ),
         migrations.AddIndex(
             model_name='employeewalletwithdrawal',

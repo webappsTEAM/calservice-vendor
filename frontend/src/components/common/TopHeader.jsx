@@ -25,6 +25,7 @@ import {
   Square,
   X,
   CheckCheck,
+  Activity,
 } from 'lucide-react';
 
 import { Modal } from '../enterprise/Modal.jsx';
@@ -32,9 +33,7 @@ import {
   apiGetNotifications,
   apiMarkNotificationRead,
   apiClearNotifications,
-  apiUpdateLocationFull,
 } from '../../api/workforceService.js';
-import { getGPSPosition } from '../../hooks/useGPSPosition.js';
 
 export function TopHeader({ onToggleSidebar = () => {} }) {
   const { user, logout, togglePresence, isAdmin, isEmployee, registrationStatus } = useAuth();
@@ -74,55 +73,14 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
     };
   }, [showNotifMenu]);
 
-  // Location Scan State
-  const [localLocState, setLocalLocState] = useState('idle'); // 'idle' | 'locating' | 'success' | 'error'
-  const [localLocCoords, setLocalLocCoords] = useState(() => {
-    const loc = user?.last_known_location;
-    if (loc?.latitude && loc?.longitude) {
-      return { latitude: Number(loc.latitude), longitude: Number(loc.longitude), accuracy: loc.accuracy || null };
-    }
-    return null;
-  });
-
-  const localHandleScanCurrentLocation = async () => {
-    if (localLocState === 'locating') return;
-    setLocalLocState('locating');
-    try {
-      const pos = await getGPSPosition(true);
-      const { latitude, longitude, accuracy, speed, heading } = pos.coords;
-      const captured_at = new Date(pos.timestamp || Date.now()).toISOString();
-      await apiUpdateLocationFull(latitude, longitude, accuracy, speed, heading, captured_at);
-      setLocalLocCoords({
-        latitude,
-        longitude,
-        accuracy,
-        timestamp: pos.timestamp || Date.now(),
-      });
-      setLocalLocState('success');
-      window.dispatchEvent(
-        new CustomEvent('workforce:location-updated', {
-          detail: {
-            latitude,
-            longitude,
-            accuracy,
-            speed,
-            heading,
-            captured_at,
-            timestamp: pos.timestamp || Date.now(),
-            source: 'header_scan',
-          },
-        })
-      );
-      setTimeout(() => setLocalLocState('idle'), 2500);
-    } catch (_) {
-      setLocalLocState('error');
-      setTimeout(() => setLocalLocState('idle'), 3000);
-    }
-  };
-
-  const locCoords = employeeRuntime?.liveLocation || localLocCoords;
-  const locState = employeeRuntime?.locationState || localLocState;
-  const handleScanCurrentLocation = employeeRuntime ? employeeRuntime.scanCurrentLocation : localHandleScanCurrentLocation;
+  // Location telemetry consumed authoritatively from EmployeeRuntimeProvider
+  const locCoords = employeeRuntime?.liveLocation || (user?.last_known_location ? {
+    latitude: Number(user.last_known_location.latitude),
+    longitude: Number(user.last_known_location.longitude),
+    accuracy: user.last_known_location.accuracy || null,
+  } : null);
+  const locState = employeeRuntime?.locationState || 'idle';
+  const handleScanCurrentLocation = employeeRuntime?.scanCurrentLocation || (() => {});
 
   // Background notification polling for Admin users ONLY (Employee notifications are centralized in EmployeeRuntimeProvider)
   useEffect(() => {
@@ -135,6 +93,7 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
     let pollInterval = null;
 
     const fetchNotifs = async () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       try {
         const res = await apiGetNotifications();
         if (!isCancelled && res) {
@@ -345,8 +304,8 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
     }
   };
 
-  const isOnline = Boolean(user?.isOnline);
-  const isBusy = user?.availability === 'busy';
+  const isOnline = Boolean(employeeRuntime ? employeeRuntime.isOnline : user?.isOnline);
+  const isBusy = isEmployee ? Boolean(employeeRuntime?.hasActiveJob) : user?.availability === 'busy';
 
   return (
     <>
@@ -746,6 +705,16 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                           <Settings className="w-3.5 h-3.5 text-slate-400" />
                           <span>Settings</span>
                         </Link>
+                        {isAdmin && (
+                          <Link
+                            to="/workforce/admin/monitoring/database-egress"
+                            onClick={() => setShowUserMenu(false)}
+                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 text-blue-700 flex items-center gap-2 transition-colors font-semibold"
+                          >
+                            <Activity className="w-3.5 h-3.5 text-blue-600" />
+                            <span>Database & Egress</span>
+                          </Link>
+                        )}
                       </div>
 
                       <button
