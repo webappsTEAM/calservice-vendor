@@ -107,6 +107,9 @@ if USE_POSTGRES:
         _db_options["sslmode"] = _sslmode
 
     _connection_opts = [f'-c search_path={os.getenv("DB_SCHEMA", "public")}']
+    _idle_tx_timeout = os.getenv("DB_IDLE_IN_TRANSACTION_TIMEOUT", "10000")
+    if _idle_tx_timeout:
+        _connection_opts.append(f"-c idle_in_transaction_session_timeout={_idle_tx_timeout}")
     _stmt_timeout = os.getenv("DB_STATEMENT_TIMEOUT", "")
     if _stmt_timeout:
         _connection_opts.append(f"-c statement_timeout={_stmt_timeout}")
