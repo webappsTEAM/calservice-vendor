@@ -1178,6 +1178,25 @@ def reconsider_jobs_for_employee(employee_or_id) -> int:
     )
     excluded_job_ids = list(active_offered_ids | declined_ids)
 
+    # Determine employee's domains from approved services and service_roles
+    emp_services = []
+    bank_details = emp.bank_details or {}
+    onboarding = bank_details.get("onboarding", {})
+    for s in onboarding.get("services", []):
+        if isinstance(s, dict):
+            if s.get("name"):
+                emp_services.append(str(s["name"]))
+            if s.get("category"):
+                emp_services.append(str(s["category"]))
+    if hasattr(emp, "service_roles") and isinstance(emp.service_roles, list):
+        for sr in emp.service_roles:
+            if sr:
+                emp_services.append(str(sr))
+
+    emp_domains = set()
+    for s in emp_services:
+        emp_domains.update(detect_service_domains(s))
+
     # Scope: Company-scoped bookings for this employee's company + Marketplace bookings (company_id=NULL)
     scope_q = get_booking_discovery_scope(emp.company_id)
 
@@ -1189,11 +1208,18 @@ def reconsider_jobs_for_employee(employee_or_id) -> int:
             latitude__isnull=False,
             longitude__isnull=False,
             created_at__gte=cutoff,
-        ).exclude(id__in=excluded_job_ids).order_by("-created_at")[:10]
+        ).exclude(id__in=excluded_job_ids).order_by("-created_at")[:20]
     )
 
     dispatched_count = 0
     for job in pending_jobs:
+        # Fast domain pre-filter: skip bookings whose service domain is completely unrelated to employee's domains
+        job_label = f"{job.issue_title or ''} {job.service_category or ''}".strip()
+        if emp_domains and job_label:
+            job_domains = detect_service_domains(job_label)
+            if job_domains and not (job_domains & emp_domains):
+                continue
+
         logger.info(f"[DISPATCH_GPS_TRIGGER] Fresh GPS / presence for Employee #{emp.id} triggered evaluation for Job #{job.id}.")
         success, msg = reconcile_booking_for_dispatch(job)
         if success:
