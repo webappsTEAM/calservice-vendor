@@ -19,12 +19,15 @@ logger = logging.getLogger("workforce.workload")
 # Authoritative definition of all statuses visible in an employee's active jobs queue
 ACTIVE_QUEUE_STATUSES: List[str] = [
     "assigned",
+    "received",
     "accepted",
     "on_the_way",
     "en_route",
     "arrived",
+    "service_started",
     "in_progress",
     "proof_submitted",
+    "follow_up_required",
 ]
 
 # Authoritative definition of all statuses where an employee is actively executing work
@@ -33,19 +36,24 @@ ACTIVE_WORKLOAD_STATUSES: List[str] = [
     "on_the_way",
     "en_route",
     "arrived",
+    "service_started",
     "in_progress",
     "proof_submitted",
+    "follow_up_required",
 ]
 
 # Workload blocking statuses that prevent new exclusive offers (ONE EMPLOYEE = ONE ACTIVE JOB)
 WORKLOAD_OCCUPIED_STATUSES: List[str] = [
     "assigned",
+    "received",
     "accepted",
     "on_the_way",
     "en_route",
     "arrived",
+    "service_started",
     "in_progress",
     "proof_submitted",
+    "follow_up_required",
 ]
 
 # Terminal statuses where an assignment has fully ended
@@ -98,11 +106,13 @@ def get_employee_active_job(employee_or_id, for_update: bool = False, statuses: 
             from service_requests.models import EmployeeJob
             emp_job_qs = EmployeeJob.objects.filter(
                 employee_id=emp_id,
-                status__in=["ASSIGNED", "ACCEPTED", "ON_THE_WAY", "EN_ROUTE", "ARRIVED", "IN_PROGRESS", "PROOF_SUBMITTED"],
+                service_request__status__in=target_statuses,
+            ).exclude(
+                status__in=["COMPLETED", "CANCELLED", "REJECTED", "EMPLOYEE_CANCELLED"]
             )
             if for_update:
                 emp_job_qs = emp_job_qs.select_for_update()
-            active_emp_job = emp_job_qs.select_related("service_request").first()
+            active_emp_job = emp_job_qs.select_related("service_request").order_by("-service_request__updated_at").first()
             if active_emp_job and active_emp_job.service_request:
                 sr = active_emp_job.service_request
                 if sr.status in target_statuses:
@@ -177,35 +187,39 @@ def supersede_other_offers_for_employee(employee, accepted_job, reason: str = "E
     emp_id = employee.pk if hasattr(employee, "pk") else employee
     accepted_job_id = accepted_job.pk if hasattr(accepted_job, "pk") else accepted_job
 
-    other_offers = WorkforceJobOffer.objects.select_for_update().filter(
-        employee_id=emp_id,
-        status=WorkforceJobOffer.Status.OFFERED,
-    ).exclude(job_id=accepted_job_id)
+    other_offers = list(
+        WorkforceJobOffer.objects.select_for_update().filter(
+            employee_id=emp_id,
+            status=WorkforceJobOffer.Status.OFFERED,
+        ).exclude(job_id=accepted_job_id)
+    )
 
-    closed_count = 0
-    for offer in other_offers:
-        offer.status = WorkforceJobOffer.Status.SUPERSEDED_BY_ACCEPTANCE
-        offer.rejection_reason = reason
-        offer.save(update_fields=["status", "rejection_reason"])
-        closed_count += 1
+    if not other_offers:
+        return 0
 
-        logger.info(
-            f"[OFFER_SUPERSEDED] employee={emp_id} offer_job={offer.job_id} "
-            f"active_job={accepted_job_id} reason=EMPLOYEE_ALREADY_BUSY"
-        )
+    WorkforceJobOffer.objects.filter(
+        id__in=[o.id for o in other_offers]
+    ).update(
+        status=WorkforceJobOffer.Status.SUPERSEDED_BY_ACCEPTANCE,
+        rejection_reason=reason,
+    )
 
-        user_obj = getattr(employee, "user", None)
-        if user_obj:
-            WorkforceEventLog.objects.create(
+    user_obj = getattr(employee, "user", None)
+    if user_obj:
+        evs = [
+            WorkforceEventLog(
                 user=user_obj,
                 event_type="JOB_OFFER_CLOSED",
                 payload={
-                    "job_id": offer.job_id,
-                    "offer_id": offer.id,
+                    "job_id": o.job_id,
+                    "offer_id": o.id,
                     "reason": reason,
                     "active_job_id": accepted_job_id,
                     "message": "Offer closed automatically because you accepted another job.",
                 }
             )
+            for o in other_offers
+        ]
+        WorkforceEventLog.objects.bulk_create(evs)
 
-    return closed_count
+    return len(other_offers)

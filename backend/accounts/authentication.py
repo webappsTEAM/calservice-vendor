@@ -85,3 +85,20 @@ def set_auth_cookies(response, access_token, refresh_token=None):
             domain=domain,
             path="/",
         )
+
+
+def clear_auth_cookies(response):
+    domain = getattr(settings, "AUTH_COOKIE_DOMAIN", None)
+    samesite = getattr(settings, "AUTH_COOKIE_SAMESITE", "Lax")
+    response.delete_cookie(
+        getattr(settings, "AUTH_COOKIE", "qt_access"),
+        path="/",
+        domain=domain,
+        samesite=samesite,
+    )
+    response.delete_cookie(
+        getattr(settings, "AUTH_COOKIE_REFRESH", "qt_refresh"),
+        path="/",
+        domain=domain,
+        samesite=samesite,
+    )

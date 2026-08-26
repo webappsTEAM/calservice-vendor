@@ -2,9 +2,26 @@
 workforce-app/backend/service_requests/models.py
 ServiceRequest model pointing to shared Supabase table service_requests_servicerequest (managed=False).
 """
+import threading
 from django.conf import settings
 from django.db import models
 from common.models import CompanyScopedManager
+
+_dispatch_suppression = threading.local()
+
+
+class suppress_dispatch_hook:
+    """
+    Context manager to prevent nested/recursive post-commit dispatch triggers
+    when internal dispatch engine components update ServiceRequest records.
+    """
+    def __enter__(self):
+        self._prev = getattr(_dispatch_suppression, "active", False)
+        _dispatch_suppression.active = True
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        _dispatch_suppression.active = self._prev
 
 SERVICE_CATEGORIES = [
     ("hvac", "HVAC & Air Conditioning"),
@@ -28,6 +45,50 @@ def _generate_request_id():
         num += 1
         candidate = f"SR-{str(num).zfill(4)}"
     return candidate
+
+
+# Canonical Quotation-based Service IDs and Slugs
+QUOTATION_SERVICE_IDS = {
+    91: "Interior Painting",
+    92: "Exterior Painting",
+    93: "Waterproofing",
+    94: "Wood & Metal",
+    95: "Texture Decor",
+    35: "Brick & Block Work",
+    36: "Plastering & Wall Repair",
+    37: "Wall & Partition Construction",
+    38: "Wall Breaking & Demolition",
+}
+
+QUOTATION_SERVICE_SLUGS = {
+    "interior-painting",
+    "exterior-painting",
+    "waterproofing",
+    "wood-metal",
+    "texture-decor",
+    "brick-block-work",
+    "plastering-wall-repair",
+    "wall-partition-construction",
+    "wall-breaking-demolition",
+}
+
+
+def is_quotation_service(service_id=None, slug=None, name=None, category=None):
+    """
+    Authoritative backend check whether a service operates in QUOTATION mode.
+    """
+    if service_id and int(service_id) in QUOTATION_SERVICE_IDS:
+        return True
+    if slug and str(slug).lower().strip() in QUOTATION_SERVICE_SLUGS:
+        return True
+    if name:
+        clean_name = str(name).lower().strip()
+        for q_name in QUOTATION_SERVICE_IDS.values():
+            if clean_name == q_name.lower():
+                return True
+    if category and str(category).lower().strip() in ["painting", "mason", "masonry", "painting & waterproofing", "masonry & civil"]:
+        return True
+    return False
 
 
 class CatalogCategory(models.Model):
@@ -76,6 +137,26 @@ class Service(models.Model):
     def __str__(self):
         return f"{self.name} ({self.category.name if self.category else 'No Category'})"
 
+    @property
+    def pricing_mode(self):
+        return "QUOTATION" if is_quotation_service(self.id, self.slug, self.name) else "FIXED"
+
+    @property
+    def requires_inspection(self):
+        return self.pricing_mode == "QUOTATION"
+
+    @property
+    def requires_measurement(self):
+        return self.pricing_mode == "QUOTATION"
+
+    @property
+    def min_inspection_photos(self):
+        if not self.requires_inspection:
+            return 1
+        if self.id in [91, 92, 93, 94, 95] or "painting" in (self.slug or "").lower():
+            return 3
+        return 2
+
 
 class ServiceRequest(models.Model):
 
@@ -114,7 +195,21 @@ class ServiceRequest(models.Model):
         FAILED    = "failed",    "Failed"
         CANCELLED = "cancelled", "Cancelled"
 
+    class RequestKind(models.TextChoices):
+        DIRECT     = "DIRECT",     "Direct Standard Job"
+        ESTIMATION = "ESTIMATION", "Estimation / Inspection Job"
+        WORK       = "WORK",       "Actual Work Execution Job"
+
     request_id = models.CharField(max_length=20, unique=True, blank=True)
+    request_kind = models.CharField(
+        max_length=50,
+        choices=RequestKind.choices,
+        default=RequestKind.DIRECT,
+        db_index=True,
+    )
+    parent_request_id = models.BigIntegerField(null=True, blank=True)
+    quote_number = models.CharField(max_length=50, null=True, blank=True)
+
     company = models.ForeignKey(
         "companies.Company",
         on_delete=models.CASCADE,
@@ -183,13 +278,7 @@ class ServiceRequest(models.Model):
 
     workforce_job_id = models.CharField(max_length=100, blank=True, default="")
     external_assignment_id = models.CharField(max_length=100, blank=True, default="")
-    technician_name = models.CharField(max_length=200, blank=True, default="")
-    technician_phone = models.CharField(max_length=50, blank=True, default="")
-    technician_photo = models.TextField(blank=True, default="")
     technician_rating = models.FloatField(null=True, blank=True)
-    payment_collected_by_name = models.CharField(max_length=200, blank=True, default="")
-    collection_method = models.CharField(max_length=50, blank=True, default="")
-    collection_reference = models.CharField(max_length=100, blank=True, default="")
     service_zone_name_snapshot = models.CharField(max_length=200, blank=True, default="")
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -205,21 +294,53 @@ class ServiceRequest(models.Model):
     def __str__(self):
         return f"{self.request_id or f'SR #{self.pk}'} - {self.issue_title} ({self.status})"
 
+    @property
+    def is_estimation(self):
+        """Authoritative check if this ServiceRequest is an Estimation Job."""
+        if str(self.request_kind).upper() == "ESTIMATION":
+            return True
+        if str(self.request_kind).upper() == "WORK":
+            return False
+        return is_quotation_service(name=self.issue_title, category=self.service_category)
+
+    @property
+    def pricing_mode(self):
+        if self.is_estimation:
+            return "QUOTATION"
+        return "FIXED"
+
     def save(self, *args, **kwargs):
-        is_new = self.pk is None
+        skip_dispatch = kwargs.pop("skip_dispatch", False)
         if not self.request_id:
             self.request_id = _generate_request_id()
         super().save(*args, **kwargs)
 
-        if is_new and self.status in ["new_request", "confirmed", "draft"]:
-            try:
-                from workforce_api.services.automatic_dispatch import dispatch_job
-                dispatch_job(self)
-            except Exception as e:
+        # Post-commit dispatch trigger: fires AFTER the transaction successfully commits.
+        # This decouples dispatch from booking persistence — a dispatch failure will
+        # never roll back or raise an exception during customer booking creation.
+        # Triggers for all unassigned bookings in DISPATCHABLE_STATUSES (both new bookings and status updates).
+        # Recursion guard: Internal dispatch mutations (suppress_dispatch_hook or _skip_dispatch) will NOT re-trigger dispatch.
+        from workforce_api.services.automatic_dispatch import DISPATCHABLE_STATUSES
+        is_suppressed = getattr(_dispatch_suppression, "active", False) or getattr(self, "_skip_dispatch", False) or skip_dispatch
+        if not is_suppressed and self.status in DISPATCHABLE_STATUSES and self.assigned_employee_id is None:
+            _job_id = self.pk
+
+            def _post_commit_dispatch():
                 import logging
-                logging.getLogger("workforce.dispatch").exception(
-                    f"[AUTO_DISPATCH_TRIGGER_FAILED] Failed to trigger automatic dispatch for Job #{self.id}: {e}"
-                )
+                _log = logging.getLogger("workforce.dispatch")
+                try:
+                    from workforce_api.services.automatic_dispatch import reconcile_booking_for_dispatch
+                    from service_requests.models import ServiceRequest as _SR
+                    _job = _SR.objects.filter(pk=_job_id).first()
+                    if _job:
+                        reconcile_booking_for_dispatch(_job)
+                except Exception as _exc:
+                    _log.exception(
+                        f"[AUTO_DISPATCH_TRIGGER_FAILED] Post-commit dispatch failed for Job #{_job_id}: {_exc}"
+                    )
+
+            from django.db import transaction
+            transaction.on_commit(_post_commit_dispatch)
 
 
 
@@ -283,15 +404,18 @@ class ServiceRequest(models.Model):
             from workforce_api.models import JobPayment
             pmt = getattr(self, "payment_record", None) or JobPayment.objects.filter(job=self).first()
             if pmt:
-                if pmt.payment_status == JobPayment.PaymentStatus.CASH_PENDING:
-                    pending_dependencies.append("Cash payment collection has been reported but is awaiting customer confirmation.")
-                elif pmt.payment_status == JobPayment.PaymentStatus.PENDING and pmt.payment_method == JobPayment.PaymentMethod.CASH_ON_SERVICE:
-                    pending_dependencies.append("Cash on service payment collection and confirmation is required before closing job.")
+                if pmt.payment_method == JobPayment.PaymentMethod.CASH_ON_SERVICE:
+                    if not pmt.is_cash_collected or pmt.payment_status not in [JobPayment.PaymentStatus.PAID, "PAID", "paid"]:
+                        pending_dependencies.append("Cash on service payment collection is required before closing job.")
                 elif pmt.payment_status not in [JobPayment.PaymentStatus.PAID, "PAID", "paid"]:
                     pending_dependencies.append(f"Payment is in '{pmt.payment_status}' state (must be PAID before closing job).")
             else:
+                is_cash = (self.payment_method or "").lower() in ["cash", "cod", "cash_on_service", "cash_on_delivery"]
                 if str(self.payment_status).lower() not in ["paid", "collected"]:
-                    pending_dependencies.append(f"Payment status is '{self.payment_status}' (must be PAID before closing job).")
+                    if is_cash:
+                        pending_dependencies.append("Cash on service payment collection is required before closing job.")
+                    else:
+                        pending_dependencies.append(f"Payment status is '{self.payment_status}' (must be PAID before closing job).")
         except Exception as e:
             pending_dependencies.append(f"Payment verification failed: {str(e)}")
 
@@ -338,5 +462,9 @@ class EmployeeJob(models.Model):
 
     def __str__(self):
         return f"EmployeeJob SR-{self.service_request_id} -> Emp {self.employee_id} ({self.status})"
+
+
+RequestKind = ServiceRequest.RequestKind
+
 
 

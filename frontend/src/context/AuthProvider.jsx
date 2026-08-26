@@ -5,7 +5,6 @@ import {
   apiWorkforceLogin,
   apiWorkforceSignup,
   apiWorkforceLogout,
-  apiGetOnboardingProfile,
   apiTogglePresence,
 } from '../api/workforceService.js';
 import {
@@ -34,22 +33,13 @@ export function AuthProvider({ children }) {
           return null;
         }
 
+        // Single API call: /auth/me/ now returns presence, availability, and
+        // last_known_location inline — no separate sequential onboarding profile call needed.
         const me = await apiFetchMe();
 
         if (me && me.username) {
           const isAdmin = ['admin', 'manager'].includes((me.role || '').toLowerCase()) || Boolean(me.is_superuser);
-          let empData = null;
-
-          if (!isAdmin) {
-            try {
-              empData = await apiGetOnboardingProfile();
-            } catch (_) {
-              // Non-admin user without onboarding record
-            }
-          }
-
-          const isEmployee = Boolean(empData) || (me.role || '').toLowerCase() === 'employee';
-          const computedRole = isAdmin ? (me.role || 'admin').toLowerCase() : (isEmployee ? 'employee' : (me.role || 'employee').toLowerCase());
+          const isEmployee = !isAdmin && (me.role || '').toLowerCase() === 'employee';
 
           const u = {
             id: me.id,
@@ -57,18 +47,20 @@ export function AuthProvider({ children }) {
             email: me.email || '',
             firstName: me.first_name || '',
             lastName: me.last_name || '',
-            role: computedRole,
+            role: isAdmin ? (me.role || 'admin').toLowerCase() : 'employee',
             companyId: me.company,
             companyName: me.company_name || '',
             isAdmin: isAdmin,
-            isEmployee: isEmployee,
-            registrationStatus: empData ? (empData.registration_status || 'not_started') : (isAdmin ? 'approved' : 'not_started'),
-            isOnline: empData ? Boolean(empData.is_online) : false,
-            availability: empData ? (empData.live_availability || 'offline') : 'offline',
+            isEmployee: isEmployee || !isAdmin,
+            registrationStatus: me.registration_status || (isAdmin ? 'approved' : 'not_started'),
+            isOnline: Boolean(me.is_online),
+            availability: me.live_availability || 'offline',
+            last_known_location: me.last_known_location || null,
           };
 
           setUser(u);
-          setEmployee(empData);
+          // Keep employee state for pages that still read it directly
+          setEmployee(me.employee_id ? { is_online: me.is_online, live_availability: me.live_availability } : null);
           return u;
         } else {
           clearAuthTokens();
@@ -145,7 +137,39 @@ export function AuthProvider({ children }) {
     return res;
   }, [refreshProfile]);
 
-  const logout = useCallback(async () => {
+  const logout = useCallback(async (options = {}) => {
+    // High-priority check: An employee cannot sign out while ONLINE
+    if (!options?.skipOnlineCheck && user?.isEmployee && (user?.isOnline || employee?.is_online)) {
+      const err = new Error('You are currently ONLINE. Please switch your status to OFFLINE before signing out.');
+      err.code = 'CANNOT_LOGOUT_WHILE_ONLINE';
+      err.status = 400;
+      throw err;
+    }
+
+    // 1. Send authenticated logout request to backend
+    try {
+      await apiWorkforceLogout();
+    } catch (err) {
+      if (err?.code === 'CANNOT_LOGOUT_WHILE_ONLINE' || err?.data?.code === 'CANNOT_LOGOUT_WHILE_ONLINE' || err?.status === 400) {
+        const errorMsg = err?.data?.error || err?.message || 'You are currently ONLINE. Please switch your status to OFFLINE before signing out.';
+        const blockErr = new Error(errorMsg);
+        blockErr.code = 'CANNOT_LOGOUT_WHILE_ONLINE';
+        blockErr.status = 400;
+        throw blockErr;
+      }
+    }
+
+    // 2. Set flash logout notification in sessionStorage for display on the login page
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem('wf_logout_notification', JSON.stringify({
+          message: 'Signed out successfully. Technician presence is OFFLINE.',
+          timestamp: Date.now(),
+        }));
+      }
+    } catch (_) {}
+
+    // 3. Clear auth tokens and state
     clearAuthTokens();
     if (typeof BroadcastChannel !== 'undefined') {
       try {
@@ -154,35 +178,38 @@ export function AuthProvider({ children }) {
         channel.close();
       } catch (_) {}
     }
-    try {
-      await apiWorkforceLogout();
-    } catch (_) {}
     setUser(null);
     setEmployee(null);
-  }, []);
+  }, [user, employee]);
 
   const togglePresence = useCallback(async (desiredOnlineState = null) => {
     try {
       const res = await apiTogglePresence(desiredOnlineState);
-      if (user) {
-        setUser(prev => ({
+      setUser(prev => {
+        if (!prev) return prev;
+        return {
           ...prev,
-          isOnline: res.is_online,
+          isOnline: Boolean(res.is_online),
+          is_online: Boolean(res.is_online),
           availability: res.availability,
-        }));
-      }
-      if (employee) {
-        setEmployee(prev => ({
-          ...prev,
-          is_online: res.is_online,
           live_availability: res.availability,
-        }));
-      }
+        };
+      });
+      setEmployee(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          isOnline: Boolean(res.is_online),
+          is_online: Boolean(res.is_online),
+          availability: res.availability,
+          live_availability: res.availability,
+        };
+      });
       return res;
     } catch (e) {
       throw e;
     }
-  }, [user, employee]);
+  }, []);
 
   // Cross-tab Session Sync using BroadcastChannel
   useEffect(() => {

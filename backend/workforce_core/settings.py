@@ -28,9 +28,9 @@ else:
 
 _allowed_hosts_env = os.getenv("ALLOWED_HOSTS")
 if _allowed_hosts_env:
-    ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
+    ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()] + ["testserver"]
 else:
-    ALLOWED_HOSTS = ["*"] if DEBUG else ["localhost", "127.0.0.1"]
+    ALLOWED_HOSTS = ["*"] if DEBUG else ["localhost", "127.0.0.1", "testserver"]
 
 # Application definition
 INSTALLED_APPS = [
@@ -53,6 +53,9 @@ INSTALLED_APPS = [
     "service_requests",
     "workforce_api",
     "time_tracking",
+
+    # Vendor Wallet financial module
+    "vendor_wallet",
 ]
 
 MIDDLEWARE = [
@@ -104,6 +107,9 @@ if USE_POSTGRES:
         _db_options["sslmode"] = _sslmode
 
     _connection_opts = [f'-c search_path={os.getenv("DB_SCHEMA", "public")}']
+    _idle_tx_timeout = os.getenv("DB_IDLE_IN_TRANSACTION_TIMEOUT", "10000")
+    if _idle_tx_timeout:
+        _connection_opts.append(f"-c idle_in_transaction_session_timeout={_idle_tx_timeout}")
     _stmt_timeout = os.getenv("DB_STATEMENT_TIMEOUT", "")
     if _stmt_timeout:
         _connection_opts.append(f"-c statement_timeout={_stmt_timeout}")

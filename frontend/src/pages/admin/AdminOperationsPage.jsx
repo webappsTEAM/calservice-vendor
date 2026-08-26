@@ -13,7 +13,6 @@
 
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
-  apiGetAdminApplications,
   apiGetEligibleTechnicians,
   apiTriggerAutoDispatch,
   apiDispatchAssign,
@@ -450,9 +449,10 @@ export function AdminOperationsPage() {
   const loadData = async () => {
     try {
       setIsLoading(true);
-      const [techs, jobsList, locsData, fleetData, pendingSvcData, pendingExtData] =
+      // Note: approved-employee list removed — online/offline counts now derived from fleetMap.
+      // This eliminates a duplicate of the /applications/?status=approved request.
+      const [jobsList, locsData, fleetData, pendingSvcData, pendingExtData] =
         await Promise.all([
-          apiGetAdminApplications('approved').catch(() => []),
           apiGetWorkforceJobs().catch(() => []),
           apiGetLocations().catch(() => []),
           apiGetFleetMap().catch(() => []),
@@ -462,10 +462,12 @@ export function AdminOperationsPage() {
 
       const safe = (d) => (Array.isArray(d) ? d : d?.results || []);
       const jobsArr = safe(jobsList);
-      setTechnicians(safe(techs));
+      const fleetArr = safe(fleetData);
       setJobs(jobsArr);
       setLocations(safe(locsData));
-      setFleetMap(safe(fleetData));
+      setFleetMap(fleetArr);
+      // Derive technician list from fleet map — same data, no extra API call
+      setTechnicians(fleetArr);
       setPendingServices(safe(pendingSvcData));
       setPendingExtensions(safe(pendingExtData));
 
@@ -505,7 +507,10 @@ export function AdminOperationsPage() {
     const interval = setInterval(async () => {
       try {
         const data = await apiGetFleetMap();
-        setFleetMap(Array.isArray(data) ? data : data?.results || []);
+        const fleetArr = Array.isArray(data) ? data : data?.results || [];
+        setFleetMap(fleetArr);
+        // Keep technician count metrics in sync with latest fleet data
+        setTechnicians(fleetArr);
       } catch (_) {}
     }, 60_000);
     return () => clearInterval(interval);

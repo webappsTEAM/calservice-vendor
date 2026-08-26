@@ -83,9 +83,9 @@ class Employee(models.Model):
 class PresenceLog(models.Model):
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="presence_logs")
     company = models.ForeignKey('companies.Company', on_delete=models.CASCADE, related_name="presence_logs")
-    is_online = models.BooleanField(default=False)
-    availability = models.CharField(max_length=50, default="offline")
-    created_at = models.DateTimeField(auto_now_add=True)
+    login_at = models.DateTimeField(null=True, blank=True)
+    logout_at = models.DateTimeField(null=True, blank=True)
+    duration_seconds = models.IntegerField(default=0, blank=True, null=True)
 
     objects = CompanyScopedManager()
 

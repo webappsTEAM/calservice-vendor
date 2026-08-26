@@ -8,6 +8,7 @@ from .automatic_dispatch import (
     get_eligible_candidates,
     expire_and_reassign_offers,
     reconsider_jobs_for_employee,
+    reconcile_booking_for_dispatch,
 )
 from .geo_spatial import (
     ADMIN_DISPATCH_RADIUS_KM,
@@ -54,6 +55,7 @@ __all__ = [
     "get_eligible_candidates",
     "expire_and_reassign_offers",
     "reconsider_jobs_for_employee",
+    "reconcile_booking_for_dispatch",
     "ADMIN_DISPATCH_RADIUS_KM",
     "MAX_GPS_AGE_SECONDS",
     "DISTANCE_TOLERANCE_KM",

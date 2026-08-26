@@ -2,12 +2,15 @@ import { createContext, useContext } from 'react';
 
 export const ACTIVE_QUEUE_STATUSES = [
   'assigned',
+  'received',
   'accepted',
   'on_the_way',
   'en_route',
   'arrived',
+  'service_started',
   'in_progress',
   'proof_submitted',
+  'follow_up_required',
 ];
 
 export const EmployeeRuntimeContext = createContext(null);

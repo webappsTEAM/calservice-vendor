@@ -92,6 +92,53 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
     service_request.status = target
     service_request.save(update_fields=["status"])
 
+    # ── Employee Wallet Credit ──────────────────────────────────────────────
+    # Triggered only on COMPLETED transition. Non-blocking: a wallet error must
+    # never roll back a successfully completed job. Failures are logged for
+    # admin reconciliation via `python manage.py reconcile_wallets`.
+    if target == "completed":
+        try:
+            from workforce_api.models import JobPayment
+            from vendor_wallet.services.wallet_service import credit_job_earning
+            from vendor_wallet.exceptions import IdempotentTransactionError, CommissionConfigMissingError
+
+            job_payment = JobPayment.objects.filter(job=service_request).first()
+            employee = service_request.assigned_employee
+            if not employee:
+                logger.warning(
+                    "[WALLET_SKIP] Job #%s: assigned_employee is null. Employee wallet credit skipped.",
+                    service_request.pk,
+                )
+            elif job_payment and job_payment.payment_status == "PAID":
+                credit_job_earning(
+                    employee=employee,
+                    job=service_request,
+                    job_payment=job_payment,
+                    actor=actor,
+                )
+            else:
+                logger.info(
+                    "[WALLET_SKIP] Job #%s: payment not PAID (status=%s). Wallet credit deferred.",
+                    service_request.pk,
+                    getattr(job_payment, "payment_status", "NO_PAYMENT"),
+                )
+        except IdempotentTransactionError:
+            # Already credited — safe to ignore on retries
+            logger.info("[WALLET_IDEMPOTENT] Job #%s already credited.", service_request.pk)
+        except CommissionConfigMissingError as _wce:
+            logger.error(
+                "[WALLET_CREDIT_FAILED] Job #%s — COMMISSION_CONFIG_MISSING: %s. "
+                "Admin must create an EmployeeCommissionConfig and run reconcile_wallets.",
+                service_request.pk, _wce,
+            )
+        except Exception as _wce:
+            logger.error(
+                "[WALLET_CREDIT_FAILED] Job #%s: %s. Run `reconcile_wallets` to detect and correct.",
+                service_request.pk, _wce,
+                exc_info=True,
+            )
+    # ── End Wallet Credit ───────────────────────────────────────────────────
+
     # Sync EmployeeJob status and timestamps
     try:
         from service_requests.models import EmployeeJob
@@ -110,7 +157,7 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
         EmployeeJob.objects.filter(service_request=service_request).update(**emp_job_updates)
 
         if target in ["completed", "cancelled", "redispatching", "unable_to_complete"]:
-            from workforce_api.models import JobTrackingSession
+            from workforce_api.models import JobTrackingSession, WorkforceEventLog
             closing_status = (
                 JobTrackingSession.SessionStatus.COMPLETED
                 if target == "completed"
@@ -123,13 +170,63 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
                 status=closing_status,
                 ended_at=now,
             )
-            if service_request.assigned_employee:
+
+            # Auto Clock-Out active TimeLog upon job completion
+            eval_emp = service_request.assigned_employee or emp
+            if target == "completed" and eval_emp:
+                try:
+                    from time_tracking.services import close_employee_active_timelog
+                    close_employee_active_timelog(eval_emp)
+                except Exception as _to_err:
+                    logger.warning("Auto clock-out error on job #%s completion: %s", service_request.pk, _to_err)
+
+            if eval_emp:
                 from workforce_api.services.workload import reconcile_employee_availability
-                reconcile_employee_availability(service_request.assigned_employee)
+                new_avail = reconcile_employee_availability(eval_emp)
                 logger.info(
-                    f"[EMPLOYEE_RELEASED] employee={service_request.assigned_employee.id} "
-                    f"job={service_request.id} target_state={target.upper()}"
+                    f"[EMPLOYEE_RELEASED] employee={eval_emp.id} "
+                    f"job={service_request.id} target_state={target.upper()} availability={new_avail}"
                 )
+
+                # Emit realtime events so technician and admin UI reconcile without refresh
+                try:
+                    user_obj = getattr(eval_emp, "user", None)
+                    if user_obj:
+                        WorkforceEventLog.objects.create(
+                            user=user_obj,
+                            event_type="JOB_COMPLETED" if target == "completed" else "EMPLOYEE_JOB_CANCELLED",
+                            payload={
+                                "job_id": service_request.id,
+                                "request_id": service_request.request_id or f"SR-{service_request.id}",
+                                "status": target,
+                                "employee_id": eval_emp.id,
+                                "availability": new_avail,
+                                "is_online": eval_emp.is_online,
+                            }
+                        )
+                        if target == "completed":
+                            WorkforceEventLog.objects.create(
+                                user=user_obj,
+                                event_type="EMPLOYEE_JOB_COMPLETED",
+                                payload={
+                                    "job_id": service_request.id,
+                                    "request_id": service_request.request_id or f"SR-{service_request.id}",
+                                    "status": "completed",
+                                    "employee_id": eval_emp.id,
+                                }
+                            )
+                        WorkforceEventLog.objects.create(
+                            user=user_obj,
+                            event_type="EMPLOYEE_AVAILABILITY_CHANGED",
+                            payload={
+                                "employee_id": eval_emp.id,
+                                "availability": new_avail,
+                                "is_online": eval_emp.is_online,
+                                "has_active_job": False if new_avail == "available" else True,
+                            }
+                        )
+                except Exception as _ev_err:
+                    logger.warning("Failed to emit completion WorkforceEventLog: %s", _ev_err)
     except Exception as _sm_err:
         logger.exception(
             "Non-fatal error in post-transition side-effects for Job #%s -> %s: %s",

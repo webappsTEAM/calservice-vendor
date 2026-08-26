@@ -246,8 +246,7 @@ export function EmployeeSettingsPage() {
       setError('');
       await apiDeactivateAccount(deactivatePassword, deactivateReason);
       setShowDeactivateModal(false);
-      alert('Your account has been deactivated. Logging out now.');
-      await logout();
+      await logout({ skipOnlineCheck: true });
     } catch (err) {
       setError(err.message || 'Account deactivation failed.');
     } finally {

@@ -39,6 +39,66 @@ class WorkforceOnboardingDraftSerializer(serializers.Serializer):
     draft_data = serializers.DictField(required=True)
 
 
+class WorkforceEmployeeProfileListSerializer(serializers.ModelSerializer):
+    """
+    Lightweight list serializer for the applications list endpoint.
+    Reads only JSONB bank_details (in-memory) — zero extra DB queries per row.
+    Per-row WorkforceEmployeeDocument queries are deliberately excluded here;
+    they are available on the detail endpoint via WorkforceEmployeeProfileSerializer.
+    """
+    user_id = serializers.IntegerField(source="user.id", read_only=True)
+    username = serializers.CharField(source="user.username", read_only=True)
+    first_name = serializers.CharField(source="user.first_name", read_only=True)
+    last_name = serializers.CharField(source="user.last_name", read_only=True)
+    email = serializers.CharField(source="user.email", read_only=True)
+    mobile_number = serializers.CharField(source="user.mobile_number", read_only=True)
+    phone = serializers.CharField(source="user.phone", read_only=True)
+    company_id = serializers.IntegerField(source="company.id", read_only=True)
+    company_name = serializers.CharField(source="company.company_name", read_only=True)
+    registration_status = serializers.SerializerMethodField()
+    all_requested_services = serializers.SerializerMethodField()
+    documents_status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Employee
+        fields = [
+            "id",
+            "user_id",
+            "employee_id",
+            "username",
+            "first_name",
+            "last_name",
+            "email",
+            "mobile_number",
+            "phone",
+            "company_id",
+            "company_name",
+            "is_active",
+            "registration_status",
+            "all_requested_services",
+            "documents_status",
+            "created_at",
+        ]
+
+    def get_registration_status(self, obj):
+        ob = (obj.bank_details or {}).get("onboarding", {})
+        raw = str(ob.get("status", "not_started")).strip().lower()
+        from workforce_api.services.registration import VALID_REGISTRATION_STATUSES, REGISTRATION_STATUS_NOT_STARTED
+        return raw if raw in VALID_REGISTRATION_STATUSES else REGISTRATION_STATUS_NOT_STARTED
+
+    def get_all_requested_services(self, obj):
+        ob = (obj.bank_details or {}).get("onboarding", {})
+        return ob.get("services", [])
+
+    def get_documents_status(self, obj):
+        """
+        Returns only the JSONB-stored document map — no DB query.
+        Document records from WorkforceEmployeeDocument are available on the detail endpoint.
+        """
+        ob = (obj.bank_details or {}).get("onboarding", {})
+        return dict(ob.get("documents", {}))
+
+
 class WorkforceEmployeeProfileSerializer(serializers.ModelSerializer):
     user_id = serializers.IntegerField(source="user.id", read_only=True)
     username = serializers.CharField(source="user.username", read_only=True)
@@ -397,6 +457,58 @@ class PaymentCollectionEventSerializer(serializers.ModelSerializer):
         return "System"
 
 
+class WorkforceJobListSerializer(serializers.ModelSerializer):
+    """
+    Lightweight read-only DTO for admin job list pages.
+
+    Returns only what a job row card needs:
+      - identity (id, request_id, status, priority)
+      - customer display (customer_name, phone)
+      - service info (service_category, issue_title)
+      - location (address)
+      - scheduling (preferred_date, preferred_time)
+      - financials (total_amount, payment_status, payment_method)
+      - assignment (assigned_employee_name)
+      - timestamps (created_at, updated_at)
+
+    Does NOT include: cart_data, description, extensions, payments,
+    offer details, wave details, proofs, lifecycle events.
+
+    This replaces the full WorkforceJobSerializer in the admin list path,
+    reducing per-job payload from ~4 KB to ~400 bytes.
+    """
+    assigned_employee_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ServiceRequest
+        fields = [
+            "id",
+            "request_id",
+            "customer_name",
+            "phone",
+            "email",
+            "service_category",
+            "issue_title",
+            "status",
+            "priority",
+            "address",
+            "preferred_date",
+            "preferred_time",
+            "total_amount",
+            "payment_status",
+            "payment_method",
+            "assigned_employee_name",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_assigned_employee_name(self, obj):
+        emp = obj.assigned_employee
+        if emp and hasattr(emp, "user"):
+            return emp.user.get_full_name() or emp.user.username
+        return None
+
+
 class WorkforceJobSerializer(serializers.ModelSerializer):
     customer_display_name = serializers.SerializerMethodField()
     service_title = serializers.SerializerMethodField()
@@ -417,13 +529,36 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
     server_time = serializers.SerializerMethodField()
     offer_id = serializers.SerializerMethodField()
     offered_at = serializers.SerializerMethodField()
+    wave_id = serializers.SerializerMethodField()
+    wave_number = serializers.SerializerMethodField()
     can_cancel = serializers.SerializerMethodField()
+
+    request_kind = serializers.CharField(read_only=True)
+    parent_request_id = serializers.IntegerField(read_only=True)
+    quote_number = serializers.CharField(read_only=True)
+    is_estimation = serializers.SerializerMethodField()
+    is_work_job = serializers.SerializerMethodField()
+    pricing_mode = serializers.SerializerMethodField()
+    can_create_quote = serializers.SerializerMethodField()
+    active_quote_id = serializers.SerializerMethodField()
+    active_quote_number = serializers.SerializerMethodField()
+    active_quote_status = serializers.SerializerMethodField()
 
     class Meta:
         model = ServiceRequest
         fields = [
             "id",
             "request_id",
+            "request_kind",
+            "parent_request_id",
+            "quote_number",
+            "is_estimation",
+            "is_work_job",
+            "pricing_mode",
+            "can_create_quote",
+            "active_quote_id",
+            "active_quote_number",
+            "active_quote_status",
             "customer_name",
             "phone",
             "email",
@@ -463,6 +598,8 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             "server_time",
             "offer_id",
             "offered_at",
+            "wave_id",
+            "wave_number",
             "can_cancel",
         ]
 
@@ -554,30 +691,6 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
         return (obj.updated_at or obj.created_at).isoformat() if (obj.updated_at or obj.created_at) else None
 
     def get_cancellation_deadline(self, obj):
-        if not self.get_is_accepted_by_current_employee(obj):
-            return None
-        if obj.status not in ["accepted", "on_the_way"]:
-            return None
-        emp = self._get_context_emp()
-        lifecycle_events_map = self.context.get("lifecycle_events_map")
-        if lifecycle_events_map is not None:
-            accept_event = lifecycle_events_map.get(obj.id)
-        else:
-            from .models import WorkforceJobLifecycleEvent
-            accept_event = WorkforceJobLifecycleEvent.objects.filter(
-                job=obj,
-                employee=emp,
-                event_type=WorkforceJobLifecycleEvent.EventType.EMPLOYEE_JOB_ACCEPTED,
-            ).order_by("-created_at").first()
-        if accept_event and accept_event.cancellation_deadline:
-            return accept_event.cancellation_deadline.isoformat()
-        from datetime import timedelta
-        from django.utils import timezone
-        accepted_at = accept_event.accepted_at if accept_event else (obj.updated_at or obj.created_at)
-        if accepted_at:
-            deadline = accepted_at + timedelta(minutes=5)
-            if deadline > timezone.now():
-                return deadline.isoformat()
         return None
 
     def get_distance_km(self, obj):
@@ -590,9 +703,8 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
         if emp_lat is None or emp_lon is None or obj.latitude is None or obj.longitude is None:
             return None
         try:
-            from time_tracking.geo import haversine_distance
-            dist_m = haversine_distance(float(emp_lat), float(emp_lon), float(obj.latitude), float(obj.longitude))
-            return round(dist_m / 1000.0, 2)
+            from workforce_api.services.geo_spatial import calculate_distance_km
+            return calculate_distance_km(float(emp_lat), float(emp_lon), float(obj.latitude), float(obj.longitude))
         except Exception:
             return None
 
@@ -602,6 +714,43 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
         if obj.customer:
             return f"{obj.customer.first_name} {obj.customer.last_name}".strip() or obj.customer.username
         return "Valued Customer"
+
+    def get_is_estimation(self, obj):
+        return bool(getattr(obj, "is_estimation", False))
+
+    def get_is_work_job(self, obj):
+        return bool(getattr(obj, "is_work_job", False))
+
+    def get_pricing_mode(self, obj):
+        return getattr(obj, "pricing_mode", "FIXED")
+
+    def get_can_create_quote(self, obj):
+        if not getattr(obj, "is_estimation", False):
+            return False
+        from workforce_api.services.quotation_service import can_create_quote
+        allowed, _ = can_create_quote(obj)
+        return allowed
+
+    def get_active_quote_id(self, obj):
+        quote_rel = getattr(obj, "quotes", None)
+        if quote_rel:
+            q = quote_rel.order_by("-id").first()
+            return q.id if q else None
+        return None
+
+    def get_active_quote_number(self, obj):
+        quote_rel = getattr(obj, "quotes", None)
+        if quote_rel:
+            q = quote_rel.order_by("-id").first()
+            return q.quote_number if q else None
+        return getattr(obj, "quote_number", None)
+
+    def get_active_quote_status(self, obj):
+        quote_rel = getattr(obj, "quotes", None)
+        if quote_rel:
+            q = quote_rel.order_by("-id").first()
+            return q.status if q else None
+        return None
 
     def get_service_title(self, obj):
         return obj.issue_title or obj.service_category
@@ -616,6 +765,20 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             return None
         offer = self._get_emp_offer(obj, emp)
         return offer.id if offer else None
+
+    def get_wave_id(self, obj):
+        emp = self._get_context_emp()
+        if not emp:
+            return None
+        offer = self._get_emp_offer(obj, emp)
+        return str(offer.wave_id) if (offer and getattr(offer, "wave_id", None)) else None
+
+    def get_wave_number(self, obj):
+        emp = self._get_context_emp()
+        if not emp:
+            return None
+        offer = self._get_emp_offer(obj, emp)
+        return getattr(offer, "wave_number", None) if offer else None
 
     def get_offered_at(self, obj):
         emp = self._get_context_emp()
@@ -661,8 +824,10 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             "job_id": offer.job_id,
             "employee_id": offer.employee_id,
             "status": "OFFERED",
-            "offered_at": offer.offered_at.isoformat(),
-            "expires_at": offer.expires_at.isoformat(),
+            "wave_id": str(offer.wave_id) if getattr(offer, "wave_id", None) else "",
+            "wave_number": getattr(offer, "wave_number", 1),
+            "offered_at": offer.offered_at.isoformat() if offer.offered_at else "",
+            "expires_at": offer.expires_at.isoformat() if offer.expires_at else "",
             "server_time": timezone.now().isoformat(),
             "is_expired": False,
         }
@@ -765,32 +930,34 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
         if not emp or obj.assigned_employee_id != emp.id:
             return None
 
-        if obj.status not in ["accepted", "on_the_way", "en_route"]:
+        # Cancellation allowed in accepted, on_the_way, en_route, arrived states BEFORE customer OTP verification
+        if obj.status not in ["accepted", "on_the_way", "en_route", "arrived"]:
             return {
                 "can_cancel": False,
+                "cancellation_available": False,
                 "reason": "Not in cancellable state",
-                "remaining_seconds": 0,
+            }
+
+        # Check if customer OTP is already verified
+        from workforce_api.models import PreServiceVerification
+        verification = PreServiceVerification.objects.filter(job=obj).first()
+        if verification and verification.otp_verified:
+            return {
+                "can_cancel": False,
+                "cancellation_available": False,
+                "reason": "Cancellation locked after customer OTP verification",
             }
 
         from service_requests.models import EmployeeJob
-        from django.utils import timezone
-        from datetime import timedelta
-
         emp_job = EmployeeJob.objects.filter(service_request=obj, employee=emp).first()
         accepted_at = (emp_job.accepted_date if emp_job and emp_job.accepted_date else None) or obj.updated_at
-        if not accepted_at:
-            return None
-
-        deadline = accepted_at + timedelta(minutes=5)
-        now = timezone.now()
-        remaining_seconds = max(0, int((deadline - now).total_seconds()))
-        can_cancel = remaining_seconds > 0
 
         return {
-            "can_cancel": can_cancel,
-            "accepted_at": accepted_at.isoformat(),
-            "cancellation_deadline": deadline.isoformat(),
-            "remaining_seconds": remaining_seconds,
+            "can_cancel": True,
+            "cancellation_available": True,
+            "accepted_at": accepted_at.isoformat() if accepted_at else None,
+            "cancellation_deadline": None,
+            "remaining_seconds": None,
         }
 
 
@@ -949,6 +1116,339 @@ class EmployeeSavedLocationSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
+
+
+# ─── Estimation & Quotation Serializers ───────────────────────────────────────
+
+class WorkforceRateCardSerializer(serializers.ModelSerializer):
+    class Meta:
+        from .models import WorkforceRateCard
+        model = WorkforceRateCard
+        fields = [
+            "id",
+            "service_id",
+            "service_category",
+            "service_name",
+            "section",
+            "item_name",
+            "description",
+            "unit",
+            "default_rate",
+            "default_cost",
+            "tax_rate",
+            "max_discount_percent",
+            "is_active",
+            "sort_order",
+        ]
+
+
+class WorkforceQuoteItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        from .models import WorkforceQuoteItem
+        model = WorkforceQuoteItem
+        fields = [
+            "id",
+            "quote",
+            "section",
+            "name",
+            "description",
+            "item_type",
+            "quantity",
+            "unit",
+            "unit_price",
+            "tax_rate",
+            "discount_amount",
+            "total_amount",
+            "material_source",
+            "is_customer_supplied",
+            "warranty_applicable",
+            "notes",
+            "sort_order",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class WorkforceQuoteMeasurementSerializer(serializers.ModelSerializer):
+    class Meta:
+        from .models import WorkforceQuoteMeasurement
+        model = WorkforceQuoteMeasurement
+        fields = [
+            "id",
+            "quote",
+            "name",
+            "measurement_type",
+            "length",
+            "width",
+            "height",
+            "area",
+            "quantity",
+            "unit",
+            "notes",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class WorkforceQuotePhotoSerializer(serializers.ModelSerializer):
+    class Meta:
+        from .models import WorkforceQuotePhoto
+        model = WorkforceQuotePhoto
+        fields = [
+            "id",
+            "quote",
+            "photo_url",
+            "photo_type",
+            "caption",
+            "sort_order",
+            "created_at",
+        ]
+        read_only_fields = ["id", "created_at"]
+
+
+class WorkforcePaintingQuoteSerializer(serializers.ModelSerializer):
+    class Meta:
+        from .models import WorkforcePaintingQuote
+        model = WorkforcePaintingQuote
+        fields = [
+            "id",
+            "property_type",
+            "rooms_detail",
+            "area_sqft",
+            "surface_condition",
+            "existing_paint_condition",
+            "paint_type",
+            "brand_grade",
+            "number_of_coats",
+            "requires_putty",
+            "requires_priming",
+            "crack_treatment",
+            "waterproofing_needed",
+            "scaffolding_required",
+            "color_code",
+            "notes",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class WorkforceMasonQuoteSerializer(serializers.ModelSerializer):
+    class Meta:
+        from .models import WorkforceMasonQuote
+        model = WorkforceMasonQuote
+        fields = [
+            "id",
+            "work_type",
+            "length",
+            "width",
+            "height",
+            "area_sqft",
+            "estimated_duration_days",
+            "requires_demolition",
+            "debris_disposal_included",
+            "structural_impact",
+            "access_difficulty",
+            "labour_count",
+            "materials_needed",
+            "notes",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class WorkforceQuoteListSerializer(serializers.ModelSerializer):
+    """Lightweight list serializer for Estimates page."""
+    customer_name = serializers.SerializerMethodField()
+    technician_name = serializers.SerializerMethodField()
+    items_count = serializers.SerializerMethodField()
+    is_structurally_cleared = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        from .models import WorkforceQuote
+        model = WorkforceQuote
+        fields = [
+            "id",
+            "quote_number",
+            "quote_version",
+            "job_id",
+            "work_job_id",
+            "title",
+            "description",
+            "service_category",
+            "service_name",
+            "customer_name",
+            "technician_name",
+            "status",
+            "subtotal_amount",
+            "discount_amount",
+            "tax_amount",
+            "total_amount",
+            "net_payable",
+            "inspection_fee",
+            "inspection_fee_adjusted",
+            "items_count",
+            "structural_impact",
+            "is_structurally_cleared",
+            "valid_until",
+            "sent_at",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_customer_name(self, obj):
+        if obj.job and obj.job.customer_name:
+            return obj.job.customer_name
+        if obj.customer:
+            return f"{obj.customer.first_name} {obj.customer.last_name}".strip() or obj.customer.username
+        return "Customer"
+
+    def get_technician_name(self, obj):
+        if obj.technician:
+            if obj.technician.user:
+                return obj.technician.user.get_full_name() or obj.technician.user.username
+            return obj.technician.employee_id or "Technician"
+        return ""
+
+    def get_items_count(self, obj):
+        return obj.items.count()
+
+
+class WorkforceQuoteDetailSerializer(serializers.ModelSerializer):
+    """Comprehensive detail serializer for quotation builder, editing drafts, and review."""
+    items = WorkforceQuoteItemSerializer(many=True, read_only=True)
+    measurements = WorkforceQuoteMeasurementSerializer(many=True, read_only=True)
+    photos = WorkforceQuotePhotoSerializer(many=True, read_only=True)
+    painting_details = WorkforcePaintingQuoteSerializer(read_only=True)
+    mason_details = WorkforceMasonQuoteSerializer(read_only=True)
+    customer_name = serializers.SerializerMethodField()
+    technician_name = serializers.SerializerMethodField()
+    is_structurally_cleared = serializers.BooleanField(read_only=True)
+    job_details = serializers.SerializerMethodField()
+
+    class Meta:
+        from .models import WorkforceQuote
+        model = WorkforceQuote
+        fields = [
+            "id",
+            "quote_number",
+            "quote_version",
+            "job_id",
+            "work_job_id",
+            "job_details",
+            "title",
+            "description",
+            "service_category",
+            "service_name",
+            "customer_name",
+            "technician_name",
+            "status",
+            "estimated_labor_cost",
+            "estimated_materials_cost",
+            "subtotal_amount",
+            "discount_amount",
+            "tax_amount",
+            "total_amount",
+            "inspection_fee",
+            "inspection_fee_adjusted",
+            "net_payable",
+            "valid_until",
+            "decision_token",
+            "customer_decision",
+            "customer_decided_at",
+            "customer_decline_reason",
+            "customer_notes",
+            "structural_impact",
+            "is_structurally_cleared",
+            "admin_cleared_at",
+            "admin_clearance_notes",
+            "sent_at",
+            "items",
+            "measurements",
+            "photos",
+            "painting_details",
+            "mason_details",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_customer_name(self, obj):
+        if obj.job and obj.job.customer_name:
+            return obj.job.customer_name
+        if obj.customer:
+            return f"{obj.customer.first_name} {obj.customer.last_name}".strip() or obj.customer.username
+        return "Customer"
+
+    def get_technician_name(self, obj):
+        if obj.technician:
+            if obj.technician.user:
+                return obj.technician.user.get_full_name() or obj.technician.user.username
+            return obj.technician.employee_id or "Technician"
+        return ""
+
+    def get_job_details(self, obj):
+        if not obj.job:
+            return None
+        return {
+            "id": obj.job.id,
+            "request_id": obj.job.request_id,
+            "address": obj.job.address,
+            "preferred_date": str(obj.job.preferred_date) if obj.job.preferred_date else None,
+            "preferred_time": obj.job.preferred_time,
+            "issue_title": obj.job.issue_title,
+        }
+
+
+class WorkforceCustomerQuoteSerializer(serializers.ModelSerializer):
+    """Sanitized customer view of a quotation."""
+    items = WorkforceQuoteItemSerializer(many=True, read_only=True)
+    measurements = WorkforceQuoteMeasurementSerializer(many=True, read_only=True)
+    photos = WorkforceQuotePhotoSerializer(many=True, read_only=True)
+    painting_details = WorkforcePaintingQuoteSerializer(read_only=True)
+    mason_details = WorkforceMasonQuoteSerializer(read_only=True)
+    technician_name = serializers.SerializerMethodField()
+
+    class Meta:
+        from .models import WorkforceQuote
+        model = WorkforceQuote
+        fields = [
+            "quote_number",
+            "quote_version",
+            "title",
+            "description",
+            "service_category",
+            "service_name",
+            "technician_name",
+            "status",
+            "subtotal_amount",
+            "discount_amount",
+            "tax_amount",
+            "total_amount",
+            "inspection_fee",
+            "inspection_fee_adjusted",
+            "net_payable",
+            "valid_until",
+            "decision_token",
+            "customer_decision",
+            "customer_decided_at",
+            "items",
+            "measurements",
+            "photos",
+            "painting_details",
+            "mason_details",
+            "created_at",
+        ]
+
+    def get_technician_name(self, obj):
+        if obj.technician:
+            if obj.technician.user:
+                return obj.technician.user.get_full_name() or "Assigned Expert"
+            return "Assigned Expert"
+        return "CalTrack Specialist"
+
 
 
 
