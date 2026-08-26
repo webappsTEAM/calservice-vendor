@@ -13,6 +13,7 @@ Public API (preferred entry points for all callers):
 """
 import uuid
 import logging
+import re
 from datetime import timedelta
 from typing import List, Dict, Any, Tuple, Optional
 
@@ -72,6 +73,30 @@ def get_booking_discovery_scope(company_id: Optional[int] = None) -> Q:
     return Q()
 
 # Explicit canonical alias dictionary covering normal and specialized categories
+GENERIC_STOP_WORDS = {
+    "repair", "repairs", "cleaning", "clean", "service", "services",
+    "installation", "maintenance", "work", "job", "and", "the", "for",
+    "fix", "fitting", "uninstallation", "regular", "deep", "inspection",
+    "basic", "standard", "general", "diagnostics", "gas", "refill", "setup"
+}
+
+CANONICAL_DOMAINS = {
+    "electrical": {"electrical", "electrician", "switchboard", "wiring", "wire", "fuse", "socket", "fan", "inverter", "light", "lighting", "geyser", "5 15a"},
+    "plumbing": {"plumbing", "plumber", "pipe", "drainage", "tap", "leakage", "leak", "sanitary", "toilet", "commode", "flush", "sink", "faucet", "water tank"},
+    "hvac": {"hvac", "ac", "air conditioning", "cooling", "refrigerant", "copper piping", "split ac", "window ac"},
+    "kitchen_cleaning": {"kitchen cleaning", "kitchen", "chimney", "empty kitchen", "full kitchen"},
+    "bathroom_cleaning": {"bathroom cleaning", "bathroom", "toilet cleaning"},
+    "sofa_cleaning": {"sofa cleaning", "sofa", "couch", "cushion", "fabric sofa"},
+    "house_cleaning": {"full house cleaning", "house cleaning", "home cleaning", "full home deep cleaning", "classic 1 bhk", "1 bhk", "2 bhk", "3 bhk"},
+    "painting": {"painting", "paintings", "painter", "wall painting", "interior painting", "exterior painting", "waterproofing", "texture decor", "wood and metal", "whitewash"},
+    "carpentry": {"carpentry", "carpenter", "furniture", "wood work", "door", "cupboard", "cabinet", "lock", "drill", "hang"},
+    "pest_control": {"pest control", "cockroach", "termite", "bed bugs", "ants", "pest", "mosquito", "rodent"},
+    "appliance": {"refrigerator", "fridge", "freezer", "washing machine", "washer", "dryer", "tv", "television", "microwave", "oven", "water purifier", "ro service", "ro filter"},
+    "masonry": {"masonry", "mason", "brick", "block", "plastering", "demolition", "wall construction", "tile", "civil work"},
+    "transport": {"goods and transport", "goods transport", "packers and movers", "transport", "logistics", "truck", "tempo", "two wheeler", "shifting", "relocation", "tata ace", "delivery", "mini truck", "two wheeler delivery"},
+    "groceries": {"vegetables", "groceries", "farm fresh", "sweet potato", "amlaa"},
+}
+
 EXPLICIT_SERVICE_ALIASES = {
     "hvac": {"hvac", "ac", "air conditioning", "ac service", "ac repair", "ac installation", "ac gas", "ac repair and diagnostics", "ac service and cleaning", "ac gas and refrigerant", "ac installation and uninstallation"},
     "ac": {"hvac", "ac", "air conditioning", "ac service", "ac repair", "ac installation", "ac gas", "ac repair and diagnostics", "ac service and cleaning", "ac gas and refrigerant", "ac installation and uninstallation"},
@@ -95,10 +120,10 @@ EXPLICIT_SERVICE_ALIASES = {
     "ants and bed bugs control": {"ants and bed bugs control", "ants", "bed bugs", "pest control"},
     "termite control": {"termite control", "termite", "pest control"},
     "cleaning": {"cleaning", "kitchen cleaning", "bathroom cleaning", "full house cleaning", "sofa cleaning", "deep cleaning", "house cleaning"},
-    "kitchen cleaning": {"kitchen cleaning", "cleaning", "deep cleaning"},
-    "bathroom cleaning": {"bathroom cleaning", "cleaning", "deep cleaning"},
+    "kitchen cleaning": {"kitchen cleaning", "kitchen", "empty kitchen cleaning", "full kitchen cleaning", "full kitchen cleaning – deep clean"},
+    "bathroom cleaning": {"bathroom cleaning", "bathroom", "toilet cleaning"},
     "full house cleaning": {"full house cleaning", "cleaning", "deep cleaning", "house cleaning"},
-    "sofa cleaning": {"sofa cleaning", "cleaning", "couch cleaning"},
+    "sofa cleaning": {"sofa cleaning", "couch cleaning"},
     "two wheeler": {"two wheeler", "bike", "scooter", "motorcycle", "bike repair", "two wheeler repair"},
     "goods and transport": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting", "commercial transport", "packers and movers", "packer and mover", "packers movers", "packer mover", "house shifting", "home shifting", "office shifting", "mini truck", "tempo", "goods transport truck", "goods transport two wheeler", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
     "goods transport": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting", "commercial transport", "packers and movers", "packer and mover", "packers movers", "packer mover", "house shifting", "home shifting", "office shifting", "mini truck", "tempo", "goods transport truck", "goods transport two wheeler", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
@@ -130,8 +155,8 @@ EXPLICIT_SERVICE_ALIASES = {
     "cctv": {"security", "cctv", "security and cctv", "cctv installation", "cctv repair", "camera installation"},
     "masonry": {"masonry", "mason", "brick work", "block work", "plastering", "wall repair", "civil work", "brick and block work", "brick wall construction", "wall and partition construction"},
     "brick wall construction": {"masonry", "mason", "brick work", "block work", "plastering", "wall repair", "civil work", "brick and block work", "brick wall construction", "wall and partition construction"},
-    "general": {"general", "general maintenance", "handyman", "maintenance", "repair"},
-    "general maintenance": {"general", "general maintenance", "handyman", "maintenance", "repair"},
+    "general": {"general", "general maintenance", "handyman", "maintenance"},
+    "general maintenance": {"general", "general maintenance", "handyman", "maintenance"},
     "vegetables_groceries": {"vegetables_groceries", "vegetables and groceries", "vegetables", "vegetable", "groceries", "grocery", "farm fresh", "farm fresh vegetable", "groceries and essentials", "sweet potato", "sweet potato (sakkaraivalli)", "amlaa", "amla", "nellikaai"},
     "vegetables and groceries": {"vegetables_groceries", "vegetables and groceries", "vegetables", "vegetable", "groceries", "grocery", "farm fresh", "farm fresh vegetable", "groceries and essentials", "sweet potato", "sweet potato (sakkaraivalli)", "amlaa", "amla", "nellikaai"},
     "vegetables": {"vegetables_groceries", "vegetables and groceries", "vegetables", "vegetable", "groceries", "grocery", "farm fresh", "farm fresh vegetable", "groceries and essentials", "sweet potato", "sweet potato (sakkaraivalli)", "amlaa", "amla", "nellikaai"},
@@ -139,9 +164,9 @@ EXPLICIT_SERVICE_ALIASES = {
     "farm fresh vegetable": {"vegetables_groceries", "vegetables and groceries", "vegetables", "vegetable", "groceries", "grocery", "farm fresh", "farm fresh vegetable", "groceries and essentials", "sweet potato", "sweet potato (sakkaraivalli)", "amlaa", "amla", "nellikaai"},
     "sweet potato (sakkaraivalli)": {"vegetables_groceries", "vegetables and groceries", "vegetables", "vegetable", "groceries", "grocery", "farm fresh", "farm fresh vegetable", "sweet potato", "sweet potato (sakkaraivalli)"},
     "amlaa (nellikaai)": {"vegetables_groceries", "vegetables and groceries", "vegetables", "vegetable", "groceries", "grocery", "farm fresh", "farm fresh vegetable", "amlaa", "amla", "nellikaai"},
-    "kitchen_cleaning": {"kitchen_cleaning", "kitchen cleaning", "cleaning", "deep cleaning", "empty kitchen cleaning", "full kitchen cleaning", "full kitchen cleaning – deep clean"},
-    "empty kitchen cleaning": {"kitchen_cleaning", "kitchen cleaning", "cleaning", "deep cleaning", "empty kitchen cleaning", "full kitchen cleaning"},
-    "full kitchen cleaning – deep clean": {"kitchen_cleaning", "kitchen cleaning", "cleaning", "deep cleaning", "empty kitchen cleaning", "full kitchen cleaning", "full kitchen cleaning – deep clean"},
+    "kitchen_cleaning": {"kitchen_cleaning", "kitchen cleaning", "empty kitchen cleaning", "full kitchen cleaning", "full kitchen cleaning – deep clean"},
+    "empty kitchen cleaning": {"kitchen_cleaning", "kitchen cleaning", "empty kitchen cleaning", "full kitchen cleaning"},
+    "full kitchen cleaning – deep clean": {"kitchen_cleaning", "kitchen cleaning", "empty kitchen cleaning", "full kitchen cleaning", "full kitchen cleaning – deep clean"},
     "goods_transport_two_wheeler": {"goods_transport_two_wheeler", "two wheeler", "two-wheeler delivery", "two wheeler delivery", "goods and transport", "goods transport", "transport", "delivery", "packer and mover", "packers and movers"},
     "goods_transport_truck": {"goods_transport_truck", "truck", "mini truck delivery", "mini truck", "tempo", "tata ace", "goods and transport", "goods transport", "transport", "delivery", "packer and mover", "packers and movers"},
     "two-wheeler delivery — 2 wheeler (general goods)": {"goods_transport_two_wheeler", "two wheeler", "two-wheeler delivery", "two wheeler delivery", "goods and transport", "goods transport", "transport", "delivery"},
@@ -161,6 +186,23 @@ def normalize_service_name(name: str) -> str:
     s = s.replace("/", " ").replace("\\", " ").replace("+", " and ")
     s = s.replace("&", " and ")
     return " ".join(s.split())
+
+
+def detect_service_domains(text: str) -> Set[str]:
+    """
+    Identifies the canonical service domain(s) for a given text by regex word-boundary
+    matching against CANONICAL_DOMAINS.
+    """
+    if not text:
+        return set()
+    clean = normalize_service_name(text)
+    matched_domains = set()
+    for dom, kws in CANONICAL_DOMAINS.items():
+        for kw in kws:
+            pattern = rf"\b{re.escape(kw)}\b"
+            if re.search(pattern, clean):
+                matched_domains.add(dom)
+    return matched_domains
 
 
 def resolve_service_identifiers(category_raw: Any, issue_title_raw: Any, cart_data: Any) -> List[str]:
@@ -197,6 +239,8 @@ def resolve_service_identifiers(category_raw: Any, issue_title_raw: Any, cart_da
                         terms.append(svc_obj.name)
                     if hasattr(svc_obj, "slug") and svc_obj.slug and svc_obj.slug not in terms:
                         terms.append(svc_obj.slug)
+                    if getattr(svc_obj, "category", None) and svc_obj.category.name not in terms:
+                        terms.append(svc_obj.category.name)
             except Exception as e:
                 logger.debug(f"[SERVICE_ID_RESOLVE_ERR] {e}")
 
@@ -208,13 +252,27 @@ def resolve_service_identifiers(category_raw: Any, issue_title_raw: Any, cart_da
             if isinstance(item, dict):
                 _add_term(item.get("service_name"))
                 _add_term(item.get("category"))
+                _add_term(item.get("categoryName"))
                 _add_term(item.get("title"))
                 _add_term(item.get("name"))
                 _add_term(item.get("service_id"))
                 _add_term(item.get("category_id"))
+                item_id = item.get("id")
+                if item_id:
+                    _add_term(item_id)
+                    try:
+                        from service_requests.models import Service
+                        svc = Service.objects.filter(slug=str(item_id)).first()
+                        if svc:
+                            _add_term(svc.name)
+                            if svc.category:
+                                _add_term(svc.category.name)
+                    except Exception:
+                        pass
     elif isinstance(cart_data, dict):
         _add_term(cart_data.get("service_name"))
         _add_term(cart_data.get("category"))
+        _add_term(cart_data.get("categoryName"))
         _add_term(cart_data.get("title"))
         _add_term(cart_data.get("name"))
 
@@ -224,40 +282,84 @@ def resolve_service_identifiers(category_raw: Any, issue_title_raw: Any, cart_da
 def canonical_service_match(requested_service: str, approved_services: List[str], verified_skills: List[str]) -> Tuple[bool, str, str]:
     """
     Evaluates whether a requested service matches an employee's authorized services or verified skills.
+    Uses database-authoritative domain matching and domain keyword extraction.
+    Generic words (e.g. 'repair', 'cleaning', 'service', 'installation') CANNOT independently establish a match.
     Returns (is_match, match_method, matched_term).
     """
     if not requested_service:
         return True, "EMPTY_SERVICE_BYPASS", ""
 
     req_clean = normalize_service_name(requested_service)
-    req_words = set(w for w in req_clean.split() if len(w) >= 2)
+    if not req_clean:
+        return False, "EMPTY_SERVICE", ""
 
-    # 1. Check exact or direct match against approved employee services
+    # 1. Exact match against approved employee services
     for it in approved_services:
         if not it:
             continue
         it_clean = normalize_service_name(it)
-        if req_clean == it_clean or req_clean in it_clean or it_clean in req_clean:
-            return True, "EXACT_OR_SUBSTRING_SERVICE", it
+        if req_clean == it_clean:
+            return True, "EXACT_SERVICE", it
 
-    # 2. Check verified skills
+    # 2. Exact match against verified skills
     for sk in verified_skills:
         if not sk:
             continue
         sk_clean = normalize_service_name(sk)
-        if req_clean == sk_clean or req_clean in sk_clean or sk_clean in req_clean:
-            return True, "VERIFIED_SKILL_MATCH", sk
+        if req_clean == sk_clean:
+            return True, "EXACT_SKILL", sk
 
-    # 3. Check explicit canonical alias table
+    # 3. Domain-based matching (Domain Authority)
+    req_domains = detect_service_domains(req_clean)
+    if req_domains:
+        for it in approved_services:
+            if not it:
+                continue
+            it_domains = detect_service_domains(it)
+            shared = req_domains.intersection(it_domains)
+            if shared:
+                return True, f"DOMAIN_MATCH_{list(shared)[0].upper()}", it
+
+        for sk in verified_skills:
+            if not sk:
+                continue
+            sk_domains = detect_service_domains(sk)
+            shared = req_domains.intersection(sk_domains)
+            if shared:
+                return True, f"DOMAIN_MATCH_SKILL_{list(shared)[0].upper()}", sk
+
+    # 4. Non-generic substring match (guarded by domain check and stop-word protection)
+    if req_clean not in GENERIC_STOP_WORDS:
+        for it in approved_services:
+            if not it:
+                continue
+            it_clean = normalize_service_name(it)
+            if it_clean not in GENERIC_STOP_WORDS:
+                if (len(req_clean) >= 4 and req_clean in it_clean) or (len(it_clean) >= 4 and it_clean in req_clean):
+                    it_doms = detect_service_domains(it_clean)
+                    if not req_domains or not it_doms or req_domains.intersection(it_doms):
+                        return True, "NON_GENERIC_SUBSTRING_SERVICE", it
+
+        for sk in verified_skills:
+            if not sk:
+                continue
+            sk_clean = normalize_service_name(sk)
+            if sk_clean not in GENERIC_STOP_WORDS:
+                if (len(req_clean) >= 4 and req_clean in sk_clean) or (len(sk_clean) >= 4 and sk_clean in req_clean):
+                    sk_doms = detect_service_domains(sk_clean)
+                    if not req_domains or not sk_doms or req_domains.intersection(sk_doms):
+                        return True, "NON_GENERIC_SUBSTRING_SKILL", sk
+
+    # 5. Explicit alias table matching (full alias match only)
     for alias_key, alias_group in EXPLICIT_SERVICE_ALIASES.items():
-        if req_clean == alias_key or req_clean in alias_group or any(req_word in alias_group for req_word in req_words):
+        if req_clean == alias_key or req_clean in alias_group:
             for it in approved_services:
                 it_clean = normalize_service_name(it)
-                if it_clean in alias_group or any(w in alias_group for w in it_clean.split() if len(w) >= 2):
+                if it_clean in alias_group and it_clean not in GENERIC_STOP_WORDS:
                     return True, "EXPLICIT_ALIAS_SERVICE", it
             for sk in verified_skills:
                 sk_clean = normalize_service_name(sk)
-                if sk_clean in alias_group or any(w in alias_group for w in sk_clean.split() if len(w) >= 2):
+                if sk_clean in alias_group and sk_clean not in GENERIC_STOP_WORDS:
                     return True, "EXPLICIT_ALIAS_SKILL", sk
 
     return False, "NO_MATCH", ""

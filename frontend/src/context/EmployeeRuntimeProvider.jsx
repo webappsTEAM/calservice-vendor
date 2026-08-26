@@ -96,8 +96,8 @@ export function EmployeeRuntimeProvider({ children }) {
     selectedJobRef.current = selectedJob;
   }, [selectedJob]);
 
-  const hasActiveJob = useMemo(() => {
-    return activeJobs.some((j) => {
+  const activeAssignedJob = useMemo(() => {
+    return activeJobs.find((j) => {
       const st = (j.status || j.job_status || '').toLowerCase();
       const isAssigned = Boolean(
         j.is_assigned_to_current_employee ||
@@ -105,8 +105,11 @@ export function EmployeeRuntimeProvider({ children }) {
         j.assigned_employee_id === user?.id
       );
       return isAssigned && ACTIVE_QUEUE_STATUSES.includes(st);
-    });
+    }) || null;
   }, [activeJobs, user?.id, user?.employee_id]);
+
+  const hasActiveJob = Boolean(activeAssignedJob);
+
 
   const incomingOffers = useMemo(() => {
     const currentNow = Date.now() + (serverTimeOffset || 0);
@@ -195,7 +198,8 @@ export function EmployeeRuntimeProvider({ children }) {
           if (Array.isArray(jobsData)) {
             setActiveJobs(jobsData);
 
-            const serverTimeStr = jobsData[0]?.server_time || jobsData[0]?.active_offer?.server_time;
+            const jobWithServerTime = jobsData.find((j) => j.server_time || j.active_offer?.server_time);
+            const serverTimeStr = jobWithServerTime?.server_time || jobWithServerTime?.active_offer?.server_time;
             if (serverTimeStr) {
               const sTime = Date.parse(serverTimeStr);
               if (!isNaN(sTime)) {
@@ -245,18 +249,29 @@ export function EmployeeRuntimeProvider({ children }) {
 
               if (!prev) {
                 if (currentOffer) return currentOffer;
-                return findActiveJob() || jobsData[0] || null;
+                return findActiveJob() || null;
               }
               const updated = jobsData.find((j) => j.id === prev.id);
               if (updated) {
+                const isOffer = (updated.is_offer === true || updated.active_offer?.status === 'OFFERED') &&
+                  !updated.active_offer?.is_expired &&
+                  !updated.is_assigned_to_current_employee;
+                if (isOffer) {
+                  return updated;
+                }
                 const st = (updated.status || updated.job_status || '').toLowerCase();
-                if (ACTIVE_QUEUE_STATUSES.includes(st)) {
+                const isAssigned = Boolean(
+                  updated.is_assigned_to_current_employee ||
+                  updated.assigned_employee_id === user?.employee_id ||
+                  updated.assigned_employee_id === user?.id
+                );
+                if (isAssigned && ACTIVE_QUEUE_STATUSES.includes(st)) {
                   return updated;
                 }
               }
-              // If prev was completed or removed from active queue, pick next active job or offer or null
+              // If prev was completed, cancelled, expired or removed from active queue, pick next authoritative offer or active job, or null
               if (currentOffer) return currentOffer;
-              return findActiveJob() || jobsData[0] || null;
+              return findActiveJob() || null;
             });
             return jobsData;
           }
@@ -823,6 +838,7 @@ export function EmployeeRuntimeProvider({ children }) {
       incomingOffer,
       incomingOffers,
       hasActiveJob,
+      activeAssignedJob,
       isJobsLoading,
       isCompletedLoading,
       jobsError,
@@ -877,6 +893,7 @@ export function EmployeeRuntimeProvider({ children }) {
       incomingOffer,
       incomingOffers,
       hasActiveJob,
+      activeAssignedJob,
       isJobsLoading,
       isCompletedLoading,
       jobsError,

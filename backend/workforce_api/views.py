@@ -1313,43 +1313,48 @@ class WorkforceJobListView(APIView):
                 ).exclude(
                     status__in=["REJECTED", "CANCELLED", "COMPLETED", "EMPLOYEE_CANCELLED"]
                 ).values_list("service_request_id", flat=True))
+                completed_emp_job_sr_ids = list(EmployeeJob.objects.filter(
+                    employee=emp,
+                    status="COMPLETED"
+                ).values_list("service_request_id", flat=True))
             except Exception:
                 emp_job_sr_ids = []
+                completed_emp_job_sr_ids = []
 
-            # Canonical query definitions
+            # Canonical query definitions: EXCLUSIVELY authoritative explicit employee relationships
+            # 1. Explicitly assigned to current employee with active queue status
             assigned_active_qs = Q(
                 assigned_employee=emp,
                 status__in=ACTIVE_QUEUE_STATUSES
             )
+            # 2. Explicitly completed by current employee
             completed_qs = Q(
                 assigned_employee=emp,
-                status__in=["completed", "cancelled"]
+                status="completed"
+            ) | (
+                Q(id__in=completed_emp_job_sr_ids) & Q(status="completed")
             )
+            # 3. Explicit active unexpired offer to current employee
             offered_qs = Q(
                 id__in=offered_job_ids
             )
-            employee_job_qs = Q(
-                id__in=emp_job_sr_ids
+            # 4. Explicit active EmployeeJob belonging to current employee
+            employee_job_active_qs = (
+                Q(id__in=emp_job_sr_ids) & Q(status__in=ACTIVE_QUEUE_STATUSES)
             )
 
             status_filter = str(request.query_params.get("status", "active")).lower().strip()
 
             if status_filter == "completed":
-                qs = ServiceRequest.objects.filter(
-                    Q(assigned_employee=emp, status="completed") |
-                    (Q(id__in=emp_job_sr_ids) & Q(status="completed"))
-                )
+                qs = ServiceRequest.objects.filter(completed_qs)
             elif status_filter == "all":
                 qs = ServiceRequest.objects.filter(
-                    assigned_active_qs | completed_qs | offered_qs | employee_job_qs
+                    assigned_active_qs | completed_qs | offered_qs | employee_job_active_qs
                 )
             else: # "active" default
                 qs = ServiceRequest.objects.filter(
-                    assigned_active_qs | offered_qs | (employee_job_qs & Q(status__in=ACTIVE_QUEUE_STATUSES))
+                    assigned_active_qs | offered_qs | employee_job_active_qs
                 ).exclude(status__in=["completed", "cancelled"])
-
-            if emp.company:
-                qs = qs.filter(Q(company=emp.company) | Q(company__isnull=True) | Q(assigned_employee=emp) | Q(id__in=offered_job_ids))
 
             qs = qs.select_related("customer", "assigned_employee", "assigned_employee__user", "company")
             qs = qs.distinct().order_by("-updated_at", "-created_at")

@@ -141,6 +141,7 @@ export function EmployeeDashboardPage() {
     incomingOffer,
     incomingOffers: runtimeIncomingOffers,
     hasActiveJob,
+    activeAssignedJob,
     isJobsLoading: isRuntimeJobsLoading,
     refreshActiveJobs,
     refreshCompletedJobs,
@@ -679,7 +680,7 @@ export function EmployeeDashboardPage() {
 
     const handleToggleOnline = async () => {
       if (hasActiveJob) {
-        const activeJobRef = activeJobs[0]?.request_id || (activeJobs[0]?.id ? `SR-${activeJobs[0].id}` : 'your active assignment');
+        const activeJobRef = activeAssignedJob?.request_id || (activeAssignedJob?.id ? `SR-${activeAssignedJob.id}` : 'your active assignment');
         setError(`Cannot go offline while actively working on ${activeJobRef}. Please complete or cancel the active job first.`);
         return;
       }
@@ -1062,7 +1063,7 @@ export function EmployeeDashboardPage() {
                 disabled={hasActiveJob || isTogglingOnline}
                 title={
                   hasActiveJob
-                    ? `Locked Online: Currently active on assignment (${activeJobs[0]?.request_id || 'active job'})`
+                    ? `Locked Online: Currently active on assignment (${activeAssignedJob?.request_id || 'active job'})`
                     : isTogglingOnline
                       ? 'Updating availability status...'
                       : (isOnline ? 'Click to switch status to OFFLINE' : 'Click to switch status to ONLINE')
@@ -1697,7 +1698,7 @@ export function EmployeeDashboardPage() {
                   <div className="flex items-center gap-2.5">
                     <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse shrink-0" />
                     <span>
-                      <strong>ACTIVE ASSIGNMENT IN PROGRESS:</strong> You are currently working on <strong>{activeJobs[0].request_id || `SR-${activeJobs[0].id}`}</strong> ({activeJobs[0].service_title || activeJobs[0].service_category}). Complete current service to receive new job dispatches.
+                      <strong>ACTIVE ASSIGNMENT IN PROGRESS:</strong> You are currently working on <strong>{activeAssignedJob?.request_id || (activeAssignedJob?.id ? `SR-${activeAssignedJob.id}` : 'Active Job')}</strong> ({activeAssignedJob?.service_title || activeAssignedJob?.service_category}). Complete current service to receive new job dispatches.
                     </span>
                   </div>
                   <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
@@ -1953,19 +1954,19 @@ export function EmployeeDashboardPage() {
                             Active Assignment In Progress
                           </h2>
                           <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-500/30 text-blue-100 border border-blue-400/30">
-                            {activeJobs[0]?.status?.toUpperCase() || 'BUSY'}
+                            {activeAssignedJob?.status?.toUpperCase() || 'BUSY'}
                           </span>
                         </div>
                         <p className="text-[11px] text-slate-300 mt-0.5 font-medium">
-                          You have an active job assignment ({activeJobs[0]?.request_id || `Job #${activeJobs[0]?.id}`}). New dispatch offers are paused until this job is completed.
+                          You have an active job assignment ({activeAssignedJob?.request_id || (activeAssignedJob?.id ? `Job #${activeAssignedJob.id}` : 'Active Job')}). New dispatch offers are paused until this job is completed.
                         </p>
                       </div>
                     </div>
-                    {activeJobs[0] && (
+                    {activeAssignedJob && (
                       <button
                         type="button"
                         onClick={() => {
-                          setSelectedJob(activeJobs[0]);
+                          setSelectedJob(activeAssignedJob);
                           const el = document.getElementById('selected-job-workspace');
                           if (el) el.scrollIntoView({ behavior: 'smooth' });
                         }}
@@ -2136,8 +2137,8 @@ export function EmployeeDashboardPage() {
                     type="button"
                     onClick={() => {
                       setJobQueueTab('active');
-                      const target = activeJobs.find((j) => j.id === selectedJob?.id) || activeJobs[0] || null;
-                      if (target) setSelectedJob(target);
+                      const target = activeJobs.find((j) => j.id === selectedJob?.id) || null;
+                      setSelectedJob(target);
                     }}
                     className={`flex-1 py-1.5 px-2 rounded text-center transition-all cursor-pointer ${jobQueueTab === 'active'
                         ? 'bg-white text-blue-700 shadow-2xs'
@@ -2150,8 +2151,8 @@ export function EmployeeDashboardPage() {
                     type="button"
                     onClick={() => {
                       setJobQueueTab('completed');
-                      const target = completedJobs.find((j) => j.id === selectedJob?.id) || completedJobs[0] || null;
-                      if (target) setSelectedJob(target);
+                      const target = completedJobs.find((j) => j.id === selectedJob?.id) || null;
+                      setSelectedJob(target);
                     }}
                     className={`flex-1 py-1.5 px-2 rounded text-center transition-all cursor-pointer ${jobQueueTab === 'completed'
                         ? 'bg-white text-emerald-700 shadow-2xs'
@@ -2164,8 +2165,8 @@ export function EmployeeDashboardPage() {
                     type="button"
                     onClick={() => {
                       setJobQueueTab('all');
-                      const target = allJobs.find((j) => j.id === selectedJob?.id) || allJobs[0] || null;
-                      if (target) setSelectedJob(target);
+                      const target = allJobs.find((j) => j.id === selectedJob?.id) || null;
+                      setSelectedJob(target);
                     }}
                     className={`py-1.5 px-3 rounded text-center transition-all cursor-pointer ${jobQueueTab === 'all'
                         ? 'bg-white text-slate-900 shadow-2xs'
