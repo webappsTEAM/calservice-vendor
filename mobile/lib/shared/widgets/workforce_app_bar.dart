@@ -80,6 +80,20 @@ class WorkforceAppBar extends ConsumerWidget implements PreferredSizeWidget {
     final photoUrl = profileAsync.valueOrNull?.avatar;
 
     return AppBar(
+      backgroundColor: Colors.transparent,
+      elevation: 0,
+      flexibleSpace: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Color(0xFF0A2540), // Deep Peacock Navy
+              Color(0xFF004E89), // Peacock Blue
+            ],
+          ),
+        ),
+      ),
       titleSpacing: showDrawerMenu ? 0 : AppSpacing.md,
       leading: showDrawerMenu
           ? Builder(
@@ -93,21 +107,23 @@ class WorkforceAppBar extends ConsumerWidget implements PreferredSizeWidget {
       title: Row(
         children: [
           if (showBrand) ...[
-            Container(
-              width: 28,
-              height: 28,
-              decoration: BoxDecoration(
-                color: AppColors.primary,
-                borderRadius: BorderRadius.circular(7),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x332563EB),
-                    blurRadius: 4,
-                    offset: Offset(0, 1),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(7),
+              child: Image.asset(
+                'assets/images/sevo_logo.png',
+                width: 28,
+                height: 28,
+                fit: BoxFit.contain,
+                errorBuilder: (context, error, stackTrace) => Container(
+                  width: 28,
+                  height: 28,
+                  decoration: BoxDecoration(
+                    color: AppColors.primary,
+                    borderRadius: BorderRadius.circular(7),
                   ),
-                ],
+                  child: const Icon(Icons.handyman_rounded, size: 16, color: Colors.white),
+                ),
               ),
-              child: const Icon(Icons.build_rounded, size: 15, color: Colors.white),
             ),
             const SizedBox(width: 8),
             Expanded(
@@ -120,19 +136,32 @@ class WorkforceAppBar extends ConsumerWidget implements PreferredSizeWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w800,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w900,
                       color: Colors.white,
-                      letterSpacing: 0.2,
+                      letterSpacing: 0.5,
                     ),
                   ),
-                  Text(
-                    'WORKFORCE',
-                    style: TextStyle(
-                      fontSize: 9,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.8,
-                      color: Colors.blue.shade200,
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF059669).withValues(alpha: 0.3),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: const Color(0xFF34D399).withValues(alpha: 0.4), width: 0.5),
+                      ),
+                      child: const Text(
+                        'WORKFORCE',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 8.5,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.8,
+                          color: Color(0xFF6EE7B7),
+                        ),
+                      ),
                     ),
                   ),
                 ],
@@ -408,34 +437,37 @@ class _StatusSubBar extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: 6),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.18),
-        border: Border(top: BorderSide(color: Colors.white.withValues(alpha: 0.08))),
+        color: const Color(0xFF071A2E).withValues(alpha: 0.65),
+        border: Border(
+          top: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
+          bottom: BorderSide(color: const Color(0xFF004E89).withValues(alpha: 0.3)),
+        ),
       ),
       child: Row(
         children: [
           Container(
-            width: 7,
-            height: 7,
+            width: 7.5,
+            height: 7.5,
             decoration: BoxDecoration(
               color: statusColor,
               shape: BoxShape.circle,
               boxShadow: [
                 BoxShadow(
-                  color: statusColor.withValues(alpha: 0.6),
-                  blurRadius: 4,
+                  color: statusColor.withValues(alpha: 0.7),
+                  blurRadius: 5,
                   spreadRadius: 1,
                 ),
               ],
             ),
           ),
-          const SizedBox(width: 6),
-          Text(
+          const SizedBox(width: 7),
+          const Text(
             'WORKFORCE STATUS:',
             style: TextStyle(
               fontSize: 10,
               fontWeight: FontWeight.w700,
-              color: Colors.blue.shade100,
-              letterSpacing: 0.4,
+              color: Color(0xFFBAE6FD), // Sky-200 for maximum readability on Peacock
+              letterSpacing: 0.5,
             ),
           ),
           const SizedBox(width: 6),

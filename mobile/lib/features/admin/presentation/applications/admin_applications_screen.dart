@@ -464,12 +464,12 @@ class _AdminApplicationsScreenState
       onTap: onTap,
       borderRadius: BorderRadius.circular(20),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
         decoration: BoxDecoration(
-          color: isSelected ? const Color(0xFFEFF6FF) : const Color(0xFFF1F5F9),
+          color: isSelected ? const Color(0xFFEFF6FF) : const Color(0xFFF8FAFC),
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color: isSelected ? const Color(0xFF2563EB) : const Color(0xFFE2E8F0),
+            color: isSelected ? const Color(0xFF004E89) : const Color(0xFFE2E8F0),
             width: isSelected ? 1.5 : 1.0,
           ),
         ),
@@ -477,8 +477,8 @@ class _AdminApplicationsScreenState
           label,
           style: TextStyle(
             fontSize: 11.5,
-            fontWeight: isSelected ? FontWeight.w800 : FontWeight.w500,
-            color: isSelected ? const Color(0xFF2563EB) : const Color(0xFF475569),
+            fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
+            color: isSelected ? const Color(0xFF004E89) : const Color(0xFF475569),
           ),
         ),
       ),
@@ -534,7 +534,7 @@ class _AdminApplicationsScreenState
                       dense: true,
                       title: const Text('All Services', style: TextStyle(fontWeight: FontWeight.w700)),
                       trailing: _selectedService == 'ALL'
-                          ? const Icon(Icons.check_rounded, color: Color(0xFF2563EB))
+                          ? const Icon(Icons.check_rounded, color: Color(0xFF004E89))
                           : null,
                       onTap: () {
                         setState(() {
@@ -551,7 +551,7 @@ class _AdminApplicationsScreenState
                     dense: true,
                     title: Text(serviceName, style: TextStyle(fontWeight: isSel ? FontWeight.w800 : FontWeight.w500)),
                     trailing: isSel
-                        ? const Icon(Icons.check_rounded, color: Color(0xFF2563EB))
+                        ? const Icon(Icons.check_rounded, color: Color(0xFF004E89))
                         : null,
                     onTap: () {
                       setState(() {
@@ -634,7 +634,7 @@ class _AdminApplicationsScreenState
                 style: const TextStyle(color: Color(0xFF64748B), fontSize: 12.5)),
             const SizedBox(height: 2),
             Text('Requested Value: ${cr.newValue ?? '—'}',
-                style: const TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF2563EB), fontSize: 13)),
+                style: const TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF004E89), fontSize: 13)),
             const SizedBox(height: 14),
             TextField(
               controller: notesController,
@@ -733,7 +733,7 @@ class _AdminApplicationCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppRadius.card),
         border: Border.all(color: const Color(0xFFE2E8F0)),
         boxShadow: const [
-          BoxShadow(color: Color(0x06000000), blurRadius: 4, offset: Offset(0, 1)),
+          BoxShadow(color: Color(0x060A2540), blurRadius: 4, offset: Offset(0, 1.5)),
         ],
       ),
       child: Column(
@@ -744,13 +744,13 @@ class _AdminApplicationCard extends StatelessWidget {
             children: [
               CircleAvatar(
                 radius: 20,
-                backgroundColor: const Color(0xFFEFF6FF),
+                backgroundColor: const Color(0xFF004E89).withValues(alpha: 0.1),
                 child: Text(
                   app.initial,
                   style: const TextStyle(
                     fontSize: 15,
-                    fontWeight: FontWeight.w800,
-                    color: Color(0xFF2563EB),
+                    fontWeight: FontWeight.w900,
+                    color: Color(0xFF004E89),
                   ),
                 ),
               ),
@@ -761,20 +761,44 @@ class _AdminApplicationCard extends StatelessWidget {
                   children: [
                     Text(
                       app.name ?? 'Technician #${app.id}',
-                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
+                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
-                    const SizedBox(height: 1),
-                    Text(
-                      '${app.employeeId ?? 'ID: Pending'}${app.phone != null ? ' • ${app.phone}' : ''}',
-                      style: const TextStyle(
-                        fontSize: 11.5,
-                        color: Color(0xFF64748B),
-                        fontFamily: 'monospace',
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF1F5F9),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            app.employeeId ?? 'ID: Pending',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: Color(0xFF334155),
+                              fontFamily: 'monospace',
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        if (app.phone != null && app.phone!.isNotEmpty) ...[
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              app.phone!,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Color(0xFF64748B),
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ],
                 ),
@@ -793,7 +817,7 @@ class _AdminApplicationCard extends StatelessWidget {
               ),
               Text(
                 '${app.allRequestedServices.length} Selected',
-                style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w800, color: Color(0xFF2563EB)),
+                style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w800, color: Color(0xFF004E89)),
               ),
             ],
           ),
@@ -818,10 +842,11 @@ class _AdminApplicationCard extends StatelessWidget {
               if (app.pendingDocumentsCount > 0) ...[
                 const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
                   decoration: BoxDecoration(
                     color: const Color(0xFFFEF3C7),
                     borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: const Color(0xFFFDE68A), width: 0.8),
                   ),
                   child: Text(
                     '${app.pendingDocumentsCount} Pending',
@@ -833,7 +858,7 @@ class _AdminApplicationCard extends StatelessWidget {
           ),
 
           const SizedBox(height: 10),
-          const Divider(height: 1),
+          const Divider(height: 1, color: Color(0xFFF1F5F9)),
           const SizedBox(height: 8),
 
           // Action
@@ -841,22 +866,27 @@ class _AdminApplicationCard extends StatelessWidget {
             alignment: Alignment.centerRight,
             child: InkWell(
               onTap: onReviewDossier,
-              borderRadius: BorderRadius.circular(4),
-              child: const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                child: Row(
+              borderRadius: BorderRadius.circular(6),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEFF6FF),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: const Color(0xFFBFDBFE)),
+                ),
+                child: const Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      'Review Dossiers',
+                      'Review Full Dossier',
                       style: TextStyle(
-                        fontSize: 12,
+                        fontSize: 11.5,
                         fontWeight: FontWeight.w800,
-                        color: Color(0xFF2563EB),
+                        color: Color(0xFF004E89),
                       ),
                     ),
                     SizedBox(width: 4),
-                    Icon(Icons.arrow_forward_rounded, size: 14, color: Color(0xFF2563EB)),
+                    Icon(Icons.arrow_forward_rounded, size: 13, color: Color(0xFF004E89)),
                   ],
                 ),
               ),
@@ -886,6 +916,9 @@ class _AdminChangeRequestCard extends StatelessWidget {
         color: Colors.white,
         borderRadius: BorderRadius.circular(AppRadius.card),
         border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: const [
+          BoxShadow(color: Color(0x060A2540), blurRadius: 4, offset: Offset(0, 1.5)),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -935,7 +968,7 @@ class _AdminChangeRequestCard extends StatelessWidget {
                     children: [
                       const Text('Requested', style: TextStyle(fontSize: 10, color: Color(0xFF94A3B8))),
                       Text(changeRequest.newValue ?? '—',
-                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Color(0xFF2563EB))),
+                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Color(0xFF004E89))),
                     ],
                   ),
                 ),
@@ -949,7 +982,7 @@ class _AdminChangeRequestCard extends StatelessWidget {
               child: FilledButton(
                 onPressed: onDecide,
                 style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFF2563EB),
+                  backgroundColor: const Color(0xFF004E89),
                   visualDensity: VisualDensity.compact,
                 ),
                 child: const Text('Review / Decide'),

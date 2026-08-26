@@ -43,26 +43,42 @@ class _AdminDrawerState extends ConsumerState<AdminDrawer> {
             Container(
               padding: const EdgeInsets.all(AppSpacing.md),
               decoration: const BoxDecoration(
-                color: Color(0xFF0F172A),
-                border: Border(bottom: BorderSide(color: Color(0xFF1E293B))),
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Color(0xFF0A2540), // Deep Peacock Navy
+                    Color(0xFF004E89), // Peacock Blue
+                  ],
+                ),
+                border: Border(bottom: BorderSide(color: Color(0x33004E89))),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     children: [
-                      Container(
-                        width: 34,
-                        height: 34,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF2563EB),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: const Center(
-                          child: Icon(
-                            Icons.grid_view_rounded,
-                            color: Colors.white,
-                            size: 18,
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Image.asset(
+                          'assets/images/sevo_logo.png',
+                          width: 36,
+                          height: 36,
+                          fit: BoxFit.contain,
+                          errorBuilder: (context, error, stackTrace) => Container(
+                            width: 36,
+                            height: 36,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF2563EB),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const Center(
+                              child: Icon(
+                                Icons.handyman_rounded,
+                                color: Colors.white,
+                                size: 20,
+                              ),
+                            ),
                           ),
                         ),
                       ),
@@ -72,10 +88,10 @@ class _AdminDrawerState extends ConsumerState<AdminDrawer> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text(
-                              'CALSERVICES',
+                              'SEVO',
                               style: TextStyle(
                                 color: Colors.white,
-                                fontSize: 13,
+                                fontSize: 16,
                                 fontWeight: FontWeight.w900,
                                 letterSpacing: 0.8,
                               ),
@@ -87,16 +103,20 @@ class _AdminDrawerState extends ConsumerState<AdminDrawer> {
                                 vertical: 1.5,
                               ),
                               decoration: BoxDecoration(
-                                color: const Color(0xFF1E293B),
+                                color: const Color(0xFF059669).withValues(alpha: 0.35),
                                 borderRadius: BorderRadius.circular(4),
+                                border: Border.all(
+                                  color: const Color(0xFF34D399).withValues(alpha: 0.5),
+                                  width: 0.6,
+                                ),
                               ),
                               child: const Text(
                                 'WORKFORCE ADMIN',
                                 style: TextStyle(
-                                  color: Color(0xFF93C5FD),
-                                  fontSize: 9,
+                                  color: Color(0xFF6EE7B7),
+                                  fontSize: 8.5,
                                   fontWeight: FontWeight.w800,
-                                  letterSpacing: 0.5,
+                                  letterSpacing: 0.6,
                                 ),
                               ),
                             ),
@@ -109,14 +129,14 @@ class _AdminDrawerState extends ConsumerState<AdminDrawer> {
                   Row(
                     children: [
                       CircleAvatar(
-                        radius: 18,
-                        backgroundColor: const Color(0xFF334155),
+                        radius: 19,
+                        backgroundColor: Colors.white.withValues(alpha: 0.15),
                         child: Text(
                           initial,
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 14,
-                            fontWeight: FontWeight.bold,
+                            fontWeight: FontWeight.w900,
                           ),
                         ),
                       ),
@@ -129,8 +149,8 @@ class _AdminDrawerState extends ConsumerState<AdminDrawer> {
                               displayName,
                               style: const TextStyle(
                                 color: Colors.white,
-                                fontSize: 13.5,
-                                fontWeight: FontWeight.w700,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w800,
                               ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
@@ -139,7 +159,7 @@ class _AdminDrawerState extends ConsumerState<AdminDrawer> {
                               Text(
                                 email,
                                 style: const TextStyle(
-                                  color: Color(0xFF94A3B8),
+                                  color: Color(0xFFBAE6FD),
                                   fontSize: 11,
                                 ),
                                 maxLines: 1,
@@ -150,12 +170,13 @@ class _AdminDrawerState extends ConsumerState<AdminDrawer> {
                       ),
                       Container(
                         padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 2,
+                          horizontal: 7,
+                          vertical: 2.5,
                         ),
                         decoration: BoxDecoration(
                           color: const Color(0xFFFEF3C7),
-                          borderRadius: BorderRadius.circular(4),
+                          borderRadius: BorderRadius.circular(5),
+                          border: Border.all(color: const Color(0xFFFDE68A), width: 0.8),
                         ),
                         child: const Text(
                           'ADMIN',
@@ -163,6 +184,7 @@ class _AdminDrawerState extends ConsumerState<AdminDrawer> {
                             color: Color(0xFF92400E),
                             fontSize: 9.5,
                             fontWeight: FontWeight.w900,
+                            letterSpacing: 0.4,
                           ),
                         ),
                       ),
@@ -439,7 +461,7 @@ class _DrawerNavItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final effectiveIconColor = isActive
-        ? const Color(0xFF2563EB)
+        ? const Color(0xFF004E89) // Peacock Blue
         : (iconColor ?? const Color(0xFF64748B));
 
     return Container(
@@ -453,7 +475,11 @@ class _DrawerNavItem extends StatelessWidget {
           child: Container(
             decoration: isActive
                 ? const BoxDecoration(
-                    border: Border(left: BorderSide(color: Color(0xFF2563EB), width: 3)),
+                    borderRadius: BorderRadius.only(
+                      topLeft: Radius.circular(8),
+                      bottomLeft: Radius.circular(8),
+                    ),
+                    border: Border(left: BorderSide(color: Color(0xFF004E89), width: 3.5)),
                   )
                 : null,
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
@@ -466,8 +492,8 @@ class _DrawerNavItem extends StatelessWidget {
                     label,
                     style: TextStyle(
                       fontSize: 13,
-                      fontWeight: isActive ? FontWeight.w800 : FontWeight.w500,
-                      color: isActive ? const Color(0xFF1D4ED8) : const Color(0xFF334155),
+                      fontWeight: isActive ? FontWeight.w800 : FontWeight.w600,
+                      color: isActive ? const Color(0xFF0A2540) : const Color(0xFF334155),
                     ),
                   ),
                 ),

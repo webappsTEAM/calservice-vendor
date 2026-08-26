@@ -330,12 +330,12 @@ class _AdminEmployeesScreenState extends ConsumerState<AdminEmployeesScreen> {
     VoidCallback onTap, {
     Color? activeColor,
   }) {
-    final color = activeColor ?? const Color(0xFF2563EB);
+    final color = activeColor ?? const Color(0xFF004E89);
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(20),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
         decoration: BoxDecoration(
           color: isSelected ? color.withValues(alpha: 0.12) : const Color(0xFFF1F5F9),
           borderRadius: BorderRadius.circular(20),
@@ -348,7 +348,7 @@ class _AdminEmployeesScreenState extends ConsumerState<AdminEmployeesScreen> {
           label,
           style: TextStyle(
             fontSize: 11.5,
-            fontWeight: isSelected ? FontWeight.w800 : FontWeight.w500,
+            fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
             color: isSelected ? color : const Color(0xFF475569),
           ),
         ),
@@ -388,13 +388,13 @@ class _AdminEmployeesScreenState extends ConsumerState<AdminEmployeesScreen> {
               children: [
                 CircleAvatar(
                   radius: 26,
-                  backgroundColor: const Color(0xFFEFF6FF),
+                  backgroundColor: const Color(0xFF004E89).withValues(alpha: 0.1),
                   child: Text(
                     tech.initial,
                     style: const TextStyle(
                       fontSize: 20,
-                      fontWeight: FontWeight.w800,
-                      color: Color(0xFF2563EB),
+                      fontWeight: FontWeight.w900,
+                      color: Color(0xFF004E89),
                     ),
                   ),
                 ),
@@ -477,7 +477,7 @@ class _AdminEmployeesScreenState extends ConsumerState<AdminEmployeesScreen> {
               icon: const Icon(Icons.folder_shared_rounded, size: 18),
               label: const Text('Review Full Dossier'),
               style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFF2563EB),
+                backgroundColor: const Color(0xFF004E89),
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
             ),
@@ -537,9 +537,9 @@ class _AdminEmployeeCard extends StatelessWidget {
         border: Border.all(color: const Color(0xFFE2E8F0)),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x08000000),
+            color: Color(0x060A2540),
             blurRadius: 4,
-            offset: Offset(0, 1),
+            offset: Offset(0, 1.5),
           ),
         ],
       ),
@@ -552,13 +552,13 @@ class _AdminEmployeeCard extends StatelessWidget {
             children: [
               CircleAvatar(
                 radius: 20,
-                backgroundColor: const Color(0xFFEFF6FF),
+                backgroundColor: const Color(0xFF004E89).withValues(alpha: 0.1),
                 child: Text(
                   tech.initial,
                   style: const TextStyle(
                     fontSize: 15,
-                    fontWeight: FontWeight.w800,
-                    color: Color(0xFF2563EB),
+                    fontWeight: FontWeight.w900,
+                    color: Color(0xFF004E89),
                   ),
                 ),
               ),
@@ -584,6 +584,7 @@ class _AdminEmployeeCard extends StatelessWidget {
                         fontSize: 11,
                         fontFamily: 'monospace',
                         color: Color(0xFF64748B),
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ],
@@ -648,7 +649,7 @@ class _AdminEmployeeCard extends StatelessWidget {
                 style: const TextStyle(
                   fontSize: 11.5,
                   fontWeight: FontWeight.w800,
-                  color: Color(0xFF2563EB),
+                  color: Color(0xFF004E89),
                 ),
               ),
             ],
@@ -700,11 +701,11 @@ class _AdminEmployeeCard extends StatelessWidget {
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.w800,
-                          color: Color(0xFF2563EB),
+                          color: Color(0xFF004E89),
                         ),
                       ),
                       SizedBox(width: 2),
-                      Icon(Icons.arrow_forward_rounded, size: 14, color: Color(0xFF2563EB)),
+                      Icon(Icons.arrow_forward_rounded, size: 14, color: Color(0xFF004E89)),
                     ],
                   ),
                 ),

@@ -38,9 +38,9 @@ class RecentJobCard extends StatelessWidget {
         border: Border.all(color: const Color(0xFFE2E8F0)),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x060F172A),
-            blurRadius: 3,
-            offset: Offset(0, 1),
+            color: Color(0x060A2540),
+            blurRadius: 4,
+            offset: Offset(0, 1.5),
           ),
         ],
       ),
@@ -49,21 +49,27 @@ class RecentJobCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Top Row: Job ID + Status Badge
+            // Top Row: Job ID Pill + Status Badge
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                Expanded(
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEFF6FF),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: const Color(0xFFBFDBFE), width: 0.8),
+                  ),
                   child: Text(
                     job.requestId,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       fontFamily: 'monospace',
-                      fontSize: 13.5,
+                      fontSize: 12.5,
                       fontWeight: FontWeight.w900,
-                      color: Color(0xFF2563EB),
+                      color: Color(0xFF004E89),
                       letterSpacing: 0.3,
                     ),
                   ),
@@ -81,7 +87,7 @@ class RecentJobCard extends StatelessWidget {
                 children: [
                   const Icon(
                     Icons.person_outline_rounded,
-                    size: 14,
+                    size: 15,
                     color: Color(0xFF64748B),
                   ),
                   const SizedBox(width: 6),
@@ -105,8 +111,8 @@ class RecentJobCard extends StatelessWidget {
               children: [
                 const Icon(
                   Icons.build_circle_outlined,
-                  size: 14,
-                  color: Color(0xFF64748B),
+                  size: 15,
+                  color: Color(0xFF004E89),
                 ),
                 const SizedBox(width: 6),
                 Expanded(
@@ -116,7 +122,7 @@ class RecentJobCard extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       fontSize: 12.5,
-                      fontWeight: FontWeight.w600,
+                      fontWeight: FontWeight.w700,
                       color: Color(0xFF334155),
                     ),
                   ),
@@ -190,8 +196,7 @@ class RecentJobCard extends StatelessWidget {
                   ),
                   borderRadius: BorderRadius.circular(6),
                   child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                     decoration: BoxDecoration(
                       color: const Color(0xFFEFF6FF),
                       borderRadius: BorderRadius.circular(6),
@@ -205,14 +210,14 @@ class RecentJobCard extends StatelessWidget {
                           style: TextStyle(
                             fontSize: 11.5,
                             fontWeight: FontWeight.w800,
-                            color: Color(0xFF2563EB),
+                            color: Color(0xFF004E89),
                           ),
                         ),
                         SizedBox(width: 4),
                         Icon(
                           Icons.arrow_forward_rounded,
                           size: 13,
-                          color: Color(0xFF2563EB),
+                          color: Color(0xFF004E89),
                         ),
                       ],
                     ),

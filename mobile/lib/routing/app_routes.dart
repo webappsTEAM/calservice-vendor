@@ -5,6 +5,8 @@ class AppRoutes {
 
   static const splash = '/';
   static const login = '/login';
+  static const createAccount = '/create-account';
+  static const onboardingWizard = '/onboarding/wizard';
   static const pendingReview = '/pending-review';
   static const correctionRequired = '/correction-required';
   static const rejected = '/rejected';

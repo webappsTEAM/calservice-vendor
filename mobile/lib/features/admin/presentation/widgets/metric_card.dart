@@ -33,9 +33,9 @@ class MetricCard extends StatelessWidget {
         border: Border.all(color: const Color(0xFFE2E8F0)),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x060F172A),
-            blurRadius: 3,
-            offset: Offset(0, 1),
+            color: Color(0x060A2540),
+            blurRadius: 4,
+            offset: Offset(0, 1.5),
           ),
         ],
       ),
@@ -60,10 +60,10 @@ class MetricCard extends StatelessWidget {
                 ),
               ),
               Container(
-                padding: const EdgeInsets.all(5),
+                padding: const EdgeInsets.all(5.5),
                 decoration: BoxDecoration(
-                  color: iconColor.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(6),
+                  color: iconColor.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(7),
                 ),
                 child: Icon(icon, size: 15, color: iconColor),
               ),

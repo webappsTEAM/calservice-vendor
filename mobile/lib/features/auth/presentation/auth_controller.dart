@@ -54,6 +54,30 @@ class AuthController extends StateNotifier<AuthState> {
     state = AuthState.authenticated(user);
   }
 
+  Future<void> signup({
+    required String firstName,
+    String? lastName,
+    required String mobileNumber,
+    required String email,
+    required String password,
+  }) async {
+    final user = await _repository.signup(
+      firstName: firstName,
+      lastName: lastName,
+      mobileNumber: mobileNumber,
+      email: email,
+      password: password,
+    );
+    state = AuthState.authenticated(user);
+  }
+
+  Future<void> refreshUser() async {
+    final user = await _repository.refreshUser();
+    if (user != null) {
+      state = AuthState.authenticated(user);
+    }
+  }
+
   Future<void> logout() async {
     await _repository.logout();
     state = const AuthState.unauthenticated();

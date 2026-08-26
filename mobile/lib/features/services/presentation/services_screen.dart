@@ -5,6 +5,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../shared/widgets/async_value_view.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/status_chip.dart';
+import '../../../shared/widgets/workforce_app_bar.dart';
 import '../../profile/domain/employee_profile.dart';
 import '../../profile/presentation/profile_providers.dart';
 import '../domain/service_catalog.dart';
@@ -28,19 +29,9 @@ class _ServicesScreenState extends ConsumerState<ServicesScreen> {
     final actionState = ref.watch(servicesControllerProvider);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Services & Skills'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Refresh services',
-            onPressed: () {
-              ref.invalidate(employeeProfileProvider);
-              ref.invalidate(serviceCatalogProvider);
-              ref.invalidate(employeeSkillsProvider);
-            },
-          ),
-        ],
+      appBar: const WorkforceAppBar(
+        titleText: 'Services & Skills',
+        showBrand: false,
       ),
       body: RefreshIndicator(
         onRefresh: () async {

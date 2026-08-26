@@ -11,6 +11,7 @@ import '../features/admin/presentation/applications/admin_applications_screen.da
 import '../features/admin/presentation/employees/admin_employees_screen.dart';
 import '../features/admin/presentation/skills/admin_skills_screen.dart';
 import '../features/auth/presentation/auth_controller.dart';
+import '../features/auth/presentation/create_account_screen.dart';
 import '../features/auth/presentation/employee_only_screen.dart';
 import '../features/auth/presentation/login_screen.dart';
 import '../features/dashboard/presentation/home_screen.dart';
@@ -24,6 +25,7 @@ import '../features/onboarding_status/presentation/correction_required_screen.da
 import '../features/onboarding_status/presentation/pending_review_screen.dart';
 import '../features/onboarding_status/presentation/registration_incomplete_screen.dart';
 import '../features/onboarding_status/presentation/rejected_screen.dart';
+import '../features/onboarding_wizard/presentation/onboarding_wizard_screen.dart';
 import '../features/performance/presentation/performance_screen.dart';
 import '../features/profile/presentation/profile_screen.dart';
 import '../features/services/presentation/services_screen.dart';
@@ -86,6 +88,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       }
 
       if (authState.status == AuthStatus.unauthenticated) {
+        if (location == AppRoutes.createAccount) return null;
         return location == AppRoutes.login ? null : AppRoutes.login;
       }
 
@@ -109,10 +112,12 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         case 'under_review':
           return location == AppRoutes.pendingReview ? null : AppRoutes.pendingReview;
         case 'correction_required':
+          if (location == AppRoutes.onboardingWizard) return null;
           return location == AppRoutes.correctionRequired ? null : AppRoutes.correctionRequired;
         case 'rejected':
           return location == AppRoutes.rejected ? null : AppRoutes.rejected;
         default: // not_started, in_progress, or anything unrecognized
+          if (location == AppRoutes.onboardingWizard) return null;
           return location == AppRoutes.registrationIncomplete
               ? null
               : AppRoutes.registrationIncomplete;
@@ -126,6 +131,18 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: AppRoutes.login,
         builder: (context, state) => const LoginScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.createAccount,
+        builder: (context, state) => const CreateAccountScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.onboardingWizard,
+        builder: (context, state) {
+          final stepParam = state.uri.queryParameters['step'];
+          final initialStep = stepParam != null ? int.tryParse(stepParam) : null;
+          return OnboardingWizardScreen(initialStep: initialStep);
+        },
       ),
       GoRoute(
         path: AppRoutes.pendingReview,

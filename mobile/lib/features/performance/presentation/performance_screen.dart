@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../shared/widgets/async_value_view.dart';
 import '../../../shared/widgets/empty_state.dart';
+import '../../../shared/widgets/workforce_app_bar.dart';
 import '../domain/performance_summary.dart';
 import 'performance_providers.dart';
 
@@ -17,15 +18,9 @@ class PerformanceScreen extends ConsumerWidget {
     final summaryAsync = ref.watch(performanceProvider);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Performance'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Refresh performance',
-            onPressed: () => ref.refresh(performanceProvider.future),
-          ),
-        ],
+      appBar: const WorkforceAppBar(
+        titleText: 'Performance',
+        showBrand: false,
       ),
       body: RefreshIndicator(
         onRefresh: () => ref.refresh(performanceProvider.future),

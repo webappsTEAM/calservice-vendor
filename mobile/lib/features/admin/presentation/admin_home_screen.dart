@@ -42,9 +42,9 @@ class AdminHomeScreen extends ConsumerWidget {
             return ListView(
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.fromLTRB(
-                AppSpacing.lg,
-                AppSpacing.lg,
-                AppSpacing.lg,
+                AppSpacing.md,
+                AppSpacing.md,
+                AppSpacing.md,
                 AppSpacing.xxl,
               ),
               children: [
@@ -53,15 +53,15 @@ class AdminHomeScreen extends ConsumerWidget {
                   onRefresh: () => ref.invalidate(adminDashboardDataProvider),
                   isRefreshing: dashboardAsync.isLoading,
                 ),
-                const SizedBox(height: AppSpacing.lg),
+                const SizedBox(height: 20),
 
                 // 2. Action Center (4 Priority Operational Cards)
                 ActionCenterSection(data: data),
-                const SizedBox(height: AppSpacing.lg),
+                const SizedBox(height: 20),
 
                 // 3. Workforce Overview (5 Metric Cards)
                 WorkforceOverviewSection(data: data),
-                const SizedBox(height: AppSpacing.lg),
+                const SizedBox(height: 20),
 
                 // 4. Recent Operations & Service Bookings
                 RecentOperationsSection(data: data),

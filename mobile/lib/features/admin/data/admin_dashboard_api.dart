@@ -286,6 +286,66 @@ class AdminDashboardApi {
     return data is Map<String, dynamic> ? data : const <String, dynamic>{};
   }
 
+  /// Decides on multiple technician services in bulk (approve / reject).
+  Future<Map<String, dynamic>> bulkDecideServices({
+    required int applicationId,
+    required List<int> serviceIds,
+    required String action,
+    String reason = '',
+    bool allPending = false,
+  }) async {
+    final response = await _dio.post(
+      '/workforce/admin/applications/$applicationId/services/bulk-decide/',
+      data: {
+        'service_ids': serviceIds,
+        'action': action,
+        'reason': reason,
+        'all_pending': allPending,
+      },
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is Map<String, dynamic> ? data : const <String, dynamic>{};
+  }
+
+  /// Verifies or rejects a single uploaded document in an applicant's dossier.
+  Future<Map<String, dynamic>> verifyDocument({
+    required int applicationId,
+    required String docCategory,
+    required String action,
+    String reason = '',
+  }) async {
+    final response = await _dio.post(
+      '/workforce/admin/applications/$applicationId/document/$docCategory/verify/',
+      data: {'action': action, 'reason': reason},
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is Map<String, dynamic> ? data : const <String, dynamic>{};
+  }
+
+  /// Verifies or rejects multiple uploaded documents in bulk.
+  Future<Map<String, dynamic>> bulkVerifyDocuments({
+    required int applicationId,
+    required List<String> categories,
+    required String action,
+    String reason = '',
+    bool allPending = false,
+  }) async {
+    final response = await _dio.post(
+      '/workforce/admin/applications/$applicationId/documents/bulk-verify/',
+      data: {
+        'categories': categories,
+        'action': action,
+        'reason': reason,
+        'all_pending': allPending,
+      },
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is Map<String, dynamic> ? data : const <String, dynamic>{};
+  }
+
   /// Fetches company authorized locations & geofences.
   Future<List<dynamic>> fetchLocations() async {
     final response = await _dio.get(

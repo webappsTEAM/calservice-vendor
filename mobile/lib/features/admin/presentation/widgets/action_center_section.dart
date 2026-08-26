@@ -33,24 +33,24 @@ class ActionCenterSection extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            const Text(
+            Text(
               'ACTION CENTER',
               style: TextStyle(
                 fontSize: 11.5,
                 fontWeight: FontWeight.w800,
-                color: Color(0xFF475569),
+                color: AppColors.textSecondary,
                 letterSpacing: 0.8,
               ),
             ),
           ],
         ),
         const SizedBox(height: 2),
-        const Text(
+        Text(
           'Items requiring immediate operational attention',
           style: TextStyle(
             fontSize: 12,
             fontWeight: FontWeight.w400,
-            color: Color(0xFF64748B),
+            color: AppColors.textMuted,
           ),
         ),
         const SizedBox(height: AppSpacing.sm),
@@ -147,22 +147,26 @@ class ActionCenterSection extends StatelessWidget {
 
             return Column(
               children: [
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(child: card1),
-                    const SizedBox(width: 10),
-                    Expanded(child: card2),
-                  ],
+                IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(child: card1),
+                      const SizedBox(width: 10),
+                      Expanded(child: card2),
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 10),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(child: card3),
-                    const SizedBox(width: 10),
-                    Expanded(child: card4),
-                  ],
+                IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(child: card3),
+                      const SizedBox(width: 10),
+                      Expanded(child: card4),
+                    ],
+                  ),
                 ),
               ],
             );

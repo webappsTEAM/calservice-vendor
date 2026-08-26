@@ -68,6 +68,51 @@ class AuthRepository {
     return AuthUser.fromJson(meJson);
   }
 
+  Future<AuthUser> signup({
+    required String firstName,
+    String? lastName,
+    required String mobileNumber,
+    required String email,
+    required String password,
+  }) async {
+    final json = await _authApi.signup(
+      firstName: firstName,
+      lastName: lastName,
+      mobileNumber: mobileNumber,
+      email: email,
+      password: password,
+    );
+
+    final accessToken =
+        json['access_token'] as String? ?? json['token'] as String?;
+    final refreshToken = json['refresh_token'] as String?;
+    if (accessToken != null &&
+        accessToken.isNotEmpty &&
+        refreshToken != null &&
+        refreshToken.isNotEmpty) {
+      await _tokenStorage.saveTokens(
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+      );
+    }
+
+    final userJson = json['user'] as Map<String, dynamic>?;
+    if (userJson != null) {
+      return AuthUser.fromJson(userJson);
+    }
+    final meJson = await _authApi.fetchMe();
+    return AuthUser.fromJson(meJson);
+  }
+
+  Future<AuthUser?> refreshUser() async {
+    try {
+      final json = await _authApi.fetchMe();
+      return AuthUser.fromJson(json);
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> logout() async {
     await _tokenStorage.clear();
     try {

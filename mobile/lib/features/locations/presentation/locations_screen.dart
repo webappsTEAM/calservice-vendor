@@ -253,7 +253,7 @@ class _LocationsScreenState extends ConsumerState<LocationsScreen> {
         const SizedBox(height: 2),
         Text(
           _view == 'add' ? 'Add New Location' : 'Edit Location',
-          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.textPrimary),
         ),
         const SizedBox(height: 2),
         Text(

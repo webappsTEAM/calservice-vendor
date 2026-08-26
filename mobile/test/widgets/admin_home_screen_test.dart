@@ -256,7 +256,8 @@ void main() {
       expect(find.text('On Active Jobs'), findsOneWidget);
       expect(find.text('Pending Review'), findsOneWidget);
 
-      // Recent Operations Section
+      // Scroll to Recent Operations Section
+      await tester.scrollUntilVisible(find.byType(RecentOperationsSection), 200);
       expect(find.textContaining('Recent Operations'), findsOneWidget);
       expect(find.text('View All Jobs'), findsOneWidget);
       expect(find.byType(RecentOperationsSection), findsOneWidget);
@@ -297,6 +298,8 @@ void main() {
         (tester) async {
       await tester.pumpWidget(createSubject());
       await tester.pumpAndSettle();
+
+      await tester.scrollUntilVisible(find.text('SR-3490'), 200);
 
       // Check fields for SR-3490
       expect(find.text('SR-3490'), findsOneWidget);

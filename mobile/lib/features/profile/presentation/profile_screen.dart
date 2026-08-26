@@ -6,6 +6,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../shared/widgets/async_value_view.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/status_chip.dart';
+import '../../../shared/widgets/workforce_app_bar.dart';
 import '../../auth/presentation/auth_controller.dart';
 import '../domain/employee_profile.dart';
 import 'profile_providers.dart';
@@ -74,23 +75,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     final actionState = ref.watch(profileControllerProvider);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('My Profile'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Refresh profile',
-            onPressed: () {
-              ref.invalidate(employeeProfileProvider);
-              ref.invalidate(changeRequestsProvider);
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.logout_rounded, color: Color(0xFFDC2626)),
-            tooltip: 'Log Out',
-            onPressed: _confirmLogout,
-          ),
-        ],
+      appBar: const WorkforceAppBar(
+        titleText: 'My Profile',
+        showBrand: false,
       ),
       body: RefreshIndicator(
         onRefresh: () async {

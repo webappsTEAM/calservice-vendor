@@ -34,7 +34,7 @@ class RecentOperationsSection extends StatelessWidget {
                   const Icon(
                     Icons.business_center_outlined,
                     size: 15,
-                    color: Color(0xFF2563EB),
+                    color: Color(0xFF004E89),
                   ),
                   const SizedBox(width: 6),
                   Flexible(
@@ -42,11 +42,11 @@ class RecentOperationsSection extends StatelessWidget {
                       'Recent Operations (${data.jobs.length})',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 12,
+                      style: TextStyle(
+                        fontSize: 11.5,
                         fontWeight: FontWeight.w800,
-                        color: Color(0xFF475569),
-                        letterSpacing: 0.5,
+                        color: AppColors.textSecondary,
+                        letterSpacing: 0.8,
                       ),
                     ),
                   ),
@@ -65,22 +65,31 @@ class RecentOperationsSection extends StatelessWidget {
                     Text(
                       'View All Jobs',
                       style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                        color: Color(0xFF2563EB),
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF004E89),
                       ),
                     ),
                     SizedBox(width: 2),
                     Icon(
                       Icons.arrow_forward_rounded,
                       size: 13,
-                      color: Color(0xFF2563EB),
+                      color: Color(0xFF004E89),
                     ),
                   ],
                 ),
               ),
             ),
           ],
+        ),
+        const SizedBox(height: 2),
+        Text(
+          'Latest customer field work orders and fulfillment status',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w400,
+            color: AppColors.textMuted,
+          ),
         ),
         const SizedBox(height: AppSpacing.sm),
         // Empty State or List of Recent Job Cards

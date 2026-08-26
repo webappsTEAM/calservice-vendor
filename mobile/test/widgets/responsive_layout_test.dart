@@ -385,19 +385,6 @@ void main() {
       addTearDown(() => tester.view.resetPhysicalSize());
       addTearDown(() => tester.view.resetDevicePixelRatio());
 
-      final controller = StreamController<PreServiceStatus>();
-      addTearDown(() => controller.close());
-      controller.add(
-        const PreServiceStatus(
-          geofencePassed: true,
-          otpVerified: true,
-          presencePhoto: true,
-          appliancePhoto: true,
-          workAreaPhoto: true,
-          isComplete: true,
-        ),
-      );
-
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
@@ -405,7 +392,18 @@ void main() {
             employeeProfileProvider.overrideWith((ref) => Future.value(mockProfile)),
             activeJobsProvider.overrideWith((ref) => Future.value([mockJob])),
             completedJobsProvider.overrideWith((ref) => Future.value([])),
-            preServiceStatusProvider(mockJob.id).overrideWith((ref) => controller.stream),
+            preServiceStatusProvider(mockJob.id).overrideWith(
+              (ref) => Stream.value(
+                const PreServiceStatus(
+                  geofencePassed: true,
+                  otpVerified: true,
+                  presencePhoto: true,
+                  appliancePhoto: true,
+                  workAreaPhoto: true,
+                  isComplete: true,
+                ),
+              ),
+            ),
           ],
           child: MaterialApp(
             theme: ThemeData.light(useMaterial3: true),

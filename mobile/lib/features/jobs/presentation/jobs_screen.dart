@@ -112,10 +112,10 @@ class _JobsScreenState extends ConsumerState<JobsScreen> {
                           'Jobs Queue (${displayedJobs.length})',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.w800,
-                            color: Color(0xFF0F172A),
+                            color: AppColors.textPrimary,
                           ),
                         ),
                       ),
@@ -140,7 +140,7 @@ class _JobsScreenState extends ConsumerState<JobsScreen> {
             Container(
               padding: const EdgeInsets.all(3),
               decoration: BoxDecoration(
-                color: const Color(0xFFE2E8F0),
+                color: AppColors.surfaceMuted,
                 borderRadius: BorderRadius.circular(AppRadius.chip),
               ),
               child: Row(

@@ -368,10 +368,10 @@ class _AdminJobsScreenState extends ConsumerState<AdminJobsScreen> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
-          color: isSelected ? const Color(0xFF2563EB) : Colors.white,
+          color: isSelected ? const Color(0xFF004E89) : Colors.white,
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color: isSelected ? const Color(0xFF2563EB) : const Color(0xFFCBD5E1),
+            color: isSelected ? const Color(0xFF004E89) : const Color(0xFFCBD5E1),
           ),
         ),
         child: Text(
@@ -428,9 +428,9 @@ class _AdminJobCard extends StatelessWidget {
         border: Border.all(color: const Color(0xFFE2E8F0)),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x060F172A),
-            blurRadius: 3,
-            offset: Offset(0, 1),
+            color: Color(0x060A2540),
+            blurRadius: 4,
+            offset: Offset(0, 1.5),
           ),
         ],
       ),
@@ -439,21 +439,27 @@ class _AdminJobCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Top Row: Job ID + Status Badge
+            // Top Row: Job ID Pill + Status Badge
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                Expanded(
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEFF6FF),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: const Color(0xFFBFDBFE), width: 0.8),
+                  ),
                   child: Text(
                     job.requestId,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       fontFamily: 'monospace',
-                      fontSize: 14,
+                      fontSize: 13,
                       fontWeight: FontWeight.w900,
-                      color: Color(0xFF2563EB),
+                      color: Color(0xFF004E89),
                       letterSpacing: 0.3,
                     ),
                   ),
@@ -502,7 +508,7 @@ class _AdminJobCard extends StatelessWidget {
                   child: Icon(
                     Icons.build_circle_outlined,
                     size: 15,
-                    color: Color(0xFF2563EB),
+                    color: Color(0xFF004E89),
                   ),
                 ),
                 const SizedBox(width: 6),
@@ -637,7 +643,6 @@ class _AdminJobCard extends StatelessWidget {
                 // Dispatch Action Button
                 FilledButton.icon(
                   onPressed: () {
-                    // Navigate to Dispatch module with this job selected
                     context.go(
                       '${AppRoutes.adminDispatch}?jobId=${job.id}',
                     );
@@ -645,7 +650,7 @@ class _AdminJobCard extends StatelessWidget {
                   icon: const Icon(Icons.send_rounded, size: 14),
                   label: const Text('Dispatch'),
                   style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFF2563EB),
+                    backgroundColor: const Color(0xFF004E89),
                     foregroundColor: Colors.white,
                     visualDensity: VisualDensity.compact,
                     padding:

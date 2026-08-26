@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../shared/widgets/async_value_view.dart';
 import '../../../shared/widgets/empty_state.dart';
+import '../../../shared/widgets/workforce_app_bar.dart';
 import '../domain/app_notification.dart';
 import 'notifications_providers.dart';
 
@@ -15,7 +16,11 @@ class NotificationsScreen extends ConsumerWidget {
     final asyncNotifications = ref.watch(notificationsProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Notifications')),
+      appBar: const WorkforceAppBar(
+        titleText: 'Notifications',
+        showBrand: false,
+        showNotifications: false,
+      ),
       body: RefreshIndicator(
         onRefresh: () => ref.refresh(notificationsProvider.future),
         child: AsyncValueView(

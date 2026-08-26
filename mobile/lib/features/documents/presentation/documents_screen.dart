@@ -7,6 +7,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../shared/widgets/async_value_view.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/status_chip.dart';
+import '../../../shared/widgets/workforce_app_bar.dart';
 import '../../profile/domain/employee_profile.dart';
 import '../../profile/presentation/profile_providers.dart';
 import 'documents_providers.dart';
@@ -22,15 +23,9 @@ class DocumentsScreen extends ConsumerWidget {
     final actionState = ref.watch(documentsControllerProvider);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Documents'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Refresh documents',
-            onPressed: () => ref.refresh(employeeProfileProvider.future),
-          ),
-        ],
+      appBar: const WorkforceAppBar(
+        titleText: 'Documents',
+        showBrand: false,
       ),
       body: RefreshIndicator(
         onRefresh: () => ref.refresh(employeeProfileProvider.future),

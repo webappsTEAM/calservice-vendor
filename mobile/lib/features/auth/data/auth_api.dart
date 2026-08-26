@@ -10,6 +10,26 @@ class AuthApi {
 
   final Dio _dio;
 
+  Future<Map<String, dynamic>> signup({
+    required String firstName,
+    String? lastName,
+    required String mobileNumber,
+    required String email,
+    required String password,
+  }) async {
+    final response = await _dio.post(
+      '/workforce/signup/',
+      data: {
+        'first_name': firstName,
+        if (lastName != null && lastName.isNotEmpty) 'last_name': lastName,
+        'mobile_number': mobileNumber,
+        'email': email,
+        'password': password,
+      },
+    );
+    return response.data as Map<String, dynamic>;
+  }
+
   Future<Map<String, dynamic>> login({
     required String identifier,
     required String password,

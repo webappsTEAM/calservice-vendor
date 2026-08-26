@@ -14,6 +14,22 @@ import '../../features/settings/domain/appearance_preferences.dart';
 /// this makes the existing call sites automatically pick up dark mode and
 /// high contrast without changing them, at the cost of a small global-state
 /// pattern instead of Flutter's usual InheritedWidget theming.
+/// Model representing a semantic family (base, tint, tintBorder, onTint)
+/// matching the web app's Tailwind enterprise styling.
+class SemanticColor {
+  const SemanticColor({
+    required this.base,
+    required this.tint,
+    required this.tintBorder,
+    required this.onTint,
+  });
+
+  final Color base;
+  final Color tint;
+  final Color tintBorder;
+  final Color onTint;
+}
+
 class AppColors {
   AppColors._();
 
@@ -27,11 +43,56 @@ class AppColors {
 
   static bool get _isDark => _brightness == Brightness.dark;
 
-  // Brand colors — these don't invert with theme.
-  static const Color primary = Color(0xFF2563EB);
+  // SEVO Brand & Peacock Palette
+  static const Color peacockNavy = Color(0xFF0A2540); // Deep Peacock Navy
+  static const Color peacockBlue = Color(0xFF004E89); // Peacock Blue
+  static const Color primary = Color(0xFF2563EB); // Royal Blue accent
   static const Color primaryDark = Color(0xFF1D4ED8);
   static const Color accent = Color(0xFFF59E0B);
-  static const Color darkSurface = Color(0xFF0F172A);
+  static const Color emerald = Color(0xFF059669);
+  static const Color mintAccent = Color(0xFF10B981);
+  static const Color darkSurface = Color(0xFF0A2540);
+
+  // Peacock Gradient
+  static const LinearGradient peacockGradient = LinearGradient(
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+    colors: [
+      Color(0xFF0A2540), // Deep Peacock Navy
+      Color(0xFF004E89), // Peacock Blue
+    ],
+  );
+
+  // Semantic color families
+  static const SemanticColor success = SemanticColor(
+    base: Color(0xFF059669),
+    tint: Color(0xFFECFDF5),
+    tintBorder: Color(0xFFA7F3D0),
+    onTint: Color(0xFF065F46),
+  );
+
+  static const SemanticColor error = SemanticColor(
+    base: Color(0xFFE11D48),
+    tint: Color(0xFFFFF1F2),
+    tintBorder: Color(0xFFFECDD3),
+    onTint: Color(0xFF9F1239),
+  );
+
+  static const SemanticColor warning = SemanticColor(
+    base: Color(0xFFD97706),
+    tint: Color(0xFFFFFBEB),
+    tintBorder: Color(0xFFFDE68A),
+    onTint: Color(0xFF92400E),
+  );
+
+  static const SemanticColor info = SemanticColor(
+    base: Color(0xFF2563EB),
+    tint: Color(0xFFEFF6FF),
+    tintBorder: Color(0xFFBFDBFE),
+    onTint: Color(0xFF1E40AF),
+  );
+
+  static Color get surfaceMuted => _isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9);
 
   static Color get background =>
       _isDark ? const Color(0xFF0B1220) : const Color(0xFFF8FAFC);
@@ -71,9 +132,32 @@ class AppRadius {
   AppRadius._();
 
   static const double card = 14;
+  static const double cardStandard = 14;
   static const double chip = 8;
   static const double button = 10;
   static const double input = 10;
+  static const double sheet = 20;
+  static const double pill = 999;
+}
+
+class AppElevation {
+  AppElevation._();
+
+  static const List<BoxShadow> none = [];
+  static const List<BoxShadow> subtle = [
+    BoxShadow(
+      color: Color(0x0A000000),
+      blurRadius: 8,
+      offset: Offset(0, 2),
+    ),
+  ];
+  static const List<BoxShadow> elevated = [
+    BoxShadow(
+      color: Color(0x14000000),
+      blurRadius: 16,
+      offset: Offset(0, 4),
+    ),
+  ];
 }
 
 /// A page transition that swaps instantly — used app-wide when the user

@@ -147,6 +147,61 @@ class ControlledFieldsConfig {
   final List<String> lockedFields;
 }
 
+/// Structured onboarding state returned by GET /workforce/onboarding/me/ and
+/// GET /workforce/profile/me/ under the `onboarding_data` key.
+class OnboardingData {
+  const OnboardingData({
+    required this.status,
+    required this.step,
+    required this.draft,
+    required this.services,
+    this.documents = const {},
+    this.correctionNotes,
+    this.rejectionReason,
+  });
+
+  factory OnboardingData.fromJson(Map<String, dynamic>? json) {
+    if (json == null) {
+      return const OnboardingData(
+        status: 'not_started',
+        step: 1,
+        draft: {},
+        services: [],
+        documents: {},
+      );
+    }
+
+    final draftRaw = json['draft'];
+    final servicesRaw = json['services'];
+    final docsRaw = json['documents'];
+
+    return OnboardingData(
+      status: parseString(json['status']) ?? 'not_started',
+      step: parseInt(json['step']) ?? 1,
+      draft: draftRaw is Map<String, dynamic> ? draftRaw : {},
+      services: servicesRaw is List
+          ? servicesRaw.whereType<Map<String, dynamic>>().toList()
+          : [],
+      documents: docsRaw is Map<String, dynamic> ? docsRaw : {},
+      correctionNotes: parseString(json['correction_notes']),
+      rejectionReason: parseString(json['rejection_reason']),
+    );
+  }
+
+  final String status;
+  final int step;
+  final Map<String, dynamic> draft;
+  final List<Map<String, dynamic>> services;
+  final Map<String, dynamic> documents;
+  final String? correctionNotes;
+  final String? rejectionReason;
+
+  Map<String, dynamic> section(String key) {
+    final s = draft[key];
+    return s is Map<String, dynamic> ? Map<String, dynamic>.from(s) : <String, dynamic>{};
+  }
+}
+
 /// Mirrors WorkforceEmployeeProfileSerializer (backend/workforce_api/serializers.py:42-100),
 /// returned by GET /workforce/profile/me/ and GET /workforce/onboarding/me/.
 class EmployeeProfile {
@@ -175,6 +230,12 @@ class EmployeeProfile {
     required this.allRequestedServices,
     required this.documents,
     required this.controlledFields,
+    this.onboardingData = const OnboardingData(
+      status: 'not_started',
+      step: 1,
+      draft: {},
+      services: [],
+    ),
   });
 
   factory EmployeeProfile.fromJson(Map<String, dynamic> json) {
@@ -182,6 +243,7 @@ class EmployeeProfile {
     final requestedJson = json['all_requested_services'];
     final docsJson = json['documents_status'];
     final controlledJson = json['controlled_fields'];
+    final onboardingJson = json['onboarding_data'];
 
     return EmployeeProfile(
       employeeId: parseString(json['employee_id']),
@@ -219,6 +281,9 @@ class EmployeeProfile {
       controlledFields: ControlledFieldsConfig.fromJson(
         controlledJson is Map<String, dynamic> ? controlledJson : null,
       ),
+      onboardingData: OnboardingData.fromJson(
+        onboardingJson is Map<String, dynamic> ? onboardingJson : null,
+      ),
     );
   }
 
@@ -246,6 +311,7 @@ class EmployeeProfile {
   final List<RequestedService> allRequestedServices;
   final List<EmployeeDocument> documents;
   final ControlledFieldsConfig controlledFields;
+  final OnboardingData onboardingData;
 
   String get fullName => [firstName, lastName].where((s) => s.isNotEmpty).join(' ');
   String get displayPhone => (phone?.isNotEmpty == true ? phone : mobileNumber) ?? '';

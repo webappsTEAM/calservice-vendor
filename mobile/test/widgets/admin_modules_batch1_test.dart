@@ -170,7 +170,7 @@ void main() {
       expect(find.text('Employee Applications & Verification Queue'), findsOneWidget);
       expect(find.text('Applications'), findsOneWidget);
       expect(find.text('Change Requests'), findsOneWidget);
-      expect(find.text('Review Dossiers'), findsNWidgets(2));
+      expect(find.text('Review Full Dossier'), findsNWidgets(2));
 
       // Switch to Change Requests Tab
       await tester.tap(find.text('Change Requests'));

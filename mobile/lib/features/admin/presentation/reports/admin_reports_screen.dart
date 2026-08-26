@@ -124,6 +124,9 @@ class _AdminReportsScreenState extends ConsumerState<AdminReportsScreen> {
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(AppRadius.card),
                 border: Border.all(color: const Color(0xFFE2E8F0)),
+                boxShadow: const [
+                  BoxShadow(color: Color(0x060A2540), blurRadius: 4, offset: Offset(0, 1.5)),
+                ],
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -134,12 +137,12 @@ class _AdminReportsScreenState extends ConsumerState<AdminReportsScreen> {
                       Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
-                          color: const Color(0xFFEEF2FF),
+                          color: const Color(0xFF004E89).withValues(alpha: 0.1),
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: const Icon(
                           Icons.bar_chart_rounded,
-                          color: Color(0xFF4F46E5),
+                          color: Color(0xFF004E89),
                           size: 24,
                         ),
                       ),
@@ -479,12 +482,12 @@ class _ReportTypeChip extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
         decoration: BoxDecoration(
-          color: isSelected ? const Color(0xFF4F46E5) : const Color(0xFFF1F5F9),
+          color: isSelected ? const Color(0xFF004E89) : const Color(0xFFF1F5F9),
           borderRadius: BorderRadius.circular(8),
           boxShadow: isSelected
               ? const [
                   BoxShadow(
-                    color: Color(0x204F46E5),
+                    color: Color(0x20004E89),
                     blurRadius: 3,
                     offset: Offset(0, 1),
                   ),

@@ -25,19 +25,28 @@ class WorkforceOverviewSection extends StatelessWidget {
             const Icon(
               Icons.people_alt_rounded,
               size: 15,
-              color: Color(0xFF2563EB),
+              color: Color(0xFF004E89),
             ),
             const SizedBox(width: 6),
-            const Text(
+            Text(
               'WORKFORCE OVERVIEW',
               style: TextStyle(
                 fontSize: 11.5,
                 fontWeight: FontWeight.w800,
-                color: Color(0xFF475569),
+                color: AppColors.textSecondary,
                 letterSpacing: 0.8,
               ),
             ),
           ],
+        ),
+        const SizedBox(height: 2),
+        Text(
+          'Personnel roster, availability and field activity',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w400,
+            color: AppColors.textMuted,
+          ),
         ),
         const SizedBox(height: AppSpacing.sm),
         // Adaptive Grid for 5 Metric Cards
@@ -51,8 +60,8 @@ class WorkforceOverviewSection extends StatelessWidget {
               value: data.totalRegisteredCount,
               subtext: 'Technicians on roster',
               icon: Icons.people_alt_rounded,
-              iconColor: const Color(0xFF3B82F6),
-              valueColor: const Color(0xFF1E293B),
+              iconColor: const Color(0xFF004E89),
+              valueColor: const Color(0xFF0F172A),
             );
 
             final card2 = MetricCard(
@@ -60,7 +69,7 @@ class WorkforceOverviewSection extends StatelessWidget {
               value: data.approvedAndActiveCount,
               subtext: 'Authorized for jobs',
               icon: Icons.check_circle_rounded,
-              iconColor: const Color(0xFF10B981),
+              iconColor: const Color(0xFF059669),
               valueColor: const Color(0xFF047857),
             );
 
@@ -68,9 +77,9 @@ class WorkforceOverviewSection extends StatelessWidget {
               label: 'Online & Available',
               value: data.onlineAndAvailableCount,
               subtext: 'Ready for dispatch',
-              icon: Icons.wifi_tethering_rounded,
-              iconColor: const Color(0xFF0EA5E9),
-              valueColor: const Color(0xFF0284C7),
+              icon: Icons.sensors_rounded,
+              iconColor: const Color(0xFF0284C7),
+              valueColor: const Color(0xFF0369A1),
             );
 
             final card4 = MetricCard(
@@ -78,8 +87,8 @@ class WorkforceOverviewSection extends StatelessWidget {
               value: data.onActiveJobsCount,
               subtext: 'Currently in field',
               icon: Icons.construction_rounded,
-              iconColor: const Color(0xFFF59E0B),
-              valueColor: const Color(0xFFD97706),
+              iconColor: const Color(0xFFD97706),
+              valueColor: const Color(0xFFB45309),
             );
 
             final card5 = MetricCard(
@@ -87,8 +96,8 @@ class WorkforceOverviewSection extends StatelessWidget {
               value: data.pendingReviewCount,
               subtext: 'Awaiting dossier check',
               icon: Icons.schedule_rounded,
-              iconColor: const Color(0xFFF97316),
-              valueColor: const Color(0xFFEA580C),
+              iconColor: const Color(0xFFEA580C),
+              valueColor: const Color(0xFFC2410C),
             );
 
             if (isSmall) {
@@ -127,22 +136,26 @@ class WorkforceOverviewSection extends StatelessWidget {
             // Standard Mobile 2-column layout with 5th card spanning across
             return Column(
               children: [
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(child: card1),
-                    const SizedBox(width: 10),
-                    Expanded(child: card2),
-                  ],
+                IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(child: card1),
+                      const SizedBox(width: 10),
+                      Expanded(child: card2),
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 10),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(child: card3),
-                    const SizedBox(width: 10),
-                    Expanded(child: card4),
-                  ],
+                IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(child: card3),
+                      const SizedBox(width: 10),
+                      Expanded(child: card4),
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 10),
                 card5,

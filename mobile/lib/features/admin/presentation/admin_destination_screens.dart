@@ -39,12 +39,12 @@ class AdminPlaceholderScreen extends StatelessWidget {
                 Container(
                   padding: const EdgeInsets.all(8),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFEFF6FF),
+                    color: const Color(0xFF004E89).withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: const Icon(
                     Icons.dashboard_customize_rounded,
-                    color: Color(0xFF2563EB),
+                    color: Color(0xFF004E89),
                     size: 24,
                   ),
                 ),
