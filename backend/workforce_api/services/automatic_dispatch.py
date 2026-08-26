@@ -365,6 +365,10 @@ def canonical_service_match(requested_service: str, approved_services: List[str]
     return False, "NO_MATCH", ""
 
 
+_MANDATORY_DOC_REQS_CACHE: Dict[int, List[Any]] = {}
+_MANDATORY_COMP_REQS_CACHE: Dict[int, List[Any]] = {}
+
+
 def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = None, check_workload: bool = True) -> Tuple[bool, str, Dict[str, bool]]:
     """
     9-Gate Employee Eligibility Engine:
@@ -402,8 +406,11 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
         if hasattr(emp, "prefetched_mandatory_doc_reqs"):
             mandatory_doc_reqs = emp.prefetched_mandatory_doc_reqs
         else:
-            from workforce_api.models import WorkforceRequiredDocument
-            mandatory_doc_reqs = list(WorkforceRequiredDocument.objects.filter(company_id=emp.company_id, is_mandatory=True))
+            cid = emp.company_id
+            if cid not in _MANDATORY_DOC_REQS_CACHE:
+                from workforce_api.models import WorkforceRequiredDocument
+                _MANDATORY_DOC_REQS_CACHE[cid] = list(WorkforceRequiredDocument.objects.filter(company_id=cid, is_mandatory=True))
+            mandatory_doc_reqs = _MANDATORY_DOC_REQS_CACHE[cid]
 
         if mandatory_doc_reqs:
             if hasattr(emp, "prefetched_employee_documents"):
@@ -444,8 +451,11 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
         if hasattr(emp, "prefetched_mandatory_comp_reqs"):
             mandatory_comp_reqs = emp.prefetched_mandatory_comp_reqs
         else:
-            from workforce_api.models import WorkforceComplianceRequirement
-            mandatory_comp_reqs = list(WorkforceComplianceRequirement.objects.filter(company_id=emp.company_id, is_mandatory=True))
+            cid = emp.company_id
+            if cid not in _MANDATORY_COMP_REQS_CACHE:
+                from workforce_api.models import WorkforceComplianceRequirement
+                _MANDATORY_COMP_REQS_CACHE[cid] = list(WorkforceComplianceRequirement.objects.filter(company_id=cid, is_mandatory=True))
+            mandatory_comp_reqs = _MANDATORY_COMP_REQS_CACHE[cid]
 
         if mandatory_comp_reqs:
             today = timezone.now().date()
@@ -858,137 +868,147 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
     """
     job_id = job_id_or_obj.pk if hasattr(job_id_or_obj, "pk") else job_id_or_obj
 
+    job_obj = ServiceRequest.objects.filter(pk=job_id).first()
+    if not job_obj:
+        return False, "Job not found."
+
+    if job_obj.status in ["completed", "cancelled"]:
+        return False, f"Job #{job_id} is {job_obj.status} and cannot be dispatched."
+
+    if job_obj.status in ["accepted", "on_the_way", "en_route", "arrived", "in_progress", "proof_submitted", "service_completed", "payment_pending", "cash_pending"] and job_obj.assigned_employee:
+        return False, f"Job #{job_id} is already accepted and in progress with Employee #{job_obj.assigned_employee_id}."
+
+    now = timezone.now()
+
+    # Step 1: Lazy reconciliation of expired offers for this job
+    sweep_job_expired_offers(job_obj)
+
+    # Step 2: Idempotency check: Is there an active unexpired wave running for this job?
+    active_offers = list(
+        WorkforceJobOffer.objects.filter(
+            job=job_obj,
+            status=WorkforceJobOffer.Status.OFFERED,
+            expires_at__gt=now,
+        )
+    )
+
+    if active_offers:
+        current_wave_num = active_offers[0].wave_number
+        logger.info(
+            f"[DISPATCH_WAVE_ACTIVE] Job #{job_id} already has active Wave {current_wave_num} "
+            f"with {len(active_offers)} pending offer(s)."
+        )
+        return True, f"Active Wave {current_wave_num} already pending ({len(active_offers)} offers)."
+
+    # Step 3: Validate customer booking coordinates
+    is_valid_coords, cust_lat, cust_lon, coord_err = validate_coordinates(job_obj.latitude, job_obj.longitude)
+    if not is_valid_coords:
+        if job_obj.status not in ["unassigned", "redispatching"]:
+            job_obj.status = "unassigned"
+            job_obj.save(update_fields=["status", "updated_at"])
+        logger.info(
+            f"[DISPATCH_PENDING_GPS] Job #{job_id} ({job_obj.request_id}) coordinates missing or invalid ({coord_err}). Waiting for valid GPS fix."
+        )
+        return False, "Customer booking is missing valid GPS coordinates."
+
+    WorkforceEventLog.objects.create(
+        event_type="DISPATCH_STARTED",
+        payload={"job_id": job_obj.id, "service": job_obj.service_category}
+    )
+
+    # Step 4: Find eligible candidate technicians across 0 to 20 km (OUTSIDE TRANSACTION)
+    candidates = get_eligible_candidates(
+        job_obj,
+        max_gps_age_seconds=max_gps_age_seconds,
+        radius_km=MAX_DISPATCH_RADIUS_KM,
+        exclude_employee_ids=exclude_employee_ids,
+        check_workload=False,
+    )
+
+    WorkforceEventLog.objects.create(
+        event_type="CANDIDATES_EVALUATED",
+        payload={"job_id": job_obj.id, "eligible_count": len(candidates)}
+    )
+
+    # Step 5: Group candidates by sequential distance wave (1 to 6, up to 20 km)
+    wave_groups: Dict[int, List[Dict[str, Any]]] = {w: [] for w in range(1, 7)}
+    for c in candidates:
+        w_num = c.get("wave_number")
+        if w_num and 1 <= w_num <= 6:
+            wave_groups[w_num].append(c)
+
+    # Step 6: Select lowest non-empty wave (skip empty waves immediately)
+    target_wave_number = None
+    target_wave_candidates = []
+    for w_idx in range(1, 7):
+        if wave_groups[w_idx]:
+            target_wave_number = w_idx
+            target_wave_candidates = wave_groups[w_idx]
+            break
+
+    # Step 7: If all 6 waves are exhausted, escalate to Admin fallback
+    if not target_wave_number or not target_wave_candidates:
+        if job_obj.status != "unassigned" or job_obj.assigned_employee is not None:
+            job_obj.status = "unassigned"
+            job_obj.assigned_employee = None
+            job_obj.save(update_fields=["status", "assigned_employee"])
+
+        WorkforceEventLog.objects.create(
+            event_type="DISPATCH_ADMIN_FALLBACK",
+            payload={"job_id": job_obj.id, "reason": "ALL_WAVES_EXHAUSTED", "candidates_considered": len(candidates)}
+        )
+
+        admin_user = None
+        if job_obj.company:
+            admin_user = get_user_model().objects.filter(
+                Q(role__in=["admin", "manager"]) | Q(is_staff=True),
+                company=job_obj.company
+            ).first()
+        if not admin_user:
+            admin_user = get_user_model().objects.filter(is_superuser=True).first()
+
+        if admin_user:
+            service_name = job_obj.issue_title or job_obj.service_category or "Service"
+            WorkforceNotification.objects.create(
+                recipient=admin_user,
+                title="Automatic Dispatch: Awaiting Technician",
+                message=f"No eligible nearby technician available within 20 km for Job #{job_obj.id} ({service_name}). Job escalated to Admin dispatch.",
+                notification_type="DISPATCH_UNASSIGNED",
+                company=job_obj.company,
+                related_object_id=str(job_obj.id),
+            )
+        logger.info(f"[DISPATCH_NO_CANDIDATES] Job #{job_obj.id} -> No eligible candidates found in Waves 1-6. Escalated to Admin.")
+        return False, "No eligible technicians available for automatic dispatch within 20 km. Job escalated to Admin dispatch."
+
+    # Step 8: Fast Atomic Offer Creation (Transaction held ONLY for offer inserts: < 20 ms)
+    wave_uuid = uuid.uuid4()
+    wave_created_at = timezone.now()
+    wave_expires_at = wave_created_at + timedelta(minutes=DEFAULT_OFFER_DURATION_MINUTES)
+    wave_label = f"Wave {target_wave_number}"
+
+    created_offers = []
     with transaction.atomic():
-        job_obj = ServiceRequest.objects.select_for_update().filter(pk=job_id).first()
-        if not job_obj:
-            return False, "Job not found."
+        locked_job = ServiceRequest.objects.select_for_update().filter(pk=job_id).first()
+        if not locked_job or locked_job.status in ["completed", "cancelled"]:
+            return False, f"Job #{job_id} is {locked_job.status if locked_job else 'missing'}."
 
-        if job_obj.status in ["completed", "cancelled"]:
-            return False, f"Job #{job_id} is {job_obj.status} and cannot be dispatched."
+        if locked_job.assigned_employee and locked_job.status not in ["unassigned", "redispatching"]:
+            return False, f"Job #{job_id} already assigned to Employee #{locked_job.assigned_employee_id}."
 
-        if job_obj.status in ["accepted", "on_the_way", "en_route", "arrived", "in_progress", "proof_submitted", "service_completed", "payment_pending", "cash_pending"] and job_obj.assigned_employee:
-            return False, f"Job #{job_id} is already accepted and in progress with Employee #{job_obj.assigned_employee_id}."
-
-        now = timezone.now()
-
-        # Step 1: Lazy reconciliation of expired offers for this job
-        sweep_job_expired_offers(job_obj)
-
-        # Step 2: Idempotency check: Is there an active unexpired wave running for this job?
-        active_offers = list(
-            WorkforceJobOffer.objects.select_for_update().filter(
-                job=job_obj,
-                status=WorkforceJobOffer.Status.OFFERED,
-                expires_at__gt=now,
-            )
-        )
-
-        if active_offers:
-            current_wave_num = active_offers[0].wave_number
-            logger.info(
-                f"[DISPATCH_WAVE_ACTIVE] Job #{job_id} already has active Wave {current_wave_num} "
-                f"with {len(active_offers)} pending offer(s)."
-            )
-            return True, f"Active Wave {current_wave_num} already pending ({len(active_offers)} offers)."
-
-        # Step 3: Validate customer booking coordinates
-        is_valid_coords, cust_lat, cust_lon, coord_err = validate_coordinates(job_obj.latitude, job_obj.longitude)
-        if not is_valid_coords:
-            if job_obj.status not in ["unassigned", "redispatching"]:
-                job_obj.status = "unassigned"
-                job_obj.save(update_fields=["status", "updated_at"])
-            logger.info(
-                f"[DISPATCH_PENDING_GPS] Job #{job_id} ({job_obj.request_id}) coordinates missing or invalid ({coord_err}). Waiting for valid GPS fix."
-            )
-            return False, "Customer booking is missing valid GPS coordinates."
-
-        WorkforceEventLog.objects.create(
-            event_type="DISPATCH_STARTED",
-            payload={"job_id": job_obj.id, "service": job_obj.service_category}
-        )
-
-        # Step 4: Find eligible candidate technicians across 0 to 20 km
-        candidates = get_eligible_candidates(
-            job_obj,
-            max_gps_age_seconds=max_gps_age_seconds,
-            radius_km=MAX_DISPATCH_RADIUS_KM,
-            exclude_employee_ids=exclude_employee_ids,
-            check_workload=False,
-        )
-
-        WorkforceEventLog.objects.create(
-            event_type="CANDIDATES_EVALUATED",
-            payload={"job_id": job_obj.id, "eligible_count": len(candidates)}
-        )
-
-        # Step 5: Group candidates by sequential distance wave (1 to 6, up to 20 km)
-        wave_groups: Dict[int, List[Dict[str, Any]]] = {w: [] for w in range(1, 7)}
-        for c in candidates:
-            w_num = c.get("wave_number")
-            if w_num and 1 <= w_num <= 6:
-                wave_groups[w_num].append(c)
-
-        # Step 6: Select lowest non-empty wave (skip empty waves immediately)
-        target_wave_number = None
-        target_wave_candidates = []
-        for w_idx in range(1, 7):
-            if wave_groups[w_idx]:
-                target_wave_number = w_idx
-                target_wave_candidates = wave_groups[w_idx]
-                break
-
-        # Step 7: If all 6 waves are exhausted, escalate to Admin fallback
-        if not target_wave_number or not target_wave_candidates:
-            if job_obj.status != "unassigned" or job_obj.assigned_employee is not None:
-                job_obj.status = "unassigned"
-                job_obj.assigned_employee = None
-                job_obj.save(update_fields=["status", "assigned_employee"])
-
-            WorkforceEventLog.objects.create(
-                event_type="DISPATCH_ADMIN_FALLBACK",
-                payload={"job_id": job_obj.id, "reason": "ALL_WAVES_EXHAUSTED", "candidates_considered": len(candidates)}
-            )
-
-            admin_user = None
-            if job_obj.company:
-                admin_user = get_user_model().objects.filter(
-                    Q(role__in=["admin", "manager"]) | Q(is_staff=True),
-                    company=job_obj.company
-                ).first()
-            if not admin_user:
-                admin_user = get_user_model().objects.filter(is_superuser=True).first()
-
-            if admin_user:
-                service_name = job_obj.issue_title or job_obj.service_category or "Service"
-                WorkforceNotification.objects.create(
-                    recipient=admin_user,
-                    title="Automatic Dispatch: Awaiting Technician",
-                    message=f"No eligible nearby technician available within 20 km for Job #{job_obj.id} ({service_name}). Job escalated to Admin dispatch.",
-                    notification_type="DISPATCH_UNASSIGNED",
-                    company=job_obj.company,
-                    related_object_id=str(job_obj.id),
-                )
-            logger.info(f"[DISPATCH_NO_CANDIDATES] Job #{job_obj.id} -> No eligible candidates found in Waves 1-6. Escalated to Admin.")
-            return False, "No eligible technicians available for automatic dispatch within 20 km. Job escalated to Admin dispatch."
-
-        # Step 8: Wave Synchronization Constants (computed ONCE outside employee loop)
-        wave_uuid = uuid.uuid4()
-        wave_created_at = timezone.now()
-        wave_expires_at = wave_created_at + timedelta(minutes=DEFAULT_OFFER_DURATION_MINUTES)
-        wave_label = f"Wave {target_wave_number}"
+        if WorkforceJobOffer.objects.filter(job=locked_job, status=WorkforceJobOffer.Status.OFFERED, expires_at__gt=wave_created_at).exists():
+            return True, f"Active wave already pending for Job #{job_id}."
 
         # Keep ServiceRequest in unassigned status until an employee accepts
-        if job_obj.status in ["draft", "new_request", "received", "confirmed"]:
-            apply_transition(job_obj, "unassigned")
+        if locked_job.status in ["draft", "new_request", "received", "confirmed"]:
+            apply_transition(locked_job, "unassigned")
 
-        created_offers = []
         for cand in target_wave_candidates:
             cand_emp = cand["employee"]
             cand_dist = cand["distance_km"]
             cand_score = cand["score"]
 
             offer = WorkforceJobOffer.objects.create(
-                job=job_obj,
+                job=locked_job,
                 employee=cand_emp,
                 status=WorkforceJobOffer.Status.OFFERED,
                 wave_id=wave_uuid,
@@ -1003,7 +1023,7 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
                 user=cand_emp.user,
                 event_type="OFFER_CREATED",
                 payload={
-                    "job_id": job_obj.id,
+                    "job_id": locked_job.id,
                     "offer_id": offer.id,
                     "employee_id": cand_emp.id,
                     "wave_id": str(wave_uuid),
@@ -1013,9 +1033,9 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
                 }
             )
 
-            loc_str = f" at {job_obj.address}" if job_obj.address else ""
-            req_id_str = f" ({job_obj.request_id})" if job_obj.request_id else f" #{job_obj.id}"
-            service_label = job_obj.issue_title or job_obj.service_category or "Service Request"
+            loc_str = f" at {locked_job.address}" if locked_job.address else ""
+            req_id_str = f" ({locked_job.request_id})" if locked_job.request_id else f" #{locked_job.id}"
+            service_label = locked_job.issue_title or locked_job.service_category or "Service Request"
             expiry_str = wave_expires_at.strftime("%H:%M:%S UTC")
 
             WorkforceNotification.objects.create(
@@ -1023,16 +1043,16 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
                 title="New Job Offer Available!",
                 message=f"You have a new job offer for '{service_label}'{req_id_str}{loc_str} ({cand_dist:.1f} km away via {wave_label}). Expiry: {expiry_str}. Open your dashboard to review.",
                 notification_type="JOB_OFFER",
-                company=job_obj.company,
-                related_object_id=str(job_obj.id),
+                company=locked_job.company,
+                related_object_id=str(locked_job.id),
             )
 
-        emp_summary = ", ".join([f"EMP-{c['employee'].id} ({c['distance_km']:.2f}km)" for c in target_wave_candidates])
-        logger.info(
-            f"[DISPATCH_DECISION] Job #{job_obj.id} dispatched to Wave {target_wave_number} "
-            f"(UUID: {wave_uuid}, expires: {wave_expires_at.strftime('%H:%M:%S')}) -> Offers: [{emp_summary}]"
-        )
-        return True, f"Job #{job_obj.id} dispatched to Wave {target_wave_number} ({len(created_offers)} technicians offered)."
+    emp_summary = ", ".join([f"EMP-{c['employee'].id} ({c['distance_km']:.2f}km)" for c in target_wave_candidates])
+    logger.info(
+        f"[DISPATCH_DECISION] Job #{job_obj.id} dispatched to Wave {target_wave_number} "
+        f"(UUID: {wave_uuid}, expires: {wave_expires_at.strftime('%H:%M:%S')}) -> Offers: [{emp_summary}]"
+    )
+    return True, f"Job #{job_obj.id} dispatched to Wave {target_wave_number} ({len(created_offers)} technicians offered)."
 
 
 def dispatch_next_candidate(job_id_or_obj, exclude_employee_ids: Optional[List[int]] = None) -> Tuple[bool, str]:
@@ -1208,7 +1228,7 @@ def reconsider_jobs_for_employee(employee_or_id) -> int:
             latitude__isnull=False,
             longitude__isnull=False,
             created_at__gte=cutoff,
-        ).exclude(id__in=excluded_job_ids).order_by("-created_at")[:20]
+        ).exclude(id__in=excluded_job_ids).order_by("-created_at")[:5]
     )
 
     dispatched_count = 0

@@ -324,9 +324,16 @@ export function EmployeeDashboardPage() {
     if (!selectedJob?.id) return;
     if (forbiddenPreServiceJobsRef.current.has(selectedJob.id)) return;
 
-    // Only fetch if employee is assigned or job is in an active workload state
-    const isAssigned = selectedJob.assigned_employee === user?.id || selectedJob.assigned_employee === employee?.id;
-    if (!isAssigned && !['accepted', 'on_the_way', 'arrived', 'in_progress'].includes((selectedJob.status || '').toLowerCase())) {
+    // Only fetch if employee is assigned and job is in an active workload state
+    const isAssigned = Boolean(
+      selectedJob.is_assigned_to_current_employee ||
+      selectedJob.assigned_employee === employee?.id ||
+      selectedJob.assigned_employee?.id === employee?.id ||
+      selectedJob.assigned_employee_id === employee?.id ||
+      (selectedJob.assigned_employee === user?.id && !employee?.id)
+    );
+    const activeStatuses = ['accepted', 'on_the_way', 'arrived', 'in_progress'];
+    if (!isAssigned || !activeStatuses.includes((selectedJob.status || '').toLowerCase())) {
       return;
     }
 
@@ -337,13 +344,21 @@ export function EmployeeDashboardPage() {
           forbiddenPreServiceJobsRef.current.add(selectedJob.id);
         }
       });
-  }, [selectedJob?.id, selectedJob?.assigned_employee, selectedJob?.status, user?.id, employee?.id]);
+  }, [selectedJob?.id, selectedJob?.assigned_employee, selectedJob?.assigned_employee_id, selectedJob?.is_assigned_to_current_employee, selectedJob?.status, user?.id, employee?.id]);
 
   // Poll pre-service status every 4s while job is active and arrival not yet confirmed
   useEffect(() => {
+    const isAssigned = Boolean(
+      selectedJob?.is_assigned_to_current_employee ||
+      selectedJob?.assigned_employee === employee?.id ||
+      selectedJob?.assigned_employee?.id === employee?.id ||
+      selectedJob?.assigned_employee_id === employee?.id ||
+      (selectedJob?.assigned_employee === user?.id && !employee?.id)
+    );
     const activeStatuses = ['accepted', 'on_the_way', 'arrived'];
     if (
       !selectedJob?.id ||
+      !isAssigned ||
       !activeStatuses.includes((selectedJob.status || '').toLowerCase()) ||
       preServiceState.geofence_passed ||
       forbiddenPreServiceJobsRef.current.has(selectedJob.id)
