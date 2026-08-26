@@ -691,17 +691,17 @@ export function EmployeeDashboardPage() {
         setError('');
         const toggleFn = runtimeTogglePresence || authTogglePresence;
         const res = await toggleFn();
+        setIsTogglingOnline(false);
         setSuccessMsg(res?.is_online ? 'You are now ONLINE and ready to receive dispatches.' : 'You are now OFFLINE.');
         setTimeout(() => setSuccessMsg(''), 3500);
         if (res?.is_online && scanCurrentLocation) {
           scanCurrentLocation().catch(() => {});
         }
-        await refreshActiveJobs({ silent: true }).catch(() => {});
-        await loadDashboard().catch(() => {});
+        refreshActiveJobs({ silent: true }).catch(() => {});
+        loadDashboard({ silent: true }).catch(() => {});
       } catch (err) {
-        setError(err.message || 'Failed to toggle availability.');
-      } finally {
         setIsTogglingOnline(false);
+        setError(err.message || 'Failed to toggle availability.');
       }
     };
 

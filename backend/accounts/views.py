@@ -447,6 +447,6 @@ class LogoutView(APIView):
             "is_online": False,
             "availability": "offline",
         }, status=status.HTTP_200_OK)
-        response.delete_cookie("qt_access")
-        response.delete_cookie("qt_refresh")
+        from .authentication import clear_auth_cookies
+        clear_auth_cookies(response)
         return response

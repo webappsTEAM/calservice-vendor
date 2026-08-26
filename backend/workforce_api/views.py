@@ -1226,8 +1226,25 @@ class WorkforcePresenceToggleView(APIView):
 
         if emp.is_online and emp.current_availability == "available":
             try:
-                from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
-                reconsider_jobs_for_employee(emp)
+                import threading
+                from django.db import connection
+
+                def _bg_reconsider(employee_id):
+                    connection.close()
+                    try:
+                        from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
+                        reconsider_jobs_for_employee(employee_id)
+                    except Exception as err:
+                        logger.debug(f"[PRESENCE_TOGGLE_DISPATCH_BG_ERR] {err}")
+                    finally:
+                        connection.close()
+
+                threading.Thread(
+                    target=_bg_reconsider,
+                    args=(emp.id,),
+                    daemon=True,
+                    name=f"ReconsiderJobs-Emp-{emp.id}",
+                ).start()
             except Exception as e:
                 logger.debug(f"[PRESENCE_TOGGLE_DISPATCH_ERR] {e}")
 
