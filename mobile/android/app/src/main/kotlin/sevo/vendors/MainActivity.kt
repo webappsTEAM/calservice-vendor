@@ -1,4 +1,4 @@
-package com.caldimservices.vendor
+package sevo.vendors
 
 import io.flutter.embedding.android.FlutterActivity
 

@@ -214,15 +214,17 @@ class StatusChip extends StatelessWidget {
             decoration: BoxDecoration(color: style.dot, shape: BoxShape.circle),
           ),
           const SizedBox(width: 5),
-          Text(
-            text.toUpperCase(),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: dense ? 9.5 : 10.5,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 0.4,
-              color: style.foreground,
+          Flexible(
+            child: Text(
+              text.toUpperCase(),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: dense ? 9.5 : 10.5,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.4,
+                color: style.foreground,
+              ),
             ),
           ),
         ],
