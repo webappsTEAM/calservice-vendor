@@ -165,6 +165,19 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 25,
+    # Fixes EC-06: this app previously configured no throttling at all (the
+    # Customer app at least had a blanket anon/user rate). Baseline rates
+    # only for now, matching the Customer app's convention — individual
+    # views (signup, OTP verify, dispatch-sensitive endpoints) should get
+    # their own ScopedRateThrottle scopes as a follow-up.
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": os.getenv("THROTTLE_ANON", "60/minute"),
+        "user": os.getenv("THROTTLE_USER", "300/minute"),
+    },
 }
 
 SIMPLE_JWT = {
