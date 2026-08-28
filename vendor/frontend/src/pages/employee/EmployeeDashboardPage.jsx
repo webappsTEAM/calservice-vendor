@@ -30,6 +30,8 @@ import {
   apiVerifyArrival,
   apiSetLogisticsLeg,
   apiGetLogisticsLeg,
+  apiGetJobMessages,
+  apiSendJobMessage,
   apiCancelJob,
   apiUploadDocument,
 } from '../../api/workforceService.js';
@@ -67,6 +69,7 @@ import {
   Sun,
   Moon,
   Send,
+  MessageSquare,
   CreditCard,
   Award,
   FileText,
@@ -500,6 +503,49 @@ export function EmployeeDashboardPage() {
       setError(err.message || 'Failed to update trip leg.');
     } finally {
       setLogisticsLegSaving(false);
+    }
+  };
+
+  // X-09: in-app chat with the customer. Polling-based -- see
+  // BookingMessage's docstring (both apps' backend) for why. Available
+  // for any assigned job (not gated by category like Trip Leg above).
+  const [jobChatMessages, setJobChatMessages] = useState([]);
+  const [jobChatInput, setJobChatInput] = useState('');
+  const [jobChatSending, setJobChatSending] = useState(false);
+  const jobChatEndRef = useRef(null);
+
+  useEffect(() => {
+    if (!selectedJob?.id) { setJobChatMessages([]); return; }
+    let cancelled = false;
+    const fetchMessages = () => {
+      apiGetJobMessages(selectedJob.id)
+        .then((res) => {
+          if (!cancelled) setJobChatMessages(Array.isArray(res?.results) ? res.results : []);
+        })
+        .catch(() => {});
+    };
+    fetchMessages();
+    const interval = setInterval(fetchMessages, 10000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [selectedJob?.id]);
+
+  useEffect(() => {
+    jobChatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [jobChatMessages.length]);
+
+  const handleSendJobChat = async () => {
+    const body = jobChatInput.trim();
+    if (!body || jobChatSending || !selectedJob?.id) return;
+    setJobChatSending(true);
+    try {
+      await apiSendJobMessage(selectedJob.id, body);
+      setJobChatInput('');
+      const res = await apiGetJobMessages(selectedJob.id);
+      setJobChatMessages(Array.isArray(res?.results) ? res.results : []);
+    } catch (err) {
+      setError(err.message || 'Failed to send message.');
+    } finally {
+      setJobChatSending(false);
     }
   };
 
@@ -2560,6 +2606,54 @@ export function EmployeeDashboardPage() {
                               >
                                 Delivered
                               </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* X-09: in-app chat with the customer. */}
+                          {selectedJob?.id && (
+                            <div className="p-3 bg-white border border-slate-200 rounded space-y-2">
+                              <h4 className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                                <MessageSquare className="w-3.5 h-3.5 text-blue-600" />
+                                Chat with Customer
+                              </h4>
+                              <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto px-0.5">
+                                {jobChatMessages.length === 0 ? (
+                                  <div className="text-[11px] text-slate-400 text-center py-2">No messages yet.</div>
+                                ) : (
+                                  jobChatMessages.map((m) => {
+                                    const mine = m.sender_persona === 'technician';
+                                    return (
+                                      <div key={m.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
+                                        <div className={`max-w-[78%] px-2.5 py-1.5 rounded-lg text-xs ${mine ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-800'}`}>
+                                          {!mine && (
+                                            <div className="text-[10px] font-bold opacity-70 mb-0.5">{m.sender_name || 'Customer'}</div>
+                                          )}
+                                          <div>{m.body}</div>
+                                        </div>
+                                      </div>
+                                    );
+                                  })
+                                )}
+                                <div ref={jobChatEndRef} />
+                              </div>
+                              <div className="flex gap-2">
+                                <input
+                                  type="text"
+                                  value={jobChatInput}
+                                  onChange={(e) => setJobChatInput(e.target.value)}
+                                  onKeyDown={(e) => { if (e.key === 'Enter' && !jobChatSending) handleSendJobChat(); }}
+                                  placeholder="Type a message..."
+                                  maxLength={2000}
+                                  className="flex-1 px-2.5 py-1.5 rounded border border-slate-300 text-xs outline-none"
+                                />
+                                <button
+                                  onClick={handleSendJobChat}
+                                  disabled={jobChatSending || !jobChatInput.trim()}
+                                  className="px-2.5 py-1.5 rounded bg-blue-600 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                  <Send className="w-3.5 h-3.5" />
+                                </button>
                               </div>
                             </div>
                           )}

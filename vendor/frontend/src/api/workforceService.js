@@ -167,6 +167,19 @@ export async function apiGetLogisticsLeg(jobId) {
   return await apiRequest(`/workforce/jobs/${jobId}/logistics-leg/`);
 }
 
+// X-09: in-app chat -- mirrors CustomerBookingMessagesView on the Customer
+// app. Polling-based, see BookingMessage's docstring (both apps) for why.
+export async function apiGetJobMessages(jobId) {
+  return await apiRequest(`/workforce/jobs/${jobId}/messages/`);
+}
+
+export async function apiSendJobMessage(jobId, body) {
+  return await apiRequest(`/workforce/jobs/${jobId}/messages/`, {
+    method: 'POST',
+    json: { body },
+  });
+}
+
 export async function apiVerifyOTP(jobId, otp) {
   return await apiRequest(`/workforce/jobs/${jobId}/verify-otp/`, {
     method: 'POST',
