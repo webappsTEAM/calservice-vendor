@@ -22,6 +22,7 @@ import { EmployeeDashboardPage } from './pages/employee/EmployeeDashboardPage.js
 import { EmployeeProfilePage } from './pages/employee/EmployeeProfilePage.jsx';
 import { EmployeeSettingsPage } from './pages/employee/EmployeeSettingsPage.jsx';
 import { EmployeePerformancePage } from './pages/employee/EmployeePerformancePage.jsx';
+import { EmployeeEarningsPage } from './pages/employee/EmployeeEarningsPage.jsx';
 import { EmployeeLocationPage } from './pages/employee/EmployeeLocationPage.jsx';
 
 function EmployeeWorkspaceLayout() {
@@ -151,7 +152,7 @@ export function App() {
             <Route path="schedule" element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="attendance" element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="leave" element={<Navigate to="/workforce/employee/dashboard" replace />} />
-            <Route path="earnings" element={<Navigate to="/workforce/employee/dashboard" replace />} />
+            <Route path="earnings" element={<EmployeeEarningsPage />} />
             <Route path="documents" element={<EmployeeDashboardPage />} />
             <Route path="services" element={<EmployeeDashboardPage />} />
             <Route path="profile" element={<EmployeeProfilePage />} />
