@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.exceptions import ValidationError
+from rest_framework.throttling import ScopedRateThrottle  # EC-06
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.renderers import BaseRenderer, JSONRenderer
 from rest_framework.response import Response
@@ -133,6 +134,8 @@ def get_request_company(request):
 
 class WorkforceSignupView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]  # EC-06: unauthenticated, brute-forceable
+    throttle_scope = "workforce_signup"
 
     def post(self, request):
         serializer = WorkforceSignupSerializer(data=request.data)
@@ -1548,6 +1551,8 @@ class WorkforceJobCashCollectView(APIView):
     - Emits immutable audit trail events.
     """
     permission_classes = [IsApprovedTechnician]
+    throttle_classes = [ScopedRateThrottle]  # EC-06: money-movement endpoint
+    throttle_scope = "workforce_cash_collect"
 
     def post(self, request, pk):
         job = ServiceRequest.objects.filter(pk=pk).first()
@@ -1679,6 +1684,8 @@ class WorkforceJobPaymentVerifyOTPView(APIView):
     - If service completed, closes/completes the job.
     """
     permission_classes = [IsApprovedTechnician]
+    throttle_classes = [ScopedRateThrottle]  # EC-06: OTP guess-attempt endpoint
+    throttle_scope = "workforce_otp"
 
     def post(self, request, pk):
         job = ServiceRequest.objects.filter(pk=pk).first()
@@ -6092,6 +6099,8 @@ class WorkforceJobArriveView(APIView):
 
 class WorkforceJobVerifyOTPView(APIView):
     permission_classes = [IsApprovedTechnician]
+    throttle_classes = [ScopedRateThrottle]  # EC-06: OTP guess-attempt endpoint
+    throttle_scope = "workforce_otp"
 
     def post(self, request, pk):
         job = ServiceRequest.objects.filter(pk=pk).first()
@@ -6191,6 +6200,8 @@ class WorkforceJobResendOTPView(APIView):
     Regenerates a fresh Work Start OTP and sends it to the customer.
     """
     permission_classes = [IsApprovedTechnician]
+    throttle_classes = [ScopedRateThrottle]  # EC-06: avoid OTP-resend spam
+    throttle_scope = "workforce_otp"
 
     def post(self, request, pk):
         job = ServiceRequest.objects.filter(pk=pk).first()

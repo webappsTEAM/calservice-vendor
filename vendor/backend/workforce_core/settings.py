@@ -177,6 +177,13 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": os.getenv("THROTTLE_ANON", "60/minute"),
         "user": os.getenv("THROTTLE_USER", "300/minute"),
+        # EC-06 (vendor half): the blanket anon/user rates above were the only
+        # protection every endpoint had. Mirrors the scoped-throttle pattern
+        # already applied on the Customer app's settings for the same finding.
+        # Opt-in per view via ScopedRateThrottle + throttle_scope.
+        "workforce_signup": os.getenv("THROTTLE_WF_SIGNUP", "10/hour"),
+        "workforce_otp": os.getenv("THROTTLE_WF_OTP", "15/minute"),
+        "workforce_cash_collect": os.getenv("THROTTLE_WF_CASH", "20/minute"),
     },
 }
 
