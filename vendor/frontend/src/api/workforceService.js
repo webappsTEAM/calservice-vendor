@@ -153,6 +153,20 @@ export async function apiVerifyArrival(jobId, lat, lon) {
   });
 }
 
+// GT-B-03: logistics-only sub-phase tracking, separate from job.status --
+// see the backend WorkforceJobLogisticsLegView docstring for the full
+// rationale (this never changes job.status/triggers a state transition).
+export async function apiSetLogisticsLeg(jobId, leg) {
+  return await apiRequest(`/workforce/jobs/${jobId}/logistics-leg/`, {
+    method: 'POST',
+    json: { leg },
+  });
+}
+
+export async function apiGetLogisticsLeg(jobId) {
+  return await apiRequest(`/workforce/jobs/${jobId}/logistics-leg/`);
+}
+
 export async function apiVerifyOTP(jobId, otp) {
   return await apiRequest(`/workforce/jobs/${jobId}/verify-otp/`, {
     method: 'POST',
