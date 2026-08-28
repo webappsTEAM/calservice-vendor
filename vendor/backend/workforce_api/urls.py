@@ -96,6 +96,7 @@ from .views import (
     WorkforceTwoFactorView,
     WorkforceActiveSessionsView,
     WorkforceLoginHistoryView,
+    AdminCashOutstandingView, AdminCashSettlementView,
     WorkforceUserPreferenceView,
     WorkforceNotificationPreferenceView,
     WorkforcePrivacyExportView,
@@ -264,6 +265,8 @@ urlpatterns = [
     path("security/2fa/toggle/", WorkforceTwoFactorView.as_view(), name="workforce-security-2fa-toggle"),
     path("security/sessions/", WorkforceActiveSessionsView.as_view(), name="workforce-security-sessions"),
     path("security/login-history/", WorkforceLoginHistoryView.as_view(), name="workforce-security-login-history"),
+    path("admin/cash/outstanding/<int:employee_id>/", AdminCashOutstandingView.as_view(), name="admin-cash-outstanding"),
+    path("admin/cash/settlements/", AdminCashSettlementView.as_view(), name="admin-cash-settlements"),
 
     # Appearance & Preferences
     path("preferences/", WorkforceUserPreferenceView.as_view(), name="workforce-preferences"),

@@ -19,6 +19,11 @@ from .workload import (
     reconcile_employee_availability,
     supersede_other_offers_for_employee,
 )
+from .cash_reconciliation import (
+    compute_outstanding_cash,
+    record_cash_settlement,
+    list_cash_settlements,
+)
 
 __all__ = [
     "dispatch_job",
@@ -35,4 +40,7 @@ __all__ = [
     "is_employee_busy",
     "reconcile_employee_availability",
     "supersede_other_offers_for_employee",
+    "compute_outstanding_cash",
+    "record_cash_settlement",
+    "list_cash_settlements",
 ]

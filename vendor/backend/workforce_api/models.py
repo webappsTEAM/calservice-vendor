@@ -1229,6 +1229,21 @@ class JobPayment(models.Model):
         null=True,
         blank=True,
     )
+    # GT-C-02: "cash collected by a driver is never reconciled". PAID
+    # CASH_ON_SERVICE rows sit here forever with nothing tracking whether the
+    # technician has actually handed that cash to the office. reconciled
+    # flips True (and reconciled_in points at the CashSettlement) the moment
+    # this payment is included in a settlement -- see
+    # CashSettlement/compute_outstanding_cash in services/__init__.py.
+    reconciled = models.BooleanField(default=False, db_index=True)
+    reconciled_in = models.ForeignKey(
+        "CashSettlement",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reconciled_payments",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1243,6 +1258,45 @@ class JobPayment(models.Model):
 
     def __str__(self):
         return f"Payment #{self.id} for Job #{self.job_id} ({self.payment_method} - {self.payment_status} - ₹{self.amount_due})"
+
+
+class CashSettlement(models.Model):
+    """
+    GT-C-02: a single "technician handed in cash" event. expected_amount is
+    computed at creation time from every unreconciled PAID CASH_ON_SERVICE
+    JobPayment for this employee (see
+    services.compute_outstanding_cash) -- discrepancy is what actually
+    surfaces a shortfall/overage instead of it silently going unnoticed.
+    """
+    employee = models.ForeignKey(
+        "employees.Employee",
+        on_delete=models.CASCADE,
+        related_name="cash_settlements",
+    )
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="cash_settlements",
+    )
+    expected_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    deposited_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    discrepancy = models.DecimalField(max_digits=10, decimal_places=2)
+    notes = models.TextField(blank=True, default="")
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="cash_settlements_recorded",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "workforce_cash_settlement"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Settlement #{self.id} for Employee #{self.employee_id}: expected {self.expected_amount}, deposited {self.deposited_amount}"
 
 
 class PaymentCollectionEvent(models.Model):

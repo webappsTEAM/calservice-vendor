@@ -6799,6 +6799,94 @@ class WorkforceActiveSessionsView(APIView):
         return Response([current_session], status=status.HTTP_200_OK)
 
 
+class AdminCashOutstandingView(APIView):
+    """
+    GET /workforce/admin/cash/outstanding/<int:employee_id>/
+    GT-C-02: how much cash a given technician should currently be holding
+    from PAID cash-on-service collections that haven't been settled yet.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsWorkforceAdmin]
+
+    def get(self, request, employee_id):
+        from employees.models import Employee
+        from workforce_api.services import compute_outstanding_cash
+        emp = Employee.objects.filter(pk=employee_id).first()
+        if not emp:
+            return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
+        expected_amount, outstanding_qs = compute_outstanding_cash(emp)
+        return Response({
+            "employee_id": emp.id,
+            "outstanding_amount": str(expected_amount),
+            "unsettled_payment_count": outstanding_qs.count(),
+        })
+
+
+class AdminCashSettlementView(APIView):
+    """
+    POST /workforce/admin/cash/settlements/
+    body: {employee_id, deposited_amount, notes?}
+    GT-C-02: records a cash-in-hand settlement -- computes what the
+    technician should be holding, compares to what was actually deposited,
+    and marks every matched cash payment reconciled. discrepancy in the
+    response is the whole point: a shortfall or overage is now a number,
+    not silence.
+
+    GET on the same endpoint lists recent settlements, optionally filtered
+    by ?employee_id=.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsWorkforceAdmin]
+
+    def get(self, request):
+        from employees.models import Employee
+        from workforce_api.services import list_cash_settlements
+        employee = None
+        employee_id = request.query_params.get("employee_id")
+        if employee_id:
+            employee = Employee.objects.filter(pk=employee_id).first()
+        company = resolve_actor_company(request) if not getattr(request.user, "is_superuser", False) else None
+        settlements = list_cash_settlements(employee=employee, company=company)
+        return Response([
+            {
+                "id": s.id,
+                "employee_id": s.employee_id,
+                "expected_amount": str(s.expected_amount),
+                "deposited_amount": str(s.deposited_amount),
+                "discrepancy": str(s.discrepancy),
+                "notes": s.notes,
+                "created_at": s.created_at.isoformat(),
+            }
+            for s in settlements
+        ])
+
+    def post(self, request):
+        from employees.models import Employee
+        from workforce_api.services import record_cash_settlement
+        employee_id = request.data.get("employee_id")
+        deposited_amount = request.data.get("deposited_amount")
+        notes = request.data.get("notes", "")
+        if not employee_id or deposited_amount is None:
+            return Response({"error": "employee_id and deposited_amount are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        emp = Employee.objects.filter(pk=employee_id).first()
+        if not emp:
+            return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            settlement = record_cash_settlement(
+                employee=emp, company=emp.company, deposited_amount=deposited_amount,
+                recorded_by=request.user, notes=notes,
+            )
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            "id": settlement.id,
+            "expected_amount": str(settlement.expected_amount),
+            "deposited_amount": str(settlement.deposited_amount),
+            "discrepancy": str(settlement.discrepancy),
+        }, status=status.HTTP_201_CREATED)
+
+
 class WorkforceLoginHistoryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
