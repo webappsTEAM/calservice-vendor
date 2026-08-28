@@ -144,6 +144,17 @@ class ServiceRequest(models.Model):
         PAID      = "paid",      "Paid"
         FAILED    = "failed",    "Failed"
         CANCELLED = "cancelled", "Cancelled"
+        # HS-C-03/HS-C-06: were missing from this mirror -- this app's own
+        # PaymentStatus was a strict subset of the Customer app's (this table
+        # is shared). CASH_PENDING is the important one: this app writes it
+        # onto the shared column directly (see WorkforceJob*PaymentView-style
+        # code in workforce_api/views.py) whenever a technician reports cash
+        # collected but the customer has not yet confirmed it -- it was never
+        # a formally recognized value on either side of this mirror.
+        PROCESSING         = "processing",         "Processing"
+        REFUNDED           = "refunded",           "Refunded"
+        PARTIALLY_REFUNDED = "partially_refunded", "Partially Refunded"
+        CASH_PENDING       = "cash_pending",       "Cash Collection Pending"
 
     request_id = models.CharField(max_length=20, unique=True, blank=True)
     company = models.ForeignKey(
