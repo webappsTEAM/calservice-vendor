@@ -115,6 +115,17 @@ class ServiceRequest(models.Model):
         UNLOADING       = "UNLOADING",       "Unloading"
         DELIVERED       = "DELIVERED",       "Delivered"
 
+    # X-04: mirrors the Customer app's ServiceRequest.CancellationReason
+    # exactly, so cancellation_reason (added below) can carry the same
+    # choices on both sides of the shared table.
+    class CancellationReason(models.TextChoices):
+        CHANGE_OF_PLANS   = "CHANGE_OF_PLANS",   "Change of plans / Booked by mistake"
+        EXPECTED_FASTER    = "EXPECTED_FASTER",    "Expected faster service / Partner too far"
+        WRONG_SERVICE      = "WRONG_SERVICE",      "Selected wrong service, date, or address"
+        FOUND_ALTERNATIVE  = "FOUND_ALTERNATIVE",  "Found alternative service / Solved myself"
+        PRICE_OR_PAYMENT   = "PRICE_OR_PAYMENT",   "Price or payment issue"
+        OTHER              = "OTHER",              "Other reason"
+
     class PaymentMethod(models.TextChoices):
         COD    = "COD",    "Cash on Service"
         ONLINE = "ONLINE", "Online Payment"
@@ -142,6 +153,10 @@ class ServiceRequest(models.Model):
     customer_name = models.CharField(max_length=200, blank=True, default="")
     phone = models.CharField(max_length=30, blank=True, default="")
     email = models.EmailField(blank=True, null=True)
+    # X-04: was missing from this mirror -- vendor-side code that needs to
+    # look up the customer's permanent ID (e.g. for a payslip/invoice
+    # reference) had no field to read it from.
+    customer_code = models.CharField(max_length=30, blank=True, null=True, db_index=True)
 
     service_category = models.CharField(max_length=150)
     issue_title = models.CharField(max_length=300)
@@ -156,6 +171,18 @@ class ServiceRequest(models.Model):
     cart_data = models.JSONField(default=list, blank=True)
 
     drop_address = models.TextField(blank=True, default="")
+    # X-04: these were all missing from this mirror even though they exist
+    # on the shared table -- a technician handling a logistics job had no
+    # way, via this app's ORM, to see who they're actually handing goods to
+    # (drop_contact_*) or what the declared value / insurance status is.
+    drop_contact_name = models.CharField(max_length=200, blank=True, default="")
+    drop_contact_phone = models.CharField(max_length=20, blank=True, default="")
+    drop_contact_email = models.EmailField(blank=True, default="")
+    declared_value = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    consignee_relationship = models.CharField(max_length=100, blank=True, default="")
+    insurance_opted_in = models.BooleanField(default=False)
+    insurance_premium = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    insurance_liability_cap = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     logistics_leg = models.CharField(max_length=20, choices=LogisticsLeg.choices, blank=True, default="")
     logistics_leg_updated_at = models.DateTimeField(null=True, blank=True)
     logistics_leg_history = models.JSONField(default=list, blank=True)
@@ -174,9 +201,44 @@ class ServiceRequest(models.Model):
     transaction_id = models.CharField(max_length=200, blank=True, null=True)
     payment_gateway = models.CharField(max_length=50, blank=True, null=True)
     invoice_id = models.CharField(max_length=50, blank=True, null=True)
+    # X-04: was missing -- payroll/earnings code on this side could not
+    # tell WHEN a cash payment was actually collected, only who collected it
+    # (payment_collected_by_name, already present below).
+    payment_collected_at = models.DateTimeField(null=True, blank=True)
 
     status = models.CharField(max_length=30, choices=Status.choices, default=Status.NEW_REQUEST)
     priority = models.CharField(max_length=20, choices=Priority.choices, default=Priority.NORMAL)
+    # X-04: were missing -- this app's own request_id auto-numbering only
+    # makes sense in the context of what KIND of request it is, and quote
+    # jobs are a first-class case the workforce app should be able to see.
+    request_kind = models.CharField(max_length=30, default="standard", db_index=True,
+                                     choices=[("standard", "Standard"),
+                                              ("inspection", "Inspection"),
+                                              ("quoted_work", "Quoted Work")])
+    quote_number = models.CharField(max_length=100, blank=True, null=True, unique=True, db_index=True)
+
+    # X-04: pricing snapshot fields, all missing from this mirror -- a
+    # technician-facing payslip/earnings view that wants to show what a
+    # coupon actually discounted, or the true subtotal/final breakdown,
+    # had no field to read any of it from.
+    coupon_code_snapshot = models.CharField(max_length=50, blank=True, default="")
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    subtotal_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    final_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+
+    # X-04: cancellation fields, all missing from this mirror -- without
+    # these a technician-side "why was this job cancelled" view (e.g. after
+    # WorkforceJobArriveView-style checks) had nothing to read, even though
+    # the Customer app records this in full on every cancellation.
+    cancelled_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    cancelled_by_persona = models.CharField(max_length=30, blank=True, choices=[("customer", "Customer"), ("admin", "Admin"), ("employee", "Employee")])
+    cancellation_reason = models.CharField(max_length=50, blank=True, choices=CancellationReason.choices)
+    cancellation_note = models.TextField(blank=True)
+    cancelled_at_status = models.CharField(max_length=30, blank=True)
+
+    # X-04: service-zone-at-booking-time snapshot, missing from this mirror.
+    service_zone_id_snapshot = models.IntegerField(null=True, blank=True, db_index=False)
+    service_zone_name_snapshot = models.CharField(max_length=150, blank=True, default="")
 
     assigned_employee = models.ForeignKey(
         "employees.Employee",
@@ -187,24 +249,41 @@ class ServiceRequest(models.Model):
     technician_name = models.CharField(max_length=200, blank=True, default="")
     technician_phone = models.CharField(max_length=50, blank=True, default="")
     technician_photo = models.CharField(max_length=500, blank=True, default="")
+    # X-04: were missing from this mirror -- this is exactly the field pair
+    # a technician's own live-location update would need to write to, and
+    # this app previously had no way to set them via its ORM at all.
+    technician_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    technician_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     technician_location_name = models.CharField(max_length=200, blank=True, default="")
     start_otp = models.CharField(max_length=10, blank=True, default="")
     otp_verified = models.BooleanField(default=False)
     otp_attempt_count = models.IntegerField(default=0, blank=True)
     otp_hash = models.CharField(max_length=255, blank=True, default="")
+    # X-04: were missing -- this app could set/read otp_verified but never
+    # see when the OTP actually expires or when it was verified.
+    otp_expires_at = models.DateTimeField(null=True, blank=True)
+    otp_verified_at = models.DateTimeField(null=True, blank=True)
+    # X-04: was missing -- the UUID a customer's tracking link is built
+    # from; a technician-side deep link to the same tracking page had
+    # nothing to read this from.
+    tracking_token = models.UUIDField(null=True, blank=True, unique=True, db_index=True)
     payment_collected_by_name = models.CharField(max_length=200, blank=True, default="")
     collection_method = models.CharField(max_length=50, blank=True, default="")
     collection_reference = models.CharField(max_length=100, blank=True, default="")
 
+    # X-04: workforce_job_id/external_assignment_id/technician_rating were
+    # the only genuinely new fields in what used to be a second block here --
+    # that block also re-declared technician_name/phone/photo and
+    # payment_collected_by_name/collection_method/collection_reference a
+    # second time (Django silently keeps only the last definition of a
+    # repeated attribute name, so those duplicates were dead code) and gave
+    # technician_photo a different type the second time around (TextField
+    # vs the correct CharField(max_length=500) above, matching the
+    # Customer app's real column) -- removed rather than fixed in place,
+    # since the first declarations above are already correct.
     workforce_job_id = models.CharField(max_length=100, blank=True, default="")
     external_assignment_id = models.CharField(max_length=100, blank=True, default="")
-    technician_name = models.CharField(max_length=200, blank=True, default="")
-    technician_phone = models.CharField(max_length=50, blank=True, default="")
-    technician_photo = models.TextField(blank=True, default="")
     technician_rating = models.FloatField(null=True, blank=True)
-    payment_collected_by_name = models.CharField(max_length=200, blank=True, default="")
-    collection_method = models.CharField(max_length=50, blank=True, default="")
-    collection_reference = models.CharField(max_length=100, blank=True, default="")
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
