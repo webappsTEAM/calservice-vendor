@@ -131,6 +131,16 @@ class WorkforceRequiredDocument(models.Model):
     description = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # GT-A-02: which job service categories this requirement applies to (e.g.
+    # ["mini_truck", "two_wheeler_delivery", "packers_movers"]). Empty list
+    # (the default) preserves the original behaviour -- applies to every job,
+    # exactly as every existing row already does. Only non-empty lists scope
+    # a requirement (e.g. Driving Licence / RC / Insurance / Permit) to
+    # specific categories, so Gate 3 can require vehicle documents only for
+    # jobs that actually need a vehicle, without touching the blanket
+    # documents (ID proof, etc.) that already apply to everyone.
+    applies_to_categories = models.JSONField(default=list, blank=True)
+
     class Meta:
         db_table = "workforce_required_document"
         unique_together = ("company", "category")
@@ -1297,7 +1307,66 @@ class PaymentCollectionEvent(models.Model):
         return f"PaymentEvent #{self.id} ({self.event_type}) for Payment #{self.job_payment_id}"
 
 
+class Vehicle(models.Model):
+    """
+    GT-A-01: a driver is currently modeled as "an Employee with a job title" --
+    there is no vehicle at all: no type, no registration number, no capacity.
+    This is the minimal vehicle record needed for goods/transport dispatch and
+    document-expiry gating (insurance, permit, PUC), without inventing a full
+    fleet-management module the product hasn't asked for.
+    """
+    class VehicleType(models.TextChoices):
+        TWO_WHEELER   = "two_wheeler",   "Two Wheeler"
+        THREE_WHEELER = "three_wheeler", "Three Wheeler / Auto"
+        MINI_TRUCK    = "mini_truck",    "Mini Truck"
+        PICKUP        = "pickup",        "Pickup Van"
+        TRUCK         = "truck",         "Truck"
+        OTHER         = "other",         "Other"
 
+    employee = models.ForeignKey(
+        "employees.Employee",
+        on_delete=models.CASCADE,
+        related_name="vehicles",
+    )
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="vehicles",
+    )
+    vehicle_type = models.CharField(max_length=20, choices=VehicleType.choices, default=VehicleType.OTHER)
+    registration_number = models.CharField(max_length=30, db_index=True)
+    capacity_kg = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+    capacity_label = models.CharField(max_length=50, blank=True, default="")
 
+    # Document expiry -- checked the same way employee documents already are
+    # (see automatic_dispatch.py Gate 3), but vehicle documents are properties
+    # of the vehicle, not the person, so they live here rather than being
+    # forced into WorkforceEmployeeDocument.
+    insurance_expiry = models.DateField(null=True, blank=True)
+    permit_expiry = models.DateField(null=True, blank=True)
+    puc_expiry = models.DateField(null=True, blank=True)
+    rc_verified = models.BooleanField(default=False)
 
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        db_table = "workforce_vehicle"
+        unique_together = ("company", "registration_number")
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.registration_number} ({self.get_vehicle_type_display()})"
+
+    def is_document_current(self, as_of=None):
+        """True only if every expiry this vehicle has on file is still valid.
+        A vehicle with no expiry dates recorded at all returns True -- absence
+        of data is not treated as expiry, matching how WorkforceEmployeeDocument
+        expiry checks already behave (missing expiry_date never fails Gate 3)."""
+        from django.utils import timezone as _tz
+        today = as_of or _tz.now().date()
+        for d in (self.insurance_expiry, self.permit_expiry, self.puc_expiry):
+            if d and d < today:
+                return False
+        return True

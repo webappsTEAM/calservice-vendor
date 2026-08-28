@@ -42,6 +42,18 @@ DEFAULT_OFFER_DURATION_MINUTES = 5
 # Dispatchable database statuses
 DISPATCHABLE_STATUSES = ["draft", "new_request", "confirmed", "unassigned", "assigned", "redispatching"]
 
+# GT-A-01/GT-A-02: service_name values that require a vehicle on file with
+# current insurance/permit/PUC (Gate 3). Mirrors
+# Customer/backend/service_requests/services/logistics_pricing.py's
+# LOGISTICS_CATEGORIES -- kept as its own constant here (rather than a
+# cross-app import) since the two Django projects share a database but not
+# a codebase.
+LOGISTICS_SERVICE_CATEGORIES = {
+    "goods_transport_truck",
+    "goods_transport_two_wheeler",
+    "packers_movers",
+}
+
 # Canonical service synonyms and explicit alias dictionary
 EXPLICIT_SERVICE_ALIASES = {
     "hvac": {"hvac", "ac", "air conditioning", "ac service", "ac repair", "ac installation", "ac gas", "ac repair & diagnostics", "ac service & cleaning", "ac gas & refrigerant", "ac installation & uninstallation"},
@@ -147,7 +159,18 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
     if emp and getattr(emp, "company_id", None):
         from workforce_api.models import WorkforceRequiredDocument, WorkforceEmployeeDocument
         mandatory_doc_reqs = WorkforceRequiredDocument.objects.filter(company_id=emp.company_id, is_mandatory=True)
-        if mandatory_doc_reqs.exists():
+        # GT-A-02: a requirement with a non-empty applies_to_categories only
+        # gates jobs in one of those categories (e.g. Driving Licence should
+        # not block a technician from taking an AC-repair job). A requirement
+        # with an empty list (the default, and every pre-existing row) keeps
+        # applying to every job, exactly as before this field existed.
+        service_name_clean = (service_name or "").strip().lower()
+        mandatory_doc_reqs = [
+            rd for rd in mandatory_doc_reqs
+            if not rd.applies_to_categories
+            or service_name_clean in {str(c).strip().lower() for c in rd.applies_to_categories}
+        ]
+        if mandatory_doc_reqs:
             if hasattr(emp, "prefetched_employee_documents"):
                 emp_docs_map = {d.requirement_id: d for d in emp.prefetched_employee_documents}
             else:
@@ -168,6 +191,24 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
                     gate_results["G3"] = False
                     logger.debug(f"[9GATE_REJECT_GATE3_DOCUMENTS_EXPIRED] Employee #{emp.id} mandatory document '{req_doc.title}' expired on {emp_doc.expiry_date}.")
                     return False, f"Gate 3: Technician mandatory document '{req_doc.title}' expired on {emp_doc.expiry_date}.", gate_results
+
+        # GT-A-01/GT-A-02: for logistics jobs specifically, also require at
+        # least one active Vehicle on file whose insurance/permit/PUC are all
+        # current. This is opt-in in effect: an employee with zero Vehicle
+        # rows is only blocked for jobs in LOGISTICS_SERVICE_CATEGORIES, and
+        # only once dispatch actually routes a logistics job their way --
+        # non-logistics dispatch is entirely unaffected.
+        if service_name_clean in LOGISTICS_SERVICE_CATEGORIES:
+            from workforce_api.models import Vehicle
+            vehicles = list(Vehicle.objects.filter(employee=emp, is_active=True))
+            if not vehicles:
+                gate_results["G3"] = False
+                logger.debug(f"[9GATE_REJECT_GATE3_NO_VEHICLE] Employee #{emp.id} has no active vehicle on file for logistics job '{service_name}'.")
+                return False, "Gate 3: No active vehicle on file for this logistics job.", gate_results
+            if not any(v.is_document_current() for v in vehicles):
+                gate_results["G3"] = False
+                logger.debug(f"[9GATE_REJECT_GATE3_VEHICLE_DOCS_EXPIRED] Employee #{emp.id} has no vehicle with current insurance/permit/PUC.")
+                return False, "Gate 3: Vehicle insurance, permit or PUC has expired.", gate_results
         else:
             documents = onboarding.get("documents", {})
             if any(doc.get("status") in ["rejected", "pending_review", "missing"] for doc in documents.values()):
