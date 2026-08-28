@@ -103,6 +103,18 @@ class ServiceRequest(models.Model):
         HIGH   = "high",   "High"
         URGENT = "urgent", "Urgent"
 
+    # GT-B-03: mirrors the Customer app's ServiceRequest.LogisticsLeg
+    # exactly (same field, same choices, same shared table) -- see that
+    # model's docstring for the full rationale. This is the technician-
+    # facing side: WorkforceJobLogisticsLegView (workforce_api/views.py)
+    # is what actually sets this.
+    class LogisticsLeg(models.TextChoices):
+        EN_ROUTE_PICKUP = "EN_ROUTE_PICKUP", "En Route to Pickup"
+        LOADING         = "LOADING",         "Loading"
+        EN_ROUTE_DROP   = "EN_ROUTE_DROP",   "En Route to Drop"
+        UNLOADING       = "UNLOADING",       "Unloading"
+        DELIVERED       = "DELIVERED",       "Delivered"
+
     class PaymentMethod(models.TextChoices):
         COD    = "COD",    "Cash on Service"
         ONLINE = "ONLINE", "Online Payment"
@@ -144,6 +156,9 @@ class ServiceRequest(models.Model):
     cart_data = models.JSONField(default=list, blank=True)
 
     drop_address = models.TextField(blank=True, default="")
+    logistics_leg = models.CharField(max_length=20, choices=LogisticsLeg.choices, blank=True, default="")
+    logistics_leg_updated_at = models.DateTimeField(null=True, blank=True)
+    logistics_leg_history = models.JSONField(default=list, blank=True)
     payment_method = models.CharField(
         max_length=20,
         choices=PaymentMethod.choices,

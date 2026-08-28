@@ -7787,3 +7787,74 @@ class WorkforceDispatchHealthView(APIView):
             "last_status": (row.payload or {}).get("status"),
             "last_detail": (row.payload or {}).get("detail"),
         }, status=status.HTTP_200_OK if healthy else status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+class WorkforceJobLogisticsLegView(APIView):
+    """
+    GT-B-03: technician-facing sub-phase tracker for multi-leg logistics
+    jobs. Deliberately separate from job.status/apply_transition -- see
+    the LogisticsLeg docstring in service_requests/models.py for the full
+    rationale. Setting a leg never changes job.status and is never gated
+    by ALLOWED_TRANSITIONS; the only guard here is that the job must be
+    assigned to this technician, be a logistics-category job, and not
+    already be in a terminal status.
+
+    POST body: {"leg": "EN_ROUTE_PICKUP" | "LOADING" | "EN_ROUTE_DROP" |
+    "UNLOADING" | "DELIVERED"}
+    """
+    permission_classes = [IsApprovedTechnician]
+
+    _TERMINAL_STATUSES = {"completed", "cancelled", "unable_to_complete"}
+
+    def get(self, request, pk):
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({
+            "logistics_leg": job.logistics_leg,
+            "logistics_leg_updated_at": job.logistics_leg_updated_at,
+            "logistics_leg_history": job.logistics_leg_history,
+        }, status=status.HTTP_200_OK)
+
+    def post(self, request, pk):
+        from workforce_api.services.automatic_dispatch import LOGISTICS_SERVICE_CATEGORIES
+
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp or job.assigned_employee != emp:
+            return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
+
+        service_name = (job.service_category or "").strip().lower()
+        if service_name not in LOGISTICS_SERVICE_CATEGORIES:
+            return Response({
+                "error": f"Leg tracking is only available for logistics jobs, not '{job.service_category}'."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if job.status in self._TERMINAL_STATUSES:
+            return Response({
+                "error": f"Job #{job.id} is already '{job.status}' -- leg cannot be updated."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        leg = (request.data.get("leg") or "").strip().upper()
+        if leg not in ServiceRequest.LogisticsLeg.values:
+            valid_legs = ", ".join(ServiceRequest.LogisticsLeg.values)
+            return Response({
+                "error": f"Invalid leg. Choose one of: {valid_legs}"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        now = timezone.now()
+        job.logistics_leg = leg
+        job.logistics_leg_updated_at = now
+        history = job.logistics_leg_history or []
+        history.append({"leg": leg, "at": now.isoformat(), "by": request.user.id})
+        job.logistics_leg_history = history
+        job.save(update_fields=["logistics_leg", "logistics_leg_updated_at", "logistics_leg_history", "updated_at"])
+
+        return Response({
+            "logistics_leg": job.logistics_leg,
+            "logistics_leg_updated_at": job.logistics_leg_updated_at,
+            "logistics_leg_history": job.logistics_leg_history,
+        }, status=status.HTTP_200_OK)
