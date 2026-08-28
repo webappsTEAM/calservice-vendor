@@ -108,16 +108,26 @@ export function LiveCameraCaptureModal({
     }
   }, [stopStream]);
 
+  const isConfirmedRef = useRef(false);
+  const capturedImageRef = useRef(null);
+
+  useEffect(() => {
+    capturedImageRef.current = capturedImage;
+  }, [capturedImage]);
+
   // Start camera when modal opens
   useEffect(() => {
     if (isOpen) {
+      isConfirmedRef.current = false;
       setCapturedImage(null);
       setFacingMode(defaultFacingMode);
       startCamera(defaultFacingMode);
     } else {
       stopStream();
-      if (capturedImage?.previewUrl) {
-        URL.revokeObjectURL(capturedImage.previewUrl);
+      // Only revoke unconfirmed snapshots discarded on close
+      // Confirmed capture preview URLs are strictly owned by the parent
+      if (capturedImageRef.current?.previewUrl && !isConfirmedRef.current) {
+        URL.revokeObjectURL(capturedImageRef.current.previewUrl);
       }
       setCapturedImage(null);
     }
@@ -196,6 +206,7 @@ export function LiveCameraCaptureModal({
   // Confirm and return photo
   const handleConfirm = () => {
     if (!capturedImage) return;
+    isConfirmedRef.current = true;
     onCapture(capturedImage.file, capturedImage.previewUrl);
     onClose();
   };
@@ -204,6 +215,7 @@ export function LiveCameraCaptureModal({
   const handleNativeFileChange = (e) => {
     const file = e.target.files?.[0];
     if (file) {
+      isConfirmedRef.current = true;
       const previewUrl = URL.createObjectURL(file);
       onCapture(file, previewUrl);
       onClose();

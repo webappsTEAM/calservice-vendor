@@ -21,6 +21,11 @@ class WorkforceSignupSerializer(serializers.Serializer):
     mobile_number = serializers.CharField(max_length=20)
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True, min_length=6)
+    account_type = serializers.CharField(required=False, default="independent")
+    provider_id = serializers.IntegerField(required=False, allow_null=True)
+    provider_slug = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    company_id = serializers.IntegerField(required=False, allow_null=True)
+    company_slug = serializers.CharField(required=False, allow_null=True, allow_blank=True)
 
     def validate_email(self, value):
         if User.objects.filter(email__iexact=value).exists():
@@ -32,6 +37,76 @@ class WorkforceSignupSerializer(serializers.Serializer):
         if User.objects.filter(mobile_number=cleaned).exists():
             raise serializers.ValidationError("An account with this mobile number already exists.")
         return cleaned
+
+    def validate(self, attrs):
+        account_type = str(attrs.get("account_type") or "independent").strip().lower()
+        if account_type in ["provider_technician", "provider"]:
+            provider_id = attrs.get("provider_id") or attrs.get("company_id")
+            provider_slug = attrs.get("provider_slug") or attrs.get("company_slug")
+            if not provider_id and not provider_slug:
+                raise serializers.ValidationError({
+                    "provider_id": "Provider selection is mandatory when joining a Service Provider."
+                })
+        elif account_type in ["service_provider", "organization"]:
+            raise serializers.ValidationError({
+                "account_type": "To register as a Service Provider, please use the Service Provider registration endpoint."
+            })
+        return attrs
+
+
+
+class PublicServiceProviderListSerializer(serializers.ModelSerializer):
+    """
+    Public-facing serializer for active Service Providers available for technician signup.
+    Excludes internal administration, financial, employee, or sensitive credentials.
+    """
+    class Meta:
+        from companies.models import Company
+        model = Company
+        fields = [
+            "id",
+            "company_name",
+            "display_id",
+            "slug",
+            "industry",
+            "primary_country",
+        ]
+
+
+class WorkforceProviderJoinRequestSerializer(serializers.ModelSerializer):
+    technician_id = serializers.IntegerField(source="technician.id", read_only=True)
+    technician_name = serializers.SerializerMethodField()
+    technician_email = serializers.CharField(source="technician.user.email", read_only=True)
+    technician_phone = serializers.CharField(source="technician.user.mobile_number", read_only=True)
+    provider_id = serializers.IntegerField(source="provider.id", read_only=True)
+    provider_name = serializers.CharField(source="provider.company_name", read_only=True)
+    provider_display_id = serializers.CharField(source="provider.display_id", read_only=True)
+    decided_by_username = serializers.CharField(source="decided_by.username", read_only=True)
+
+    class Meta:
+        from .models import WorkforceProviderJoinRequest
+        model = WorkforceProviderJoinRequest
+        fields = [
+            "id",
+            "technician_id",
+            "technician_name",
+            "technician_email",
+            "technician_phone",
+            "provider_id",
+            "provider_name",
+            "provider_display_id",
+            "status",
+            "requested_at",
+            "decided_at",
+            "decided_by_username",
+            "rejection_reason",
+            "notes",
+        ]
+
+    def get_technician_name(self, obj):
+        if obj.technician and obj.technician.user:
+            return f"{obj.technician.user.first_name} {obj.technician.user.last_name}".strip() or obj.technician.user.username
+        return "Unknown Technician"
 
 
 class WorkforceOnboardingDraftSerializer(serializers.Serializer):
@@ -58,6 +133,9 @@ class WorkforceEmployeeProfileListSerializer(serializers.ModelSerializer):
     registration_status = serializers.SerializerMethodField()
     all_requested_services = serializers.SerializerMethodField()
     documents_status = serializers.SerializerMethodField()
+    join_request = serializers.SerializerMethodField()
+    association_status = serializers.SerializerMethodField()
+    is_independent = serializers.SerializerMethodField()
 
     class Meta:
         model = Employee
@@ -77,6 +155,9 @@ class WorkforceEmployeeProfileListSerializer(serializers.ModelSerializer):
             "registration_status",
             "all_requested_services",
             "documents_status",
+            "join_request",
+            "association_status",
+            "is_independent",
             "created_at",
         ]
 
@@ -97,6 +178,22 @@ class WorkforceEmployeeProfileListSerializer(serializers.ModelSerializer):
         """
         ob = (obj.bank_details or {}).get("onboarding", {})
         return dict(ob.get("documents", {}))
+
+    def get_join_request(self, obj):
+        ob = (obj.bank_details or {}).get("onboarding", {})
+        return ob.get("join_request", None)
+
+    def get_association_status(self, obj):
+        if obj.company_id:
+            return "APPROVED"
+        ob = (obj.bank_details or {}).get("onboarding", {})
+        jr = ob.get("join_request")
+        if jr and isinstance(jr, dict):
+            return jr.get("status", "PENDING")
+        return "INDEPENDENT"
+
+    def get_is_independent(self, obj):
+        return obj.company_id is None
 
 
 class WorkforceEmployeeProfileSerializer(serializers.ModelSerializer):
@@ -121,6 +218,9 @@ class WorkforceEmployeeProfileSerializer(serializers.ModelSerializer):
     all_requested_services = serializers.SerializerMethodField()
     documents_status = serializers.SerializerMethodField()
     controlled_fields = serializers.SerializerMethodField()
+    join_request = serializers.SerializerMethodField()
+    association_status = serializers.SerializerMethodField()
+    is_independent = serializers.SerializerMethodField()
 
     class Meta:
         model = Employee
@@ -156,8 +256,12 @@ class WorkforceEmployeeProfileSerializer(serializers.ModelSerializer):
             "all_requested_services",
             "documents_status",
             "controlled_fields",
+            "join_request",
+            "association_status",
+            "is_independent",
             "is_active",
         ]
+
 
     def get_avatar(self, obj):
         if obj.user and obj.user.avatar:
@@ -229,6 +333,22 @@ class WorkforceEmployeeProfileSerializer(serializers.ModelSerializer):
                 "identity_documents",
             ] if is_locked else [],
         }
+
+    def get_join_request(self, obj):
+        ob = (obj.bank_details or {}).get("onboarding", {})
+        return ob.get("join_request", None)
+
+    def get_association_status(self, obj):
+        if obj.company_id:
+            return "APPROVED"
+        ob = (obj.bank_details or {}).get("onboarding", {})
+        jr = ob.get("join_request")
+        if jr and isinstance(jr, dict):
+            return jr.get("status", "PENDING")
+        return "INDEPENDENT"
+
+    def get_is_independent(self, obj):
+        return obj.company_id is None
 
 
 
@@ -498,11 +618,18 @@ class WorkforceJobListSerializer(serializers.ModelSerializer):
             "payment_status",
             "payment_method",
             "assigned_employee_name",
+            "technician_id",
+            "technician_name",
+            "technician_phone",
+            "accepted_at",
+            "completed_at",
             "created_at",
             "updated_at",
         ]
 
     def get_assigned_employee_name(self, obj):
+        if getattr(obj, "technician_name", None):
+            return obj.technician_name
         emp = obj.assigned_employee
         if emp and hasattr(emp, "user"):
             return emp.user.get_full_name() or emp.user.username
@@ -532,6 +659,7 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
     wave_id = serializers.SerializerMethodField()
     wave_number = serializers.SerializerMethodField()
     can_cancel = serializers.SerializerMethodField()
+    completed_at = serializers.SerializerMethodField()
 
     request_kind = serializers.CharField(read_only=True)
     parent_request_id = serializers.IntegerField(read_only=True)
@@ -601,7 +729,51 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             "wave_id",
             "wave_number",
             "can_cancel",
+            "completed_at",
+            "started_at",
+            "technician_id",
+            "technician_name",
+            "technician_phone",
+            "technician_photo",
+            "technician_rating",
+            "tracking_token",
         ]
+
+    def get_completed_at(self, obj):
+        # 0. Authoritative persisted completed_at on ServiceRequest
+        if getattr(obj, "completed_at", None):
+            return obj.completed_at.isoformat()
+
+        # 1. EmployeeJob.completed_date
+        from service_requests.models import EmployeeJob
+        emp_job = getattr(obj, "employee_jobs", None)
+        if emp_job is not None:
+            ej = emp_job.filter(completed_date__isnull=False).order_by("-completed_date").first()
+            if ej and ej.completed_date:
+                return ej.completed_date.isoformat()
+        else:
+            ej = EmployeeJob.objects.filter(service_request=obj, completed_date__isnull=False).order_by("-completed_date").first()
+            if ej and ej.completed_date:
+                return ej.completed_date.isoformat()
+
+        # 2. PostServiceProof.submitted_at
+        from workforce_api.models import PostServiceProof
+        proof = getattr(obj, "post_service_proof", None)
+        if not proof:
+            proof = PostServiceProof.objects.filter(job=obj, submitted_at__isnull=False).first()
+        if proof and proof.submitted_at:
+            return proof.submitted_at.isoformat()
+
+        # 3. JobPayment.cash_collected_at
+        pmt = getattr(obj, "payment", None)
+        if pmt and getattr(pmt, "cash_collected_at", None):
+            return pmt.cash_collected_at.isoformat()
+        from workforce_api.models import JobPayment
+        jp = JobPayment.objects.filter(job=obj, cash_collected_at__isnull=False).first()
+        if jp and jp.cash_collected_at:
+            return jp.cash_collected_at.isoformat()
+
+        return None
 
     def _get_context_emp(self):
         request = self.context.get("request")
@@ -675,6 +847,8 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
     def get_accepted_at(self, obj):
         if not self.get_is_accepted_by_current_employee(obj):
             return None
+        if getattr(obj, "accepted_at", None):
+            return obj.accepted_at.isoformat()
         emp = self._get_context_emp()
         lifecycle_events_map = self.context.get("lifecycle_events_map")
         if lifecycle_events_map is not None:
@@ -1448,6 +1622,456 @@ class WorkforceCustomerQuoteSerializer(serializers.ModelSerializer):
                 return obj.technician.user.get_full_name() or "Assigned Expert"
             return "Assigned Expert"
         return "CalTrack Specialist"
+
+
+# ── Phase 2A: Service Provider & Provider Admin Serializers ───────────────────
+
+class ServiceProviderCreateSerializer(serializers.Serializer):
+    """
+    Serializer for Superadmin creating a Service Provider (Company) and its
+    primary Service Provider Admin user atomically.
+    """
+    company_name = serializers.CharField(max_length=255, required=True)
+    display_id = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    address = serializers.CharField(required=False, allow_blank=True)
+    industry = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    website = serializers.URLField(max_length=255, required=False, allow_blank=True)
+    primary_country = serializers.CharField(max_length=2, required=False, default="US")
+
+    admin_username = serializers.CharField(max_length=150, required=True)
+    admin_email = serializers.EmailField(required=True)
+    admin_password = serializers.CharField(write_only=True, min_length=6, required=True)
+    admin_first_name = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
+    admin_last_name = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
+    admin_phone = serializers.CharField(max_length=30, required=False, allow_blank=True, default="")
+
+    def validate_company_name(self, value):
+        name = value.strip()
+        if not name:
+            raise serializers.ValidationError("Company name cannot be blank.")
+        return name
+
+    def validate_admin_username(self, value):
+        uname = value.strip()
+        if not uname:
+            raise serializers.ValidationError("Admin username cannot be blank.")
+        if User.objects.filter(username__iexact=uname).exists():
+            raise serializers.ValidationError(f"Username '{uname}' is already taken.")
+        return uname
+
+    def validate_admin_email(self, value):
+        email = value.strip().lower()
+        if not email:
+            raise serializers.ValidationError("Admin email cannot be blank.")
+        if User.objects.filter(email__iexact=email).exists():
+            raise serializers.ValidationError(f"An account with email '{email}' already exists.")
+        return email
+
+    def validate_admin_phone(self, value):
+        phone = value.strip() if value else ""
+        if phone and User.objects.filter(phone=phone).exists():
+            raise serializers.ValidationError(f"Phone number '{phone}' is already registered to an existing account.")
+        return phone
+
+    def validate_display_id(self, value):
+        if not value:
+            return ""
+        did = value.strip().upper()
+        from companies.models import Company
+        if Company.objects.filter(display_id__iexact=did).exists():
+            raise serializers.ValidationError(f"Display ID '{did}' is already in use.")
+        return did
+
+
+class ServiceProviderSelfSignupSerializer(serializers.Serializer):
+    """
+    Public-facing serializer for a new organization self-registering as a Service Provider.
+    Atomically creates Company + primary Service Provider Admin user.
+    """
+    company_name = serializers.CharField(max_length=255, required=True)
+    industry = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
+    phone = serializers.CharField(max_length=30, required=False, allow_blank=True, default="")
+    email = serializers.EmailField(required=False, allow_blank=True, default="")
+    address = serializers.CharField(required=False, allow_blank=True, default="")
+    city = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
+    state = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
+    country = serializers.CharField(max_length=100, required=False, allow_blank=True, default="US")
+    website = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+
+    first_name = serializers.CharField(max_length=150, required=True)
+    last_name = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
+    admin_email = serializers.EmailField(required=False, allow_blank=True, default="")
+    admin_phone = serializers.CharField(max_length=30, required=False, allow_blank=True, default="")
+    username = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
+    password = serializers.CharField(write_only=True, min_length=6, required=True)
+    confirm_password = serializers.CharField(write_only=True, min_length=6, required=False, allow_blank=True, default="")
+
+    company_id = serializers.IntegerField(required=False, allow_null=True)
+    provider_id = serializers.IntegerField(required=False, allow_null=True)
+
+    def validate_company_name(self, value):
+        name = value.strip()
+        if not name:
+            raise serializers.ValidationError("Service Provider Name cannot be blank.")
+        return name
+
+    def validate_website(self, value):
+        val = (value or "").strip()
+        if not val:
+            return ""
+        if not val.startswith("http://") and not val.startswith("https://"):
+            val = "https://" + val
+        from django.core.validators import URLValidator
+        validator = URLValidator()
+        try:
+            validator(val)
+        except Exception:
+            raise serializers.ValidationError("Enter a valid URL (e.g. https://example.com or example.com).")
+        return val
+
+    def validate(self, attrs):
+        if attrs.get("company_id") or attrs.get("provider_id"):
+            raise serializers.ValidationError("Cannot supply an existing company ID during new provider registration.")
+
+        p = attrs.get("password")
+        cp = attrs.get("confirm_password")
+        if cp and p != cp:
+            raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
+
+        admin_email = attrs.get("admin_email") or attrs.get("email")
+        if not admin_email:
+            raise serializers.ValidationError({"admin_email": "Administrator email is required."})
+        admin_email = admin_email.strip().lower()
+        if User.objects.filter(email__iexact=admin_email).exists():
+            raise serializers.ValidationError({"admin_email": f"An account with email '{admin_email}' already exists. Please sign in or use a different email."})
+        attrs["admin_email"] = admin_email
+
+        admin_phone = (attrs.get("admin_phone") or attrs.get("phone") or "").strip()
+        if admin_phone:
+            import re
+            clean_phone = re.sub(r"[^\d+]", "", admin_phone)
+            if User.objects.filter(phone=clean_phone).exists() or User.objects.filter(mobile_number=clean_phone).exists():
+                raise serializers.ValidationError({"phone": f"Phone number '{clean_phone}' is already registered with another account."})
+            attrs["admin_phone"] = clean_phone
+
+        uname = attrs.get("username", "").strip()
+        if not uname:
+            base_uname = admin_email.split("@")[0].lower()
+            candidate = base_uname
+            c = 1
+            while User.objects.filter(username__iexact=candidate).exists():
+                candidate = f"{base_uname}_{c}"
+                c += 1
+            attrs["username"] = candidate
+        else:
+            if User.objects.filter(username__iexact=uname).exists():
+                raise serializers.ValidationError({"username": f"Username '{uname}' is already taken."})
+
+        return attrs
+
+
+
+class ServiceProviderListSerializer(serializers.ModelSerializer):
+
+    """
+    Serializer for Superadmin listing all Service Providers (Companies).
+    """
+    primary_admin = serializers.SerializerMethodField()
+    employee_count = serializers.SerializerMethodField()
+
+    class Meta:
+        from companies.models import Company
+        model = Company
+        fields = [
+            "id",
+            "company_name",
+            "display_id",
+            "slug",
+            "is_active",
+            "address",
+            "industry",
+            "website",
+            "primary_country",
+            "created_at",
+            "employee_count",
+            "primary_admin",
+        ]
+
+    def get_primary_admin(self, obj):
+        admin = User.objects.filter(
+            company=obj,
+            role__in=["service_provider_admin", "admin", "manager"]
+        ).order_by("id").first()
+        if not admin:
+            return None
+        return {
+            "id": admin.id,
+            "username": admin.username,
+            "email": admin.email or "",
+            "first_name": admin.first_name or "",
+            "last_name": admin.last_name or "",
+            "full_name": admin.get_full_name(),
+            "phone": admin.phone or "",
+            "role": admin.role,
+        }
+
+    def get_employee_count(self, obj):
+        if hasattr(obj, "emp_count"):
+            return obj.emp_count
+        return obj.employees.filter(is_active=True).count()
+
+
+class ServiceProviderDetailSerializer(serializers.ModelSerializer):
+    """
+    Detailed serializer for Superadmin viewing a specific Service Provider.
+    """
+    primary_admin = serializers.SerializerMethodField()
+    employee_count = serializers.SerializerMethodField()
+    admins = serializers.SerializerMethodField()
+
+    class Meta:
+        from companies.models import Company
+        model = Company
+        fields = [
+            "id",
+            "company_name",
+            "display_id",
+            "slug",
+            "is_active",
+            "address",
+            "industry",
+            "website",
+            "primary_country",
+            "timezone",
+            "created_at",
+            "updated_at",
+            "employee_count",
+            "primary_admin",
+            "admins",
+        ]
+
+    def get_primary_admin(self, obj):
+        admin = User.objects.filter(
+            company=obj,
+            role__in=["service_provider_admin", "admin", "manager"]
+        ).order_by("id").first()
+        if not admin:
+            return None
+        return {
+            "id": admin.id,
+            "username": admin.username,
+            "email": admin.email or "",
+            "first_name": admin.first_name or "",
+            "last_name": admin.last_name or "",
+            "full_name": admin.get_full_name(),
+            "phone": admin.phone or "",
+            "role": admin.role,
+        }
+
+    def get_admins(self, obj):
+        admins = User.objects.filter(
+            company=obj,
+            role__in=["service_provider_admin", "admin", "manager"]
+        ).order_by("id")[:10]
+        return [
+            {
+                "id": a.id,
+                "username": a.username,
+                "email": a.email or "",
+                "first_name": a.first_name or "",
+                "last_name": a.last_name or "",
+                "full_name": a.get_full_name(),
+                "role": a.role,
+            }
+            for a in admins
+        ]
+
+    def get_employee_count(self, obj):
+        return obj.employees.filter(is_active=True).count()
+
+
+class ProviderProfileSerializer(serializers.ModelSerializer):
+    """
+    Serializer for authenticated Provider Admin querying their own provider identity.
+    """
+    primary_admin = serializers.SerializerMethodField()
+    employee_count = serializers.SerializerMethodField()
+
+    class Meta:
+        from companies.models import Company
+        model = Company
+        fields = [
+            "id",
+            "company_name",
+            "display_id",
+            "slug",
+            "is_active",
+            "address",
+            "industry",
+            "website",
+            "primary_country",
+            "timezone",
+            "created_at",
+            "employee_count",
+            "primary_admin",
+        ]
+
+    def get_primary_admin(self, obj):
+        admin = User.objects.filter(
+            company=obj,
+            role__in=["service_provider_admin", "admin", "manager"]
+        ).order_by("id").first()
+        if not admin:
+            return None
+        return {
+            "id": admin.id,
+            "username": admin.username,
+            "email": admin.email or "",
+            "first_name": admin.first_name or "",
+            "last_name": admin.last_name or "",
+            "full_name": admin.get_full_name(),
+            "phone": admin.phone or "",
+            "role": admin.role,
+        }
+
+    def get_employee_count(self, obj):
+        return obj.employees.filter(is_active=True).count()
+
+
+# ── Phase 2B: Technician Management & Provisioning Serializers ───────────────
+
+class TechnicianCreateSerializer(serializers.Serializer):
+    first_name = serializers.CharField(max_length=150, required=True)
+    last_name = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
+    email = serializers.EmailField(required=True)
+    phone = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
+    mobile_number = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
+    username = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
+    password = serializers.CharField(max_length=128, required=False, allow_blank=True, default="")
+    services = serializers.ListField(child=serializers.CharField(), required=False, default=list)
+    skills = serializers.ListField(child=serializers.CharField(), required=False, default=list)
+    company_id = serializers.IntegerField(required=False, allow_null=True, default=None)
+
+    def validate_email(self, value):
+        normalized = value.strip().lower()
+        if User.objects.filter(email__iexact=normalized).exists():
+            raise serializers.ValidationError("An account with this email address already exists.")
+        return normalized
+
+    def validate_username(self, value):
+        if value:
+            normalized = value.strip().lower()
+            if User.objects.filter(username__iexact=normalized).exists():
+                raise serializers.ValidationError("This username is already taken.")
+            return normalized
+        return value
+
+
+class TechnicianListSerializer(serializers.ModelSerializer):
+    first_name = serializers.CharField(source="user.first_name", read_only=True)
+    last_name = serializers.CharField(source="user.last_name", read_only=True)
+    full_name = serializers.SerializerMethodField()
+    email = serializers.CharField(source="user.email", read_only=True)
+    username = serializers.CharField(source="user.username", read_only=True)
+    phone = serializers.SerializerMethodField()
+    mobile_number = serializers.SerializerMethodField()
+    company_id = serializers.IntegerField(source="company.id", read_only=True, allow_null=True)
+    company_name = serializers.CharField(source="company.company_name", read_only=True, default=None)
+    is_independent = serializers.SerializerMethodField()
+    role = serializers.CharField(source="user.role", read_only=True, default="employee")
+    registration_status = serializers.SerializerMethodField()
+    approved_services = serializers.SerializerMethodField()
+    skills = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Employee
+        fields = [
+            "id",
+            "employee_id",
+            "first_name",
+            "last_name",
+            "full_name",
+            "email",
+            "username",
+            "phone",
+            "mobile_number",
+            "company_id",
+            "company_name",
+            "is_independent",
+            "role",
+            "registration_status",
+            "is_active",
+            "is_online",
+            "current_availability",
+            "approved_services",
+            "skills",
+            "created_at",
+        ]
+
+    def get_full_name(self, obj):
+        if obj.user:
+            return obj.user.get_full_name() or f"{obj.user.first_name} {obj.user.last_name}".strip() or obj.user.username
+        return ""
+
+    def get_phone(self, obj):
+        if obj.user:
+            return getattr(obj.user, "phone", None) or getattr(obj.user, "mobile_number", "")
+        return ""
+
+    def get_mobile_number(self, obj):
+        if obj.user:
+            return getattr(obj.user, "mobile_number", None) or getattr(obj.user, "phone", "")
+        return ""
+
+    def get_is_independent(self, obj):
+        return obj.company_id is None
+
+    def get_registration_status(self, obj):
+        from .services.registration import get_employee_registration_status
+        return get_employee_registration_status(obj)
+
+    def get_approved_services(self, obj):
+        bank_details = obj.bank_details or {}
+        onboarding = bank_details.get("onboarding", {})
+        services = onboarding.get("services", [])
+        return [s for s in services if s.get("status") == "approved"]
+
+    def get_skills(self, obj):
+        try:
+            return list(
+                obj.skills.filter(is_verified=True).values("id", "skill__name", "proficiency_level")
+            )
+        except Exception:
+            return []
+
+
+class TechnicianDetailSerializer(TechnicianListSerializer):
+    onboarding_data = serializers.SerializerMethodField()
+    documents = serializers.SerializerMethodField()
+    all_services = serializers.SerializerMethodField()
+
+    class Meta(TechnicianListSerializer.Meta):
+        fields = TechnicianListSerializer.Meta.fields + [
+            "onboarding_data",
+            "documents",
+            "all_services",
+        ]
+
+    def get_onboarding_data(self, obj):
+        bank_details = obj.bank_details or {}
+        return bank_details.get("onboarding", {})
+
+    def get_documents(self, obj):
+        bank_details = obj.bank_details or {}
+        onboarding = bank_details.get("onboarding", {})
+        return onboarding.get("documents", {})
+
+    def get_all_services(self, obj):
+        bank_details = obj.bank_details or {}
+        onboarding = bank_details.get("onboarding", {})
+        return onboarding.get("services", [])
+
+
 
 
 

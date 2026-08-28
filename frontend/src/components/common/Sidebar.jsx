@@ -25,6 +25,7 @@ import {
   ReceiptText,
   Activity,
   Calculator,
+  Building2,
 } from 'lucide-react';
 
 export function Sidebar({ onCloseMobile = () => {} }) {
@@ -86,6 +87,26 @@ export function Sidebar({ onCloseMobile = () => {} }) {
             </button>
             {!collapsed.workforce && (
               <div className="mt-1 space-y-0.5 pl-1">
+                {user?.isSuperadmin && (
+                  <NavLink
+                    to="/workforce/admin/service-providers"
+                    onClick={onCloseMobile}
+                    className={navItemClass}
+                  >
+                    <Building2 className="w-3.5 h-3.5 text-blue-600" />
+                    <span>Service Providers</span>
+                  </NavLink>
+                )}
+                {user?.isServiceProviderAdmin && (
+                  <NavLink
+                    to="/workforce/admin/provider-profile"
+                    onClick={onCloseMobile}
+                    className={navItemClass}
+                  >
+                    <Building2 className="w-3.5 h-3.5 text-blue-600" />
+                    <span>Provider Profile</span>
+                  </NavLink>
+                )}
                 <NavLink
                   to="/workforce/admin/employees"
                   onClick={onCloseMobile}

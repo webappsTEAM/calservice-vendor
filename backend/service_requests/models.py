@@ -3,6 +3,7 @@ workforce-app/backend/service_requests/models.py
 ServiceRequest model pointing to shared Supabase table service_requests_servicerequest (managed=False).
 """
 import threading
+import uuid
 from django.conf import settings
 from django.db import models
 from common.models import CompanyScopedManager
@@ -126,6 +127,8 @@ class Service(models.Model):
     image = models.CharField(max_length=500, blank=True, default="")
     is_active = models.BooleanField(default=True)
     sort_order = models.IntegerField(default=0)
+    customization = models.JSONField(default=dict, blank=True)
+    flow_type = models.CharField(max_length=50, default="STANDARD", blank=True)
     created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
 
@@ -239,6 +242,13 @@ class ServiceRequest(models.Model):
     cart_data = models.JSONField(default=list, blank=True)
 
     drop_address = models.TextField(blank=True, default="")
+    drop_contact_name = models.CharField(max_length=200, blank=True, default="")
+    drop_contact_phone = models.CharField(max_length=50, blank=True, default="")
+    drop_contact_email = models.CharField(max_length=100, blank=True, default="")
+    consignee_relationship = models.CharField(max_length=100, blank=True, default="")
+    insurance_opted_in = models.BooleanField(default=False)
+    logistics_leg = models.CharField(max_length=100, blank=True, default="DIRECT")
+    logistics_leg_history = models.JSONField(default=list, blank=True)
     payment_method = models.CharField(
         max_length=20,
         choices=PaymentMethod.choices,
@@ -278,7 +288,20 @@ class ServiceRequest(models.Model):
 
     workforce_job_id = models.CharField(max_length=100, blank=True, default="")
     external_assignment_id = models.CharField(max_length=100, blank=True, default="")
+    technician_id = models.IntegerField(null=True, blank=True)
     technician_rating = models.FloatField(null=True, blank=True)
+    technician_heading = models.FloatField(null=True, blank=True, default=0.0)
+    technician_speed = models.FloatField(null=True, blank=True, default=0.0)
+    technician_latitude = models.FloatField(null=True, blank=True)
+    technician_longitude = models.FloatField(null=True, blank=True)
+    technician_accuracy = models.FloatField(null=True, blank=True)
+    technician_location_updated_at = models.DateTimeField(null=True, blank=True)
+    technician_last_seen_at = models.DateTimeField(null=True, blank=True)
+    technician_arrived_at = models.DateTimeField(null=True, blank=True)
+    tracking_token = models.UUIDField(null=True, blank=True, default=uuid.uuid4)
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
     service_zone_name_snapshot = models.CharField(max_length=200, blank=True, default="")
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -311,6 +334,13 @@ class ServiceRequest(models.Model):
 
     def save(self, *args, **kwargs):
         skip_dispatch = kwargs.pop("skip_dispatch", False)
+        is_new = self.pk is None
+        old_status = None
+        if not is_new:
+            old_inst = ServiceRequest.objects.filter(pk=self.pk).values("status").first()
+            if old_inst:
+                old_status = old_inst.get("status")
+
         if not self.request_id:
             self.request_id = _generate_request_id()
         super().save(*args, **kwargs)
@@ -318,22 +348,38 @@ class ServiceRequest(models.Model):
         # Post-commit dispatch trigger: fires AFTER the transaction successfully commits.
         # This decouples dispatch from booking persistence — a dispatch failure will
         # never roll back or raise an exception during customer booking creation.
-        # Triggers for all unassigned bookings in DISPATCHABLE_STATUSES (both new bookings and status updates).
-        # Recursion guard: Internal dispatch mutations (suppress_dispatch_hook or _skip_dispatch) will NOT re-trigger dispatch.
+        # Only enqueues upon explicit lifecycle transitions:
+        # 1. Newly created booking in a dispatchable status (unassigned)
+        # 2. Status transition from non-dispatchable into dispatchable status
+        # 3. Explicit redispatch status transition ('redispatching')
+        # Unrelated saves (e.g. address text, notes, tokens) will NOT re-enqueue!
         from workforce_api.services.automatic_dispatch import DISPATCHABLE_STATUSES
         is_suppressed = getattr(_dispatch_suppression, "active", False) or getattr(self, "_skip_dispatch", False) or skip_dispatch
-        if not is_suppressed and self.status in DISPATCHABLE_STATUSES and self.assigned_employee_id is None:
+        is_dispatch_transition = (
+            (is_new and self.status in DISPATCHABLE_STATUSES)
+            or (old_status is not None and old_status not in DISPATCHABLE_STATUSES and self.status in DISPATCHABLE_STATUSES)
+            or (self.status == "redispatching")
+        )
+
+        if not is_suppressed and is_dispatch_transition and self.assigned_employee_id is None:
             _job_id = self.pk
+            _comp_id = self.company_id
 
             def _post_commit_dispatch():
                 import logging
                 _log = logging.getLogger("workforce.dispatch")
                 try:
-                    from workforce_api.services.automatic_dispatch import reconcile_booking_for_dispatch
-                    from service_requests.models import ServiceRequest as _SR
-                    _job = _SR.objects.filter(pk=_job_id).first()
-                    if _job:
-                        reconcile_booking_for_dispatch(_job)
+                    # Enqueue to reliable Redis Stream (workforce:dispatch:jobs)
+                    from workforce_api.services.redis_dispatch import enqueue_dispatch_job
+                    msg_id = enqueue_dispatch_job(_job_id, event_type="NEW_JOB", company_id=_comp_id)
+                    if not msg_id:
+                        # Redis unavailable: execute bounded single-job targeted fallback
+                        _log.info(f"[DISPATCH_FALLBACK_DB] Redis unavailable for Job #{_job_id}. Executing bounded DB reconciliation.")
+                        from workforce_api.services.automatic_dispatch import reconcile_booking_for_dispatch
+                        from service_requests.models import ServiceRequest as _SR
+                        _job = _SR.objects.filter(pk=_job_id).first()
+                        if _job:
+                            reconcile_booking_for_dispatch(_job, use_redis_geo=False)
                 except Exception as _exc:
                     _log.exception(
                         f"[AUTO_DISPATCH_TRIGGER_FAILED] Post-commit dispatch failed for Job #{_job_id}: {_exc}"

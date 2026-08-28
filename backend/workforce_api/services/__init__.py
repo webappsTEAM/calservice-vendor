@@ -10,6 +10,14 @@ from .automatic_dispatch import (
     reconsider_jobs_for_employee,
     reconcile_booking_for_dispatch,
 )
+from .redis_dispatch import (
+    update_technician_dispatch_geo,
+    remove_technician_from_dispatch_geo,
+    find_nearby_technician_candidates,
+    enqueue_dispatch_job,
+    acknowledge_dispatch_job,
+    process_dispatch_stream_events,
+)
 from .geo_spatial import (
     ADMIN_DISPATCH_RADIUS_KM,
     MAX_GPS_AGE_SECONDS,
@@ -56,6 +64,12 @@ __all__ = [
     "expire_and_reassign_offers",
     "reconsider_jobs_for_employee",
     "reconcile_booking_for_dispatch",
+    "update_technician_dispatch_geo",
+    "remove_technician_from_dispatch_geo",
+    "find_nearby_technician_candidates",
+    "enqueue_dispatch_job",
+    "acknowledge_dispatch_job",
+    "process_dispatch_stream_events",
     "ADMIN_DISPATCH_RADIUS_KM",
     "MAX_GPS_AGE_SECONDS",
     "DISTANCE_TOLERANCE_KM",

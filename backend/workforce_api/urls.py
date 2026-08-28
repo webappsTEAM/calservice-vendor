@@ -122,11 +122,39 @@ from .views import (
     WorkforceAdminQuoteClearanceView,
     WorkforceAdminQuoteMetricsView,
     WorkforceAdminQuoteRetryConversionView,
+    WorkforceSuperadminServiceProviderListView,
+    WorkforceSuperadminServiceProviderDetailView,
+    WorkforceProviderProfileView,
+    WorkforceAdminTechnicianListView,
+    WorkforceAdminTechnicianDetailView,
+    WorkforceAdminTechnicianToggleActiveView,
+    WorkforcePublicServiceProviderListView,
+    WorkforceServiceProviderSignupView,
+    WorkforceAdminJoinRequestDecideView,
 )
 
 
-
 urlpatterns = [
+    # Public: Service Providers List (Phase 2C) & Self-Service Registration (Phase 2D)
+    path("service-providers/public/", WorkforcePublicServiceProviderListView.as_view(), name="workforce-public-service-providers"),
+    path("service-providers/signup/", WorkforceServiceProviderSignupView.as_view(), name="workforce-service-provider-signup"),
+
+
+    # Superadmin: Service Provider Management (Phase 2A)
+    path("superadmin/service-providers/", WorkforceSuperadminServiceProviderListView.as_view(), name="workforce-superadmin-service-providers"),
+    path("superadmin/service-providers/<int:pk>/", WorkforceSuperadminServiceProviderDetailView.as_view(), name="workforce-superadmin-service-provider-detail"),
+
+    # Provider Admin: Provider Profile & Technician Management (Phase 2A & 2B)
+    path("provider/profile/", WorkforceProviderProfileView.as_view(), name="workforce-provider-profile"),
+    path("provider/technicians/", WorkforceAdminTechnicianListView.as_view(), name="workforce-provider-technicians"),
+    path("admin/technicians/", WorkforceAdminTechnicianListView.as_view(), name="workforce-admin-technicians"),
+    path("admin/technicians/<int:pk>/", WorkforceAdminTechnicianDetailView.as_view(), name="workforce-admin-technician-detail"),
+    path("admin/technicians/<int:pk>/toggle-active/", WorkforceAdminTechnicianToggleActiveView.as_view(), name="workforce-admin-technician-toggle-active"),
+
+    # Join Request Decisions (Phase 2C)
+    path("admin/join-requests/<int:pk>/decide/", WorkforceAdminJoinRequestDecideView.as_view(), name="workforce-admin-join-request-decide"),
+    path("admin/applications/<int:pk>/join-request/decide/", WorkforceAdminJoinRequestDecideView.as_view(), name="workforce-admin-application-join-request-decide"),
+
     # Public Operations & Support Inquiries
     path("support/inquiry/", WorkforcePublicSupportInquiryView.as_view(), name="workforce-support-inquiry"),
 
@@ -137,6 +165,7 @@ urlpatterns = [
     path("onboarding/documents/", WorkforceOnboardingDocumentUploadView.as_view(), name="workforce-onboarding-documents"),
     path("onboarding/submit/", WorkforceOnboardingSubmitView.as_view(), name="workforce-onboarding-submit"),
     path("catalog/", WorkforceCatalogListView.as_view(), name="workforce-catalog"),
+
 
     # Employee Services Self-Service Request & Removal
     path("services/request/", WorkforceEmployeeServiceRequestView.as_view(), name="workforce-service-request"),

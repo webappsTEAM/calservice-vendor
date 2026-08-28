@@ -173,13 +173,21 @@ class LoginView(APIView):
             except Exception:
                 emp = None
 
-            user_role = (getattr(user, "role", None) or "employee").lower()
-            if emp and user_role not in ["admin", "manager"]:
+            is_super = bool(getattr(user, "is_superuser", False) or str(getattr(user, "role", "")).lower() in ["superadmin", "super_admin"])
+            raw_role = str(getattr(user, "role", None) or "employee").lower()
+            if is_super:
+                user_role = "superadmin"
+            elif raw_role in ["service_provider_admin", "admin", "manager"]:
+                user_role = "service_provider_admin" if raw_role == "service_provider_admin" else raw_role
+            else:
                 user_role = "employee"
 
             company_id = getattr(user, "company_id", None) or (getattr(emp, "company_id", None) if emp else None)
             company_obj = getattr(user, "company", None) or (getattr(emp, "company", None) if emp else None)
             company_name = getattr(company_obj, "company_name", "") if company_obj else ""
+
+            is_superadmin_val = is_super
+            is_provider_admin_val = bool(not is_super and user_role in ["service_provider_admin", "admin", "manager"] and company_id is not None)
 
             # Step 5: Issue JWT access and refresh tokens
             refresh = RefreshToken.for_user(user)
@@ -197,7 +205,26 @@ class LoginView(APIView):
                 identifier, lookup_type, matched_user_id, matched_user_active, password_check, db_status, response_code, response_code_name
             )
 
-            reg_status = get_employee_registration_status(emp or user)
+            if is_superadmin_val or is_provider_admin_val:
+                reg_status = "approved"
+            else:
+                reg_status = get_employee_registration_status(emp or user)
+
+
+            association_status = "INDEPENDENT"
+            requested_provider_id = None
+            requested_provider_name = None
+
+            if company_id:
+                association_status = "APPROVED"
+            elif emp:
+                bank_details = emp.bank_details or {}
+                onboarding = bank_details.get("onboarding", {})
+                jr = onboarding.get("join_request")
+                if jr and isinstance(jr, dict):
+                    association_status = jr.get("status", "PENDING")
+                    requested_provider_id = jr.get("provider_id")
+                    requested_provider_name = jr.get("provider_name")
 
             response = Response({
                 "message": "Login successful.",
@@ -213,7 +240,15 @@ class LoginView(APIView):
                     "role": user_role,
                     "company": company_id,
                     "company_name": company_name,
+                    "provider_id": company_id,
+                    "provider_name": company_name,
+                    "is_independent": bool(company_id is None),
+                    "association_status": association_status,
+                    "requested_provider_id": requested_provider_id,
+                    "requested_provider_name": requested_provider_name,
                     "is_superuser": getattr(user, "is_superuser", False),
+                    "is_superadmin": is_superadmin_val,
+                    "is_provider_admin": is_provider_admin_val,
                     "employee_id": getattr(emp, "employee_id", None) if emp else None,
                     "registration_status": reg_status,
                 }
@@ -281,8 +316,13 @@ class WorkforceRefreshView(APIView):
                             emp = Employee.objects.filter(user=user).first()
                         except Exception:
                             emp = None
-                    user_role = getattr(user, "role", "employee")
-                    if emp and user_role not in ["admin", "manager"]:
+                    is_super = bool(getattr(user, "is_superuser", False) or str(getattr(user, "role", "")).lower() in ["superadmin", "super_admin"])
+                    raw_role = str(getattr(user, "role", None) or "employee").lower()
+                    if is_super:
+                        user_role = "superadmin"
+                    elif raw_role in ["service_provider_admin", "admin", "manager"]:
+                        user_role = "service_provider_admin" if raw_role == "service_provider_admin" else raw_role
+                    else:
                         user_role = "employee"
                     company_id = getattr(user, "company_id", None) or (getattr(emp, "company_id", None) if emp else None)
         except (OperationalError, DatabaseError) as db_err:
@@ -340,11 +380,38 @@ class MeView(APIView):
 
             company_name = getattr(company_obj, "company_name", None) if company_obj else None
 
-            user_role = getattr(user, "role", "employee")
-            if emp and user_role not in ["admin", "manager"]:
+            is_super = bool(getattr(user, "is_superuser", False) or str(getattr(user, "role", "")).lower() in ["superadmin", "super_admin"])
+            raw_role = str(getattr(user, "role", None) or "employee").lower()
+            if is_super:
+                user_role = "superadmin"
+            elif raw_role in ["service_provider_admin", "admin", "manager"]:
+                user_role = "service_provider_admin" if raw_role == "service_provider_admin" else raw_role
+            else:
                 user_role = "employee"
 
-            reg_status = get_employee_registration_status(emp or user)
+            is_superadmin_val = is_super
+            is_provider_admin_val = bool(not is_super and user_role in ["service_provider_admin", "admin", "manager"] and company_id is not None)
+
+            if is_superadmin_val or is_provider_admin_val:
+                reg_status = "approved"
+            else:
+                reg_status = get_employee_registration_status(emp or user)
+
+
+            association_status = "INDEPENDENT"
+            requested_provider_id = None
+            requested_provider_name = None
+
+            if company_id:
+                association_status = "APPROVED"
+            elif emp:
+                bank_details = emp.bank_details or {}
+                onboarding = bank_details.get("onboarding", {})
+                jr = onboarding.get("join_request")
+                if jr and isinstance(jr, dict):
+                    association_status = jr.get("status", "PENDING")
+                    requested_provider_id = jr.get("provider_id")
+                    requested_provider_name = jr.get("provider_name")
 
             # Include employee presence/availability in /auth/me/ response so that the
             # frontend AuthProvider does NOT need a separate sequential call to
@@ -370,7 +437,15 @@ class MeView(APIView):
                 "role": user_role,
                 "company": company_id,
                 "company_name": company_name,
+                "provider_id": company_id,
+                "provider_name": company_name,
+                "is_independent": bool(company_id is None),
+                "association_status": association_status,
+                "requested_provider_id": requested_provider_id,
+                "requested_provider_name": requested_provider_name,
                 "is_superuser": getattr(user, "is_superuser", False),
+                "is_superadmin": is_superadmin_val,
+                "is_provider_admin": is_provider_admin_val,
                 "employee_id": getattr(emp, "employee_id", None) if emp else None,
                 "registration_status": reg_status,
                 # Presence & location (for AuthProvider initialization — avoids second API call)

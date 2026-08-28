@@ -13,6 +13,14 @@ export async function apiWorkforceSignup(payload) {
   });
 }
 
+export async function apiServiceProviderSignup(payload) {
+  return await apiRequest('/workforce/service-providers/signup/', {
+    method: 'POST',
+    json: payload,
+  });
+}
+
+
 export async function apiWorkforceLogin(identifier, password) {
   const trimmed = (identifier || '').trim();
   return await apiRequest('/auth/login/', {
@@ -960,6 +968,89 @@ export async function apiAdminRetryQuoteConversion(quoteId) {
     method: 'POST',
   });
 }
+
+// ── Phase 2A: Service Provider & Provider Admin Management ───────────────────
+
+export async function apiGetSuperadminServiceProviders(params = {}) {
+  const query = new URLSearchParams();
+  if (params.q) query.append('q', params.q);
+  if (params.is_active !== undefined) query.append('is_active', params.is_active);
+  const qs = query.toString() ? `?${query.toString()}` : '';
+  return await apiRequest(`/workforce/superadmin/service-providers/${qs}`);
+}
+
+export async function apiCreateSuperadminServiceProvider(payload) {
+  return await apiRequest('/workforce/superadmin/service-providers/', {
+    method: 'POST',
+    json: payload,
+  });
+}
+
+export async function apiGetSuperadminServiceProvider(id) {
+  return await apiRequest(`/workforce/superadmin/service-providers/${id}/`);
+}
+
+export async function apiGetProviderProfile() {
+  return await apiRequest('/workforce/provider/profile/');
+}
+
+// ── Phase 2B: Provider Technician Management ──────────────────────────────────
+
+export async function apiGetAdminTechnicians(params = {}) {
+  const query = new URLSearchParams();
+  if (params.q) query.append('q', params.q);
+  if (params.is_active !== undefined) query.append('is_active', params.is_active);
+  if (params.company_id !== undefined) query.append('company_id', params.company_id);
+  const qs = query.toString() ? `?${query.toString()}` : '';
+  return await apiRequest(`/workforce/admin/technicians/${qs}`);
+}
+
+export async function apiCreateAdminTechnician(payload) {
+  return await apiRequest('/workforce/admin/technicians/', {
+    method: 'POST',
+    json: payload,
+  });
+}
+
+export async function apiGetAdminTechnicianDetail(id) {
+  return await apiRequest(`/workforce/admin/technicians/${id}/`);
+}
+
+export async function apiUpdateAdminTechnician(id, payload) {
+  return await apiRequest(`/workforce/admin/technicians/${id}/`, {
+    method: 'PATCH',
+    json: payload,
+  });
+}
+
+export async function apiToggleAdminTechnicianActive(id) {
+  return await apiRequest(`/workforce/admin/technicians/${id}/toggle-active/`, {
+    method: 'POST',
+  });
+}
+
+// ── Phase 2C: Public Providers & Join Requests ────────────────────────────────
+
+export async function apiGetPublicServiceProviders(params = {}) {
+  const query = new URLSearchParams();
+  if (params.search) query.append('search', params.search);
+  if (params.q) query.append('q', params.q);
+  const qs = query.toString() ? `?${query.toString()}` : '';
+  return await apiRequest(`/workforce/service-providers/public/${qs}`);
+}
+
+export async function apiDecideJoinRequest(requestIdOrEmployeeId, action, reason = '') {
+  return await apiRequest(`/workforce/admin/join-requests/${requestIdOrEmployeeId}/decide/`, {
+    method: 'POST',
+    json: {
+      action,
+      reason,
+    },
+  });
+}
+
+
+
 
 
 

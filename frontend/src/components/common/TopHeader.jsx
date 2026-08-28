@@ -26,6 +26,7 @@ import {
   X,
   CheckCheck,
   Activity,
+  Building2,
 } from 'lucide-react';
 
 import { Modal } from '../enterprise/Modal.jsx';
@@ -719,6 +720,32 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                 </div>
 
 
+                {/* Role & Organization Scope Badge */}
+                <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-slate-800/90 border border-slate-700 text-slate-300 select-none">
+                  {user.isSuperadmin ? (
+                    <>
+                      <Shield className="w-3 h-3 text-purple-400 shrink-0" />
+                      <span className="text-purple-200">Superadmin</span>
+                    </>
+                  ) : user.isServiceProviderAdmin ? (
+                    <>
+                      <Building2 className="w-3 h-3 text-blue-400 shrink-0" />
+                      <span className="truncate max-w-[140px] text-blue-200" title={user.providerName || user.companyName}>
+                        {user.providerName || user.companyName || 'Provider Admin'}
+                      </span>
+                    </>
+                  ) : user.isEmployee ? (
+                    <>
+                      <Wrench className="w-3 h-3 text-emerald-400 shrink-0" />
+                      <span className="truncate max-w-[140px] text-slate-300" title={user.providerName || user.companyName ? `Tech • ${user.providerName || user.companyName}` : 'Independent Technician'}>
+                        {user.providerName || user.companyName ? `Tech • ${user.providerName || user.companyName}` : 'Independent Tech'}
+                      </span>
+                    </>
+                  ) : (
+                    <span>{user.role}</span>
+                  )}
+                </div>
+
                 {/* User Dropdown */}
                 <div className="relative">
                   <button
@@ -742,7 +769,7 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                           {user.firstName ? `${user.firstName} ${user.lastName}` : user.username}
                         </p>
                         <p className="text-[10px] text-slate-500 uppercase tracking-wider mt-0.5">
-                          Role: {user.isAdmin ? 'Admin' : (user.isEmployee ? 'Technician' : (user.role || 'Employee'))}
+                          Role: {user.isSuperadmin ? 'Superadmin' : (user.isServiceProviderAdmin ? 'Provider Admin' : (user.isAdmin ? 'Admin' : (user.isEmployee ? 'Technician' : (user.role || 'Employee'))))}
                         </p>
                       </div>
 

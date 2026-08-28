@@ -16,8 +16,10 @@ class CompanyScopedQuerySet(models.QuerySet):
     def visible_to(self, user):
         if user is None or not getattr(user, "is_authenticated", False):
             return self.none()
-        if getattr(user, "is_superuser", False):
+        # SUPERADMIN: global access across all providers and independent records
+        if getattr(user, "is_superuser", False) or str(getattr(user, "role", "")).lower() in ["superadmin", "super_admin"]:
             return self
+        # SERVICE_PROVIDER_ADMIN: scoped strictly to user's provider
         company = getattr(user, "company", None)
         if company is None:
             return self.none()
