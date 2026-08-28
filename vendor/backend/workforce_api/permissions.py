@@ -76,4 +76,16 @@ class IsApprovedTechnician(BasePermission):
 
         ob_data = (emp.bank_details or {}).get("onboarding", {}) if isinstance(emp.bank_details, dict) else {}
         ob_status = str(ob_data.get("status", "")).lower() if isinstance(ob_data, dict) else ""
-        return ob_status == "approved" or emp.is_active
+        # HS-A-04 fix: this class is named "IsApprovedTechnician" and every call
+        # site relies on it to gate technician-facing job/work endpoints on real
+        # admin approval (see AdminApproveCandidateView, which requires every
+        # onboarding document AND at least one requested service to be marked
+        # "approved" before setting onboarding.status = "approved"). The previous
+        # "or emp.is_active" clause made that gate meaningless: Employee.is_active
+        # defaults to True at signup (WorkforceSignupView), before any vetting
+        # happens, so effectively every freshly-signed-up technician passed this
+        # check regardless of onboarding.status (which defaults to "not_started").
+        # Confirmed there is no legacy population relying on the old behavior:
+        # bank_details.onboarding is always initialized at signup and the only
+        # place that writes status="approved" is the real admin-approval flow.
+        return ob_status == "approved"
