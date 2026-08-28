@@ -6,16 +6,24 @@ from django.conf import settings
 from django.db import models
 from common.models import CompanyScopedManager
 
+# HS-E-06: these labels previously drifted from the Customer app's own
+# static SERVICE_CATEGORIES list (same slugs, e.g. "hvac" here read
+# "HVAC & Air Conditioning" while the Customer app said just "HVAC") --
+# a technician-facing screen and a customer-facing one could show two
+# different names for the exact same category slug. Both are only a
+# fallback anyway (CatalogCategory, the shared DB table, is tried first
+# on both sides) but when it IS used it should say the same thing.
+# Synced to match Customer/backend/service_requests/models.py exactly.
 SERVICE_CATEGORIES = [
-    ("hvac", "HVAC & Air Conditioning"),
-    ("electrical", "Electrical & Wiring"),
-    ("plumbing", "Plumbing & Sanitation"),
-    ("appliance_repair", "Home Appliance Repair"),
-    ("cleaning", "Cleaning & Sanitization"),
-    ("carpentry", "Carpentry & Furniture"),
-    ("painting", "Painting & Waterproofing"),
+    ("plumbing", "Plumbing"),
+    ("electrical", "Electrical"),
+    ("carpentry", "Carpentry"),
+    ("hvac", "HVAC"),
+    ("cleaning", "Cleaning"),
     ("pest_control", "Pest Control"),
-    ("security", "Security & CCTV"),
+    ("painting", "Painting"),
+    ("appliance_repair", "Appliance Repair"),
+    ("security", "Security Systems"),
     ("general", "General Maintenance"),
 ]
 

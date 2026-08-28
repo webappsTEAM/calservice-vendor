@@ -52,6 +52,11 @@ LOGISTICS_SERVICE_CATEGORIES = {
     "goods_transport_truck",
     "goods_transport_two_wheeler",
     "packers_movers",
+    # HS-E-06: was missing here -- Customer/backend/service_requests/
+    # services/__init__.py's LOGISTICS_STOP_CATEGORIES (the multi-stop
+    # trip editor's gate) includes this bare slug alongside the two
+    # specific transport modes; this set was the odd one out.
+    "goods_transport",
 }
 
 # Canonical service synonyms and explicit alias dictionary
