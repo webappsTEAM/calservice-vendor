@@ -439,5 +439,37 @@ class EmployeeJob(models.Model):
 
     def __str__(self):
         return f"EmployeeJob SR-{self.service_request_id} -> Emp {self.employee_id} ({self.status})"
+class BookingMessage(models.Model):
+    """
+    X-09: unmanaged mirror of the Customer app's service_requests.BookingMessage
+    (same shared table, service_requests_booking_message) -- see that
+    model's docstring for the full rationale. This app writes
+    technician-sent messages here; sender_user is left null on writes from
+    this side since this app's Employee model isn't a row in the Customer
+    app's AUTH_USER_MODEL table.
+    """
 
+    class SenderPersona(models.TextChoices):
+        CUSTOMER   = "customer",   "Customer"
+        TECHNICIAN = "technician", "Technician"
+        ADMIN      = "admin",      "Admin"
 
+    booking = models.ForeignKey(
+        ServiceRequest,
+        on_delete=models.CASCADE,
+        related_name="chat_messages",
+    )
+    sender_persona = models.CharField(max_length=15, choices=SenderPersona.choices)
+    sender_name = models.CharField(max_length=200, blank=True, default="")
+    body = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    read_at_customer = models.DateTimeField(null=True, blank=True)
+    read_at_technician = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_booking_message"
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"{self.sender_persona}: {self.body[:40]}"

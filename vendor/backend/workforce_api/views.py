@@ -7858,3 +7858,78 @@ class WorkforceJobLogisticsLegView(APIView):
             "logistics_leg_updated_at": job.logistics_leg_updated_at,
             "logistics_leg_history": job.logistics_leg_history,
         }, status=status.HTTP_200_OK)
+
+class WorkforceJobMessagesView(APIView):
+    """
+    X-09: in-app chat between customer and technician for a job. Mirrors
+    CustomerBookingMessagesView on the Customer app -- see BookingMessage's
+    docstring (service_requests/models.py, both apps) for the full
+    rationale, including why this is polling-based rather than push and
+    why it doesn't attempt phone-number masking.
+
+    GET  /workforce/jobs/<pk>/messages/  -- list the thread, marks unread
+         customer messages as read by the technician
+    POST /workforce/jobs/<pk>/messages/  -- send a message as the technician
+    """
+    permission_classes = [IsApprovedTechnician]
+
+    def get(self, request, pk):
+        from service_requests.models import BookingMessage
+
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp or job.assigned_employee != emp:
+            return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
+
+        messages = BookingMessage.objects.filter(booking_id=job.id)
+        unread_ids = [m.id for m in messages if m.sender_persona != BookingMessage.SenderPersona.TECHNICIAN and m.read_at_technician is None]
+        if unread_ids:
+            BookingMessage.objects.filter(id__in=unread_ids).update(read_at_technician=timezone.now())
+            messages = BookingMessage.objects.filter(booking_id=job.id)
+
+        return Response({
+            "results": [
+                {
+                    "id": m.id,
+                    "sender_persona": m.sender_persona,
+                    "sender_name": m.sender_name,
+                    "body": m.body,
+                    "created_at": m.created_at,
+                    "read_at_customer": m.read_at_customer,
+                    "read_at_technician": m.read_at_technician,
+                }
+                for m in messages
+            ]
+        }, status=status.HTTP_200_OK)
+
+    def post(self, request, pk):
+        from service_requests.models import BookingMessage
+
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp or job.assigned_employee != emp:
+            return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
+
+        body = (request.data.get("body") or "").strip()
+        if not body:
+            return Response({"error": "Message cannot be empty."}, status=status.HTTP_400_BAD_REQUEST)
+        if len(body) > 2000:
+            return Response({"error": "Message is too long (max 2000 characters)."}, status=status.HTTP_400_BAD_REQUEST)
+
+        msg = BookingMessage.objects.create(
+            booking_id=job.id,
+            sender_persona=BookingMessage.SenderPersona.TECHNICIAN,
+            sender_name=job.technician_name or (emp.full_name if hasattr(emp, "full_name") else "Technician"),
+            body=body,
+        )
+        return Response({
+            "id": msg.id,
+            "sender_persona": msg.sender_persona,
+            "sender_name": msg.sender_name,
+            "body": msg.body,
+            "created_at": msg.created_at,
+        }, status=status.HTTP_201_CREATED)
