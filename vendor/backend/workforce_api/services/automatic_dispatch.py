@@ -10,7 +10,7 @@ from datetime import timedelta
 from typing import List, Dict, Any, Tuple, Optional
 
 from django.db import transaction
-from django.db.models import Exists, OuterRef, Prefetch, Q
+from django.db.models import Count, Exists, OuterRef, Prefetch, Q
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from django.utils.dateparse import parse_datetime
@@ -387,6 +387,27 @@ def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AG
     if exclude_employee_ids:
         candidates_qs = candidates_qs.exclude(pk__in=exclude_employee_ids)
 
+    # GT-E-02: declining/cancelling an offer previously carried no
+    # consequence for ranking -- a technician who reliably rejects or lets
+    # offers expire ranked exactly the same as one who always accepts.
+    # Annotate a rolling 30-day offer-outcome count per candidate so the
+    # scoring loop below can apply a small reliability penalty. This reuses
+    # existing WorkforceJobOffer rows -- no new model/migration needed.
+    _reliability_window_start = timezone.now() - timedelta(days=30)
+    candidates_qs = candidates_qs.annotate(
+        recent_offers_total=Count(
+            "job_offers",
+            filter=Q(job_offers__offered_at__gte=_reliability_window_start),
+        ),
+        recent_offers_declined=Count(
+            "job_offers",
+            filter=Q(
+                job_offers__offered_at__gte=_reliability_window_start,
+                job_offers__status__in=["REJECTED", "DECLINED", "EXPIRED", "CANCELLED"],
+            ),
+        ),
+    )
+
     candidates_qs = (
         candidates_qs
         .prefetch_related(
@@ -524,9 +545,20 @@ def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AG
         is_clocked_in = bank_details.get("attendance", {}).get("is_clocked_in", False)
         clock_in_bonus = 10.0 if is_clocked_in else 0.0
 
-        total_score = proximity_score + max_prof + territory_bonus + clock_in_bonus
+        # GT-E-02: reliability penalty. Only applied once there's a real
+        # sample (>=3 offers in the last 30 days) so a technician's very
+        # first offer or two is never penalized off a fluke. Max penalty is
+        # capped at 20 points -- enough to matter in ranking without letting
+        # it override a technician being genuinely much closer/more skilled.
+        recent_total = getattr(emp, "recent_offers_total", 0) or 0
+        recent_declined = getattr(emp, "recent_offers_declined", 0) or 0
+        reliability_penalty = 0.0
+        if recent_total >= 3:
+            reliability_penalty = min(20.0, (recent_declined / recent_total) * 20.0)
 
-        logger.info(f"[DISPATCH_CANDIDATE_FOUND] Employee #{emp.id} ({emp.user.username}) eligible for Job #{job_obj.id}: {dist_km:.2f}km away, score={total_score:.1f}")
+        total_score = proximity_score + max_prof + territory_bonus + clock_in_bonus - reliability_penalty
+
+        logger.info(f"[DISPATCH_CANDIDATE_FOUND] Employee #{emp.id} ({emp.user.username}) eligible for Job #{job_obj.id}: {dist_km:.2f}km away, score={total_score:.1f} (reliability_penalty={reliability_penalty:.1f})")
 
         ranked_candidates.append({
             "employee": emp,
