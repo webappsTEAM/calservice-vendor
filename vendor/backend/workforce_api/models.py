@@ -1424,3 +1424,281 @@ class Vehicle(models.Model):
             if d and d < today:
                 return False
         return True
+
+
+# ============================================================================
+# SEVO Business Plan implementation -- Wallet infrastructure (Section 1 of
+# SEVO_Business_Operational_Plan.docx).
+#
+# Deliberately NOT a self-issued stored-value instrument (see the plan for
+# why: building one would make SEVO an RBI-regulated PPI issuer). These
+# models are a ledger view over money that actually sits in a RazorpayX
+# nodal/current account. "Wallet balance" shown in-app is computed from
+# WalletLedgerEntry rows; the real money movement happens through
+# WithdrawalRequest -> RazorpayXPayoutAdapter (workforce_api/services/payouts.py).
+# ============================================================================
+
+class WalletAccount(models.Model):
+    """
+    One ledger account per payee. Two kinds:
+      - PROVIDER_HEAD: one per Company (provider business) -- every job any
+        worker on that provider's team completes credits this single
+        account (the "head wallet" from the operational brief).
+      - INDIVIDUAL_WORKER: one per Employee who onboarded directly, with no
+        provider umbrella -- credited only by jobs that Employee personally
+        completed.
+    """
+
+    class AccountType(models.TextChoices):
+        PROVIDER_HEAD = "PROVIDER_HEAD", "Provider Head Wallet"
+        INDIVIDUAL_WORKER = "INDIVIDUAL_WORKER", "Individual Worker Wallet"
+
+    class KYCTier(models.TextChoices):
+        TIER_0_PROVISIONAL = "TIER_0", "Tier 0 - Provisional"
+        TIER_1_VERIFIED = "TIER_1", "Tier 1 - Verified"
+        TIER_2_TRUSTED = "TIER_2", "Tier 2 - Trusted"
+
+    account_type = models.CharField(max_length=30, choices=AccountType.choices, db_index=True)
+
+    # Exactly one of these is set, matching account_type.
+    company = models.OneToOneField(
+        "companies.Company", on_delete=models.CASCADE, null=True, blank=True,
+        related_name="head_wallet",
+    )
+    employee = models.OneToOneField(
+        "employees.Employee", on_delete=models.CASCADE, null=True, blank=True,
+        related_name="individual_wallet",
+    )
+
+    kyc_tier = models.CharField(
+        max_length=10, choices=KYCTier.choices, default=KYCTier.TIER_0_PROVISIONAL, db_index=True,
+    )
+    kyc_tier_updated_at = models.DateTimeField(null=True, blank=True)
+
+    # Bank/UPI destination for payouts. Name-match to KYC identity is
+    # enforced at onboarding-review time (human review), not re-derived here.
+    payout_bank_account_name = models.CharField(max_length=200, blank=True, default="")
+    payout_bank_account_number_masked = models.CharField(max_length=50, blank=True, default="")
+    payout_ifsc = models.CharField(max_length=20, blank=True, default="")
+    payout_upi_id = models.CharField(max_length=100, blank=True, default="")
+
+    # RazorpayX identifiers, populated once the fund account is registered
+    # with RazorpayX. Blank until RazorpayX credentials exist and the
+    # fund-account-creation step has actually run -- see services/payouts.py.
+    razorpayx_contact_id = models.CharField(max_length=100, blank=True, default="")
+    razorpayx_fund_account_id = models.CharField(max_length=100, blank=True, default="")
+
+    # Scheduled withdrawals + minimum balance alerts (operational brief,
+    # head-wallet specific features).
+    auto_withdrawal_enabled = models.BooleanField(default=False)
+    auto_withdrawal_frequency = models.CharField(
+        max_length=10,
+        choices=[("DAILY", "Daily"), ("WEEKLY", "Weekly")],
+        blank=True, default="",
+    )
+    auto_withdrawal_day_of_week = models.IntegerField(
+        null=True, blank=True,
+        help_text="0=Monday .. 6=Sunday. Only used when frequency=WEEKLY.",
+    )
+    minimum_balance_alert_threshold = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+    )
+    low_balance_alert_sent_at = models.DateTimeField(null=True, blank=True)
+
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_wallet_account"
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(account_type="PROVIDER_HEAD", company__isnull=False, employee__isnull=True)
+                    | models.Q(account_type="INDIVIDUAL_WORKER", employee__isnull=False, company__isnull=True)
+                ),
+                name="wallet_account_type_matches_owner",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["account_type", "kyc_tier"]),
+        ]
+
+    def __str__(self):
+        owner = self.company.company_name if self.company_id else (
+            getattr(self.employee, "full_name", None) or f"Employee #{self.employee_id}"
+        )
+        return f"{self.get_account_type_display()} - {owner}"
+
+    def current_balance(self):
+        """Sum of RELEASED ledger entries only -- HELD entries (pending
+        dispute window, see WalletLedgerEntry.status) are not withdrawable
+        yet and must not appear in the balance the owner can act on."""
+        from django.db.models import Sum
+        result = self.ledger_entries.filter(status=WalletLedgerEntry.Status.RELEASED).aggregate(
+            total=Sum("signed_amount")
+        )
+        return result["total"] or 0
+
+    def withdrawal_limit_for_tier(self):
+        """Daily withdrawal ceiling by KYC tier (Section 1 table). This is
+        SEVO's own risk policy, not an RBI PPI balance cap -- money is never
+        resting in a SEVO-owned instrument, it moves straight to the
+        owner's own bank account via RazorpayX."""
+        return {
+            self.KYCTier.TIER_0_PROVISIONAL: 5000,
+            self.KYCTier.TIER_1_VERIFIED: 50000,
+            self.KYCTier.TIER_2_TRUSTED: None,  # no platform-imposed cap
+        }.get(self.kyc_tier, 5000)
+
+
+class WalletLedgerEntry(models.Model):
+    """
+    Immutable, append-only ledger row. Every completed job produces exactly
+    one JOB_CREDIT entry (net of commission) plus one COMMISSION_DEBIT entry
+    recorded separately for auditability (Section 6: per-job attribution).
+
+    `worker_performed` records who actually did the job even when the
+    payee is a provider's head wallet -- captured purely for rating,
+    dispute evidence and safety audit trail. It never changes who gets
+    paid.
+    """
+
+    class EntryType(models.TextChoices):
+        JOB_CREDIT = "JOB_CREDIT", "Job Earnings Credit"
+        COMMISSION_DEBIT = "COMMISSION_DEBIT", "SEVO Commission"
+        WITHDRAWAL_DEBIT = "WITHDRAWAL_DEBIT", "Withdrawal to Bank/UPI"
+        CLAWBACK_DEBIT = "CLAWBACK_DEBIT", "Dispute Clawback"
+        REFUND_ADJUSTMENT = "REFUND_ADJUSTMENT", "Refund Adjustment"
+        PROMO_CREDIT = "PROMO_CREDIT", "Promotional Credit"
+        COD_COMMISSION_PAYABLE = "COD_COMMISSION_PAYABLE", "Cash Job Commission Payable"
+
+    class Status(models.TextChoices):
+        HELD = "HELD", "Held (dispute window)"
+        RELEASED = "RELEASED", "Released (withdrawable)"
+        CLAWED_BACK = "CLAWED_BACK", "Clawed back"
+
+    wallet = models.ForeignKey(WalletAccount, on_delete=models.CASCADE, related_name="ledger_entries")
+    job = models.ForeignKey(
+        "service_requests.ServiceRequest", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="wallet_ledger_entries",
+    )
+    worker_performed = models.ForeignKey(
+        "employees.Employee", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="jobs_performed_ledger_entries",
+        help_text="Who actually did the job, independent of which wallet was paid.",
+    )
+
+    entry_type = models.CharField(max_length=30, choices=EntryType.choices, db_index=True)
+    # Positive for credits, negative for debits -- signed so SUM() gives the
+    # balance directly without a CASE expression at every read site.
+    signed_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    gross_job_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    commission_rate_applied = models.DecimalField(
+        max_digits=5, decimal_places=4, null=True, blank=True,
+        help_text="e.g. 0.1000 for 10%. Recorded per-entry since the rate can change (promo -> standard).",
+    )
+
+    status = models.CharField(max_length=15, choices=Status.choices, default=Status.RELEASED, db_index=True)
+    hold_release_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="JOB_CREDIT entries are held until this timestamp (dispute window) before counting toward balance.",
+    )
+
+    notes = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = "workforce_wallet_ledger_entry"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["wallet", "status", "created_at"]),
+            models.Index(fields=["job", "entry_type"]),
+        ]
+
+    def __str__(self):
+        return f"{self.get_entry_type_display()} {self.signed_amount} -> wallet #{self.wallet_id}"
+
+
+class WithdrawalRequest(models.Model):
+    """
+    A withdrawal from a WalletAccount's RELEASED balance to the owner's own
+    bank account / UPI, via RazorpayX Payouts. See
+    workforce_api/services/payouts.py for the adapter that actually talks
+    to RazorpayX -- this row tracks the request/response lifecycle so a
+    request is never lost if the payout API call fails or times out.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        PROCESSING = "PROCESSING", "Processing"
+        SUCCESS = "SUCCESS", "Success"
+        FAILED = "FAILED", "Failed"
+        AWAITING_RAZORPAYX_ACTIVATION = (
+            "AWAITING_RAZORPAYX_ACTIVATION",
+            "Awaiting RazorpayX activation",
+        )
+
+    wallet = models.ForeignKey(WalletAccount, on_delete=models.CASCADE, related_name="withdrawal_requests")
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(max_length=35, choices=Status.choices, default=Status.PENDING, db_index=True)
+    is_scheduled = models.BooleanField(default=False, help_text="True if triggered by an auto-withdrawal rule rather than an on-demand request.")
+
+    razorpayx_payout_id = models.CharField(max_length=100, blank=True, default="")
+    razorpayx_utr = models.CharField(max_length=100, blank=True, default="", help_text="Bank UTR once settled, from RazorpayX webhook.")
+    failure_reason = models.CharField(max_length=255, blank=True, default="")
+
+    debit_ledger_entry = models.OneToOneField(
+        WalletLedgerEntry, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="withdrawal_request",
+    )
+
+    requested_at = models.DateTimeField(auto_now_add=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "workforce_withdrawal_request"
+        ordering = ["-requested_at"]
+        indexes = [models.Index(fields=["wallet", "status"])]
+
+    def __str__(self):
+        return f"Withdrawal #{self.id} - {self.wallet_id} - {self.amount} ({self.status})"
+
+
+class SocialSecurityRegistration(models.Model):
+    """
+    Section 8 compliance scaffolding: tracks each individual worker's
+    progress toward the Code on Social Security 2020 / 2026 Central Rules
+    90-day (single aggregator) / 120-day (multiple aggregators) eligibility
+    threshold, and whether SEVO has registered them on the government
+    portal. Actual portal submission (Shram Suvidha / e-Shram) is a manual
+    external step -- this model gives an accurate, exportable worklist for
+    whoever does that submission, not an automated integration with a
+    government system SEVO doesn't have API access to.
+    """
+
+    class RegistrationStatus(models.TextChoices):
+        NOT_YET_ELIGIBLE = "NOT_YET_ELIGIBLE", "Not yet eligible (<90 days)"
+        ELIGIBLE_PENDING_REGISTRATION = "ELIGIBLE_PENDING", "Eligible, registration pending"
+        REGISTERED = "REGISTERED", "Registered on government portal"
+
+    employee = models.OneToOneField(
+        "employees.Employee", on_delete=models.CASCADE, related_name="social_security_registration",
+    )
+    days_worked_current_fy = models.PositiveIntegerField(default=0)
+    financial_year_start = models.DateField()
+    status = models.CharField(
+        max_length=25, choices=RegistrationStatus.choices,
+        default=RegistrationStatus.NOT_YET_ELIGIBLE, db_index=True,
+    )
+    registered_at = models.DateTimeField(null=True, blank=True)
+    registered_by = models.CharField(max_length=150, blank=True, default="", help_text="Admin who submitted the portal registration.")
+    portal_reference_id = models.CharField(max_length=100, blank=True, default="")
+
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_social_security_registration"
+
+    def __str__(self):
+        return f"{self.employee_id}: {self.days_worked_current_fy}d ({self.status})"
