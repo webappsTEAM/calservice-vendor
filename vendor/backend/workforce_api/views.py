@@ -447,6 +447,101 @@ class WalletPayoutDetailsView(APIView):
         return Response(response_serializer.data, status=status.HTTP_200_OK)
 
 
+class WalletEarningsStatementView(APIView):
+    """
+    GET /workforce/wallet/statement/?year=YYYY[&month=MM]: SEVO Section 6
+    ("Auto-generated monthly and annual earnings statements for both
+    providers (business income) and individual workers (professional/
+    other income)"). Does NOT compute or withhold any tax -- see
+    services.tax_statements module docstring for why TDS is deliberately
+    out of scope here.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from workforce_api.services import resolve_wallet_for_user, generate_earnings_statement
+        wallet, owner_role = resolve_wallet_for_user(request.user)
+        if not wallet:
+            return Response({"error": "No wallet found for this account yet."}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            year = int(request.query_params.get("year") or timezone.now().year)
+        except (TypeError, ValueError):
+            return Response({"error": "year must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+
+        month_param = request.query_params.get("month")
+        month = None
+        if month_param:
+            try:
+                month = int(month_param)
+                if not (1 <= month <= 12):
+                    raise ValueError
+            except (TypeError, ValueError):
+                return Response({"error": "month must be an integer between 1 and 12."}, status=status.HTTP_400_BAD_REQUEST)
+
+        statement = generate_earnings_statement(wallet, year, month)
+        statement["owner_role"] = owner_role
+        return Response(statement, status=status.HTTP_200_OK)
+
+
+class WalletLedgerExportView(APIView):
+    """
+    GET /workforce/wallet/ledger/export/[?start=YYYY-MM-DD&end=YYYY-MM-DD]:
+    the CSV "wage register" from SEVO Section 1 -- every ledger row for
+    the caller's own wallet, tagged with job ID, amount, commission and
+    (when known) the worker who performed it, for salary reconciliation
+    or handing to an accountant.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from workforce_api.services import resolve_wallet_for_user, export_ledger_csv
+        wallet, _owner_role = resolve_wallet_for_user(request.user)
+        if not wallet:
+            return Response({"error": "No wallet found for this account yet."}, status=status.HTTP_404_NOT_FOUND)
+
+        start_date = request.query_params.get("start") or None
+        end_date = request.query_params.get("end") or None
+        csv_text = export_ledger_csv(wallet, start_date=start_date, end_date=end_date)
+
+        response = HttpResponse(csv_text, content_type="text/csv")
+        response["Content-Disposition"] = f'attachment; filename="wallet-{wallet.id}-ledger.csv"'
+        return response
+
+
+class WorkforceAdminReconciliationView(APIView):
+    """
+    GET /workforce/admin/reconciliation/[?date=YYYY-MM-DD]: on-demand view
+    of the daily reconciliation job's findings for the caller's own
+    company (SEVO Section 5) -- the same check that
+    management/commands/run_daily_reconciliation.py runs on a schedule,
+    exposed here so an admin does not have to wait for the next cron
+    firing or read server logs to see today's standing.
+    """
+    permission_classes = [IsWorkforceAdmin]
+
+    def get(self, request):
+        from datetime import datetime as _datetime
+        from workforce_api.services import run_daily_reconciliation
+
+        target_date = None
+        date_param = request.query_params.get("date")
+        if date_param:
+            try:
+                target_date = _datetime.strptime(date_param, "%Y-%m-%d").date()
+            except ValueError:
+                return Response({"error": "date must be YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+
+        company = None
+        if not getattr(request.user, "is_superuser", False):
+            company = resolve_actor_company(request)
+            if not company:
+                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+
+        result = run_daily_reconciliation(target_date=target_date, company=company)
+        return Response(result, status=status.HTTP_200_OK)
+
+
 # ─── 2. Onboarding Status & Draft Persistence ─────────────────────────────────
 
 class WorkforceOnboardingMeView(APIView):
