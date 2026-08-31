@@ -1194,6 +1194,104 @@ class WorkforceAdminBulkServiceDecideView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+# ─── Wallet Dispute Resolution (SEVO Section 4: hold-and-clawback) ────────────
+
+class WorkforceAdminHeldEarningsListView(APIView):
+    """
+    Lists JOB_CREDIT ledger entries still inside their dispute-hold window
+    -- the admin's triage queue for deciding whether to let a payout
+    mature or claw it back before it releases. Superusers see every
+    company's held entries; a company admin/manager sees only their own
+    company's (provider head wallet) and their own individually-onboarded
+    workers have no visibility here -- disputes on their earnings are
+    handled the same way, just scoped to their own wallet's history via
+    a future wallet-detail endpoint, not this admin queue.
+    """
+    permission_classes = [IsWorkforceAdmin]
+
+    def get(self, request):
+        from .models import WalletLedgerEntry
+
+        qs = WalletLedgerEntry.objects.filter(
+            entry_type=WalletLedgerEntry.EntryType.JOB_CREDIT,
+            status=WalletLedgerEntry.Status.HELD,
+        ).select_related("wallet", "wallet__company", "job", "worker_performed", "worker_performed__user").order_by("hold_release_at")
+
+        if not getattr(request.user, "is_superuser", False):
+            company = resolve_actor_company(request)
+            if not company:
+                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+            qs = qs.filter(wallet__company_id=company.id)
+
+        results = []
+        for entry in qs[:200]:
+            wallet = entry.wallet
+            owner_name = wallet.company.company_name if wallet.company_id else (
+                getattr(wallet.employee, "full_name", None) or (wallet.employee.user.get_full_name() if wallet.employee and wallet.employee.user_id else None)
+            )
+            results.append({
+                "ledger_entry_id": entry.id,
+                "job_id": entry.job_id,
+                "wallet_id": wallet.id,
+                "wallet_owner": owner_name,
+                "amount": entry.signed_amount,
+                "gross_job_amount": entry.gross_job_amount,
+                "worker_performed": entry.worker_performed.user.get_full_name() if entry.worker_performed and entry.worker_performed.user_id else None,
+                "hold_release_at": entry.hold_release_at,
+                "created_at": entry.created_at,
+                "notes": entry.notes,
+            })
+
+        return Response({"results": results, "count": len(results)}, status=status.HTTP_200_OK)
+
+
+class WorkforceAdminWalletClawbackView(APIView):
+    """
+    POST { job_id, reason }: reverses a job's earnings at the job level --
+    never a blanket wallet freeze -- per SEVO Section 4. Delegates the
+    actual ledger mutation to services.commission.clawback_job(), which
+    handles both the still-HELD case (mark CLAWED_BACK, nothing ever
+    left the release path) and the already-RELEASED case (an offsetting
+    CLAWBACK_DEBIT entry, since the immutable ledger is never rewritten
+    after release).
+    """
+    permission_classes = [IsWorkforceAdmin]
+
+    def post(self, request):
+        from .models import WalletLedgerEntry
+        job_id = request.data.get("job_id")
+        reason = (request.data.get("reason") or "").strip()
+
+        if not job_id:
+            return Response({"error": "job_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not reason:
+            return Response({"error": "A reason is required for a clawback."}, status=status.HTTP_400_BAD_REQUEST)
+
+        job_obj = ServiceRequest.objects.filter(pk=job_id).first()
+        if not job_obj:
+            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not getattr(request.user, "is_superuser", False):
+            company = resolve_actor_company(request)
+            existing = WalletLedgerEntry.objects.filter(
+                job=job_obj, entry_type=WalletLedgerEntry.EntryType.JOB_CREDIT,
+            ).select_related("wallet").first()
+            if not company or not existing or existing.wallet.company_id != company.id:
+                return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
+        from workforce_api.services import clawback_job
+        result = clawback_job(job_obj, reason)
+        if not result:
+            return Response({"error": "No earnings entry found for this job -- nothing to claw back."}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({
+            "message": "Clawback recorded.",
+            "ledger_entry_id": result.id,
+            "status": result.status,
+            "amount": result.signed_amount,
+        }, status=status.HTTP_200_OK)
+
+
 class WorkforceAdminRequestCorrectionView(APIView):
     permission_classes = [IsWorkforceAdmin]
 
