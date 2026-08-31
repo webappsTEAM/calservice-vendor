@@ -84,6 +84,25 @@ export async function apiAdminMarkSocialSecurityRegistered(registrationId, porta
   });
 }
 
+// SEVO Section 1: on-demand self-service withdrawal of the caller's own
+// wallet -- shares the same validation + RazorpayX execution path as the
+// scheduled auto-payout cron.
+export async function apiWithdrawFromWallet(amount) {
+  return await apiRequest('/workforce/wallet/withdraw/', {
+    method: 'POST',
+    json: { amount },
+  });
+}
+
+// SEVO Section 1 (head-wallet specific features): standing daily/weekly
+// auto-payout rule + minimum-balance alert floor for the caller's own wallet.
+export async function apiUpdateAutoWithdrawalSettings(payload) {
+  return await apiRequest('/workforce/wallet/auto-withdrawal/', {
+    method: 'PATCH',
+    json: payload,
+  });
+}
+
 export async function apiWorkforceLogin(identifier, password) {
   const trimmed = (identifier || '').trim();
   return await apiRequest('/auth/login/', {
