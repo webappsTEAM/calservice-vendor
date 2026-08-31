@@ -6,6 +6,9 @@ from django.urls import include, path
 from .views import (
     WorkforceDispatchHealthView,
     WorkforceSignupView,
+    ProviderSignupView,
+    WalletMeView,
+    WalletPayoutDetailsView,
     WorkforceOnboardingMeView,
     WorkforceOnboardingDraftView,
     WorkforceOnboardingDocumentUploadView,
@@ -117,6 +120,9 @@ from .views import (
 urlpatterns = [
     # Technician Auth & Onboarding Lifecycle (Phases 4–8)
     path("signup/", WorkforceSignupView.as_view(), name="workforce-signup"),
+    path("provider/signup/", ProviderSignupView.as_view(), name="provider-signup"),
+    path("wallet/me/", WalletMeView.as_view(), name="wallet-me"),
+    path("wallet/payout-details/", WalletPayoutDetailsView.as_view(), name="wallet-payout-details"),
     path("onboarding/me/", WorkforceOnboardingMeView.as_view(), name="workforce-onboarding-me"),
     path("onboarding/draft/", WorkforceOnboardingDraftView.as_view(), name="workforce-onboarding-draft"),
     path("onboarding/documents/", WorkforceOnboardingDocumentUploadView.as_view(), name="workforce-onboarding-documents"),

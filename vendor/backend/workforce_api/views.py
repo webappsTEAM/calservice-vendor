@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 from django.utils import timezone
+from django.utils.text import slugify
 from rest_framework import permissions, status
 from rest_framework.exceptions import ValidationError
 from rest_framework.throttling import ScopedRateThrottle  # EC-06
@@ -46,6 +47,9 @@ from accounts.permissions import is_admin_role
 from .permissions import IsWorkforceAdmin, IsWorkforceEmployee, IsApprovedTechnician
 from .serializers import (
     WorkforceSignupSerializer,
+    ProviderSignupSerializer,
+    WalletAccountSerializer,
+    WalletPayoutDetailsSerializer,
     WorkforceOnboardingDraftSerializer,
     WorkforceEmployeeProfileSerializer,
     WorkforceJobSerializer,
@@ -145,6 +149,11 @@ class WorkforceSignupView(APIView):
         with transaction.atomic():
             company_id = request.data.get("company_id")
             company_slug = request.data.get("company_slug")
+            # Whether this signup explicitly asked to join a specific
+            # provider's team (vs. falling through to the shared default
+            # company below) -- decides which wallet channel this worker
+            # gets provisioned into. See SEVO business plan Section 2.
+            joining_provider_team = bool(company_id or company_slug)
             company = None
             if company_id:
                 try:
@@ -221,9 +230,27 @@ class WorkforceSignupView(APIView):
                         "rejection_reason": "",
                         "submitted_at": None,
                         "approved_at": None,
+                        "channel": "provider_team" if joining_provider_team else "individual",
                     }
                 },
             )
+
+            if not joining_provider_team:
+                # SEVO Individual Worker Model: this technician has no
+                # provider umbrella, so their own personal wallet -- not
+                # the shared default company's head wallet -- is what
+                # resolve_payee_wallet() must find for their completed
+                # jobs. Non-fatal: a wallet-provisioning hiccup must never
+                # block someone from creating an account.
+                try:
+                    from workforce_api.services import provision_individual_wallet
+                    provision_individual_wallet(employee)
+                except Exception:
+                    logger.exception(
+                        "Failed to provision individual wallet for new employee #%s at signup "
+                        "-- will need manual wallet provisioning before this worker can be paid.",
+                        employee.id,
+                    )
 
         refresh = RefreshToken.for_user(user)
         refresh["company_id"] = company.id
@@ -251,6 +278,172 @@ class WorkforceSignupView(APIView):
 
         set_auth_cookies(response, str(refresh.access_token), str(refresh))
         return response
+
+
+# ─── 1b. Provider Business Signup (SEVO Section 2: Existing Service Provider Model) ──
+
+class ProviderSignupView(APIView):
+    """
+    A service-provider business (not an individual technician) registers
+    itself: gets its own Company row, an admin/manager User account for
+    whoever owns the business, and a PROVIDER_HEAD wallet. The returned
+    company_id/company_slug is what the provider then hands to their own
+    workers so WorkforceSignupView routes those signups into this same
+    company (and therefore this same head wallet) instead of the shared
+    default company.
+    """
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "workforce_signup"
+
+    def post(self, request):
+        serializer = ProviderSignupSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        with transaction.atomic():
+            region, _ = Region.objects.get_or_create(
+                code="IN",
+                defaults={"name": "India", "currency": "INR", "currency_symbol": "₹"},
+            )
+
+            base_slug = slugify(data["business_name"])[:60] or "provider"
+            slug = base_slug
+            counter = 1
+            while Company.objects.filter(slug=slug).exists():
+                slug = f"{base_slug}-{counter}"
+                counter += 1
+
+            company = Company.objects.create(
+                company_name=data["business_name"],
+                slug=slug,
+                primary_country="IN",
+                region=region,
+                default_state="Tamil Nadu",
+                address=data.get("address", ""),
+                is_active=True,
+            )
+
+            username_candidate = data["email"].split("@")[0].lower()
+            username = username_candidate
+            counter = 1
+            while User.objects.filter(username=username).exists():
+                username = f"{username_candidate}_{counter}"
+                counter += 1
+
+            user = User.objects.create(
+                username=username,
+                email=data["email"],
+                mobile_number=data["mobile_number"],
+                phone=data["mobile_number"],
+                first_name=data["contact_first_name"],
+                last_name=data.get("contact_last_name", ""),
+                role="manager",
+                company=company,
+                is_active=True,
+                totp_secret="",
+                bio="",
+            )
+            user.set_password(data["password"])
+            user.save()
+
+            try:
+                from workforce_api.services import provision_provider_wallet
+                provision_provider_wallet(company)
+            except Exception:
+                logger.exception(
+                    "Failed to provision head wallet for new provider company #%s at signup "
+                    "-- will need manual wallet provisioning before this provider's team can be paid.",
+                    company.id,
+                )
+
+        refresh = RefreshToken.for_user(user)
+        refresh["company_id"] = company.id
+        refresh["role"] = user.role
+
+        response = Response(
+            {
+                "message": "Provider business account created successfully.",
+                "access_token": str(refresh.access_token),
+                "refresh_token": str(refresh),
+                "token": str(refresh.access_token),
+                "company": {
+                    "id": company.id,
+                    "slug": company.slug,
+                    "company_name": company.company_name,
+                },
+                "user": {
+                    "id": user.id,
+                    "username": user.username,
+                    "email": user.email,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
+                    "role": user.role,
+                },
+            },
+            status=status.HTTP_201_CREATED,
+        )
+        set_auth_cookies(response, str(refresh.access_token), str(refresh))
+        return response
+
+
+# ─── 1c. Wallet Self-Service (payout details, own wallet status) ─────────────
+
+class WalletMeView(APIView):
+    """
+    GET: the caller's own wallet -- their personal INDIVIDUAL_WORKER wallet
+    if they onboarded directly, or their provider company's shared
+    PROVIDER_HEAD wallet if they're that company's admin/manager. 404 if
+    neither applies (not yet onboarded, or a customer/kiosk account).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from workforce_api.services import resolve_wallet_for_user
+        wallet, owner_role = resolve_wallet_for_user(request.user)
+        if not wallet:
+            return Response(
+                {"error": "No wallet found for this account yet."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        serializer = WalletAccountSerializer(wallet, context={"owner_role": owner_role})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class WalletPayoutDetailsView(APIView):
+    """
+    PATCH: set/update the caller's own wallet's payout destination (bank
+    account or UPI ID). See services.wallet_onboarding.set_payout_details
+    for validation rules and the TIER_0 -> TIER_1 KYC bump this triggers.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request):
+        from workforce_api.services import resolve_wallet_for_user, set_payout_details, PayoutDetailsError
+        wallet, owner_role = resolve_wallet_for_user(request.user)
+        if not wallet:
+            return Response(
+                {"error": "No wallet found for this account yet."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = WalletPayoutDetailsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            wallet = set_payout_details(
+                wallet,
+                bank_account_name=data.get("bank_account_name", ""),
+                bank_account_number=data.get("bank_account_number", ""),
+                ifsc=data.get("ifsc", ""),
+                upi_id=data.get("upi_id", ""),
+            )
+        except PayoutDetailsError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        response_serializer = WalletAccountSerializer(wallet, context={"owner_role": owner_role})
+        return Response(response_serializer.data, status=status.HTTP_200_OK)
 
 
 # ─── 2. Onboarding Status & Draft Persistence ─────────────────────────────────

@@ -40,6 +40,14 @@ from .commission import (
     commission_rate_for,
 )
 
+from .wallet_onboarding import (
+    provision_provider_wallet,
+    provision_individual_wallet,
+    resolve_wallet_for_user,
+    set_payout_details,
+    PayoutDetailsError,
+)
+
 __all__ = [
     "dispatch_job",
     "dispatch_pending_jobs",
@@ -69,4 +77,9 @@ __all__ = [
     "net_cod_commission_payable",
     "resolve_payee_wallet",
     "commission_rate_for",
+    "provision_provider_wallet",
+    "provision_individual_wallet",
+    "resolve_wallet_for_user",
+    "set_payout_details",
+    "PayoutDetailsError",
 ]

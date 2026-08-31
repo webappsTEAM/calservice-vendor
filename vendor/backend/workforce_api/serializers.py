@@ -6,6 +6,7 @@ from django.contrib.auth import get_user_model
 from rest_framework import serializers
 from employees.models import Employee
 from service_requests.models import ServiceRequest
+from .models import WalletAccount
 
 User = get_user_model()
 
@@ -911,4 +912,95 @@ class EmployeeSavedLocationSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
+class ProviderSignupSerializer(serializers.Serializer):
+    """
+    SEVO business plan Section 2, "Existing Service Provider Model": a
+    service-provider business (plumbing outfit, electrical contractor, etc)
+    self-registers, gets its own Company row and PROVIDER_HEAD wallet, and
+    can then invite its own workers to join that company (see
+    WorkforceSignupSerializer, which already supports joining a specific
+    company via company_id/company_slug).
+    """
+    business_name = serializers.CharField(max_length=255)
+    contact_first_name = serializers.CharField(max_length=150)
+    contact_last_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    mobile_number = serializers.CharField(max_length=20)
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True, min_length=6)
+    address = serializers.CharField(required=False, allow_blank=True, default="")
+    city = serializers.CharField(required=False, allow_blank=True, default="Hosur")
 
+    def validate_email(self, value):
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("An account with this email already exists.")
+        return value.lower()
+
+    def validate_mobile_number(self, value):
+        cleaned = value.strip().replace(" ", "").replace("-", "")
+        if User.objects.filter(mobile_number=cleaned).exists():
+            raise serializers.ValidationError("An account with this mobile number already exists.")
+        return cleaned
+
+    def validate_business_name(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Business name is required.")
+        return value
+
+
+class WalletAccountSerializer(serializers.ModelSerializer):
+    """Read/write surface for a wallet owner's own onboarding + payout
+    status. Balance and withdrawal_limit are computed, never stored."""
+    balance = serializers.SerializerMethodField()
+    withdrawal_limit = serializers.SerializerMethodField()
+    owner_role = serializers.SerializerMethodField()
+    owner_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WalletAccount
+        fields = [
+            "id",
+            "account_type",
+            "kyc_tier",
+            "kyc_tier_updated_at",
+            "payout_bank_account_name",
+            "payout_bank_account_number_masked",
+            "payout_ifsc",
+            "payout_upi_id",
+            "auto_withdrawal_enabled",
+            "auto_withdrawal_frequency",
+            "auto_withdrawal_day_of_week",
+            "minimum_balance_alert_threshold",
+            "balance",
+            "withdrawal_limit",
+            "owner_role",
+            "owner_name",
+        ]
+        read_only_fields = ["id", "account_type", "kyc_tier", "kyc_tier_updated_at"]
+
+    def get_balance(self, obj):
+        return obj.current_balance()
+
+    def get_withdrawal_limit(self, obj):
+        return obj.withdrawal_limit_for_tier()
+
+    def get_owner_role(self, obj):
+        return self.context.get("owner_role", "")
+
+    def get_owner_name(self, obj):
+        if obj.company_id:
+            return obj.company.company_name
+        emp = obj.employee
+        return emp.user.get_full_name() if emp and emp.user_id else ""
+
+
+class WalletPayoutDetailsSerializer(serializers.Serializer):
+    """Input serializer for setting/updating payout destination -- either a
+    UPI ID, or a full bank account. Validation (at least one, valid IFSC
+    shape) is delegated to services.wallet_onboarding.set_payout_details so
+    there's exactly one place that decides what a "valid" payout
+    destination looks like."""
+    bank_account_name = serializers.CharField(required=False, allow_blank=True, default="")
+    bank_account_number = serializers.CharField(required=False, allow_blank=True, default="")
+    ifsc = serializers.CharField(required=False, allow_blank=True, default="")
+    upi_id = serializers.CharField(required=False, allow_blank=True, default="")
