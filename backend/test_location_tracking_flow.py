@@ -79,18 +79,27 @@ def run_tests():
 
     emp = Employee.objects.filter(user=tech_user).first()
     if not emp:
-        emp = Employee.objects.create(
-            user=tech_user,
-            employee_id="EMP-TEST-001",
-            company=company,
-            title="Master Technician",
-            is_active=True,
-            current_availability="available",
-            bank_details={"onboarding": {"status": "approved"}},
-        )
+        emp = Employee.objects.filter(company=company, employee_id="EMP-TEST-001").first()
+        if not emp:
+            emp = Employee.objects.create(
+                user=tech_user,
+                employee_id="EMP-TEST-001",
+                company=company,
+                title="Master Technician",
+                is_active=True,
+                current_availability="busy",
+                bank_details={"onboarding": {"status": "approved"}},
+            )
+        else:
+            emp.user = tech_user
+            emp.bank_details = {"onboarding": {"status": "approved"}}
+            emp.is_active = True
+            emp.current_availability = "busy"
+            emp.save()
     else:
         emp.bank_details = {"onboarding": {"status": "approved"}}
         emp.is_active = True
+        emp.current_availability = "busy"
         emp.save()
 
     # Customer Booking Location: 13.0827, 80.2707 (Chennai Central)
@@ -115,6 +124,7 @@ def run_tests():
     )
     job.status = "accepted"
     job.assigned_employee = emp
+    job.customer = cust_user
     job.latitude = cust_lat
     job.longitude = cust_lon
     job.save()

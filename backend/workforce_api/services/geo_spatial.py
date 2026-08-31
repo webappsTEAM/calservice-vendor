@@ -26,6 +26,23 @@ MAX_DISPATCH_RADIUS_KM: float = 20.0
 MAX_GPS_AGE_SECONDS: int = 120
 DISTANCE_TOLERANCE_KM: float = 0.005  # 5 meters numerical precision buffer for boundary testing
 
+# Arrival, Geofence, and Tracking Telemetry Constants
+ARRIVAL_RADIUS_METERS: float = 250.0
+ARRIVAL_MAX_ACCURACY_METERS: float = 200.0
+ARRIVAL_MAX_GPS_AGE_SECONDS: float = 30.0
+ARRIVAL_REQUIRED_FIXES: int = 2
+ARRIVAL_MIN_CONFIRMATION_INTERVAL_SECONDS: float = 2.0
+
+# Telemetry and Throttle Constants
+THROTTLED_POINT_MIN_DISTANCE_METERS: float = 20.0
+THROTTLED_POINT_MIN_INTERVAL_SECONDS: float = 30.0
+REALTIME_LOCATION_EVENT_MIN_DISTANCE_METERS: float = 15.0
+REALTIME_LOCATION_EVENT_INTERVAL_SECONDS: float = 8.0
+
+# Velocity Jump Safety Constants
+VELOCITY_SAFETY_MAX_SPEED_MPS: float = 55.0  # ~198 km/h
+VELOCITY_SAFETY_MIN_DISPLACEMENT_METERS: float = 200.0
+
 # Standard Distance Waves / Bands (0 to 20 km)
 WAVE_RANGES: List[Tuple[int, str, float, float]] = [
     (1, "Wave 1 (0–1 km)", 0.0, 1.0),

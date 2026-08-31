@@ -58,6 +58,10 @@ export function CustomerTrackingPage() {
 
   const isPollingRef = useRef(false);
   const pollTimerRef = useRef(null);
+  const sseRef = useRef(null);
+  const reconnectTimerRef = useRef(null);
+  const reconnectAttemptsRef = useRef(0);
+  const isMountedRef = useRef(true);
 
   // Fetch tracking data with deduplication
   const fetchTracking = useCallback(async (isInitial = false) => {
@@ -101,42 +105,152 @@ export function CustomerTrackingPage() {
     }
   }, [jobId]);
 
-  // Initial Load & Polling Lifecycle
+  // Fallback Polling: Only active when SSE is disconnected
+  const startFallbackPolling = useCallback(() => {
+    if (pollTimerRef.current) return;
+    console.info('[CustomerTracking] SSE inactive. Starting 5-second fallback REST polling.');
+    pollTimerRef.current = setInterval(() => {
+      if (!isMountedRef.current) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      fetchTracking(false);
+    }, 5000);
+  }, [fetchTracking]);
+
+  const stopFallbackPolling = useCallback(() => {
+    if (pollTimerRef.current) {
+      console.info('[CustomerTracking] SSE healthy. Stopping 5-second fallback REST polling.');
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  // Update technician coordinates in-place without page reload
+  const handleLocationUpdate = useCallback((loc) => {
+    if (!loc) return;
+    const lat = loc.latitude ?? loc.lat ?? loc.employee_location?.latitude;
+    const lon = loc.longitude ?? loc.lng ?? loc.lon ?? loc.employee_location?.longitude;
+    if (lat == null || lon == null) return;
+
+    setTrackingData((prev) => {
+      if (!prev) return prev;
+      const accuracy = loc.accuracy ?? loc.employee_location?.accuracy ?? prev.assigned_technician?.location?.accuracy;
+      const speed = loc.speed ?? loc.employee_location?.speed ?? prev.assigned_technician?.location?.speed;
+      const heading = loc.heading ?? loc.employee_location?.heading ?? prev.assigned_technician?.location?.heading;
+      const capturedAt = loc.captured_at ?? loc.timestamp ?? new Date().toISOString();
+
+      return {
+        ...prev,
+        status: (loc.status || prev.status).toUpperCase(),
+        distance_m: loc.distance_m ?? prev.distance_m,
+        distance_km: loc.distance_km ?? prev.distance_km,
+        geofence_status: loc.geofence_status ?? prev.geofence_status,
+        movement_status: loc.movement_status ?? prev.movement_status,
+        freshness_state: loc.freshness_state ?? 'LIVE',
+        assigned_technician: prev.assigned_technician
+          ? {
+              ...prev.assigned_technician,
+              location: {
+                latitude: Number(lat),
+                longitude: Number(lon),
+                accuracy: accuracy != null ? Number(accuracy) : null,
+                speed: speed != null ? Number(speed) : null,
+                heading: heading != null ? Number(heading) : null,
+                captured_at: capturedAt,
+                received_at: new Date().toISOString(),
+              },
+            }
+          : prev.assigned_technician,
+      };
+    });
+  }, []);
+
+  // Establish SSE stream
+  const connectSSE = useCallback(() => {
+    if (!jobId) return;
+    if (sseRef.current) {
+      try { sseRef.current.close(); } catch (_) {}
+      sseRef.current = null;
+    }
+
+    const sseUrl = `/api/workforce/realtime/stream/?job_id=${encodeURIComponent(jobId)}`;
+    const es = new EventSource(sseUrl);
+    sseRef.current = es;
+
+    es.addEventListener('ping', () => {
+      if (!isMountedRef.current) return;
+      stopFallbackPolling();
+      if (reconnectAttemptsRef.current > 0) {
+        fetchTracking(false);
+      }
+      reconnectAttemptsRef.current = 0;
+    });
+
+    es.addEventListener('job_location', (e) => {
+      if (!isMountedRef.current) return;
+      stopFallbackPolling();
+      try {
+        const payload = JSON.parse(e.data);
+        handleLocationUpdate(payload);
+      } catch (err) {
+        console.warn('[CustomerTracking] Error parsing location event:', err);
+      }
+    });
+
+    es.addEventListener('workforce_event', (e) => {
+      if (!isMountedRef.current) return;
+      try {
+        const ev = JSON.parse(e.data);
+        if (ev.event_type === 'JOB_LOCATION_UPDATE' && ev.payload) {
+          handleLocationUpdate(ev.payload);
+        }
+      } catch (_) {}
+    });
+
+    es.onerror = () => {
+      if (!isMountedRef.current) return;
+      startFallbackPolling();
+      try { es.close(); } catch (_) {}
+      sseRef.current = null;
+
+      reconnectAttemptsRef.current += 1;
+      const delay = Math.min(15000, Math.pow(2, reconnectAttemptsRef.current) * 1000);
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = setTimeout(() => {
+        if (isMountedRef.current) {
+          connectSSE();
+        }
+      }, delay);
+    };
+  }, [jobId, fetchTracking, handleLocationUpdate, startFallbackPolling, stopFallbackPolling]);
+
+  // Initial Load & SSE Lifecycle
   useEffect(() => {
-    let isMounted = true;
+    isMountedRef.current = true;
     setLoading(true);
     setErrorState(null);
 
-    // Initial fetch
+    // Initial fetch once
     fetchTracking(true);
 
-    // Polling interval (5s)
-    pollTimerRef.current = setInterval(() => {
-      if (!isMounted) return;
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-      // Stop polling if completed or cancelled
-      setTrackingData((currentData) => {
-        const status = (currentData?.status || '').toLowerCase();
-        if (status === 'completed' || status === 'cancelled' || status === 'closed') {
-          if (pollTimerRef.current) {
-            clearInterval(pollTimerRef.current);
-            pollTimerRef.current = null;
-          }
-        } else {
-          fetchTracking(false);
-        }
-        return currentData;
-      });
-    }, 5000);
+    // Connect SSE
+    connectSSE();
 
     return () => {
-      isMounted = false;
+      isMountedRef.current = false;
+      if (sseRef.current) {
+        try { sseRef.current.close(); } catch (_) {}
+        sseRef.current = null;
+      }
       if (pollTimerRef.current) {
         clearInterval(pollTimerRef.current);
         pollTimerRef.current = null;
       }
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
     };
-  }, [jobId, fetchTracking]);
+  }, [jobId, fetchTracking, connectSSE]);
 
   // Callback when Google Maps calculates route ETA
   const handleEtaCalculated = useCallback(({ etaText, distanceText }) => {
@@ -416,6 +530,7 @@ export function CustomerTrackingPage() {
 
         {/* ── Live Map Component ── */}
         <CustomerTrackingMap
+          trackingData={trackingData}
           technicianCoords={techCoords}
           serviceLocation={custLoc}
           technicianInfo={{

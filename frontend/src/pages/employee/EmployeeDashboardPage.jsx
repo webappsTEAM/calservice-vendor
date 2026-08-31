@@ -32,6 +32,7 @@ import {
 } from '../../api/workforceService.js';
 import { apiClockIn } from '../../api/clockInApi.js';
 import { TechnicianNavigationView } from '../../components/employee/navigation/TechnicianNavigationView.jsx';
+import { TechnicianDashboard } from '../../components/employee/dashboard/TechnicianDashboard.jsx';
 
 import { AppShell } from '../../components/common/AppShell.jsx';
 import { StatusBadge } from '../../components/enterprise/StatusBadge.jsx';
@@ -145,6 +146,9 @@ export function EmployeeDashboardPage() {
     isJobsLoading: isRuntimeJobsLoading,
     refreshActiveJobs,
     refreshCompletedJobs,
+    reconcileJobAccepted,
+    reconcileJobCompleted,
+    reconcileOfferRemoved,
     liveLocation,
     scanCurrentLocation,
     autoClockIn,
@@ -414,11 +418,12 @@ export function EmployeeDashboardPage() {
     isClockedIn,
   ]);
 
-  const handleVerifyOtpSubmit = async () => {
-    if (!selectedJob || !otpInput.trim()) return;
+  const handleVerifyOtpSubmit = async (jobOverride = null) => {
+    const targetJob = jobOverride || activeAssignedJob || selectedJob;
+    if (!targetJob || !otpInput.trim()) return;
     try {
-      setActionLoading(selectedJob.id);
-      const res = await apiVerifyOTP(selectedJob.id, otpInput.trim());
+      setActionLoading(targetJob.id);
+      const res = await apiVerifyOTP(targetJob.id, otpInput.trim());
       setSuccessMsg(res.message || 'Customer OTP verified!');
       const updatedState = { ...preServiceState, otp_verified: true, is_complete: res.is_complete };
       setPreServiceState(updatedState);
@@ -426,7 +431,7 @@ export function EmployeeDashboardPage() {
       // Auto Clock-In Trigger: if all 3 mandatory conditions are now satisfied
       if (res.is_complete || (updatedState.geofence_passed && updatedState.presence_photo)) {
         console.info('[EmployeeDashboard] All mandatory pre-checks complete after OTP verification. Triggering auto clock-in...');
-        await handleDirectJobClockIn();
+        await handleDirectJobClockIn(targetJob);
       }
       setTimeout(() => setSuccessMsg(''), 4000);
     } catch (err) {
@@ -436,11 +441,12 @@ export function EmployeeDashboardPage() {
     }
   };
 
-  const handleResendOtp = async () => {
-    if (!selectedJob) return;
+  const handleResendOtp = async (jobOverride = null) => {
+    const targetJob = jobOverride || activeAssignedJob || selectedJob;
+    if (!targetJob) return;
     try {
-      setActionLoading(selectedJob.id);
-      const res = await apiResendOTP(selectedJob.id);
+      setActionLoading(targetJob.id);
+      const res = await apiResendOTP(targetJob.id);
       setSuccessMsg(res.message || 'Fresh OTP generated and sent to customer!');
       setTimeout(() => setSuccessMsg(''), 4000);
     } catch (err) {
@@ -450,11 +456,12 @@ export function EmployeeDashboardPage() {
     }
   };
 
-  const handlePhotoUploadSubmit = async (photoType, file) => {
-    if (!selectedJob || !file) return;
+  const handlePhotoUploadSubmit = async (photoType, file, jobOverride = null) => {
+    const targetJob = jobOverride || activeAssignedJob || selectedJob;
+    if (!targetJob || !file) return;
     try {
-      setActionLoading(selectedJob.id);
-      const res = await apiUploadPreServicePhoto(selectedJob.id, photoType, file);
+      setActionLoading(targetJob.id);
+      const res = await apiUploadPreServicePhoto(targetJob.id, photoType, file);
       setSuccessMsg(res.message || 'Photo uploaded!');
       const updatedState = {
         ...preServiceState,
@@ -466,7 +473,7 @@ export function EmployeeDashboardPage() {
       // Auto Clock-In Trigger: if all 3 mandatory conditions are now satisfied
       if (res.is_complete || (updatedState.geofence_passed && updatedState.otp_verified && (photoType === 'presence' || updatedState.presence_photo))) {
         console.info('[EmployeeDashboard] All mandatory pre-checks complete after photo upload. Triggering auto clock-in...');
-        await handleDirectJobClockIn();
+        await handleDirectJobClockIn(targetJob);
       }
       setTimeout(() => setSuccessMsg(''), 4000);
     } catch (err) {
@@ -477,18 +484,25 @@ export function EmployeeDashboardPage() {
   };
 
   const isClockingInRef = useRef(false);
-  const handleDirectJobClockIn = async () => {
-    if (!selectedJob || isClockingInRef.current) return;
+  const handleDirectJobClockIn = async (jobOverride = null) => {
+    const jobToClockIn = jobOverride || activeAssignedJob || selectedJob;
+    if (!jobToClockIn || isClockingInRef.current) return;
     isClockingInRef.current = true;
-    setActionLoading(selectedJob.id);
+    setActionLoading(jobToClockIn.id);
     setError('');
     try {
-      const res = await autoClockIn(selectedJob.id, {
-        address: selectedJob.address || 'GPS Verified Customer Location',
+      const res = await autoClockIn(jobToClockIn.id, {
+        address: jobToClockIn.address || 'GPS Verified Customer Location',
       });
       setSuccessMsg(res.message || 'Clocked in successfully! Job is now IN PROGRESS.');
-      await loadDashboard();
-      setSelectedJob((prev) => (prev ? { ...prev, status: 'in_progress' } : null));
+      setSelectedJob((prev) => (prev ? { ...prev, status: 'in_progress' } : { ...jobToClockIn, status: 'in_progress' }));
+      // Authoritatively fetch active TimeLog state so the live timer starts immediately
+      const timeData = await apiGetTimeTracking().catch(() => null);
+      if (timeData) setTimeTracking(timeData);
+      await loadDashboard({ force: true });
+      if (typeof refreshActiveJobs === 'function') {
+        await refreshActiveJobs({ force: true });
+      }
       setTimeout(() => setSuccessMsg(''), 4000);
     } catch (err) {
       setError(err.message || 'Clock-in failed');
@@ -498,15 +512,16 @@ export function EmployeeDashboardPage() {
     }
   };
 
-  const handleManualVerifyArrival = async () => {
-    if (!selectedJob?.id) return;
+  const handleManualVerifyArrival = async (jobOverride = null) => {
+    const targetJob = jobOverride || activeAssignedJob || selectedJob;
+    if (!targetJob?.id) return;
     try {
-      setActionLoading(selectedJob.id);
+      setActionLoading(targetJob.id);
       setError('');
       const loc = liveLocation || (await scanCurrentLocation());
       if (!loc?.latitude || !loc?.longitude) throw new Error('Unable to retrieve GPS coordinates.');
       const res = await apiVerifyArrival(
-        selectedJob.id,
+        targetJob.id,
         loc.latitude,
         loc.longitude,
         loc.accuracy,
@@ -514,7 +529,7 @@ export function EmployeeDashboardPage() {
       );
       setSuccessMsg(res.message || 'Arrival verified! Work Start OTP generated for customer.');
       setPreServiceState((prev) => ({ ...prev, geofence_passed: true }));
-      setSelectedJob((prev) => (prev ? { ...prev, status: 'arrived' } : prev));
+      setSelectedJob((prev) => (prev ? { ...prev, status: 'arrived' } : { ...targetJob, status: 'arrived' }));
       await loadDashboard();
     } catch (err) {
       setError(err.message || 'Failed to verify arrival. Ensure you are within 250m of the job site.');
@@ -735,7 +750,11 @@ export function EmployeeDashboardPage() {
 
     const handleProofSubmit = async (e) => {
       e.preventDefault();
-      if (!proofModalJob) return;
+      const candidateJob = proofModalJob || activeAssignedJob || selectedJob;
+      if (!candidateJob) return;
+
+      const targetJob = (activeJobs && activeJobs.find(j => j.id === candidateJob.id)) || candidateJob;
+      if (!targetJob) return;
 
       if (!afterFaceFile) {
         setError('Live After Face Selfie is required for service completion.');
@@ -749,8 +768,7 @@ export function EmployeeDashboardPage() {
         if (afterFile) formData.append('after_appliance_photo', afterFile);
         if (workNotes) formData.append('notes', workNotes);
 
-        await apiUploadJobProof(proofModalJob.id, formData);
-        const finishedJob = proofModalJob;
+        const res = await apiUploadJobProof(targetJob.id, formData);
         setProofModalJob(null);
         setAfterFaceFile(null);
         setAfterFile(null);
@@ -761,13 +779,18 @@ export function EmployeeDashboardPage() {
         setWorkNotes('');
 
         // Seamlessly transition to collect payment if payment is pending / cash on service
-        const isPaid = finishedJob.payment?.payment_status === 'PAID' || finishedJob.payment_status === 'paid';
+        const isCompleted = res?.status === 'completed';
+        const isPaid = isCompleted || res?.payment_status === 'PAID' || targetJob.payment?.payment_status === 'PAID' || targetJob.payment_status === 'paid';
         if (!isPaid) {
-          setCashModalJob(finishedJob);
-          setCashAmountReceived(String(finishedJob.payment?.amount_due || finishedJob.total_amount || ''));
+          setCashModalJob(targetJob);
+          setCashAmountReceived(String(targetJob.payment?.amount_due || targetJob.total_amount || ''));
           setSuccessMsg('After-service proof submitted! Please collect customer payment.');
         } else {
-          setSelectedJob(null);
+          if (typeof reconcileJobCompleted === 'function') {
+            reconcileJobCompleted(targetJob.id, { ...targetJob, status: 'completed', payment_status: 'PAID' });
+          } else {
+            setSelectedJob(null);
+          }
           setSuccessMsg('After-service proof submitted! Job is COMPLETED.');
           if (typeof refreshActiveJobs === 'function') {
             await refreshActiveJobs({ force: true });
@@ -776,10 +799,10 @@ export function EmployeeDashboardPage() {
             await refreshCompletedJobs({ silent: true });
           }
           if (typeof refreshProfile === 'function') {
-            refreshProfile(true);
+            refreshProfile(true).catch(() => {});
           }
         }
-        await loadDashboard();
+        await loadDashboard({ force: true });
         setTimeout(() => setSuccessMsg(''), 5000);
       } catch (err) {
         setError(err.message || 'Proof upload failed.');
@@ -789,9 +812,10 @@ export function EmployeeDashboardPage() {
     };
 
     const handleDirectCashCollect = async (jobToCollect, customAmount = null) => {
-      const targetJob = jobToCollect || cashModalJob || selectedJob;
-      if (!targetJob) return;
+      const candidateJob = jobToCollect || cashModalJob || activeAssignedJob || selectedJob;
+      if (!candidateJob) return;
 
+      const targetJob = (activeJobs && activeJobs.find(j => j.id === candidateJob.id)) || candidateJob;
       const amtDue = parseFloat(customAmount !== null && customAmount !== undefined ? customAmount : (targetJob.payment?.amount_due || targetJob.total_amount || 0));
 
       try {
@@ -799,10 +823,16 @@ export function EmployeeDashboardPage() {
         setError('');
         const res = await apiCollectJobCash(targetJob.id, amtDue);
 
-        setSelectedJob(null);
         setCashModalJob(null);
         setCashAmountReceived('');
         setSuccessMsg(res.message || 'Cash payment collected and confirmed! Job is COMPLETED.');
+
+        // Instant Authoritative Reconciliation: Flips UI to AVAILABLE with zero manual refresh
+        if (typeof reconcileJobCompleted === 'function') {
+          reconcileJobCompleted(targetJob.id, { ...targetJob, status: 'completed', payment_status: 'PAID' });
+        } else {
+          setSelectedJob(null);
+        }
 
         if (typeof refreshActiveJobs === 'function') {
           await refreshActiveJobs({ force: true });
@@ -811,9 +841,9 @@ export function EmployeeDashboardPage() {
           await refreshCompletedJobs({ silent: true });
         }
         if (typeof refreshProfile === 'function') {
-          refreshProfile(true);
+          refreshProfile(true).catch(() => {});
         }
-        await loadDashboard();
+        await loadDashboard({ force: true });
         setTimeout(() => setSuccessMsg(''), 4000);
       } catch (err) {
         setError(err.message || 'Cash collection failed.');
@@ -832,22 +862,39 @@ export function EmployeeDashboardPage() {
       try {
         setActionLoading(jobId);
         setError('');
-        await apiAcceptJobOffer(jobId);
+        const res = await apiAcceptJobOffer(jobId);
         setSuccessMsg('Job offer accepted successfully! Heading to customer site.');
-        await loadDashboard();
+        // Instant Authoritative Reconciliation: Immediately switches winning tech UI to ASSIGNED
+        if (typeof reconcileJobAccepted === 'function') {
+          reconcileJobAccepted(jobId, res);
+        } else {
+          setSelectedJob((prev) => (prev?.id === jobId ? { ...prev, status: 'accepted', is_offer: false, is_assigned_to_current_employee: true } : prev));
+          await refreshActiveJobs({ force: true });
+        }
+        if (typeof refreshProfile === 'function') {
+          refreshProfile(true).catch(() => {});
+        }
+        await loadDashboard({ force: true });
         setTimeout(() => setSuccessMsg(''), 4000);
       } catch (err) {
         if (err.status === 409 || err.code === 'JOB_ALREADY_ACCEPTED') {
           setError('Job No Longer Available: This job was already accepted by another technician.');
-          // Remove offer from view immediately
-          setSelectedJob((prev) => (prev?.id === jobId ? null : prev));
-          refreshActiveJobs({ force: true });
+          if (typeof reconcileOfferRemoved === 'function') {
+            reconcileOfferRemoved(jobId);
+          } else {
+            setSelectedJob((prev) => (prev?.id === jobId ? null : prev));
+            refreshActiveJobs({ force: true });
+          }
         } else if (err.status === 409 || err.code === 'EMPLOYEE_ALREADY_BUSY') {
           setError('Cannot accept offer: You already have an active job in progress.');
         } else if (err.status === 409 || err.code === 'OFFER_EXPIRED') {
           setError('This job offer has expired.');
-          setSelectedJob((prev) => (prev?.id === jobId ? null : prev));
-          refreshActiveJobs({ force: true });
+          if (typeof reconcileOfferRemoved === 'function') {
+            reconcileOfferRemoved(jobId);
+          } else {
+            setSelectedJob((prev) => (prev?.id === jobId ? null : prev));
+            refreshActiveJobs({ force: true });
+          }
         } else if (err.status === 403 || err.code === 'CROSS_TENANT_FORBIDDEN') {
           setError('Unauthorized: Cross-company access forbidden.');
         } else {
@@ -1025,98 +1072,102 @@ export function EmployeeDashboardPage() {
     const isSettingsRoute = pathname.includes('/settings');
     const isHomeRoute = !isJobsRoute && !isDocumentsRoute && !isServicesRoute && !isSettingsRoute;
 
-    const breadcrumbs = [
-      { label: 'Home', to: '/workforce/employee/dashboard' },
-      ...(isJobsRoute
-        ? [{ label: 'Jobs Queue' }]
-        : isDocumentsRoute
-          ? [{ label: 'Documents' }]
-          : isServicesRoute
-            ? [{ label: 'Services' }]
-            : isSettingsRoute
-              ? [{ label: 'Settings' }]
-              : [{ label: 'Technician Hub' }]),
-    ];
+    const breadcrumbs = isHomeRoute
+      ? []
+      : [
+          { label: 'Home', to: '/workforce/employee/dashboard' },
+          ...(isJobsRoute
+            ? [{ label: 'Jobs Queue' }]
+            : isDocumentsRoute
+              ? [{ label: 'Documents' }]
+              : isServicesRoute
+                ? [{ label: 'Services' }]
+                : isSettingsRoute
+                  ? [{ label: 'Settings' }]
+                  : []),
+        ];
 
     return (
       <AppShell breadcrumbs={breadcrumbs}>
         <div className="space-y-4">
-          {/* Availability & Shift Status Bar */}
-          <div className="bg-white border border-slate-200 rounded p-4 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded bg-slate-100 border border-slate-200 flex items-center justify-center font-bold text-slate-800 text-sm">
-                {user?.firstName ? user.firstName[0].toUpperCase() : 'T'}
-              </div>
-              <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <h1 className="text-base font-bold text-slate-900">
-                    {user?.firstName ? `${user.firstName} ${user.lastName}` : user?.username}
-                  </h1>
-                  <StatusBadge
-                    status={hasActiveJob ? 'busy' : (isOnline ? 'online' : 'offline')}
-                    label={hasActiveJob ? 'ON JOB (BUSY)' : (isOnline ? 'AVAILABLE' : 'OFFLINE')}
-                  />
-                  {isClockedIn && (
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
-                      {isBreak ? 'ON BREAK' : 'SHIFT ACTIVE'}
-                    </span>
-                  )}
+          {/* Availability & Shift Status Bar (Only shown on non-dashboard management tabs) */}
+          {!isHomeRoute && (
+            <div className="bg-white border border-slate-200 rounded p-4 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded bg-slate-100 border border-slate-200 flex items-center justify-center font-bold text-slate-800 text-sm">
+                  {user?.firstName ? user.firstName[0].toUpperCase() : 'T'}
                 </div>
-                <p className="text-[11px] text-slate-500 font-mono mt-0.5">
-                  ID: <strong className="text-slate-800">{profile?.employee_id || user?.username}</strong>
-                  {profile?.city ? ` • Territory: ${profile.city}` : ''}
-                </p>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h1 className="text-base font-bold text-slate-900">
+                      {user?.firstName ? `${user.firstName} ${user.lastName}` : user?.username}
+                    </h1>
+                    <StatusBadge
+                      status={hasActiveJob ? 'busy' : (isOnline ? 'online' : 'offline')}
+                      label={hasActiveJob ? 'ON JOB (BUSY)' : (isOnline ? 'AVAILABLE' : 'OFFLINE')}
+                    />
+                    {isClockedIn && (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                        {isBreak ? 'ON BREAK' : 'SHIFT ACTIVE'}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-500 font-mono mt-0.5">
+                    ID: <strong className="text-slate-800">{profile?.employee_id || user?.username}</strong>
+                    {profile?.city ? ` • Territory: ${profile.city}` : ''}
+                  </p>
+                </div>
+              </div>
+
+              {/* Controls: Go Online / Go Offline */}
+              <div className="flex items-center gap-2 flex-wrap self-end sm:self-auto">
+                <button
+                  type="button"
+                  id="employee-dashboard-presence-toggle-btn"
+                  onClick={handleToggleOnline}
+                  disabled={hasActiveJob || isTogglingOnline}
+                  title={
+                    hasActiveJob
+                      ? `Locked Online: Currently active on assignment (${activeAssignedJob?.request_id || 'active job'})`
+                      : isTogglingOnline
+                        ? 'Updating availability status...'
+                        : (isOnline ? 'Click to switch status to OFFLINE' : 'Click to switch status to ONLINE')
+                  }
+                  className={`inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded text-xs font-bold transition-all shadow-sm select-none ${
+                    hasActiveJob
+                      ? 'bg-blue-50 text-blue-800 border border-blue-200 cursor-not-allowed opacity-90'
+                      : isTogglingOnline
+                        ? 'bg-slate-200 text-slate-500 border border-slate-300 cursor-wait opacity-80'
+                        : isOnline
+                          ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 active:bg-slate-300 cursor-pointer shadow-sm'
+                          : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white cursor-pointer shadow'
+                  }`}
+                >
+                  {isTogglingOnline ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-500" />
+                      <span>UPDATING...</span>
+                    </>
+                  ) : hasActiveJob ? (
+                    <>
+                      <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                      <span>BUSY • ON ACTIVE JOB</span>
+                    </>
+                  ) : isOnline ? (
+                    <>
+                      <Power className="w-3.5 h-3.5 text-slate-600" />
+                      <span>GO OFFLINE</span>
+                    </>
+                  ) : (
+                    <>
+                      <Power className="w-3.5 h-3.5 text-white" />
+                      <span>GO ONLINE</span>
+                    </>
+                  )}
+                </button>
               </div>
             </div>
-
-            {/* Controls: Go Online / Go Offline */}
-            <div className="flex items-center gap-2 flex-wrap self-end sm:self-auto">
-              <button
-                type="button"
-                id="employee-dashboard-presence-toggle-btn"
-                onClick={handleToggleOnline}
-                disabled={hasActiveJob || isTogglingOnline}
-                title={
-                  hasActiveJob
-                    ? `Locked Online: Currently active on assignment (${activeAssignedJob?.request_id || 'active job'})`
-                    : isTogglingOnline
-                      ? 'Updating availability status...'
-                      : (isOnline ? 'Click to switch status to OFFLINE' : 'Click to switch status to ONLINE')
-                }
-                className={`inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded text-xs font-bold transition-all shadow-sm select-none ${
-                  hasActiveJob
-                    ? 'bg-blue-50 text-blue-800 border border-blue-200 cursor-not-allowed opacity-90'
-                    : isTogglingOnline
-                      ? 'bg-slate-200 text-slate-500 border border-slate-300 cursor-wait opacity-80'
-                      : isOnline
-                        ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 active:bg-slate-300 cursor-pointer shadow-sm'
-                        : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white cursor-pointer shadow'
-                }`}
-              >
-                {isTogglingOnline ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-500" />
-                    <span>UPDATING...</span>
-                  </>
-                ) : hasActiveJob ? (
-                  <>
-                    <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-                    <span>BUSY • ON ACTIVE JOB</span>
-                  </>
-                ) : isOnline ? (
-                  <>
-                    <Power className="w-3.5 h-3.5 text-slate-600" />
-                    <span>GO OFFLINE</span>
-                  </>
-                ) : (
-                  <>
-                    <Power className="w-3.5 h-3.5 text-white" />
-                    <span>GO ONLINE</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
+          )}
 
           {/* Notifications */}
           {error && <ErrorState message={error} onDismiss={() => setError('')} />}
@@ -1599,362 +1650,50 @@ export function EmployeeDashboardPage() {
             </div>
           )}
 
-          {/* ── HOME ROUTE: TECHNICIAN HOME HUB ── */}
+          {/* ── HOME ROUTE: TECHNICIAN FIELD OPERATIONS DASHBOARD ── */}
           {isHomeRoute && (
-            <div className="space-y-4">
-              {/* Shift Attendance & Real-Time Location Telemetry Card */}
-              <ClockInCard
-                onRefreshData={loadDashboard}
-                employeeId={profile?.employee_id || user?.username}
-                employeeName={user?.firstName ? `${user.firstName} ${user.lastName}` : user?.username}
-                isOnline={isOnline}
-                timeTracking={timeTracking}
-              />
-
-              {/* Quick Operational Metrics */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="p-3.5 bg-white border border-slate-200 rounded shadow-xs space-y-1">
-                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Active Workload</span>
-                  <p className="text-xl font-bold text-slate-900 font-mono">{activeJobs.length}</p>
-                  <span className="text-[10px] text-blue-700 font-semibold">{hasActiveJob ? 'In Progress' : 'Standby'}</span>
-                </div>
-                <div className="p-3.5 bg-white border border-slate-200 rounded shadow-xs space-y-1">
-                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Completed Jobs</span>
-                  <p className="text-xl font-bold text-slate-900 font-mono">{completedJobs.length}</p>
-                  <span className="text-[10px] text-emerald-700 font-semibold">Total Handled</span>
-                </div>
-                <div className="p-3.5 bg-white border border-slate-200 rounded shadow-xs space-y-1">
-                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Authorized Services</span>
-                  <p className="text-xl font-bold text-slate-900 font-mono">{approvedServices.length}</p>
-                  <span className="text-[10px] text-indigo-700 font-semibold">Dispatch Eligible</span>
-                </div>
-                <div className="p-3.5 bg-white border border-slate-200 rounded shadow-xs space-y-1">
-                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Shift State</span>
-                  <p className="text-sm font-bold text-slate-900 mt-1 uppercase">{isClockedIn ? (isBreak ? 'On Break' : 'Clocked In') : 'Off Duty'}</p>
-                  <span className="text-[10px] text-slate-500 font-medium">{isOnline ? 'Online' : 'Offline'}</span>
-                </div>
-              </div>
-
-              {/* Quick Action Navigation Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
-                <Link
-                  to="/workforce/employee/jobs"
-                  className="p-3.5 bg-white hover:bg-blue-50/50 border border-slate-200 hover:border-blue-300 rounded shadow-xs transition-all flex items-start gap-3 group"
-                >
-                  <div className="p-2 rounded bg-blue-50 text-blue-700 group-hover:bg-blue-600 group-hover:text-white transition-colors">
-                    <Briefcase className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-slate-900 text-xs flex items-center gap-1 group-hover:text-blue-700">
-                      <span>Jobs Workspace</span>
-                      <span className="text-[10px] text-blue-600 font-normal">({activeJobs.length} active)</span>
-                    </h3>
-                    <p className="text-[11px] text-slate-500 mt-0.5">
-                      View active queue, customer directions & job execution
-                    </p>
-                  </div>
-                </Link>
-
-                <Link
-                  to="/workforce/employee/performance"
-                  className="p-3.5 bg-white hover:bg-amber-50/50 border border-slate-200 hover:border-amber-300 rounded shadow-xs transition-all flex items-start gap-3 group"
-                >
-                  <div className="p-2 rounded bg-amber-50 text-amber-700 group-hover:bg-amber-500 group-hover:text-white transition-colors">
-                    <Star className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-slate-900 text-xs group-hover:text-amber-700">
-                      Performance & Reviews
-                    </h3>
-                    <p className="text-[11px] text-slate-500 mt-0.5">
-                      Customer ratings, feedback & completion metrics
-                    </p>
-                  </div>
-                </Link>
-
-                <Link
-                  to="/workforce/employee/location"
-                  className="p-3.5 bg-white hover:bg-emerald-50/50 border border-slate-200 hover:border-emerald-300 rounded shadow-xs transition-all flex items-start gap-3 group"
-                >
-                  <div className="p-2 rounded bg-emerald-50 text-emerald-700 group-hover:bg-emerald-600 group-hover:text-white transition-colors">
-                    <MapPin className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-slate-900 text-xs group-hover:text-emerald-700">
-                      Saved Locations
-                    </h3>
-                    <p className="text-[11px] text-slate-500 mt-0.5">
-                      Territories, base addresses & GPS zones
-                    </p>
-                  </div>
-                </Link>
-
-                <Link
-                  to="/workforce/employee/documents"
-                  className="p-3.5 bg-white hover:bg-slate-50 border border-slate-200 hover:border-slate-300 rounded shadow-xs transition-all flex items-start gap-3 group"
-                >
-                  <div className="p-2 rounded bg-slate-100 text-slate-700 group-hover:bg-slate-700 group-hover:text-white transition-colors">
-                    <ShieldCheck className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-slate-900 text-xs group-hover:text-slate-800">
-                      Dossier Documents
-                    </h3>
-                    <p className="text-[11px] text-slate-500 mt-0.5">
-                      Verified ID proofs, licenses & certifications
-                    </p>
-                  </div>
-                </Link>
-              </div>
-
-              {/* ⚡ Active Assignment Workload Status Card */}
-              {hasActiveJob && (
-                <div className="bg-blue-50 border border-blue-200 rounded p-3 text-xs text-blue-900 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
-                  <div className="flex items-center gap-2.5">
-                    <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse shrink-0" />
-                    <span>
-                      <strong>ACTIVE ASSIGNMENT IN PROGRESS:</strong> You are currently working on <strong>{activeAssignedJob?.request_id || (activeAssignedJob?.id ? `SR-${activeAssignedJob.id}` : 'Active Job')}</strong> ({activeAssignedJob?.service_title || activeAssignedJob?.service_category}). Complete current service to receive new job dispatches.
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
-                    <Link
-                      to="/workforce/employee/jobs"
-                      className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded text-[11px] transition-colors shadow-xs"
-                    >
-                      Open in Jobs Workspace →
-                    </Link>
-                    <span className="text-[10px] font-mono uppercase bg-blue-100 text-blue-800 font-bold px-2 py-0.5 rounded border border-blue-300">
-                      BUSY • SINGLE WORKLOAD
-                    </span>
-                  </div>
-                </div>
-              )}
-
-              {/* ⚡ Dedicated Incoming Job Offers Section */}
-              {incomingOffers.length > 0 && (
-                <div className="space-y-2 bg-amber-50 border-2 border-amber-400 rounded p-4 shadow-md">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="relative flex h-3 w-3">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
-                      </span>
-                      <h2 className="text-xs font-bold text-amber-950 uppercase tracking-wider flex items-center gap-1.5">
-                        <Sparkles className="w-4 h-4 text-amber-600" />
-                        Exclusive Job Offer Available ({incomingOffers.length})
-                      </h2>
-                    </div>
-                    <span className="text-[11px] font-bold text-amber-900 bg-amber-200/80 px-2 py-0.5 rounded">
-                      Action Required
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
-                    {incomingOffers.map((offerJob) => {
-                      const presentation = getEmployeeJobPresentation(offerJob);
-                      return (
-                        <div
-                          key={offerJob.id}
-                          className="bg-white border border-amber-300 rounded p-3.5 shadow-sm space-y-2.5"
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div>
-                              <span className="font-mono font-bold text-xs text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
-                                {offerJob.request_id || `SR-${offerJob.id}`}
-                              </span>
-                              <h3 className="text-sm font-bold text-slate-900 mt-1">
-                                {offerJob.service_title || offerJob.service_category}
-                              </h3>
-                            </div>
-                            {offerJob.distance_km != null && (
-                              <span className="font-mono text-xs font-bold text-emerald-800 bg-emerald-50 px-2 py-1 rounded border border-emerald-200 shrink-0">
-                                📍 {formatDistanceDisplay(offerJob.distance_km)} away
-                              </span>
-                            )}
-                          </div>
-
-                          <div className="text-xs text-slate-600 bg-slate-50 p-2 rounded border border-slate-100 space-y-1">
-                            <p className="flex items-center gap-1.5 truncate">
-                              <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                              <span className="truncate">{offerJob.address || 'Customer site address provided upon acceptance'}</span>
-                            </p>
-                            {presentation?.offerExpiresAt && (
-                              <p className="flex items-center gap-1.5 text-rose-700 font-semibold text-[11px]">
-                                <Clock className="w-3.5 h-3.5 shrink-0 animate-pulse" />
-                                <span>Expires: {new Date(presentation.offerExpiresAt).toLocaleTimeString()}</span>
-                              </p>
-                            )}
-                          </div>
-
-                          {hasActiveJob && (
-                            <div className="pt-0.5">
-                              <span className="text-[10px] font-bold text-amber-900 bg-amber-100/90 px-2 py-0.5 rounded border border-amber-300 inline-block">
-                                Offer held for you — Finish current job first to accept
-                              </span>
-                            </div>
-                          )}
-
-                          <div className="flex items-center gap-2 pt-1">
-                            <button
-                              type="button"
-                              onClick={() => handleAcceptOffer(offerJob.id)}
-                              disabled={actionLoading === offerJob.id || hasActiveJob}
-                              className={`flex-1 py-2 font-bold rounded text-xs shadow-sm transition-colors flex items-center justify-center gap-1.5 ${
-                                hasActiveJob
-                                  ? 'bg-slate-400 text-white cursor-not-allowed opacity-80'
-                                  : 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
-                              }`}
-                              title={hasActiveJob ? 'Finish current job first to accept this offer' : 'Accept Job'}
-                            >
-                              <CheckCircle2 className="w-4 h-4" />
-                              <span>
-                                {actionLoading === offerJob.id
-                                  ? 'Accepting...'
-                                  : hasActiveJob
-                                  ? 'Finish current job first'
-                                  : 'ACCEPT JOB'}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleRejectOffer(offerJob.id)}
-                              disabled={actionLoading === offerJob.id}
-                              className="px-3.5 py-2 bg-white hover:bg-rose-50 text-rose-700 border border-rose-300 font-bold rounded text-xs transition-colors cursor-pointer disabled:opacity-50"
-                            >
-                              DECLINE
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {/* Authorized Services Strip */}
-              <div className="bg-white border border-slate-200 rounded p-3 shadow-sm">
-                <div className="flex items-center justify-between mb-2">
-                  <h2 className="text-[11px] font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
-                    <Wrench className="w-3.5 h-3.5 text-blue-600" />
-                    Your Authorized Dispatch Services ({approvedServices.length})
-                  </h2>
-                  <Link
-                    to="/workforce/employee/services"
-                    className="text-[11px] font-semibold text-blue-600 hover:underline"
-                  >
-                    Manage Services →
-                  </Link>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {approvedServices.length > 0 ? (
-                    approvedServices.map((svc) => (
-                      <span
-                        key={svc.id}
-                        className="px-2 py-0.5 bg-slate-50 border border-slate-200 rounded text-[11px] font-medium text-slate-800 inline-flex items-center gap-1"
-                      >
-                        <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                        <span>{svc.name}</span>
-                      </span>
-                    ))
-                  ) : (
-                    <span className="text-xs text-slate-500">
-                      Awaiting Admin service authorizations.
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              {/* Today's Jobs & Work Orders Overview Table */}
-              <div className="bg-white border border-slate-200 rounded overflow-hidden shadow-sm">
-                <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex items-center justify-between">
-                  <div>
-                    <h2 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2">
-                      <Briefcase className="w-4 h-4 text-blue-600" />
-                      Assigned Jobs Summary ({allJobs.length})
-                    </h2>
-                    <p className="text-[11px] text-slate-500 mt-0.5">
-                      Overview of your active and past service requests.
-                    </p>
-                  </div>
-                  <Link
-                    to="/workforce/employee/jobs"
-                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded text-xs transition-colors shadow-xs"
-                  >
-                    Open Full Jobs Workspace →
-                  </Link>
-                </div>
-
-                {allJobs.length > 0 ? (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs">
-                      <thead className="bg-slate-50 text-slate-600 font-semibold uppercase text-[11px] border-b border-slate-200">
-                        <tr>
-                          <th className="px-4 py-2.5">Request ID</th>
-                          <th className="px-4 py-2.5">Service</th>
-                          <th className="px-4 py-2.5">Customer</th>
-                          <th className="px-4 py-2.5">Status</th>
-                          <th className="px-4 py-2.5">Amount</th>
-                          <th className="px-4 py-2.5 text-right">Action</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {allJobs.slice(0, 5).map((job) => {
-                          const presentation = getEmployeeJobPresentation(job, hasActiveJob);
-                          return (
-                            <tr key={job.id} className="hover:bg-slate-50">
-                              <td className="px-4 py-3 font-mono font-bold text-blue-700">
-                                {job.request_id || `SR-${job.id}`}
-                              </td>
-                              <td className="px-4 py-3 font-semibold text-slate-900">
-                                {job.service_title || job.service_category}
-                              </td>
-                              <td className="px-4 py-3 text-slate-600">
-                                {job.customer_name || 'Customer'}
-                              </td>
-                              <td className="px-4 py-3">
-                                <StatusBadge
-                                  status={presentation?.badgeStatus || job.status}
-                                  label={presentation?.badgeLabel}
-                                  size="xs"
-                                />
-                              </td>
-                              <td className="px-4 py-3 font-mono font-semibold text-slate-800">
-                                ₹{job.total_amount || '0.00'}
-                              </td>
-                              <td className="px-4 py-3 text-right">
-                                <Link
-                                  to="/workforce/employee/jobs"
-                                  onClick={() => setSelectedJob(job)}
-                                  className="px-2.5 py-1 bg-slate-100 hover:bg-blue-50 text-blue-700 font-bold rounded border border-slate-200 hover:border-blue-300 text-[11px] transition-colors"
-                                >
-                                  View Job
-                                </Link>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <div className="p-8 text-center text-slate-500 text-xs">
-                    No service requests assigned yet. Go online to receive automatic dispatches.
-                  </div>
-                )}
-              </div>
-            </div>
+            <TechnicianDashboard
+              user={user}
+              employee={employee}
+              profile={profile}
+              isOnline={isOnline}
+              isTogglingOnline={isTogglingOnline}
+              handleToggleOnline={handleToggleOnline}
+              timeTracking={timeTracking}
+              onRefreshData={loadDashboard}
+              activeJobs={activeJobs}
+              completedJobs={completedJobs}
+              allJobs={allJobs}
+              activeAssignedJob={activeAssignedJob}
+              hasActiveJob={hasActiveJob}
+              incomingOffers={incomingOffers}
+              liveLocation={liveLocation}
+              gpsState={gpsState}
+              scanCurrentLocation={scanCurrentLocation}
+              actionLoading={actionLoading}
+              handleAcceptOffer={handleAcceptOffer}
+              handleRejectOffer={handleRejectOffer}
+              handleJobAction={handleJobAction}
+              handleManualVerifyArrival={handleManualVerifyArrival}
+              handleDirectJobClockIn={handleDirectJobClockIn}
+              handleOpenCancelModal={handleOpenCancelModal}
+              setProofModalJob={setProofModalJob}
+              setCashModalJob={setCashModalJob}
+              setIsQuotationModalOpen={setIsQuotationModalOpen}
+              setSelectedJob={setSelectedJob}
+              preServiceState={preServiceState}
+              otpInput={otpInput}
+              setOtpInput={setOtpInput}
+              handleVerifyOtpSubmit={handleVerifyOtpSubmit}
+              handleResendOtp={handleResendOtp}
+              approvedServices={approvedServices}
+              openLiveCamera={openLiveCamera}
+              handlePhotoUploadSubmit={handlePhotoUploadSubmit}
+            />
           )}
 
-          {/* 8. DEFAULT: ACTIVE JOBS WORKSPACE */}
-          {!pathname.includes('/schedule') &&
-            !pathname.includes('/attendance') &&
-            !pathname.includes('/leave') &&
-            !hash.includes('#attendance') &&
-            !hash.includes('#leave') &&
-            !pathname.includes('/earnings') &&
-            !pathname.includes('/documents') &&
-            !pathname.includes('/services') &&
-            !pathname.includes('/settings') && (
+          {/* 8. ACTIVE JOBS WORKSPACE (Dedicated to /jobs route) */}
+          {isJobsRoute && (
               <>
                 {/* ⚡ Active Assignment in Progress Banner (Hard Single Active Job Rule) */}
                 {hasActiveJob && (

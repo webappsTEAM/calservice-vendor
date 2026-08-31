@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useAuth } from '../../context/AuthProvider.jsx';
 import {
   apiGetAdminApplications,
   apiGetWorkforceJobs,
-  apiGetFleetMap,
+  apiGetSuperadminServiceProviders,
 } from '../../api/workforceService.js';
 import { AppShell } from '../../components/common/AppShell.jsx';
 import { PageHeader } from '../../components/common/PageHeader.jsx';
@@ -24,12 +25,17 @@ import {
   Layers,
   FileCheck,
   Activity,
+  Building2,
+  UserPlus,
+  Shield,
+  ShieldCheck,
 } from 'lucide-react';
 
 export function AdminDashboardPage() {
+  const { user, isSuperadmin, isServiceProviderAdmin } = useAuth();
   const [applications, setApplications] = useState([]);
   const [jobs, setJobs] = useState([]);
-  const [fleet, setFleet] = useState([]);
+  const [providers, setProviders] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
 
   const fetchedRef = React.useRef(false);
@@ -37,12 +43,17 @@ export function AdminDashboardPage() {
   const loadData = async () => {
     try {
       setIsLoading(true);
-      const [appsData, jobsData] = await Promise.all([
+      const promises = [
         apiGetAdminApplications().catch(() => []),
         apiGetWorkforceJobs().catch(() => []),
-      ]);
+      ];
+      if (isSuperadmin) {
+        promises.push(apiGetSuperadminServiceProviders().catch(() => []));
+      }
+      const [appsData, jobsData, provsData] = await Promise.all(promises);
       setApplications(appsData || []);
       setJobs(jobsData || []);
+      if (provsData) setProviders(provsData);
     } catch (_) {
     } finally {
       setIsLoading(false);
@@ -53,23 +64,18 @@ export function AdminDashboardPage() {
     if (fetchedRef.current) return;
     fetchedRef.current = true;
     loadData();
-  }, []);
+  }, [isSuperadmin]);
 
-  // Compute metrics from actual API data (NO mock data)
+  // Compute metrics from actual backend data (strictly zero fake/demo numbers)
   const pendingApps = applications.filter((a) =>
     ['submitted', 'under_review'].includes((a.registration_status || '').toLowerCase())
   );
   const approvedTechs = applications.filter(
     (a) => (a.registration_status || '').toLowerCase() === 'approved'
   );
-  const correctionApps = applications.filter(
-    (a) => (a.registration_status || '').toLowerCase() === 'correction_required'
-  );
-  const unassignedJobs = jobs.filter((j) => (j.status || '').toLowerCase() === 'assigned' && !j.employee_id);
-  const onlineFleet = fleet.filter((f) => f.is_online);
-  const busyFleet = fleet.filter((f) => f.is_online && f.active_job);
+  const onlineTechs = applications.filter((a) => Boolean(a.is_online));
+  const activeTechs = applications.filter((a) => Boolean(a.is_active));
 
-  // Documents requiring verification count across all applications
   let docsToVerifyCount = 0;
   applications.forEach((app) => {
     const docs = app.documents_status || (app.onboarding_data && app.onboarding_data.documents) || {};
@@ -94,20 +100,23 @@ export function AdminDashboardPage() {
       badgeClass: 'bg-blue-100 text-blue-900',
     },
     {
-      title: 'Jobs Awaiting Assignment',
-      count: unassignedJobs.length,
-      description: 'Customer bookings requiring technician dispatch',
-      to: '/workforce/admin/dispatch',
-      badgeClass: 'bg-orange-100 text-orange-900',
-    },
-    {
-      title: 'Corrections Pending Resubmission',
-      count: correctionApps.length,
-      description: 'Technicians notified to re-upload flagged files',
-      to: '/workforce/admin/applications?status=correction_required',
-      badgeClass: 'bg-slate-100 text-slate-700',
+      title: 'Active Operations',
+      count: jobs.length,
+      description: 'Assigned and pending customer service requests',
+      to: '/workforce/admin/jobs',
+      badgeClass: 'bg-emerald-100 text-emerald-900',
     },
   ];
+
+  if (isSuperadmin) {
+    actionItems.push({
+      title: 'Service Providers',
+      count: providers.length,
+      description: 'Partner organizations registered across platform',
+      to: '/workforce/admin/service-providers',
+      badgeClass: 'bg-purple-100 text-purple-900',
+    });
+  }
 
   const recentJobsColumns = [
     {
@@ -148,69 +157,71 @@ export function AdminDashboardPage() {
         </span>
       ),
     },
-    {
-      key: 'action',
-      header: 'Action',
-      align: 'right',
-      render: (_, row) => (
-        <Link
-          to="/workforce/admin/dispatch"
-          className="px-2 py-1 rounded bg-slate-100 hover:bg-blue-50 text-blue-600 font-bold text-[11px] transition-colors inline-flex items-center gap-1"
-        >
-          <span>Dispatch</span>
-          <ArrowRight className="w-3 h-3" />
-        </Link>
-      ),
-    },
   ];
 
   return (
-    <AppShell breadcrumbs={[{ label: 'Home' }]}>
-      <div className="space-y-4">
-        {/* Page Header */}
-        <PageHeader
-          title="Workforce Operations Center"
-          subtitle="Real-time personnel monitoring, dossier verifications, and dynamic dispatch"
-          actions={
-            <div className="flex items-center gap-2">
+    <AppShell breadcrumbs={[{ label: 'Home', to: '/workforce/admin' }]}>
+      <div className="space-y-6">
+        {/* Role-Aware Header */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <PageHeader
+            title={
+              isSuperadmin
+                ? 'Platform Administration Portal'
+                : `Provider Portal • ${user?.providerName || user?.companyName || 'Organization'}`
+            }
+            subtitle={
+              isSuperadmin
+                ? 'Global platform governance across all service providers, independent technicians, and field operations.'
+                : 'Technician management, onboarding applications, and field operations for your organization.'
+            }
+          />
+          <div className="flex items-center gap-2 shrink-0">
+            {isSuperadmin && (
               <Link
-                to="/workforce/admin/monitoring/database-egress"
-                className="px-3 py-1.5 rounded border border-blue-200 bg-blue-50 hover:bg-blue-100 text-xs font-semibold text-blue-700 shadow-sm transition-colors inline-flex items-center gap-1.5"
+                to="/workforce/admin/service-providers"
+                className="inline-flex items-center gap-1.5 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
               >
-                <Activity className="w-3.5 h-3.5 text-blue-600" />
-                <span>Database & Egress</span>
+                <Building2 className="w-3.5 h-3.5" />
+                <span>Service Providers</span>
               </Link>
-              <button
-                onClick={loadData}
-                className="px-3 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-sm transition-colors"
-              >
-                Refresh Data
-              </button>
-              <Link
-                to="/workforce/admin/dispatch"
-                className="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-sm transition-colors inline-flex items-center gap-1.5"
-              >
-                <Send className="w-3.5 h-3.5" />
-                <span>Open Dispatch Console</span>
-              </Link>
-            </div>
-          }
-        />
+            )}
+            <Link
+              to="/workforce/admin/employees"
+              className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>Technician Roster</span>
+            </Link>
+          </div>
+        </div>
 
         {/* Action Center */}
         <ActionCenter items={actionItems} />
 
         {/* Workforce Overview Metric Strip */}
         <div>
-          <h2 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+          <h2 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
             <Users className="w-3.5 h-3.5 text-blue-600" />
-            Workforce Overview
+            <span>{isSuperadmin ? 'Platform Workforce Overview' : 'Provider Workforce Overview'}</span>
           </h2>
           <MetricStrip
-            columns={5}
+            columns={isSuperadmin ? 5 : 4}
             metrics={[
+              ...(isSuperadmin
+                ? [
+                    {
+                      label: 'Service Providers',
+                      value: providers.length,
+                      icon: Building2,
+                      iconColor: 'text-purple-600',
+                      valueColor: 'text-purple-700',
+                      subtext: 'Partner organizations',
+                    },
+                  ]
+                : []),
               {
-                label: 'Total Registered',
+                label: 'Total Technicians',
                 value: applications.length,
                 icon: Users,
                 subtext: 'Technicians on roster',
@@ -221,23 +232,15 @@ export function AdminDashboardPage() {
                 icon: CheckCircle2,
                 iconColor: 'text-emerald-600',
                 valueColor: 'text-emerald-700',
-                subtext: 'Authorized for jobs',
+                subtext: 'Authorized for dispatch',
               },
               {
-                label: 'Online & Available',
-                value: onlineFleet.length,
+                label: 'Online (Ready)',
+                value: onlineTechs.length,
                 icon: CheckCircle2,
                 iconColor: 'text-blue-600',
                 valueColor: 'text-blue-700',
-                subtext: 'Ready for dispatch',
-              },
-              {
-                label: 'On Active Jobs',
-                value: busyFleet.length,
-                icon: Briefcase,
-                iconColor: 'text-amber-600',
-                valueColor: 'text-amber-700',
-                subtext: 'Currently in field',
+                subtext: 'Available for field jobs',
               },
               {
                 label: 'Pending Review',
@@ -251,12 +254,12 @@ export function AdminDashboardPage() {
           />
         </div>
 
-        {/* Recent Operations Table */}
-        <div className="space-y-2">
+        {/* Operations Table */}
+        <div className="space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
               <Briefcase className="w-3.5 h-3.5 text-blue-600" />
-              Recent Operations & Service Bookings ({jobs.length})
+              <span>Operations Queue ({jobs.length})</span>
             </h2>
             <Link
               to="/workforce/admin/jobs"

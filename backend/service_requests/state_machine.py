@@ -146,15 +146,24 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
         emp_job_updates = {"status": target.upper()}
         if target == "completed":
             emp_job_updates["completed_date"] = now
+            if not service_request.completed_at:
+                service_request.completed_at = now
+                service_request.save(update_fields=["completed_at", "updated_at"])
         elif target == "in_progress":
             emp_job_updates["started_date"] = now
+            if not service_request.started_at:
+                service_request.started_at = now
+                service_request.save(update_fields=["started_at", "updated_at"])
         elif target == "accepted":
             emp_job_updates["accepted_date"] = now
+            if not service_request.accepted_at:
+                service_request.accepted_at = now
+                service_request.save(update_fields=["accepted_at", "updated_at"])
         elif target == "redispatching":
             emp_job_updates["status"] = "EMPLOYEE_CANCELLED"
             emp_job_updates["is_primary"] = False
 
-        EmployeeJob.objects.filter(service_request=service_request).update(**emp_job_updates)
+        EmployeeJob.objects.filter(service_request=service_request, is_primary=True).update(**emp_job_updates)
 
         if target in ["completed", "cancelled", "redispatching", "unable_to_complete"]:
             from workforce_api.models import JobTrackingSession, WorkforceEventLog

@@ -2,7 +2,7 @@ import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthProvider.jsx';
 import { EmployeeRuntimeProvider } from './context/EmployeeRuntimeProvider.jsx';
-import { AdminRoute, EmployeeRoute, AuthenticatedRoute } from './components/common/ProtectedRoute.jsx';
+import { AdminRoute, EmployeeRoute, AuthenticatedRoute, SuperadminRoute } from './components/common/ProtectedRoute.jsx';
 
 import { LoginPage } from './pages/auth/LoginPage.jsx';
 import { SignupPage } from './pages/auth/SignupPage.jsx';
@@ -44,6 +44,8 @@ import { AdminOperationsPage } from './pages/admin/AdminOperationsPage.jsx';
 import { AdminReportsPage } from './pages/admin/AdminReportsPage.jsx';
 import { AdminSkillsPage } from './pages/admin/AdminSkillsPage.jsx';
 import { AdminDatabaseMonitoringPage } from './pages/admin/AdminDatabaseMonitoringPage.jsx';
+import { AdminServiceProvidersPage } from './pages/admin/AdminServiceProvidersPage.jsx';
+import { ProviderProfilePage } from './pages/admin/ProviderProfilePage.jsx';
 import { CustomerTrackingPage } from './pages/customer/CustomerTrackingPage.jsx';
 
 // Employee Wallet Pages
@@ -192,6 +194,26 @@ export function App() {
                 <AdminDashboardPage />
               </AdminRoute>
             }
+          />
+          <Route
+            path="/workforce/admin/service-providers"
+            element={
+              <SuperadminRoute>
+                <AdminServiceProvidersPage />
+              </SuperadminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/provider-profile"
+            element={
+              <AdminRoute>
+                <ProviderProfilePage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/provider/profile"
+            element={<Navigate to="/workforce/admin/provider-profile" replace />}
           />
           <Route
             path="/workforce/admin/applications"
