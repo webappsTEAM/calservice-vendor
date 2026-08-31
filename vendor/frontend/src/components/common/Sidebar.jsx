@@ -20,6 +20,7 @@ import {
   Star,
   MapPin,
   Wallet,
+  Landmark,
 } from 'lucide-react';
 
 export function Sidebar({ onCloseMobile = () => {} }) {
@@ -169,6 +170,14 @@ export function Sidebar({ onCloseMobile = () => {} }) {
                 >
                   <Award className="w-3.5 h-3.5 text-amber-500" />
                   <span>Scorecards</span>
+                </NavLink>
+                <NavLink
+                  to="/workforce/admin/social-security"
+                  onClick={onCloseMobile}
+                  className={navItemClass}
+                >
+                  <Landmark className="w-3.5 h-3.5 text-blue-500" />
+                  <span>Social Security</span>
                 </NavLink>
               </div>
             )}

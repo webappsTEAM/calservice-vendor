@@ -68,6 +68,22 @@ export async function apiAdminGetReconciliation(date) {
   return await apiRequest(`/workforce/admin/reconciliation/${qs ? `?${qs}` : ''}`);
 }
 
+// SEVO Section 8: Social Security Code (2020) registration worklist --
+// individual workers only, see services/social_security.py docstring.
+export async function apiAdminListSocialSecurity(statusFilter) {
+  const params = new URLSearchParams();
+  if (statusFilter) params.set('status', statusFilter);
+  const qs = params.toString();
+  return await apiRequest(`/workforce/admin/social-security/${qs ? `?${qs}` : ''}`);
+}
+
+export async function apiAdminMarkSocialSecurityRegistered(registrationId, portalReferenceId) {
+  return await apiRequest('/workforce/admin/social-security/mark-registered/', {
+    method: 'POST',
+    json: { registration_id: registrationId, portal_reference_id: portalReferenceId },
+  });
+}
+
 export async function apiWorkforceLogin(identifier, password) {
   const trimmed = (identifier || '').trim();
   return await apiRequest('/auth/login/', {
