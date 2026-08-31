@@ -268,3 +268,18 @@ CUSTOMER_APP_BASE_URL = os.getenv("CUSTOMER_APP_BASE_URL", "http://localhost:800
 # and means a real secret should be set on BOTH apps before relying on this
 # for anything sensitive.
 WORKFORCE_WEBHOOK_SECRET = os.getenv("WORKFORCE_WEBHOOK_SECRET", "wf_webhook_secret_default")
+
+# ----------------------------------------------------------------------------
+# SEVO business plan (Section 1): RazorpayX Payouts for wallet withdrawals.
+# This is a SEPARATE product/account from plain Razorpay Payments (used for
+# customer checkout) -- it requires its own RazorpayX current account and
+# its own API keys. Deliberately optional at import time: every wallet
+# feature (ledger, balance, withdrawal *requests*) works with these unset;
+# only the final "money actually leaves for the bank" step is gated on them.
+# See workforce_api/services/payouts.py for how these are used, and
+# SEVO_Business_Operational_Plan.docx Section 1 for why this is architected
+# as a payout adapter rather than a self-issued wallet.
+RAZORPAYX_KEY_ID = os.getenv("RAZORPAYX_KEY_ID", "")
+RAZORPAYX_KEY_SECRET = os.getenv("RAZORPAYX_KEY_SECRET", "")
+RAZORPAYX_ACCOUNT_NUMBER = os.getenv("RAZORPAYX_ACCOUNT_NUMBER", "")
+RAZORPAYX_WEBHOOK_SECRET = os.getenv("RAZORPAYX_WEBHOOK_SECRET", "")
