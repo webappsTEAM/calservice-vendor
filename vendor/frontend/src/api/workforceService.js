@@ -34,6 +34,10 @@ export async function apiUpdateWalletPayoutDetails(payload) {
   });
 }
 
+export async function apiAdminListScorecards() {
+  return await apiRequest('/workforce/admin/scorecards/');
+}
+
 export async function apiWorkforceLogin(identifier, password) {
   const trimmed = (identifier || '').trim();
   return await apiRequest('/auth/login/', {

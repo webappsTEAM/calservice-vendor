@@ -44,6 +44,7 @@ import { AdminEmployeesPage } from './pages/admin/AdminEmployeesPage.jsx';
 import { AdminJobsPage } from './pages/admin/AdminJobsPage.jsx';
 import { AdminOperationsPage } from './pages/admin/AdminOperationsPage.jsx';
 import { AdminWalletPage } from './pages/admin/AdminWalletPage.jsx';
+import { AdminScorecardsPage } from './pages/admin/AdminScorecardsPage.jsx';
 import { AdminReportsPage } from './pages/admin/AdminReportsPage.jsx';
 import { AdminSkillsPage } from './pages/admin/AdminSkillsPage.jsx';
 import { CustomerTrackingPage } from './pages/customer/CustomerTrackingPage.jsx';
@@ -254,6 +255,14 @@ export function App() {
             element={
               <AdminRoute>
                 <AdminWalletPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/scorecards"
+            element={
+              <AdminRoute>
+                <AdminScorecardsPage />
               </AdminRoute>
             }
           />

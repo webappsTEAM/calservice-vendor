@@ -162,6 +162,14 @@ export function Sidebar({ onCloseMobile = () => {} }) {
                   <Wallet className="w-3.5 h-3.5 text-emerald-500" />
                   <span>Wallet</span>
                 </NavLink>
+                <NavLink
+                  to="/workforce/admin/scorecards"
+                  onClick={onCloseMobile}
+                  className={navItemClass}
+                >
+                  <Award className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Scorecards</span>
+                </NavLink>
               </div>
             )}
           </div>
