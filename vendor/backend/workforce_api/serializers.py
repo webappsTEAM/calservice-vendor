@@ -419,6 +419,8 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
     accepted_at = serializers.SerializerMethodField()
     cancellation_deadline = serializers.SerializerMethodField()
     offer_expires_at = serializers.SerializerMethodField()
+    settlement_channel = serializers.SerializerMethodField()
+    earnings_wallet_owner = serializers.SerializerMethodField()
 
     class Meta:
         model = ServiceRequest
@@ -461,6 +463,11 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             "accepted_at",
             "cancellation_deadline",
             "offer_expires_at",
+            # SEVO Section 6: per-job attribution -- which wallet this job's
+            # earnings settle into, independent of which employee physically
+            # performed the job (see WalletLedgerEntry.worker_performed).
+            "settlement_channel",
+            "earnings_wallet_owner",
         ]
 
     def _get_context_emp(self):
@@ -477,6 +484,32 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             return emp_offers_map.get(obj.id)
         from .models import WorkforceJobOffer
         return WorkforceJobOffer.objects.filter(job=obj, employee=emp).order_by("-offered_at").first()
+
+    def _resolve_wallet_channel(self, obj):
+        """Cheap, best-effort: which wallet this job would settle into if
+        completed right now. Never raises -- an unassigned job or one
+        whose worker has no wallet yet simply has no channel to show."""
+        if not obj.assigned_employee_id:
+            return None, None
+        try:
+            from workforce_api.services import resolve_payee_wallet
+            wallet, channel = resolve_payee_wallet(obj)
+        except Exception:
+            return None, None
+        return wallet, channel
+
+    def get_settlement_channel(self, obj):
+        _wallet, channel = self._resolve_wallet_channel(obj)
+        return channel
+
+    def get_earnings_wallet_owner(self, obj):
+        wallet, _channel = self._resolve_wallet_channel(obj)
+        if not wallet:
+            return None
+        if wallet.company_id:
+            return wallet.company.company_name
+        emp = wallet.employee
+        return emp.user.get_full_name() if emp and emp.user_id else None
 
     def get_job_status(self, obj):
         return obj.status
