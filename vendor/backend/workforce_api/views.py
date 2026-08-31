@@ -50,6 +50,8 @@ from .serializers import (
     ProviderSignupSerializer,
     WalletAccountSerializer,
     WalletPayoutDetailsSerializer,
+    WalletWithdrawSerializer,
+    WalletAutoWithdrawalSettingsSerializer,
     WorkforceOnboardingDraftSerializer,
     WorkforceEmployeeProfileSerializer,
     WorkforceJobSerializer,
@@ -443,6 +445,98 @@ class WalletPayoutDetailsView(APIView):
             )
         except PayoutDetailsError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        response_serializer = WalletAccountSerializer(wallet, context={"owner_role": owner_role})
+        return Response(response_serializer.data, status=status.HTTP_200_OK)
+
+
+class WalletWithdrawView(APIView):
+    """
+    POST /workforce/wallet/withdraw/: on-demand self-service withdrawal of
+    the caller's own wallet, subject to available balance and the
+    KYC-tier daily cap -- see services.withdrawals.request_withdrawal for
+    the validation rules. Shares the same execution path (services.payouts)
+    as the scheduled-withdrawal cron, so a withdrawal behaves identically
+    whether it was requested here or fired automatically.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from workforce_api.services import resolve_wallet_for_user, request_withdrawal, WithdrawalValidationError
+        wallet, owner_role = resolve_wallet_for_user(request.user)
+        if not wallet:
+            return Response(
+                {"error": "No wallet found for this account yet."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = WalletWithdrawSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            withdrawal = request_withdrawal(wallet, serializer.validated_data["amount"])
+        except WithdrawalValidationError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            "id": withdrawal.id,
+            "amount": str(withdrawal.amount),
+            "status": withdrawal.status,
+            "requested_at": withdrawal.requested_at.isoformat(),
+        }, status=status.HTTP_201_CREATED)
+
+
+class WalletAutoWithdrawalSettingsView(APIView):
+    """
+    PATCH /workforce/wallet/auto-withdrawal/: set/update the caller's own
+    wallet's standing auto-payout rule and minimum-balance alert floor
+    (SEVO Section 1, head-wallet specific features). Available to any
+    wallet owner, not just providers -- an individual worker who wants a
+    standing daily/weekly auto-payout can set the same fields.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request):
+        from workforce_api.services import resolve_wallet_for_user
+        wallet, owner_role = resolve_wallet_for_user(request.user)
+        if not wallet:
+            return Response(
+                {"error": "No wallet found for this account yet."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = WalletAutoWithdrawalSettingsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        update_fields = []
+        if "auto_withdrawal_enabled" in data:
+            wallet.auto_withdrawal_enabled = data["auto_withdrawal_enabled"]
+            update_fields.append("auto_withdrawal_enabled")
+        if "auto_withdrawal_frequency" in data:
+            wallet.auto_withdrawal_frequency = data["auto_withdrawal_frequency"]
+            update_fields.append("auto_withdrawal_frequency")
+        if "auto_withdrawal_day_of_week" in data:
+            wallet.auto_withdrawal_day_of_week = data["auto_withdrawal_day_of_week"]
+            update_fields.append("auto_withdrawal_day_of_week")
+        if "minimum_balance_alert_threshold" in data:
+            wallet.minimum_balance_alert_threshold = data["minimum_balance_alert_threshold"]
+            update_fields.append("minimum_balance_alert_threshold")
+
+        if wallet.auto_withdrawal_enabled and not wallet.auto_withdrawal_frequency:
+            return Response(
+                {"error": "Set a frequency (DAILY or WEEKLY) before enabling auto-withdrawal."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if wallet.auto_withdrawal_frequency == "WEEKLY" and wallet.auto_withdrawal_day_of_week is None:
+            return Response(
+                {"error": "Set a day of week for a WEEKLY auto-withdrawal schedule."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if update_fields:
+            update_fields.append("updated_at")
+            wallet.save(update_fields=update_fields)
 
         response_serializer = WalletAccountSerializer(wallet, context={"owner_role": owner_role})
         return Response(response_serializer.data, status=status.HTTP_200_OK)

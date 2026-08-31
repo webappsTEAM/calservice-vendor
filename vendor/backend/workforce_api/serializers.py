@@ -2,6 +2,8 @@
 workforce-app/backend/workforce_api/serializers.py
 DRF serializers for Workforce Signup, Onboarding Wizard, Verification Dossier, and Jobs.
 """
+from decimal import Decimal
+
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 from employees.models import Employee
@@ -1037,3 +1039,22 @@ class WalletPayoutDetailsSerializer(serializers.Serializer):
     bank_account_number = serializers.CharField(required=False, allow_blank=True, default="")
     ifsc = serializers.CharField(required=False, allow_blank=True, default="")
     upi_id = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class WalletWithdrawSerializer(serializers.Serializer):
+    """Input serializer for an on-demand self-service withdrawal request."""
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0.01"))
+
+
+class WalletAutoWithdrawalSettingsSerializer(serializers.Serializer):
+    """Input serializer for the head-wallet standing auto-payout rule and
+    minimum-balance alert floor (SEVO Section 1, head-wallet specific
+    features). All fields optional so a caller can update just one."""
+    auto_withdrawal_enabled = serializers.BooleanField(required=False)
+    auto_withdrawal_frequency = serializers.ChoiceField(
+        choices=[("DAILY", "Daily"), ("WEEKLY", "Weekly"), ("", "")], required=False, allow_blank=True,
+    )
+    auto_withdrawal_day_of_week = serializers.IntegerField(required=False, allow_null=True, min_value=0, max_value=6)
+    minimum_balance_alert_threshold = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=False, allow_null=True, min_value=Decimal("0"),
+    )

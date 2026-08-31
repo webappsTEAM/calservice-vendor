@@ -71,6 +71,13 @@ from .social_security import (
     current_financial_year_start,
 )
 
+from .withdrawals import (
+    request_withdrawal,
+    WithdrawalValidationError,
+    check_minimum_balance_alerts,
+    run_scheduled_withdrawals,
+)
+
 __all__ = [
     "dispatch_job",
     "dispatch_pending_jobs",
@@ -116,4 +123,8 @@ __all__ = [
     "mark_social_security_registered",
     "SocialSecurityMarkRegisteredError",
     "current_financial_year_start",
+    "request_withdrawal",
+    "WithdrawalValidationError",
+    "check_minimum_balance_alerts",
+    "run_scheduled_withdrawals",
 ]
