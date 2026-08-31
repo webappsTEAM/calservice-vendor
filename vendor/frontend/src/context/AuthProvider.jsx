@@ -4,6 +4,7 @@ import {
   apiFetchMe,
   apiWorkforceLogin,
   apiWorkforceSignup,
+  apiProviderSignup,
   apiWorkforceLogout,
   apiGetOnboardingProfile,
   apiTogglePresence,
@@ -142,6 +143,20 @@ export function AuthProvider({ children }) {
     return res;
   }, [refreshProfile]);
 
+  // SEVO business plan Section 2: a service-provider business registering
+  // itself (separate flow/endpoint from an individual technician signup --
+  // see ProviderSignupPage.jsx).
+  const providerSignup = useCallback(async (payload) => {
+    const res = await apiProviderSignup(payload);
+    if (res) {
+      const token = res.access_token || res.token;
+      const refresh = res.refresh_token;
+      setAuthTokens(token, refresh);
+    }
+    await refreshProfile(true);
+    return res;
+  }, [refreshProfile]);
+
   const logout = useCallback(async () => {
     clearAuthTokens();
     if (typeof BroadcastChannel !== 'undefined') {
@@ -230,6 +245,7 @@ export function AuthProvider({ children }) {
     employee,
     login,
     signup,
+    providerSignup,
     logout,
     refreshProfile,
     togglePresence,
@@ -237,7 +253,7 @@ export function AuthProvider({ children }) {
     isAdmin: user?.isAdmin || false,
     isEmployee: user?.isEmployee || false,
     registrationStatus: user?.registrationStatus || 'not_started',
-  }), [isReady, user, employee, login, signup, logout, refreshProfile, togglePresence]);
+  }), [isReady, user, employee, login, signup, providerSignup, logout, refreshProfile, togglePresence]);
 
   return (
     <AuthContext.Provider value={value}>

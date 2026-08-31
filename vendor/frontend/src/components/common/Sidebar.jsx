@@ -154,6 +154,14 @@ export function Sidebar({ onCloseMobile = () => {} }) {
                   <Navigation className="w-3.5 h-3.5 text-slate-400" />
                   <span>Live Workforce</span>
                 </NavLink>
+                <NavLink
+                  to="/workforce/admin/wallet"
+                  onClick={onCloseMobile}
+                  className={navItemClass}
+                >
+                  <Wallet className="w-3.5 h-3.5 text-emerald-500" />
+                  <span>Wallet</span>
+                </NavLink>
               </div>
             )}
           </div>

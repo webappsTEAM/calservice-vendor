@@ -6,6 +6,7 @@ import { AdminRoute, EmployeeRoute, AuthenticatedRoute } from './components/comm
 
 import { LoginPage } from './pages/auth/LoginPage.jsx';
 import { SignupPage } from './pages/auth/SignupPage.jsx';
+import { ProviderSignupPage } from './pages/auth/ProviderSignupPage.jsx';
 
 import { TermsAndConditionsPage } from './pages/public/TermsAndConditionsPage.jsx';
 import { PrivacyPolicyPage } from './pages/public/PrivacyPolicyPage.jsx';
@@ -42,6 +43,7 @@ import { AdminApplicationDetailPage } from './pages/admin/AdminApplicationDetail
 import { AdminEmployeesPage } from './pages/admin/AdminEmployeesPage.jsx';
 import { AdminJobsPage } from './pages/admin/AdminJobsPage.jsx';
 import { AdminOperationsPage } from './pages/admin/AdminOperationsPage.jsx';
+import { AdminWalletPage } from './pages/admin/AdminWalletPage.jsx';
 import { AdminReportsPage } from './pages/admin/AdminReportsPage.jsx';
 import { AdminSkillsPage } from './pages/admin/AdminSkillsPage.jsx';
 import { CustomerTrackingPage } from './pages/customer/CustomerTrackingPage.jsx';
@@ -95,6 +97,7 @@ export function App() {
           {/* Public Auth */}
           <Route path="/workforce/login" element={<LoginPage />} />
           <Route path="/workforce/signup" element={<SignupPage />} />
+          <Route path="/workforce/provider-signup" element={<ProviderSignupPage />} />
 
           {/* Public Legal, Compliance & Support Hub */}
           <Route path="/terms" element={<TermsAndConditionsPage />} />
@@ -246,6 +249,14 @@ export function App() {
           <Route path="/workforce/admin/payroll" element={<Navigate to="/workforce/admin" replace />} />
           <Route path="/workforce/admin/compliance" element={<Navigate to="/workforce/admin" replace />} />
 
+          <Route
+            path="/workforce/admin/wallet"
+            element={
+              <AdminRoute>
+                <AdminWalletPage />
+              </AdminRoute>
+            }
+          />
           <Route
             path="/workforce/admin/reports"
             element={

@@ -13,6 +13,27 @@ export async function apiWorkforceSignup(payload) {
   });
 }
 
+// SEVO business plan Section 2: a service-provider business self-registers
+// separately from an individual worker signup -- gets its own Company +
+// head wallet instead of joining the shared default one.
+export async function apiProviderSignup(payload) {
+  return await apiRequest('/workforce/provider/signup/', {
+    method: 'POST',
+    json: payload,
+  });
+}
+
+export async function apiGetMyWallet() {
+  return await apiRequest('/workforce/wallet/me/');
+}
+
+export async function apiUpdateWalletPayoutDetails(payload) {
+  return await apiRequest('/workforce/wallet/payout-details/', {
+    method: 'PATCH',
+    json: payload,
+  });
+}
+
 export async function apiWorkforceLogin(identifier, password) {
   const trimmed = (identifier || '').trim();
   return await apiRequest('/auth/login/', {

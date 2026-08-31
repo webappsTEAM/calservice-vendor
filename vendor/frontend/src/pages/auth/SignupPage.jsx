@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../context/AuthProvider.jsx';
 import { Wrench, Smartphone, Mail, Lock, User, Eye, EyeOff } from 'lucide-react';
 import { ErrorState } from '../../components/enterprise/ErrorState.jsx';
@@ -8,6 +8,12 @@ import { LegalComplianceModal } from '../../components/common/LegalComplianceMod
 export function SignupPage() {
   const { signup } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  // A provider business's invite link carries ?company_id=<id> so this
+  // worker's signup joins that company's team wallet instead of the
+  // shared default one (see ProviderSignupPage.jsx and
+  // WorkforceSignupView's joining_provider_team check).
+  const inviteCompanyId = searchParams.get('company_id') || searchParams.get('company') || '';
 
   const [formData, setFormData] = useState({
     firstName: '',
@@ -63,6 +69,7 @@ export function SignupPage() {
         mobile_number: formData.mobileNumber.trim(),
         email: formData.email.trim(),
         password: formData.password,
+        ...(inviteCompanyId ? { company_id: inviteCompanyId } : {}),
       });
 
       navigate('/workforce/onboarding/wizard');
@@ -239,13 +246,21 @@ export function SignupPage() {
           </form>
 
 
-          <div className="pt-3 border-t border-slate-100 text-center">
+          <div className="pt-3 border-t border-slate-100 text-center space-y-1">
             <p className="text-xs text-slate-500">
               Already have an account?{' '}
               <Link to="/workforce/login" className="text-blue-600 font-semibold hover:underline">
                 Sign In
               </Link>
             </p>
+            {!inviteCompanyId && (
+              <p className="text-xs text-slate-500">
+                Registering a service provider business instead?{' '}
+                <Link to="/workforce/provider-signup" className="text-blue-600 font-semibold hover:underline">
+                  Sign up here
+                </Link>
+              </p>
+            )}
           </div>
         </div>
 
