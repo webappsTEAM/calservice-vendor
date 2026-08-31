@@ -30,6 +30,8 @@ from .views import (
     WorkforceAdminWalletClawbackView,
     WorkforceAdminScorecardsListView,
     WorkforceAdminReconciliationView,
+    WorkforceAdminSocialSecurityListView,
+    WorkforceAdminSocialSecurityMarkRegisteredView,
     WorkforceAdminApproveApplicationView,
     WorkforceAdminRejectApplicationView,
     WorkforcePresenceToggleView,
@@ -154,6 +156,8 @@ urlpatterns = [
     path("admin/wallet/clawback/", WorkforceAdminWalletClawbackView.as_view(), name="workforce-admin-wallet-clawback"),
     path("admin/scorecards/", WorkforceAdminScorecardsListView.as_view(), name="workforce-admin-scorecards"),
     path("admin/reconciliation/", WorkforceAdminReconciliationView.as_view(), name="workforce-admin-reconciliation"),
+    path("admin/social-security/", WorkforceAdminSocialSecurityListView.as_view(), name="workforce-admin-social-security"),
+    path("admin/social-security/mark-registered/", WorkforceAdminSocialSecurityMarkRegisteredView.as_view(), name="workforce-admin-social-security-mark-registered"),
     path("admin/applications/<int:pk>/approve/", WorkforceAdminApproveApplicationView.as_view(), name="workforce-admin-approve"),
     path("admin/applications/<int:pk>/reject/", WorkforceAdminRejectApplicationView.as_view(), name="workforce-admin-reject"),
 

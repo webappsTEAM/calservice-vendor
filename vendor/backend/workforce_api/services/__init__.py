@@ -63,6 +63,14 @@ from .tax_statements import (
     export_ledger_csv,
 )
 
+from .social_security import (
+    recompute_registration_status,
+    recompute_all as recompute_all_social_security,
+    mark_registered as mark_social_security_registered,
+    SocialSecurityMarkRegisteredError,
+    current_financial_year_start,
+)
+
 __all__ = [
     "dispatch_job",
     "dispatch_pending_jobs",
@@ -103,4 +111,9 @@ __all__ = [
     "run_daily_reconciliation_all_companies",
     "generate_earnings_statement",
     "export_ledger_csv",
+    "recompute_registration_status",
+    "recompute_all_social_security",
+    "mark_social_security_registered",
+    "SocialSecurityMarkRegisteredError",
+    "current_financial_year_start",
 ]

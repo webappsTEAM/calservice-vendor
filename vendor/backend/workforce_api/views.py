@@ -90,6 +90,7 @@ from .models import (
     JobTrackingSession,
     JobLocationPoint,
     WorkforceScorecard,
+    SocialSecurityRegistration,
 )
 from time_tracking.models import TimeLog, Break
 from time_tracking.serializers import TimeLogSerializer
@@ -1433,6 +1434,81 @@ class WorkforceAdminScorecardsListView(APIView):
         rows.sort(key=lambda r: (tier_rank.get(r["tier"], 0), r["sla_score"], r["average_rating"]))
 
         return Response({"results": rows, "count": len(rows)}, status=status.HTTP_200_OK)
+
+
+class WorkforceAdminSocialSecurityListView(APIView):
+    """
+    SEVO business plan Section 8: the "accurate, exportable worklist" for
+    whoever submits Social Security Code registrations on the Shram
+    Suvidha portal (see SocialSecurityRegistration model docstring and
+    services/social_security.py -- this is deliberately NOT an automated
+    government-portal integration). Individual workers only; provider-
+    team workers are out of scope for SEVO's own aggregator obligation.
+    """
+    permission_classes = [IsWorkforceAdmin]
+
+    def get(self, request):
+        qs = SocialSecurityRegistration.objects.select_related("employee", "employee__user").order_by(
+            "-days_worked_current_fy"
+        )
+
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+
+        rows = []
+        for reg in qs[:500]:
+            emp = reg.employee
+            rows.append({
+                "registration_id": reg.id,
+                "employee_id": emp.id,
+                "employee_name": emp.user.get_full_name() if emp.user_id else "",
+                "days_worked_current_fy": reg.days_worked_current_fy,
+                "financial_year_start": reg.financial_year_start,
+                "status": reg.status,
+                "registered_at": reg.registered_at,
+                "registered_by": reg.registered_by,
+                "portal_reference_id": reg.portal_reference_id,
+            })
+
+        return Response({"results": rows, "count": len(rows)}, status=status.HTTP_200_OK)
+
+
+class WorkforceAdminSocialSecurityMarkRegisteredView(APIView):
+    """
+    POST {registration_id, portal_reference_id}: records that an admin
+    has actually completed the Shram Suvidha portal submission for this
+    worker. See services.social_security.mark_registered.
+    """
+    permission_classes = [IsWorkforceAdmin]
+
+    def post(self, request):
+        from workforce_api.services import mark_social_security_registered, SocialSecurityMarkRegisteredError
+
+        registration_id = request.data.get("registration_id")
+        portal_reference_id = request.data.get("portal_reference_id")
+        if not registration_id:
+            return Response({"error": "registration_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        registration = SocialSecurityRegistration.objects.filter(pk=registration_id).first()
+        if not registration:
+            return Response({"error": "Registration record not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        registered_by = request.user.get_full_name() or request.user.username
+        try:
+            registration = mark_social_security_registered(
+                registration, registered_by=registered_by, portal_reference_id=portal_reference_id,
+            )
+        except SocialSecurityMarkRegisteredError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            "message": "Registration recorded.",
+            "registration_id": registration.id,
+            "status": registration.status,
+            "registered_at": registration.registered_at,
+            "portal_reference_id": registration.portal_reference_id,
+        }, status=status.HTTP_200_OK)
 
 
 class WorkforceAdminRequestCorrectionView(APIView):

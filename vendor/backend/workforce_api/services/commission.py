@@ -165,6 +165,18 @@ def settle_completed_job(service_request):
         f"[SETTLEMENT_OK] Job #{service_request.id}: gross={gross} commission={commission} "
         f"net={net} -> wallet #{wallet.id} ({channel}), held until {hold_release_at.isoformat()}"
     )
+    if worker_performed is not None:
+        try:
+            from workforce_api.services.social_security import recompute_registration_status
+            recompute_registration_status(worker_performed)
+        except Exception:
+            logger.exception(
+                "[SETTLEMENT_OK] Job #%s settled but failed to recompute Social Security "
+                "Code eligibility for employee #%s -- will self-correct on the next "
+                "update_social_security_eligibility cron run.",
+                service_request.id, worker_performed.id,
+            )
+
     return credit_entry
 
 
