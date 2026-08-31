@@ -158,6 +158,24 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
 
         EmployeeJob.objects.filter(service_request=service_request).update(**emp_job_updates)
 
+        # SEVO business plan Section 4: the instant a job becomes COMPLETED
+        # is the single authoritative moment it becomes billable -- settle
+        # here, not in any individual view, so commission is computed
+        # exactly once regardless of which endpoint triggered completion.
+        # settle_completed_job() is itself idempotent and already wrapped
+        # in this function's own try/except, so a settlement failure logs
+        # loudly but never blocks the job from actually completing.
+        if target == "completed":
+            try:
+                from workforce_api.services.commission import settle_completed_job
+                settle_completed_job(service_request)
+            except Exception as _settlement_err:
+                logger.exception(
+                    "Wallet settlement failed for Job #%s -- job is COMPLETED but "
+                    "earnings were NOT credited. Needs manual settlement: %s",
+                    service_request.pk, _settlement_err,
+                )
+
         if target in ["completed", "cancelled", "redispatching", "unable_to_complete"]:
             from workforce_api.models import JobTrackingSession
             closing_status = (

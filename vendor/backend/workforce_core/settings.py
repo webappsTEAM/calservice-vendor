@@ -283,3 +283,20 @@ RAZORPAYX_KEY_ID = os.getenv("RAZORPAYX_KEY_ID", "")
 RAZORPAYX_KEY_SECRET = os.getenv("RAZORPAYX_KEY_SECRET", "")
 RAZORPAYX_ACCOUNT_NUMBER = os.getenv("RAZORPAYX_ACCOUNT_NUMBER", "")
 RAZORPAYX_WEBHOOK_SECRET = os.getenv("RAZORPAYX_WEBHOOK_SECRET", "")
+
+# ----------------------------------------------------------------------------
+# SEVO business plan (Section 3): differentiated commission rates and the
+# post-completion dispute-hold window (Section 4). See
+# workforce_api/services/commission.py for how these are used.
+# Provider-dispatched jobs get a lower rate (provider already bears team
+# cost, dispatch and QC); individual-worker jobs a standard rate (SEVO
+# bears full acquisition/verification/dispatch/insurance cost directly).
+# *_PROMO_RATE applies for SEVO_PROMO_PERIOD_DAYS from wallet creation to
+# give a new provider/worker a real reason to route jobs through SEVO
+# before being asked to pay the standard rate.
+SEVO_PROVIDER_COMMISSION_RATE = os.getenv("SEVO_PROVIDER_COMMISSION_RATE", "0.10")
+SEVO_PROVIDER_PROMO_RATE = os.getenv("SEVO_PROVIDER_PROMO_RATE", "0.00")
+SEVO_INDIVIDUAL_COMMISSION_RATE = os.getenv("SEVO_INDIVIDUAL_COMMISSION_RATE", "0.18")
+SEVO_INDIVIDUAL_PROMO_RATE = os.getenv("SEVO_INDIVIDUAL_PROMO_RATE", "0.08")
+SEVO_PROMO_PERIOD_DAYS = os.getenv("SEVO_PROMO_PERIOD_DAYS", "90")
+SEVO_DISPUTE_HOLD_HOURS = os.getenv("SEVO_DISPUTE_HOLD_HOURS", "48")
