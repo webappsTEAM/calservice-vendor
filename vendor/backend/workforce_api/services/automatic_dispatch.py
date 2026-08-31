@@ -385,7 +385,7 @@ def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AG
             is_online=True,
             current_availability="available",
         )
-        .select_related("user", "company")
+        .select_related("user", "company", "scorecard")
         .annotate(is_busy_job=Exists(busy_subquery))
     )
 
@@ -561,9 +561,22 @@ def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AG
         if recent_total >= 3:
             reliability_penalty = min(20.0, (recent_declined / recent_total) * 20.0)
 
-        total_score = proximity_score + max_prof + territory_bonus + clock_in_bonus - reliability_penalty
+        # SEVO business plan Section 4 / Days 31-60 roadmap: "Rating and
+        # SLA scorecards go live and start feeding the dispatch-ranking
+        # algorithm." Same shape as reliability_penalty above: only kicks
+        # in once there is a real sample (WorkforceScorecard already
+        # withholds a tier -- and this bonus -- below 3 ratings), capped
+        # so it nudges ranking without overriding proximity/skill.
+        scorecard = getattr(emp, "scorecard", None)
+        scorecard_bonus = 0.0
+        if scorecard is not None and scorecard.rating_count >= 3:
+            rating_component = (float(scorecard.average_rating) / 5.0) * 10.0
+            sla_component = (float(scorecard.sla_score) / 100.0) * 10.0
+            scorecard_bonus = max(0.0, min(20.0, rating_component + sla_component))
 
-        logger.info(f"[DISPATCH_CANDIDATE_FOUND] Employee #{emp.id} ({emp.user.username}) eligible for Job #{job_obj.id}: {dist_km:.2f}km away, score={total_score:.1f} (reliability_penalty={reliability_penalty:.1f})")
+        total_score = proximity_score + max_prof + territory_bonus + clock_in_bonus + scorecard_bonus - reliability_penalty
+
+        logger.info(f"[DISPATCH_CANDIDATE_FOUND] Employee #{emp.id} ({emp.user.username}) eligible for Job #{job_obj.id}: {dist_km:.2f}km away, score={total_score:.1f} (scorecard_bonus={scorecard_bonus:.1f}, reliability_penalty={reliability_penalty:.1f})")
 
         ranked_candidates.append({
             "employee": emp,

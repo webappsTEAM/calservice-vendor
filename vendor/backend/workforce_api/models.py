@@ -1702,3 +1702,54 @@ class SocialSecurityRegistration(models.Model):
 
     def __str__(self):
         return f"{self.employee_id}: {self.days_worked_current_fy}d ({self.status})"
+
+
+class WorkforceScorecard(models.Model):
+    """
+    SEVO business plan Section 4 (Job Lifecycle / SLAs): "A missed SLA
+    triggers ... a scorecard mark against the provider/worker -- visible
+    in their own dashboard, not just used silently against them" and the
+    Days 31-60 roadmap item "Rating and SLA scorecards go live and start
+    feeding the dispatch-ranking algorithm."
+
+    WorkforceJobFeedback (one row per customer-rated job) is the raw
+    signal; this is the persisted, cheap-to-query rollup per employee,
+    recalculated via services/scorecards.py whenever new feedback comes
+    in. Kept separate (rather than computed live like
+    WorkforcePerformanceMeView does for a single employee's own
+    dashboard) because automatic_dispatch.py needs to bulk-fetch this for
+    every dispatch candidate on every job -- an aggregate query per
+    candidate would not scale.
+
+    `resolution_ontime` on WorkforceJobFeedback (customer-reported at
+    rating time) is the on-time/SLA-met signal used here -- there is no
+    stored arrival/completion duration target per service category in
+    this codebase to derive a stricter, non-self-reported breach from.
+    """
+
+    class Tier(models.TextChoices):
+        UNRATED = "UNRATED", "Unrated"
+        BRONZE = "BRONZE", "Bronze"
+        SILVER = "SILVER", "Silver"
+        GOLD = "GOLD", "Gold"
+
+    employee = models.OneToOneField(
+        "employees.Employee",
+        on_delete=models.CASCADE,
+        related_name="scorecard",
+    )
+    rating_count = models.PositiveIntegerField(default=0)
+    average_rating = models.DecimalField(max_digits=3, decimal_places=2, default=0)
+    csat_average = models.DecimalField(max_digits=3, decimal_places=2, default=0)
+    sla_met_count = models.PositiveIntegerField(default=0)
+    sla_breach_count = models.PositiveIntegerField(default=0)
+    sla_score = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    tier = models.CharField(max_length=10, choices=Tier.choices, default=Tier.UNRATED, db_index=True)
+    last_recalculated_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_scorecard"
+
+    def __str__(self):
+        return f"Scorecard(employee={self.employee_id}) rating={self.average_rating} sla={self.sla_score} tier={self.tier}"

@@ -89,6 +89,7 @@ from .models import (
     WorkforceJobLifecycleEvent,
     JobTrackingSession,
     JobLocationPoint,
+    WorkforceScorecard,
 )
 from time_tracking.models import TimeLog, Break
 from time_tracking.serializers import TimeLogSerializer
@@ -1290,6 +1291,53 @@ class WorkforceAdminWalletClawbackView(APIView):
             "status": result.status,
             "amount": result.signed_amount,
         }, status=status.HTTP_200_OK)
+
+
+class WorkforceAdminScorecardsListView(APIView):
+    """
+    SEVO business plan Section 4: admin-facing roster of every
+    worker/provider's rating + SLA scorecard, tenant-scoped, sorted
+    worst-standing first so an admin can spot who needs attention --
+    same persisted WorkforceScorecard row that also feeds the
+    dispatch-ranking bonus in services/automatic_dispatch.py.
+    """
+    permission_classes = [IsWorkforceAdmin]
+
+    def get(self, request):
+        qs = Employee.objects.select_related("user", "scorecard")
+
+        if not getattr(request.user, "is_superuser", False):
+            company = resolve_actor_company(request)
+            if not company:
+                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+            qs = qs.filter(company=company)
+
+        tier_rank = {
+            WorkforceScorecard.Tier.UNRATED: 0,
+            WorkforceScorecard.Tier.BRONZE: 1,
+            WorkforceScorecard.Tier.SILVER: 2,
+            WorkforceScorecard.Tier.GOLD: 3,
+        }
+
+        rows = []
+        for emp in qs.order_by("id")[:500]:
+            sc = getattr(emp, "scorecard", None)
+            rows.append({
+                "employee_id": emp.id,
+                "employee_name": emp.user.get_full_name() if emp.user_id else "",
+                "tier": sc.tier if sc else WorkforceScorecard.Tier.UNRATED,
+                "average_rating": float(sc.average_rating) if sc else 0.0,
+                "csat_average": float(sc.csat_average) if sc else 0.0,
+                "sla_score": float(sc.sla_score) if sc else 0.0,
+                "rating_count": sc.rating_count if sc else 0,
+                "sla_met_count": sc.sla_met_count if sc else 0,
+                "sla_breach_count": sc.sla_breach_count if sc else 0,
+                "last_recalculated_at": sc.last_recalculated_at if sc else None,
+            })
+
+        rows.sort(key=lambda r: (tier_rank.get(r["tier"], 0), r["sla_score"], r["average_rating"]))
+
+        return Response({"results": rows, "count": len(rows)}, status=status.HTTP_200_OK)
 
 
 class WorkforceAdminRequestCorrectionView(APIView):
@@ -7416,6 +7464,31 @@ class WorkforcePerformanceMeView(APIView):
         ontime_count = feedbacks.filter(resolution_ontime=True).count()
         resolution_rate = round((ontime_count / total_feedbacks * 100), 1) if total_feedbacks > 0 else (100.0 if completed_count > 0 else 0.0)
 
+        # SEVO business plan Section 4: persisted rating + SLA scorecard
+        # (tier feeds automatic_dispatch.py ranking; kept in sync by
+        # services.recalculate_employee_scorecard on every feedback submit).
+        scorecard = getattr(emp, "scorecard", None)
+        if scorecard is not None:
+            scorecard_data = {
+                "tier": scorecard.tier,
+                "sla_score": float(scorecard.sla_score),
+                "sla_met_count": scorecard.sla_met_count,
+                "sla_breach_count": scorecard.sla_breach_count,
+                "average_rating": float(scorecard.average_rating),
+                "rating_count": scorecard.rating_count,
+                "last_recalculated_at": scorecard.last_recalculated_at,
+            }
+        else:
+            scorecard_data = {
+                "tier": WorkforceScorecard.Tier.UNRATED,
+                "sla_score": 0.0,
+                "sla_met_count": 0,
+                "sla_breach_count": 0,
+                "average_rating": 0.0,
+                "rating_count": 0,
+                "last_recalculated_at": None,
+            }
+
         return Response({
             "metrics": {
                 "jobs_completed": completed_count,
@@ -7431,6 +7504,7 @@ class WorkforcePerformanceMeView(APIView):
             },
             "rating_distribution": rating_counts,
             "feedbacks": feedback_list,
+            "scorecard": scorecard_data,
             "has_data": completed_count > 0 or total_feedbacks > 0,
         }, status=status.HTTP_200_OK)
 
@@ -7506,6 +7580,17 @@ class WorkforceJobFeedbackSubmitView(APIView):
                 "customer_name": customer_name,
             }
         )
+
+        try:
+            from workforce_api.services import recalculate_employee_scorecard
+            recalculate_employee_scorecard(feedback.employee)
+        except Exception:
+            logger.exception(
+                "Failed to recalculate scorecard for employee #%s after feedback "
+                "submission on job #%s -- scorecard will be stale until next feedback "
+                "or a manual backfill_scorecards run.",
+                feedback.employee_id, job.id,
+            )
 
         return Response({
             "message": "Feedback submitted successfully.",

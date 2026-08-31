@@ -26,6 +26,7 @@ from .views import (
     WorkforceAdminRequestCorrectionView,
     WorkforceAdminHeldEarningsListView,
     WorkforceAdminWalletClawbackView,
+    WorkforceAdminScorecardsListView,
     WorkforceAdminApproveApplicationView,
     WorkforceAdminRejectApplicationView,
     WorkforcePresenceToggleView,
@@ -146,6 +147,7 @@ urlpatterns = [
     path("admin/applications/<int:pk>/request-correction/", WorkforceAdminRequestCorrectionView.as_view(), name="workforce-admin-request-correction"),
     path("admin/wallet/held-earnings/", WorkforceAdminHeldEarningsListView.as_view(), name="workforce-admin-wallet-held-earnings"),
     path("admin/wallet/clawback/", WorkforceAdminWalletClawbackView.as_view(), name="workforce-admin-wallet-clawback"),
+    path("admin/scorecards/", WorkforceAdminScorecardsListView.as_view(), name="workforce-admin-scorecards"),
     path("admin/applications/<int:pk>/approve/", WorkforceAdminApproveApplicationView.as_view(), name="workforce-admin-approve"),
     path("admin/applications/<int:pk>/reject/", WorkforceAdminRejectApplicationView.as_view(), name="workforce-admin-reject"),
 

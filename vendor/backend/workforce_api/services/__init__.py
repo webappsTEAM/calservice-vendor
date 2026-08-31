@@ -48,6 +48,11 @@ from .wallet_onboarding import (
     PayoutDetailsError,
 )
 
+from .scorecards import (
+    recalculate_employee_scorecard,
+    recalculate_all_scorecards,
+)
+
 __all__ = [
     "dispatch_job",
     "dispatch_pending_jobs",
@@ -82,4 +87,6 @@ __all__ = [
     "resolve_wallet_for_user",
     "set_payout_details",
     "PayoutDetailsError",
+    "recalculate_employee_scorecard",
+    "recalculate_all_scorecards",
 ]
