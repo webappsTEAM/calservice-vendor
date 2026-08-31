@@ -1,9 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { apiGetMyWallet, apiUpdateWalletPayoutDetails } from '../../api/workforceService.js';
+import {
+  apiGetMyWallet,
+  apiUpdateWalletPayoutDetails,
+  apiGetWalletStatement,
+  apiExportWalletLedgerCsv,
+} from '../../api/workforceService.js';
 import { AppShell } from '../../components/common/AppShell.jsx';
 import { LoadingState } from '../../components/enterprise/LoadingState.jsx';
 import { ErrorState } from '../../components/enterprise/ErrorState.jsx';
-import { Wallet, Landmark, ShieldCheck, ArrowUpCircle } from 'lucide-react';
+import { Wallet, Landmark, ShieldCheck, ArrowUpCircle, FileText, Download } from 'lucide-react';
 
 // SEVO business plan Section 1/2: a provider business's shared "head
 // wallet" -- every job any of this company's workers completes credits
@@ -24,6 +29,14 @@ export function AdminWalletPage() {
   });
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
+
+  const now = new Date();
+  const [statementYear, setStatementYear] = useState(now.getFullYear());
+  const [statementMonth, setStatementMonth] = useState(now.getMonth() + 1);
+  const [statement, setStatement] = useState(null);
+  const [statementLoading, setStatementLoading] = useState(false);
+  const [statementError, setStatementError] = useState('');
+  const [exporting, setExporting] = useState(false);
 
   const load = async () => {
     try {
@@ -70,6 +83,54 @@ export function AdminWalletPage() {
   };
 
   const money = (v) => `₹${Number(v || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  // SEVO Section 6: monthly/annual earnings statement -- gross job value,
+  // commission deducted, net credited. No tax is withheld or computed
+  // here; this is the figure a wallet owner hands to their own accountant.
+  const loadStatement = async (year, month) => {
+    try {
+      setStatementLoading(true);
+      setStatementError('');
+      const res = await apiGetWalletStatement(year, month);
+      setStatement(res);
+    } catch (err) {
+      setStatementError(err.message || 'Failed to load statement.');
+    } finally {
+      setStatementLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!notFound) {
+      loadStatement(statementYear, statementMonth);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notFound]);
+
+  // SEVO Section 1: "exportable as a CSV/PDF wage register" -- CSV is
+  // built server-side (services.tax_statements.export_ledger_csv) and
+  // downloaded here via a Blob, since the browser sandbox this page may
+  // render in blocks plain <a download> links.
+  const handleExportCsv = async () => {
+    try {
+      setExporting(true);
+      setStatementError('');
+      const csvText = await apiExportWalletLedgerCsv();
+      const blob = new Blob([csvText], { type: 'text/csv' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `wallet-${wallet?.id || 'ledger'}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setStatementError(err.message || 'Failed to export ledger CSV.');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -185,6 +246,93 @@ export function AdminWalletPage() {
                   {saving ? 'Saving...' : 'Save Payout Details'}
                 </button>
               </form>
+            </div>
+
+            <div className="bg-white border border-slate-200 rounded overflow-hidden shadow-sm">
+              <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex items-center gap-2">
+                <FileText className="w-4 h-4 text-blue-500" />
+                <h2 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Earnings Statement</h2>
+              </div>
+              <div className="p-4 space-y-3 text-xs">
+                {statementError && <ErrorState message={statementError} onDismiss={() => setStatementError('')} />}
+                <div className="flex flex-wrap items-end gap-2.5">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">Month</label>
+                    <select
+                      value={statementMonth}
+                      onChange={(e) => {
+                        const m = Number(e.target.value);
+                        setStatementMonth(m);
+                        loadStatement(statementYear, m);
+                      }}
+                      className="px-2 py-1.5 border border-slate-300 rounded text-xs"
+                    >
+                      {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                        <option key={m} value={m}>
+                          {new Date(2000, m - 1, 1).toLocaleString('en-US', { month: 'long' })}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">Year</label>
+                    <select
+                      value={statementYear}
+                      onChange={(e) => {
+                        const y = Number(e.target.value);
+                        setStatementYear(y);
+                        loadStatement(y, statementMonth);
+                      }}
+                      className="px-2 py-1.5 border border-slate-300 rounded text-xs"
+                    >
+                      {Array.from({ length: 5 }, (_, i) => now.getFullYear() - i).map((y) => (
+                        <option key={y} value={y}>{y}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleExportCsv}
+                    disabled={exporting}
+                    className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 text-white rounded text-xs font-semibold hover:bg-slate-900 disabled:opacity-50"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    {exporting ? 'Exporting...' : 'Download Wage Register (CSV)'}
+                  </button>
+                </div>
+
+                {statementLoading ? (
+                  <p className="text-slate-500">Loading statement...</p>
+                ) : statement ? (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-1">
+                    <div className="p-2.5 bg-slate-50 border border-slate-200 rounded">
+                      <p className="text-[10px] text-slate-500 uppercase tracking-wide">Jobs</p>
+                      <p className="font-bold font-mono text-slate-900">{statement.jobs_count}</p>
+                    </div>
+                    <div className="p-2.5 bg-slate-50 border border-slate-200 rounded">
+                      <p className="text-[10px] text-slate-500 uppercase tracking-wide">Gross Job Value</p>
+                      <p className="font-bold font-mono text-slate-900">{money(statement.gross_job_value)}</p>
+                    </div>
+                    <div className="p-2.5 bg-slate-50 border border-slate-200 rounded">
+                      <p className="text-[10px] text-slate-500 uppercase tracking-wide">Commission Deducted</p>
+                      <p className="font-bold font-mono text-slate-900">{money(statement.commission_deducted)}</p>
+                    </div>
+                    <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded col-span-2 sm:col-span-1">
+                      <p className="text-[10px] text-emerald-700 uppercase tracking-wide">Net Credited</p>
+                      <p className="font-bold font-mono text-emerald-800">{money(statement.net_credited)}</p>
+                    </div>
+                    <div className="p-2.5 bg-slate-50 border border-slate-200 rounded col-span-2 sm:col-span-2">
+                      <p className="text-[10px] text-slate-500 uppercase tracking-wide">{statement.income_category}</p>
+                      <p className="text-slate-600">{statement.period_label}</p>
+                    </div>
+                  </div>
+                ) : null}
+                <p className="text-[10px] text-slate-400 pt-1">
+                  This statement shows gross job value, commission deducted and net credited for the
+                  selected period. It does not compute or withhold any tax -- share it with your own
+                  accountant for that.
+                </p>
+              </div>
             </div>
           </>
         )}

@@ -38,6 +38,36 @@ export async function apiAdminListScorecards() {
   return await apiRequest('/workforce/admin/scorecards/');
 }
 
+// SEVO Section 6: auto-generated monthly/annual earnings statement for
+// the caller's own wallet (provider business income, or individual
+// worker professional income) -- no tax withholding is computed, see
+// services/tax_statements.py docstring.
+export async function apiGetWalletStatement(year, month) {
+  const params = new URLSearchParams({ year: String(year) });
+  if (month) params.set('month', String(month));
+  return await apiRequest(`/workforce/wallet/statement/?${params.toString()}`);
+}
+
+// SEVO Section 1: the CSV "wage register" -- returns CSV text (the API
+// client's content-type sniffing hands back plain text for non-JSON
+// responses), for the caller to trigger a client-side download.
+export async function apiExportWalletLedgerCsv(startDate, endDate) {
+  const params = new URLSearchParams();
+  if (startDate) params.set('start', startDate);
+  if (endDate) params.set('end', endDate);
+  const qs = params.toString();
+  return await apiRequest(`/workforce/wallet/ledger/export/${qs ? `?${qs}` : ''}`);
+}
+
+// SEVO Section 5: on-demand read of the daily reconciliation job's
+// findings for the caller's own company.
+export async function apiAdminGetReconciliation(date) {
+  const params = new URLSearchParams();
+  if (date) params.set('date', date);
+  const qs = params.toString();
+  return await apiRequest(`/workforce/admin/reconciliation/${qs ? `?${qs}` : ''}`);
+}
+
 export async function apiWorkforceLogin(identifier, password) {
   const trimmed = (identifier || '').trim();
   return await apiRequest('/auth/login/', {
