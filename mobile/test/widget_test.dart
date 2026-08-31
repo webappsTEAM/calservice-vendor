@@ -1,19 +1,18 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:mobile/app.dart';
 
 void main() {
-  testWidgets('App starts at the splash screen, then routes to login when signed out', (
+  testWidgets('App starts at the splash screen, then routes to onboarding for fresh launch', (
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(const ProviderScope(child: App()));
 
     expect(find.text('Verifying session...'), findsOneWidget);
 
-    // Session restore reads from flutter_secure_storage, a real platform
-    // channel call — tester.pump() alone advances a fake clock and never
-    // lets that real Future resolve, so runAsync is needed here.
+    // Session restore and onboarding flag read from storage
     await tester.runAsync(() async {
       await Future.delayed(const Duration(milliseconds: 300));
     });
@@ -21,6 +20,7 @@ void main() {
     await tester.pump();
     await tester.pump();
 
-    expect(find.text('Employee Sign In'), findsOneWidget);
+    // On fresh launch without prior completion, routes to intro onboarding walkthrough
+    expect(find.byType(PageView), findsOneWidget);
   });
 }

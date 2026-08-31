@@ -49,9 +49,10 @@ class HomeScreen extends ConsumerWidget {
           children: [
             const GreetingHeader(),
             const SizedBox(height: AppSpacing.md),
-            const WorkforceShowcaseSection(
+            WorkforceShowcaseSection(
               cardsPadding: EdgeInsets.zero,
-              headingPadding: EdgeInsets.only(bottom: AppSpacing.xs),
+              headingPadding: const EdgeInsets.only(bottom: AppSpacing.xs),
+              onTap: () => context.go('/jobs'),
             ),
             const SizedBox(height: AppSpacing.md),
             TodayOverviewCard(

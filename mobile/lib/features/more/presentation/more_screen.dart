@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../routing/app_routes.dart';
 import '../../../shared/widgets/app_card.dart';
 import '../../../shared/widgets/workforce_app_bar.dart';
 import '../../auth/presentation/auth_controller.dart';
@@ -273,16 +274,57 @@ class MoreScreen extends ConsumerWidget {
                   _NavRow(
                     icon: Icons.insights_rounded,
                     iconBg: const Color(0xFF0D9488),
-                    title: 'Performance & Earnings',
+                    title: 'Performance & Statistics',
                     subtitle: 'Track completion rate, ratings, and stats',
                     onTap: () => context.push('/more/performance'),
                   ),
                 ],
               ),
             ),
+            // ── 3. Earnings Section ────────────────────────────────────────
+            _SectionHeader(title: 'EARNINGS'),
+            const SizedBox(height: 6),
+            AppCard(
+              padding: EdgeInsets.zero,
+              child: Column(
+                children: [
+                  _NavRow(
+                    icon: Icons.account_balance_wallet_outlined,
+                    iconBg: const Color(0xFF004E89), // Peacock Blue
+                    title: 'My Wallet',
+                    subtitle: 'Balances, T+7 hold, eligibility & payouts',
+                    onTap: () => context.push(AppRoutes.earningsWallet),
+                  ),
+                  Divider(color: AppColors.border, height: 1),
+                  _NavRow(
+                    icon: Icons.receipt_long_rounded,
+                    iconBg: const Color(0xFF059669), // Emerald
+                    title: 'Transactions',
+                    subtitle: 'Full double-entry ledger & commissions',
+                    onTap: () => context.push(AppRoutes.earningsTransactions),
+                  ),
+                  Divider(color: AppColors.border, height: 1),
+                  _NavRow(
+                    icon: Icons.payments_outlined,
+                    iconBg: const Color(0xFFD97706), // Amber
+                    title: 'Withdrawals',
+                    subtitle: 'Payout requests, UTRs & disbursement status',
+                    onTap: () => context.push(AppRoutes.earningsWithdrawals),
+                  ),
+                  Divider(color: AppColors.border, height: 1),
+                  _NavRow(
+                    icon: Icons.account_balance_outlined,
+                    iconBg: const Color(0xFF6366F1), // Indigo
+                    title: 'Bank Account',
+                    subtitle: 'Manage linked payout destination accounts',
+                    onTap: () => context.push(AppRoutes.earningsBankAccount),
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: AppSpacing.lg),
 
-            // ── 3. Profile & Credentials Section ───────────────────────────
+            // ── 4. Profile & Credentials Section ───────────────────────────
             _SectionHeader(title: 'PROFILE & CREDENTIALS'),
             const SizedBox(height: 6),
             AppCard(

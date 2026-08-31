@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobile/core/storage/token_storage.dart';
+import 'package:mobile/features/onboarding/data/onboarding_storage.dart';
 import 'package:mobile/features/auth/data/auth_api.dart';
 import 'package:mobile/features/auth/data/auth_repository.dart';
 import 'package:mobile/features/auth/domain/auth_user.dart';
@@ -98,9 +99,24 @@ class FakeAuthRepository extends AuthRepository {
   }
 }
 
+class FakeOnboardingStorage extends OnboardingStorage {
+  FakeOnboardingStorage({this.completed = true});
+  bool completed;
+
+  @override
+  Future<bool> hasCompletedOnboarding() async => completed;
+
+  @override
+  Future<void> setOnboardingCompleted() async => completed = true;
+
+  @override
+  Future<void> clear() async => completed = false;
+}
+
 void main() {
   late MockTokenStorage mockTokenStorage;
   late FakeAuthRepository fakeAuthRepository;
+  late FakeOnboardingStorage fakeOnboardingStorage;
 
   setUp(() {
     mockTokenStorage = MockTokenStorage();
@@ -108,6 +124,7 @@ void main() {
       authApi: AuthApi(Dio()),
       tokenStorage: mockTokenStorage,
     );
+    fakeOnboardingStorage = FakeOnboardingStorage(completed: true);
   });
 
   Widget createTestWidget({String initialLocation = AppRoutes.login}) {
@@ -115,6 +132,7 @@ void main() {
       overrides: [
         tokenStorageProvider.overrideWithValue(mockTokenStorage),
         authRepositoryProvider.overrideWithValue(fakeAuthRepository),
+        onboardingStorageProvider.overrideWithValue(fakeOnboardingStorage),
       ],
       child: Consumer(
         builder: (context, ref, _) {
@@ -165,8 +183,24 @@ void main() {
       await tester.tap(createAccountLink);
       await tester.pumpAndSettle();
 
-      expect(find.text('Join the Workforce Platform'), findsOneWidget);
-      expect(find.text('Create your technician account to start onboarding'), findsOneWidget);
+      expect(find.text('Create Technician'), findsOneWidget);
+      expect(find.text('Create your account and start your workforce journey.'), findsOneWidget);
+    });
+
+    testWidgets('LoginScreen does not render any debug buttons in UI',
+        (tester) async {
+      tester.view.physicalSize = const Size(800, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() => tester.view.resetPhysicalSize());
+      addTearDown(() => tester.view.resetDevicePixelRatio());
+
+      fakeOnboardingStorage.completed = true;
+
+      await tester.pumpWidget(createTestWidget());
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('debug_reset_onboarding_button')), findsNothing);
+      expect(find.textContaining('DEBUG:'), findsNothing);
     });
   });
 
@@ -189,7 +223,7 @@ void main() {
       expect(find.textContaining('Email Address'), findsOneWidget);
       expect(find.textContaining('Password'), findsWidgets);
       expect(find.textContaining('Confirm Password'), findsOneWidget);
-      expect(find.text('Create Account & Start Onboarding'), findsOneWidget);
+      expect(find.text('Create Account & Continue'), findsOneWidget);
       expect(find.text('Already have an account? '), findsOneWidget);
       expect(find.text('Sign In'), findsOneWidget);
       expect(find.textContaining('CALDIM ENGINEERING'), findsOneWidget);
@@ -207,7 +241,7 @@ void main() {
       await tester.tap(find.text('Create Account'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Join the Workforce Platform'), findsOneWidget);
+      expect(find.text('Create Technician'), findsOneWidget);
 
       await tester.tap(find.text('Sign In'));
       await tester.pumpAndSettle();
@@ -227,7 +261,7 @@ void main() {
       await tester.tap(find.text('Create Account'));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Create Account & Start Onboarding'));
+      await tester.tap(find.text('Create Account & Continue'));
       await tester.pumpAndSettle();
 
       expect(find.text('First name required'), findsOneWidget);
@@ -255,7 +289,7 @@ void main() {
       await tester.enterText(textFields.at(4), 'Password123');
       await tester.enterText(textFields.at(5), 'Password123');
 
-      await tester.tap(find.text('Create Account & Start Onboarding'));
+      await tester.tap(find.text('Create Account & Continue'));
       await tester.pumpAndSettle();
 
       expect(find.text('Enter a valid email address'), findsOneWidget);
@@ -280,7 +314,7 @@ void main() {
       await tester.enterText(textFields.at(4), '123');
       await tester.enterText(textFields.at(5), '123');
 
-      await tester.tap(find.text('Create Account & Start Onboarding'));
+      await tester.tap(find.text('Create Account & Continue'));
       await tester.pumpAndSettle();
 
       expect(find.text('Password must be at least 6 characters'), findsOneWidget);
@@ -305,7 +339,7 @@ void main() {
       await tester.enterText(textFields.at(4), 'Password123');
       await tester.enterText(textFields.at(5), 'DifferentPassword');
 
-      await tester.tap(find.text('Create Account & Start Onboarding'));
+      await tester.tap(find.text('Create Account & Continue'));
       await tester.pumpAndSettle();
 
       expect(find.text('Passwords do not match'), findsOneWidget);
@@ -354,7 +388,7 @@ void main() {
       await tester.enterText(textFields.at(4), 'Secret123');
       await tester.enterText(textFields.at(5), 'Secret123');
 
-      await tester.tap(find.text('Create Account & Start Onboarding'));
+      await tester.tap(find.text('Create Account & Continue'));
       await tester.pumpAndSettle();
 
       // Verify payload passed to backend repository

@@ -22,6 +22,8 @@ class AdminDrawer extends ConsumerStatefulWidget {
 class _AdminDrawerState extends ConsumerState<AdminDrawer> {
   bool _workforceExpanded = true;
   bool _operationsExpanded = true;
+  bool _financeExpanded = true;
+  bool _monitoringExpanded = true;
 
   @override
   Widget build(BuildContext context) {
@@ -32,7 +34,10 @@ class _AdminDrawerState extends ConsumerState<AdminDrawer> {
     final email = user?.email ?? '';
 
     // Active route detection
-    final currentLocation = GoRouterState.of(context).matchedLocation;
+    String currentLocation = '';
+    try {
+      currentLocation = GoRouterState.of(context).matchedLocation;
+    } catch (_) {}
 
     return Drawer(
       backgroundColor: Colors.white,
@@ -317,7 +322,88 @@ class _AdminDrawerState extends ConsumerState<AdminDrawer> {
                   const Divider(height: 1),
                   const SizedBox(height: AppSpacing.xs),
 
-                  // 4. REPORTS
+                  // 4. FINANCE GROUP
+                  _DrawerGroupHeader(
+                    title: 'FINANCE',
+                    isExpanded: _financeExpanded,
+                    onToggle: () => setState(() => _financeExpanded = !_financeExpanded),
+                  ),
+                  if (_financeExpanded) ...[
+                    _DrawerNavItem(
+                      icon: Icons.account_balance_wallet_rounded,
+                      iconColor: const Color(0xFF004E89),
+                      label: 'Wallets',
+                      route: '/admin/finance/wallets',
+                      isActive: currentLocation.startsWith('/admin/finance/wallets'),
+                      onTap: () {
+                        Navigator.of(context).pop();
+                        context.go('/admin/finance/wallets');
+                      },
+                    ),
+                    _DrawerNavItem(
+                      icon: Icons.receipt_long_rounded,
+                      iconColor: const Color(0xFF0D9488),
+                      label: 'Transactions',
+                      route: '/admin/finance/transactions',
+                      isActive: currentLocation.startsWith('/admin/finance/transactions'),
+                      onTap: () {
+                        Navigator.of(context).pop();
+                        context.go('/admin/finance/transactions');
+                      },
+                    ),
+                    _DrawerNavItem(
+                      icon: Icons.payments_rounded,
+                      iconColor: const Color(0xFF059669),
+                      label: 'Withdrawals',
+                      route: '/admin/finance/withdrawals',
+                      isActive: currentLocation.startsWith('/admin/finance/withdrawals'),
+                      onTap: () {
+                        Navigator.of(context).pop();
+                        context.go('/admin/finance/withdrawals');
+                      },
+                    ),
+                    _DrawerNavItem(
+                      icon: Icons.account_balance_rounded,
+                      iconColor: const Color(0xFF6366F1),
+                      label: 'Bank Accounts',
+                      route: '/admin/finance/bank-accounts',
+                      isActive: currentLocation.startsWith('/admin/finance/bank-accounts'),
+                      onTap: () {
+                        Navigator.of(context).pop();
+                        context.go('/admin/finance/bank-accounts');
+                      },
+                    ),
+                  ],
+
+                  const SizedBox(height: AppSpacing.sm),
+                  const Divider(height: 1),
+                  const SizedBox(height: AppSpacing.xs),
+
+                  // 5. MONITORING GROUP
+                  _DrawerGroupHeader(
+                    title: 'MONITORING',
+                    isExpanded: _monitoringExpanded,
+                    onToggle: () => setState(() => _monitoringExpanded = !_monitoringExpanded),
+                  ),
+                  if (_monitoringExpanded) ...[
+                    _DrawerNavItem(
+                      icon: Icons.data_usage_rounded,
+                      iconColor: const Color(0xFF0284C7),
+                      label: 'Database & Egress',
+                      route: '/admin/monitoring/database-egress',
+                      isActive: currentLocation.startsWith('/admin/monitoring/database-egress'),
+                      onTap: () {
+                        Navigator.of(context).pop();
+                        context.go('/admin/monitoring/database-egress');
+                      },
+                    ),
+                  ],
+
+                  const SizedBox(height: AppSpacing.sm),
+                  const Divider(height: 1),
+                  const SizedBox(height: AppSpacing.xs),
+
+                  // 6. REPORTS
                   _DrawerNavItem(
                     icon: Icons.bar_chart_rounded,
                     label: 'Reports',
@@ -329,7 +415,7 @@ class _AdminDrawerState extends ConsumerState<AdminDrawer> {
                     },
                   ),
 
-                  // 5. SETTINGS
+                  // 7. SETTINGS
                   _DrawerNavItem(
                     icon: Icons.settings_rounded,
                     label: 'Settings',

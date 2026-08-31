@@ -4,6 +4,7 @@ class AppRoutes {
   AppRoutes._();
 
   static const splash = '/';
+  static const onboarding = '/onboarding';
   static const login = '/login';
   static const createAccount = '/create-account';
   static const onboardingWizard = '/onboarding/wizard';
@@ -27,6 +28,13 @@ class AppRoutes {
   static const moreSettingsNotifications = '/more/settings/notifications';
   static const moreSettingsPrivacy = '/more/settings/privacy';
 
+  // Employee Earnings routes
+  static const earnings = '/earnings';
+  static const earningsWallet = '/earnings/wallet';
+  static const earningsTransactions = '/earnings/transactions';
+  static const earningsWithdrawals = '/earnings/withdrawals';
+  static const earningsBankAccount = '/earnings/bank-account';
+
   // Admin / Workforce Operations Center routes
   static const adminHome = '/admin/home';
   static const adminEmployees = '/admin/employees';
@@ -39,4 +47,14 @@ class AppRoutes {
   static const adminLiveWorkforce = '/admin/live-workforce';
   static const adminReports = '/admin/reports';
   static const adminSettings = '/admin/settings';
+
+  // Admin Finance routes
+  static const adminFinanceWallets = '/admin/finance/wallets';
+  static const adminFinanceTransactions = '/admin/finance/transactions';
+  static const adminFinanceWithdrawals = '/admin/finance/withdrawals';
+  static const adminFinanceBankAccounts = '/admin/finance/bank-accounts';
+
+  // Admin Monitoring routes
+  static const adminMonitoringDatabaseEgress = '/admin/monitoring/database-egress';
 }
+

@@ -34,93 +34,56 @@ void main() {
     );
   }
 
-  group('WorkforceShowcaseSection Promotional Carousel Tests', () {
-    testWidgets('renders heading, PageView, image banners, and indicator dots', (tester) async {
+  group('WorkforceShowcaseSection Single-Image Spotlight Tests', () {
+    testWidgets('renders heading and single image without carousel or indicator dots', (tester) async {
       await tester.pumpWidget(buildTestableWidget());
       await tester.pumpAndSettle();
 
-      // Heading
+      // Heading is present
       expect(find.text('SERVICE SPOTLIGHT'), findsOneWidget);
 
-      // PageView with Image assets
-      expect(find.byType(PageView), findsOneWidget);
-      expect(find.byType(Image), findsWidgets);
+      // Single Image asset is present
+      expect(find.byType(Image), findsOneWidget);
+      final imageWidget = tester.widget<Image>(find.byType(Image));
+      expect(imageWidget.fit, equals(BoxFit.cover));
+      expect(imageWidget.alignment, equals(Alignment.center));
 
-      // 3 Indicator dots
-      expect(find.byType(GestureDetector), findsNWidgets(3));
+      // No PageView carousel
+      expect(find.byType(PageView), findsNothing);
+
+      // No indicator dots
+      expect(find.byType(AspectRatio), findsOneWidget);
+      final aspectRatioWidget = tester.widget<AspectRatio>(find.byType(AspectRatio));
+      expect(aspectRatioWidget.aspectRatio, equals(2.0));
     });
 
-    testWidgets('manual swipe transitions between banners correctly', (tester) async {
+    testWidgets('uses correct default image asset', (tester) async {
       await tester.pumpWidget(buildTestableWidget());
       await tester.pumpAndSettle();
 
-      expect(find.byType(PageView), findsOneWidget);
-
-      // Drag left to go to next banner
-      await tester.drag(find.byType(PageView), const Offset(-400, 0));
-      await tester.pumpAndSettle();
-
-      expect(find.byType(Image), findsWidgets);
-
-      // Drag left again to go to third banner
-      await tester.drag(find.byType(PageView), const Offset(-400, 0));
-      await tester.pumpAndSettle();
-
-      expect(find.byType(Image), findsWidgets);
+      final image = tester.widget<Image>(find.byType(Image));
+      final assetImage = image.image as AssetImage;
+      expect(assetImage.assetName, equals(kDefaultServiceSpotlightImage));
+      expect(assetImage.assetName, equals('Technician Homepage.jpg'));
     });
 
-    testWidgets('tapping indicator dot jumps to corresponding banner', (tester) async {
-      await tester.pumpWidget(buildTestableWidget());
-      await tester.pumpAndSettle();
-
-      expect(find.byType(PageView), findsOneWidget);
-
-      // Tap 3rd dot
-      final dots = find.byType(GestureDetector);
-      await tester.tap(dots.at(2));
-      await tester.pumpAndSettle();
-
-      expect(find.byType(Image), findsWidgets);
-    });
-
-    testWidgets('auto-scroll transitions banner automatically after interval', (tester) async {
+    testWidgets('triggers onTap callback when card is tapped', (tester) async {
+      var tapped = false;
       await tester.pumpWidget(
         buildTestableWidget(
-          child: const WorkforceShowcaseSection(
-            autoScrollInterval: Duration(seconds: 4),
+          child: WorkforceShowcaseSection(
+            headingPadding: EdgeInsets.zero,
+            cardsPadding: EdgeInsets.zero,
+            onTap: () => tapped = true,
           ),
         ),
       );
-      await tester.pump();
-
-      expect(find.byType(PageView), findsOneWidget);
-
-      // Advance clock by 4 seconds
-      await tester.pump(const Duration(seconds: 4));
       await tester.pumpAndSettle();
 
-      expect(find.byType(Image), findsWidgets);
-    });
-
-    testWidgets('reduced motion disables auto-advance timer', (tester) async {
-      AppMotion.configure(reducedMotion: true);
-
-      await tester.pumpWidget(
-        buildTestableWidget(
-          child: const WorkforceShowcaseSection(
-            autoScrollInterval: Duration(seconds: 4),
-          ),
-        ),
-      );
-      await tester.pump();
-
-      expect(find.byType(PageView), findsOneWidget);
-
-      // Advance clock by 10 seconds
-      await tester.pump(const Duration(seconds: 10));
+      await tester.tap(find.byType(Image));
       await tester.pumpAndSettle();
 
-      expect(find.byType(PageView), findsOneWidget);
+      expect(tapped, isTrue);
     });
   });
 
@@ -128,12 +91,13 @@ void main() {
     final testWidths = [320.0, 360.0, 412.0, 480.0];
 
     for (final width in testWidths) {
-      testWidgets('renders without RenderFlex overflow at px', (tester) async {
+      testWidgets('renders without RenderFlex overflow at ${width.toInt()}px', (tester) async {
         await tester.pumpWidget(buildTestableWidget(width: width));
         await tester.pumpAndSettle();
 
         expect(tester.takeException(), isNull);
         expect(find.byType(WorkforceShowcaseSection), findsOneWidget);
+        expect(find.byType(Image), findsOneWidget);
       });
     }
 
