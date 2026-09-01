@@ -990,7 +990,6 @@ def dispatch_job(
     wave_expires_at = wave_created_at + timedelta(minutes=DEFAULT_OFFER_DURATION_MINUTES)
     wave_label = f"Wave {target_wave_number}"
 
-
     created_offers = []
     with transaction.atomic():
         locked_job = ServiceRequest.objects.select_for_update().filter(pk=job_id).first()
