@@ -29,7 +29,7 @@ class Employee(models.Model):
     hire_date = models.DateField(null=True, blank=True)
     date_of_birth = models.DateField(null=True, blank=True)
     assigned_job_site_id = models.IntegerField(null=True, blank=True, db_column="assigned_job_site_id")
-    company = models.ForeignKey('companies.Company', on_delete=models.CASCADE, related_name="employees")
+    company = models.ForeignKey('companies.Company', on_delete=models.SET_NULL, null=True, blank=True, related_name="employees")
     country = models.CharField(max_length=2, blank=True, null=True)
     state = models.CharField(max_length=100, blank=True, null=True)
     department = models.CharField(max_length=100, blank=True, null=True)
@@ -78,6 +78,20 @@ class Employee(models.Model):
 
     def __str__(self):
         return f"{self.user.get_full_name()} ({self.employee_id or 'No ID'})"
+
+    @property
+    def provider(self):
+        """Semantic alias: employee.provider -> employee.company"""
+        return self.company
+
+    @provider.setter
+    def provider(self, val):
+        self.company = val
+
+    @property
+    def is_independent(self):
+        return self.company_id is None
+
 
 
 class PresenceLog(models.Model):

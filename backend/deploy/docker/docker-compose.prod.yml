@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  # ─── REDIS (In-Memory Live Tracking & Reliable Dispatch Queue) ───────────────
+  redis:
+    image: redis:8-alpine
+    container_name: workforce-prod-redis
+    restart: always
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - ../redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis_data:/data
+    # SECURITY: Bind strictly to loopback (127.0.0.1) — NEVER 0.0.0.0!
+    ports:
+      - "127.0.0.1:6379:6379"
+    networks:
+      - workforce-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ─── BACKEND API (Django REST Framework + ASGI SSE Server) ────────────────────
+  backend:
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+    container_name: workforce-prod-backend
+    restart: always
+    env_file:
+      - ../../.env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DJANGO_SETTINGS_MODULE=workforce_core.settings
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8001:8001"
+    networks:
+      - workforce-internal
+
+  # ─── DISPATCH WORKER (Continuous Stream Consumer) ────────────────────────────
+  dispatch-worker:
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+    container_name: workforce-prod-dispatch-worker
+    restart: always
+    command: ["python", "manage.py", "dispatch_worker", "--batch-size", "10", "--block-ms", "500"]
+    env_file:
+      - ../../.env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DJANGO_SETTINGS_MODULE=workforce_core.settings
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - workforce-internal
+
+volumes:
+  redis_data:
+    driver: local
+
+networks:
+  workforce-internal:
+    driver: bridge

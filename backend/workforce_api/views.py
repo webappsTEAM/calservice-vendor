@@ -13,7 +13,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.files.storage import default_storage
 from django.db import models, transaction
-from django.db.models import Q
+from django.db.models import Q, Count, Sum, Avg, Exists, OuterRef
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +41,8 @@ from time_tracking.geo import evaluate
 from datetime import timedelta
 import secrets
 from django.contrib.auth.hashers import make_password, check_password
-from accounts.permissions import is_admin_role
-from .permissions import IsWorkforceAdmin, IsWorkforceEmployee, IsApprovedTechnician
+from accounts.permissions import is_admin_role, is_superadmin, is_service_provider_admin, is_workforce_admin, is_workforce_employee
+from .permissions import IsWorkforceAdmin, IsWorkforceEmployee, IsApprovedTechnician, IsSuperadmin, IsServiceProviderAdmin
 from .services.registration import (
     get_employee_registration_status,
     get_employee_onboarding_dict,
@@ -178,33 +178,45 @@ class WorkforceSignupView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        with transaction.atomic():
-            company_id = request.data.get("company_id")
-            company_slug = request.data.get("company_slug")
-            company = None
-            if company_id:
+        account_type = str(data.get("account_type") or request.data.get("account_type") or "independent").strip().lower()
+        if account_type in ["service_provider", "organization"]:
+            return Response(
+                {"error": "To register as a Service Provider, please use the Service Provider registration endpoint.", "code": "USE_SERVICE_PROVIDER_SIGNUP"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        provider_id = data.get("provider_id") or data.get("company_id") or request.data.get("provider_id") or request.data.get("company_id")
+        provider_slug = data.get("provider_slug") or data.get("company_slug") or request.data.get("provider_slug") or request.data.get("company_slug")
+
+        is_provider_technician = account_type in ["provider_technician", "provider"]
+        target_provider = None
+
+        if is_provider_technician:
+            if not provider_id and not provider_slug:
+                return Response(
+                    {"error": "Provider selection is mandatory when joining a Service Provider.", "code": "PROVIDER_SELECTION_REQUIRED"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if provider_id:
                 try:
-                    company = Company.objects.filter(pk=int(company_id), is_active=True).first()
+                    target_provider = Company.objects.filter(pk=int(provider_id), is_active=True).first()
                 except (ValueError, TypeError):
                     pass
-            if not company and company_slug:
-                company = Company.objects.filter(slug=company_slug, is_active=True).first()
-            if not company:
-                company = Company.objects.filter(slug="calservices", is_active=True).first()
-            if not company:
-                region, _ = Region.objects.get_or_create(
-                    code="IN",
-                    defaults={"name": "India", "currency": "INR", "currency_symbol": "₹"},
-                )
-                company = Company.objects.create(
-                    company_name="CalServices Operations",
-                    display_id="CALS",
-                    slug="calservices",
-                    primary_country="IN",
-                    region=region,
-                    is_active=True,
-                )
+            if not target_provider and provider_slug:
+                target_provider = Company.objects.filter(slug=str(provider_slug).strip(), is_active=True).first()
 
+            if not target_provider:
+                return Response(
+                    {"error": "Please select a valid active Service Provider.", "code": "INVALID_SERVICE_PROVIDER"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            target_provider = None
+
+
+        from .models import WorkforceProviderJoinRequest
+
+        with transaction.atomic():
             username_candidate = data["email"].split("@")[0].lower()
             username = username_candidate
             counter = 1
@@ -212,6 +224,9 @@ class WorkforceSignupView(APIView):
                 username = f"{username_candidate}_{counter}"
                 counter += 1
 
+            # IMPORTANT ARCHITECTURAL RULE:
+            # During signup, both independent technicians and technicians requesting to join a provider
+            # MUST be created with company=None! Membership is only granted upon provider approval.
             user = User.objects.create(
                 username=username,
                 email=data["email"],
@@ -220,7 +235,7 @@ class WorkforceSignupView(APIView):
                 first_name=data["first_name"],
                 last_name=data.get("last_name", ""),
                 role="employee",
-                company=company,
+                company=None,
                 is_active=True,
                 totp_secret="",
                 bio="",
@@ -228,10 +243,11 @@ class WorkforceSignupView(APIView):
             user.set_password(data["password"])
             user.save()
 
-            employee_id = generate_next_employee_id(company)
+            employee_id = generate_next_employee_id(None)
+
             employee = Employee.objects.create(
                 user=user,
-                company=company,
+                company=None,
                 employee_id=employee_id,
                 title="Technician Candidate",
                 exempt_status="non_exempt",
@@ -243,6 +259,8 @@ class WorkforceSignupView(APIView):
                     "onboarding": {
                         "status": "not_started",
                         "step": 1,
+                        "account_type": "provider" if target_provider else "independent",
+                        "join_request": None,
                         "draft": {
                             "personal": {
                                 "first_name": user.first_name,
@@ -261,8 +279,33 @@ class WorkforceSignupView(APIView):
                 },
             )
 
+            if target_provider:
+                join_request_obj = WorkforceProviderJoinRequest.objects.create(
+                    technician=employee,
+                    provider=target_provider,
+                    status=WorkforceProviderJoinRequest.Status.PENDING,
+                )
+                now_iso = timezone.now().isoformat()
+                bank_details = employee.bank_details or {}
+                onboarding = bank_details.get("onboarding", {})
+                onboarding["join_request"] = {
+                    "id": join_request_obj.id,
+                    "provider_id": target_provider.id,
+                    "provider_name": target_provider.company_name,
+                    "provider_display_id": target_provider.display_id,
+                    "provider_slug": target_provider.slug,
+                    "status": "PENDING",
+                    "requested_at": now_iso,
+                    "decided_at": None,
+                    "decided_by": None,
+                    "rejection_reason": "",
+                }
+                bank_details["onboarding"] = onboarding
+                employee.bank_details = bank_details
+                employee.save(update_fields=["bank_details"])
+
         refresh = RefreshToken.for_user(user)
-        refresh["company_id"] = company.id
+        refresh["company_id"] = None
         refresh["role"] = user.role
 
         response = Response(
@@ -278,6 +321,14 @@ class WorkforceSignupView(APIView):
                     "first_name": user.first_name,
                     "last_name": user.last_name,
                     "role": user.role,
+                    "company_id": None,
+                    "company_name": None,
+                    "provider_id": None,
+                    "provider_name": None,
+                    "is_independent": True,
+                    "association_status": "PENDING" if target_provider else "INDEPENDENT",
+                    "requested_provider_id": target_provider.id if target_provider else None,
+                    "requested_provider_name": target_provider.company_name if target_provider else None,
                     "employee_id": employee.employee_id,
                     "registration_status": "not_started",
                 },
@@ -524,29 +575,36 @@ class WorkforceCatalogListView(APIView):
 class WorkforceAdminApplicationsListView(APIView):
     permission_classes = [IsWorkforceAdmin]
 
-    # ── Status-to-JSONB filter map for DB-side pre-filtering ──────────────────
-    # Django doesn't support filtering on nested JSONB paths in SQLite / older
-    # Postgres configs, so we do one-shot queryset + Python-slice with the
-    # lightweight serializer (zero per-row DB queries) for correctness.
-    # When the candidate count grows large, add a dedicated DB column for status.
-
     def get(self, request):
         status_filter = request.query_params.get("status", "").strip().lower()
         company = resolve_actor_company(request)
+        from django.db.models import Q
+        from .models import WorkforceProviderJoinRequest
 
-        if getattr(request.user, "is_superuser", False):
-            qs = Employee.objects.select_related("user", "company").order_by("-id")
+        if is_superadmin(request.user):
+            company_id_param = request.query_params.get("company_id")
+            if company_id_param:
+                try:
+                    cid = int(company_id_param)
+                    qs = Employee.objects.filter(
+                        Q(company_id=cid) |
+                        Q(provider_join_requests__provider_id=cid, provider_join_requests__status="PENDING")
+                    ).distinct().select_related("user", "company").order_by("-id")
+                except (ValueError, TypeError):
+                    qs = Employee.objects.select_related("user", "company").order_by("-id")
+            else:
+                qs = Employee.objects.select_related("user", "company").order_by("-id")
         elif company:
-            qs = Employee.objects.filter(company=company).select_related("user", "company").order_by("-id")
+            qs = Employee.objects.filter(
+                Q(company=company) |
+                Q(provider_join_requests__provider=company, provider_join_requests__status="PENDING")
+            ).distinct().select_related("user", "company").order_by("-id")
         else:
             return Response(
                 {"error": "Tenant company context required.", "code": "TENANT_REQUIRED"},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # Serialize using the lightweight list serializer (no per-row DB queries).
-        # bank_details is a JSONB field already fetched in the main queryset —
-        # serialization is pure Python dict-walking, no additional DB roundtrips.
         serializer = WorkforceEmployeeProfileListSerializer(qs, many=True)
         all_data = serializer.data
 
@@ -574,12 +632,15 @@ class WorkforceAdminApplicationDetailView(APIView):
         if not emp:
             return Response({"error": "Candidate dossier not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Cross-company tenant isolation check
-        if not getattr(request.user, "is_superuser", False):
+        # Cross-company tenant isolation check: SUPERADMIN has global access; Provider Admin restricted to own provider or pending join request for own provider.
+        if not is_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
-            if emp.company_id != user_company.id:
+            has_company_match = bool(emp.company_id and emp.company_id == user_company.id)
+            from .models import WorkforceProviderJoinRequest
+            has_join_req_match = WorkforceProviderJoinRequest.objects.filter(technician=emp, provider=user_company, status=WorkforceProviderJoinRequest.Status.PENDING).exists()
+            if not has_company_match and not has_join_req_match:
                 return Response({"error": "Unauthorized cross-company access.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         serializer = WorkforceEmployeeProfileSerializer(emp)
@@ -595,11 +656,11 @@ class WorkforceAdminDocumentVerifyView(APIView):
             return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Cross-company tenant isolation check
-        if not getattr(request.user, "is_superuser", False):
+        if not is_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
-            if emp.company_id != user_company.id:
+            if not emp.company_id or emp.company_id != user_company.id:
                 return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         action = request.data.get("action", "").lower()
@@ -640,15 +701,15 @@ class WorkforceAdminBulkDocumentVerifyView(APIView):
             return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Tenant isolation
-        if not getattr(request.user, "is_superuser", False):
+        if not is_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
-            if emp.company_id != user_company.id:
+            if not emp.company_id or emp.company_id != user_company.id:
                 return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         # Prevent employee from approving their own documents
-        if getattr(request.user, "employee_profile", None) and request.user.employee_profile.id == emp.id and not getattr(request.user, "is_superuser", False):
+        if getattr(request.user, "employee_profile", None) and request.user.employee_profile.id == emp.id and not is_superadmin(request.user):
             return Response({"error": "Employees cannot approve or decide their own documents."}, status=status.HTTP_403_FORBIDDEN)
 
         action = request.data.get("action", "").lower()
@@ -898,15 +959,15 @@ class WorkforceAdminServiceDecideView(APIView):
             return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Tenant isolation
-        if not getattr(request.user, "is_superuser", False):
+        if not is_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
-            if emp.company_id != user_company.id:
+            if not emp.company_id or emp.company_id != user_company.id:
                 return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         # Prevent employee from approving their own request
-        if getattr(request.user, "employee_profile", None) and request.user.employee_profile.id == emp.id and not getattr(request.user, "is_superuser", False):
+        if getattr(request.user, "employee_profile", None) and request.user.employee_profile.id == emp.id and not is_superadmin(request.user):
             return Response({"error": "Employees cannot approve or decide their own service authorizations."}, status=status.HTTP_403_FORBIDDEN)
 
         action = request.data.get("action", "").lower()
@@ -970,15 +1031,15 @@ class WorkforceAdminBulkServiceDecideView(APIView):
             return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Tenant isolation
-        if not getattr(request.user, "is_superuser", False):
+        if not is_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
-            if emp.company_id != user_company.id:
+            if not emp.company_id or emp.company_id != user_company.id:
                 return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         # Prevent employee from approving their own request
-        if getattr(request.user, "employee_profile", None) and request.user.employee_profile.id == emp.id and not getattr(request.user, "is_superuser", False):
+        if getattr(request.user, "employee_profile", None) and request.user.employee_profile.id == emp.id and not is_superadmin(request.user):
             return Response({"error": "Employees cannot approve or decide their own service authorizations."}, status=status.HTTP_403_FORBIDDEN)
 
         action = request.data.get("action", "").lower()
@@ -1062,11 +1123,11 @@ class WorkforceAdminRequestCorrectionView(APIView):
             return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Cross-company tenant isolation check
-        if not getattr(request.user, "is_superuser", False):
+        if not is_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
-            if emp.company_id != user_company.id:
+            if not emp.company_id or emp.company_id != user_company.id:
                 return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         notes = request.data.get("notes", "").strip()
@@ -1093,17 +1154,24 @@ class WorkforceAdminApproveApplicationView(APIView):
     permission_classes = [IsWorkforceAdmin]
 
     def post(self, request, pk):
-        emp = Employee.objects.filter(pk=pk).select_related("user").first()
+        emp = Employee.objects.filter(pk=pk).select_related("user", "company").first()
         if not emp:
             return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        from .models import WorkforceProviderJoinRequest
+        pending_join_req = None
+
         # Cross-company tenant isolation check
-        if not getattr(request.user, "is_superuser", False):
+        if not is_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
-            if emp.company_id != user_company.id:
+            has_company_match = bool(emp.company_id and emp.company_id == user_company.id)
+            pending_join_req = WorkforceProviderJoinRequest.objects.filter(technician=emp, provider=user_company, status=WorkforceProviderJoinRequest.Status.PENDING).first()
+            if not has_company_match and not pending_join_req:
                 return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        else:
+            pending_join_req = WorkforceProviderJoinRequest.objects.filter(technician=emp, status=WorkforceProviderJoinRequest.Status.PENDING).first()
 
         if not emp.is_active or not emp.user.is_active:
             return Response({"error": "Cannot approve candidate: User account is inactive."}, status=status.HTTP_400_BAD_REQUEST)
@@ -1130,16 +1198,37 @@ class WorkforceAdminApproveApplicationView(APIView):
                 "error": "Cannot approve candidate: At least ONE requested service must be marked as APPROVED."
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        onboarding["status"] = "approved"
-        onboarding["approved_at"] = timezone.now().isoformat()
-        onboarding["approved_by"] = request.user.username
+        with transaction.atomic():
+            now = timezone.now()
+            now_iso = now.isoformat()
 
-        bank_details["onboarding"] = onboarding
-        emp.bank_details = bank_details
-        emp.is_active = True
-        emp.is_online = False
-        emp.current_availability = "offline"
-        emp.save()
+            # If there was a pending join request and employee has no company yet, assign company atomically
+            if not emp.company and pending_join_req:
+                emp.company = pending_join_req.provider
+                if emp.user:
+                    emp.user.company = pending_join_req.provider
+                    emp.user.save(update_fields=["company"])
+                pending_join_req.status = WorkforceProviderJoinRequest.Status.APPROVED
+                pending_join_req.decided_at = now
+                pending_join_req.decided_by = request.user
+                pending_join_req.save()
+
+                join_dict = onboarding.get("join_request", {}) or {}
+                join_dict["status"] = "APPROVED"
+                join_dict["decided_at"] = now_iso
+                join_dict["decided_by"] = request.user.username
+                onboarding["join_request"] = join_dict
+
+            onboarding["status"] = "approved"
+            onboarding["approved_at"] = now_iso
+            onboarding["approved_by"] = request.user.username
+
+            bank_details["onboarding"] = onboarding
+            emp.bank_details = bank_details
+            emp.is_active = True
+            emp.is_online = False
+            emp.current_availability = "offline"
+            emp.save()
 
         return Response({
             "message": "Candidate successfully approved! Operational status set to OFFLINE.",
@@ -1153,38 +1242,66 @@ class WorkforceAdminRejectApplicationView(APIView):
     permission_classes = [IsWorkforceAdmin]
 
     def post(self, request, pk):
-        emp = Employee.objects.filter(pk=pk).first()
+        emp = Employee.objects.filter(pk=pk).select_related("user", "company").first()
         if not emp:
             return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        from .models import WorkforceProviderJoinRequest
+        pending_join_req = None
+
         # Cross-company tenant isolation check
-        if not getattr(request.user, "is_superuser", False):
+        if not is_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
-            if emp.company_id != user_company.id:
+            has_company_match = bool(emp.company_id and emp.company_id == user_company.id)
+            pending_join_req = WorkforceProviderJoinRequest.objects.filter(technician=emp, provider=user_company, status=WorkforceProviderJoinRequest.Status.PENDING).first()
+            if not has_company_match and not pending_join_req:
                 return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        else:
+            pending_join_req = WorkforceProviderJoinRequest.objects.filter(technician=emp, status=WorkforceProviderJoinRequest.Status.PENDING).first()
 
         reason = request.data.get("reason", "Qualifications or documents did not meet verification criteria.")
 
-        bank_details = emp.bank_details or {}
-        onboarding = bank_details.get("onboarding", {})
+        with transaction.atomic():
+            now = timezone.now()
+            now_iso = now.isoformat()
 
-        onboarding["status"] = "rejected"
-        onboarding["rejection_reason"] = reason
-        onboarding["rejected_at"] = timezone.now().isoformat()
+            if pending_join_req:
+                pending_join_req.status = WorkforceProviderJoinRequest.Status.REJECTED
+                pending_join_req.decided_at = now
+                pending_join_req.decided_by = request.user
+                pending_join_req.rejection_reason = reason
+                pending_join_req.save()
 
-        bank_details["onboarding"] = onboarding
-        emp.bank_details = bank_details
-        emp.is_online = False
-        emp.current_availability = "offline"
-        emp.save()
+            bank_details = emp.bank_details or {}
+            onboarding = bank_details.get("onboarding", {})
+
+            onboarding["status"] = "rejected"
+            onboarding["rejection_reason"] = reason
+            onboarding["rejected_at"] = now_iso
+            onboarding["rejected_by"] = request.user.username
+
+            if pending_join_req:
+                join_dict = onboarding.get("join_request", {}) or {}
+                join_dict["status"] = "REJECTED"
+                join_dict["rejection_reason"] = reason
+                join_dict["decided_at"] = now_iso
+                join_dict["decided_by"] = request.user.username
+                onboarding["join_request"] = join_dict
+
+            bank_details["onboarding"] = onboarding
+            emp.bank_details = bank_details
+            emp.is_online = False
+            emp.current_availability = "offline"
+            emp.save()
 
         return Response({
             "message": "Candidate application rejected.",
             "status": "rejected",
             "reason": reason,
         }, status=status.HTTP_200_OK)
+
 
 
 # ─── 7. Decoupled Presence & Availability Toggle (Rule 3) ──────────────────────
@@ -1223,6 +1340,13 @@ class WorkforcePresenceToggleView(APIView):
         emp.save(update_fields=["is_online"])
         reconcile_employee_availability(emp)
         emp.refresh_from_db(fields=["current_availability", "is_online"])
+
+        if not emp.is_online:
+            try:
+                from workforce_api.services.redis_dispatch import remove_technician_from_dispatch_geo
+                remove_technician_from_dispatch_geo(emp.id)
+            except Exception as geo_rem_err:
+                logger.debug(f"[PRESENCE_TOGGLE_GEO_REM_ERR] {geo_rem_err}")
 
         if emp.is_online and emp.current_availability == "available":
             try:
@@ -1292,21 +1416,32 @@ class WorkforceJobListView(APIView):
         emp = getattr(user, "employee_profile", None)
         company = emp.company if emp else getattr(user, "company", None)
 
-        if is_admin_role(user):
+        is_admin_view = (request.query_params.get("view_as") == "admin" or request.query_params.get("scope") == "admin")
+        if is_admin_role(user) and (not emp or is_admin_view):
             # Admin list path: use lightweight list serializer.
             # The admin jobs page only renders a table row — it does not need
             # cart_data, extensions, payments, or wave details per row.
             # Detail data is loaded separately when the admin opens a job.
             status_filter = request.query_params.get("status", "").strip().lower()
-            if user.is_superuser:
-                qs = ServiceRequest.objects.select_related("assigned_employee", "assigned_employee__user").order_by("-created_at")
+            if is_superadmin(user):
+                company_id_param = request.query_params.get("company_id")
+                if company_id_param:
+                    try:
+                        qs = ServiceRequest.objects.filter(company_id=int(company_id_param)).select_related("assigned_employee", "assigned_employee__user").order_by("-created_at")
+                    except (ValueError, TypeError):
+                        qs = ServiceRequest.objects.select_related("assigned_employee", "assigned_employee__user").order_by("-created_at")
+                else:
+                    qs = ServiceRequest.objects.select_related("assigned_employee", "assigned_employee__user").order_by("-created_at")
             elif company:
                 qs = ServiceRequest.objects.filter(company=company).select_related("assigned_employee", "assigned_employee__user").order_by("-created_at")
             else:
                 qs = ServiceRequest.objects.none()
 
             if status_filter and status_filter != "all":
-                qs = qs.filter(status=status_filter)
+                if status_filter == "active":
+                    qs = qs.exclude(status__in=["completed", "cancelled", "unable_to_complete"])
+                else:
+                    qs = qs.filter(status=status_filter)
 
             jobs = qs[:50]
             serializer = WorkforceJobListSerializer(jobs, many=True)
@@ -1317,10 +1452,14 @@ class WorkforceJobListView(APIView):
             from workforce_api.services.workload import ACTIVE_QUEUE_STATUSES, WORKLOAD_OCCUPIED_STATUSES
 
             # Pure read-only: Read valid, unexpired offers exclusively for this employee (visible even if currently busy)
+            # CRITICAL: Job must NOT be assigned to another technician or in post-acceptance state
             offered_job_ids = list(WorkforceJobOffer.objects.filter(
                 employee=emp,
                 status=WorkforceJobOffer.Status.OFFERED,
                 expires_at__gt=now,
+                job__assigned_employee__isnull=True,
+            ).exclude(
+                job__status__in=["accepted", "on_the_way", "arrived", "in_progress", "completed", "cancelled"]
             ).values_list("job_id", flat=True))
 
             try:
@@ -1351,13 +1490,14 @@ class WorkforceJobListView(APIView):
             ) | (
                 Q(id__in=completed_emp_job_sr_ids) & Q(status="completed")
             )
-            # 3. Explicit active unexpired offer to current employee
+            # 3. Explicit active unexpired offer to current employee (must remain unassigned)
             offered_qs = Q(
-                id__in=offered_job_ids
+                id__in=offered_job_ids,
+                assigned_employee__isnull=True,
             )
-            # 4. Explicit active EmployeeJob belonging to current employee
+            # 4. Explicit active EmployeeJob belonging to current employee (must not be assigned to another tech)
             employee_job_active_qs = (
-                Q(id__in=emp_job_sr_ids) & Q(status__in=ACTIVE_QUEUE_STATUSES)
+                Q(id__in=emp_job_sr_ids) & Q(status__in=ACTIVE_QUEUE_STATUSES) & (Q(assigned_employee=emp) | Q(assigned_employee__isnull=True))
             )
 
             status_filter = str(request.query_params.get("status", "active")).lower().strip()
@@ -1367,11 +1507,17 @@ class WorkforceJobListView(APIView):
             elif status_filter == "all":
                 qs = ServiceRequest.objects.filter(
                     assigned_active_qs | completed_qs | offered_qs | employee_job_active_qs
+                ).exclude(
+                    ~Q(assigned_employee=emp) & Q(assigned_employee__isnull=False) & ~Q(id__in=completed_emp_job_sr_ids)
                 )
             else: # "active" default
                 qs = ServiceRequest.objects.filter(
                     assigned_active_qs | offered_qs | employee_job_active_qs
-                ).exclude(status__in=["completed", "cancelled"])
+                ).exclude(
+                    status__in=["completed", "cancelled", "unable_to_complete"]
+                ).exclude(
+                    ~Q(assigned_employee=emp) & Q(assigned_employee__isnull=False)
+                )
 
             qs = qs.select_related("customer", "assigned_employee", "assigned_employee__user", "company")
             qs = qs.distinct().order_by("-updated_at", "-created_at")
@@ -1454,9 +1600,9 @@ class WorkforceJobTransitionView(APIView):
                 has_emp_job = False
             if not emp or (job.assigned_employee != emp and not has_emp_job):
                 return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not emp.company_id or not job.company_id or emp.company_id != job.company_id:
+            if emp.company_id != job.company_id:
                 return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
-        elif not getattr(request.user, "is_superuser", False):
+        elif not is_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
@@ -1500,16 +1646,48 @@ class WorkforceJobProofView(APIView):
 
         emp = getattr(request.user, "employee_profile", None)
         if not is_admin_role(request.user):
-            if not emp or job.assigned_employee != emp:
+            from service_requests.models import EmployeeJob
+            if not emp:
+                return Response({"error": "Unauthorized: Technician profile not found."}, status=status.HTTP_403_FORBIDDEN)
+
+            # Prevent stale EmployeeJob from authorizing a different technician when job is already assigned
+            if job.assigned_employee and job.assigned_employee != emp:
                 return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not emp.company_id or not job.company_id or emp.company_id != job.company_id:
+
+            is_assigned = (job.assigned_employee == emp)
+            has_primary_job = EmployeeJob.objects.filter(
+                service_request=job,
+                employee=emp,
+                is_primary=True,
+                status__in=["ACCEPTED", "IN_PROGRESS"],
+            ).exists()
+
+            if not is_assigned and not has_primary_job:
+                return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
+            if emp.company_id and job.company_id and emp.company_id != job.company_id:
                 return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
-        elif not getattr(request.user, "is_superuser", False):
+
+            if not job.assigned_employee and has_primary_job:
+                job.assigned_employee = emp
+                job.save(update_fields=["assigned_employee"])
+        elif not is_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
             if not job.company_id or user_company.id != job.company_id:
                 return Response({"error": "Unauthorized: Job belongs to another vendor company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
+        # Idempotency check: If job is already COMPLETED, return current state safely without re-triggering
+        if job.status == "completed":
+            pmt = JobPayment.objects.filter(job=job).first()
+            proof = getattr(job, "post_service_proof", None) or PostServiceProof.objects.filter(job=job).first()
+            return Response({
+                "message": "Job is already COMPLETED with proof submitted.",
+                "job_id": job.id,
+                "status": "completed",
+                "payment_status": pmt.payment_status if pmt else "PAID",
+                "is_submitted": proof.is_submitted if proof else True,
+            }, status=status.HTTP_200_OK)
 
         if job.status not in ["in_progress", "proof_submitted"]:
             return Response({"error": f"Cannot submit completion proof for job in status '{job.status}'. Expected 'in_progress'."}, status=status.HTTP_400_BAD_REQUEST)
@@ -1541,8 +1719,9 @@ class WorkforceJobProofView(APIView):
         proof.check_submission()
         proof.save()
 
-        # Step 1: Transition job to proof_submitted (service completed)
-        apply_transition(job, "proof_submitted", actor=request.user)
+        # Step 1: Idempotently transition job to proof_submitted (service completed)
+        if job.status != "proof_submitted":
+            apply_transition(job, "proof_submitted", actor=request.user)
 
         # Step 2: Check payment state machine. If payment is already PAID (e.g. verified ONLINE), close the job.
         pmt = JobPayment.objects.filter(job=job).first()
@@ -1550,7 +1729,8 @@ class WorkforceJobProofView(APIView):
         
         if is_paid:
             try:
-                apply_transition(job, "completed", actor=request.user)
+                if job.status != "completed":
+                    apply_transition(job, "completed", actor=request.user)
                 from workforce_api.services.workload import reconcile_employee_availability
                 if emp:
                     reconcile_employee_availability(emp)
@@ -1588,9 +1768,9 @@ class WorkforceJobPaymentDetailView(APIView):
         if not is_admin_role(request.user):
             if not emp or job.assigned_employee != emp:
                 return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not emp.company_id or not job.company_id or emp.company_id != job.company_id:
+            if emp.company_id != job.company_id:
                 return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
-        elif not getattr(request.user, "is_superuser", False):
+        elif not is_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
@@ -1638,9 +1818,9 @@ class WorkforceJobCashCollectView(APIView):
         if not is_admin_role(request.user):
             if not emp or job.assigned_employee != emp:
                 return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not emp.company_id or not job.company_id or emp.company_id != job.company_id:
+            if emp.company_id != job.company_id:
                 return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
-        elif not getattr(request.user, "is_superuser", False):
+        elif not is_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
@@ -2025,7 +2205,7 @@ class WorkforceDispatchEligibleListView(APIView):
             if not job:
                 return Response({"error": f"Job #{job_id} not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
-            if not getattr(request.user, "is_superuser", False):
+            if not is_superadmin(request.user):
                 user_company = resolve_actor_company(request)
                 if not user_company or not job.company_id or user_company.id != job.company_id:
                     return Response({"error": "Unauthorized cross-company job query.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
@@ -2050,7 +2230,7 @@ class WorkforceDispatchEligibleListView(APIView):
 
         candidates_qs = Employee.objects.filter(is_active=True).select_related("user", "company")
         user_company = None  # resolved below; initialize here to avoid NameError in superuser branch
-        if not getattr(request.user, "is_superuser", False):
+        if not is_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
@@ -2251,7 +2431,7 @@ class WorkforceDispatchAssignView(APIView):
                 return Response({"error": "Employee profile not found.", "code": "EMPLOYEE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
             # Tenant isolation check
-            if not getattr(request.user, "is_superuser", False):
+            if not is_superadmin(request.user):
                 user_company = resolve_actor_company(request)
                 if not user_company or not job.company_id or user_company.id != job.company_id:
                     return Response({"error": "Unauthorized: Cross-company job dispatch forbidden.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
@@ -2415,6 +2595,13 @@ class WorkforceJobAcceptOfferView(APIView):
             if not emp_obj:
                 return Response({"error": "Employee profile not found.", "code": "PROFILE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
+            # Prevent acceptance on terminal jobs
+            if job_obj.status in ["completed", "cancelled", "unable_to_complete"]:
+                return Response({
+                    "error": f"Cannot accept job: Job #{job_obj.id} is already {job_obj.status}.",
+                    "code": "JOB_TERMINAL_STATE"
+                }, status=status.HTTP_400_BAD_REQUEST)
+
             # Cross-company tenant isolation check
             if job_obj.company_id and emp_obj.company_id and emp_obj.company_id != job_obj.company_id:
                 return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
@@ -2427,8 +2614,8 @@ class WorkforceJobAcceptOfferView(APIView):
                     "status": job_obj.status,
                 }, status=status.HTTP_200_OK)
 
-            # Reject acceptance if assigned to another employee (Simultaneous Acceptance Winner-Takes-All)
-            if job_obj.assigned_employee and job_obj.assigned_employee != emp_obj and job_obj.status in ["accepted", "on_the_way", "arrived", "in_progress", "completed"]:
+            # Reject acceptance if already assigned to another employee (Simultaneous Acceptance Winner-Takes-All)
+            if job_obj.assigned_employee and job_obj.assigned_employee != emp_obj:
                 return Response({
                     "error": "Cannot accept job: Job has already been assigned and accepted by another technician.",
                     "code": "JOB_ALREADY_ACCEPTED"
@@ -2449,14 +2636,14 @@ class WorkforceJobAcceptOfferView(APIView):
                     "message": "This job has already been accepted by another professional."
                 }, status=status.HTTP_409_CONFLICT)
 
-            if not offer or offer.status != WorkforceJobOffer.Status.OFFERED:
-                has_employee_job = EmployeeJob.objects.filter(service_request=job_obj, employee=emp_obj).exists()
-                is_direct_assigned = (job_obj.assigned_employee == emp_obj)
-                if not has_employee_job and not is_direct_assigned:
-                    return Response({
-                        "error": "No active job offer or assignment found for this technician.",
-                        "code": "NO_ACTIVE_OFFER"
-                    }, status=status.HTTP_400_BAD_REQUEST)
+            # Stale EmployeeJob cannot bypass offer check; requires valid OFFERED offer or legitimate direct assignment
+            has_valid_offer = (offer and offer.status == WorkforceJobOffer.Status.OFFERED)
+            is_direct_assigned = (job_obj.assigned_employee == emp_obj)
+            if not has_valid_offer and not is_direct_assigned:
+                return Response({
+                    "error": "No active job offer or assignment found for this technician.",
+                    "code": "NO_ACTIVE_OFFER"
+                }, status=status.HTTP_400_BAD_REQUEST)
 
             now = timezone.now()
 
@@ -2496,17 +2683,38 @@ class WorkforceJobAcceptOfferView(APIView):
                 offer.status = "ACCEPTED"
                 offer.save(update_fields=["status"])
 
+            import secrets
             job_obj.assigned_employee = emp_obj
             job_obj.status = "accepted"
-            update_flds = ["assigned_employee", "status", "updated_at"]
+            job_obj.technician_id = emp_obj.user_id
+            job_obj.technician_name = emp_obj.user.get_full_name() or emp_obj.user.username
+            job_obj.technician_phone = emp_obj.phone or getattr(emp_obj.user, "phone", "") or ""
+            profile_img = getattr(emp_obj, "profile_photo", None) or getattr(emp_obj, "photo", "")
+            job_obj.technician_photo = profile_img.url if hasattr(profile_img, "url") else str(profile_img or "")
+            job_obj.technician_rating = getattr(emp_obj, "rating", None)
+            job_obj.accepted_at = now
+            if not job_obj.tracking_token:
+                import uuid
+                job_obj.tracking_token = uuid.uuid4()
+
+            update_flds = [
+                "assigned_employee", "status", "technician_id", "technician_name",
+                "technician_phone", "technician_photo", "technician_rating",
+                "accepted_at", "tracking_token", "updated_at"
+            ]
             if not job_obj.company_id and emp_obj.company_id:
                 job_obj.company = emp_obj.company
                 update_flds.append("company")
             job_obj.save(update_fields=update_flds)
 
-            # Atomically mark employee availability as BUSY
+            # Atomically mark employee availability as BUSY and remove from Redis GEO dispatch pool
             emp_obj.current_availability = "busy"
             emp_obj.save(update_fields=["current_availability"])
+            try:
+                from workforce_api.services.redis_dispatch import remove_technician_from_dispatch_geo
+                remove_technician_from_dispatch_geo(emp_obj.id)
+            except Exception as geo_rem_err:
+                logger.debug(f"[OFFER_ACCEPT_GEO_REM_ERR] {geo_rem_err}")
 
             # Mark all competing OFFERED records for the same job as SUPERSEDED_BY_ACCEPTANCE
             WorkforceJobOffer.objects.filter(
@@ -2636,7 +2844,7 @@ class WorkforceJobCancelAssignmentView(APIView):
             return Response({"error": "Employee profile not found.", "code": "PROFILE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
         # Cross-company tenant isolation check
-        if not emp.company_id or not job.company_id or emp.company_id != job.company_id:
+        if emp.company_id != job.company_id:
             return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         # Authorization: must be the currently assigned technician
@@ -3062,9 +3270,9 @@ class WorkforceJobExtensionView(APIView):
         if not is_admin_role(request.user):
             if not emp or job.assigned_employee != emp:
                 return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not emp.company_id or not job.company_id or emp.company_id != job.company_id:
+            if emp.company_id != job.company_id:
                 return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
-        elif not getattr(request.user, "is_superuser", False):
+        elif not is_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
@@ -3084,9 +3292,9 @@ class WorkforceJobExtensionView(APIView):
         if not is_admin_role(request.user):
             if not emp or job.assigned_employee != emp:
                 return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not emp.company_id or not job.company_id or emp.company_id != job.company_id:
+            if emp.company_id != job.company_id:
                 return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
-        elif not getattr(request.user, "is_superuser", False):
+        elif not is_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
@@ -3209,7 +3417,7 @@ class WorkforceAdminExtensionDecideView(APIView):
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Cross-company tenant isolation check
-        if not getattr(request.user, "is_superuser", False):
+        if not is_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
@@ -3295,7 +3503,7 @@ class WorkforceAdminPendingExtensionsListView(APIView):
     permission_classes = [IsWorkforceAdmin]
 
     def get(self, request):
-        if getattr(request.user, "is_superuser", False):
+        if is_superadmin(request.user):
             qs = WorkforceWorkExtension.objects.filter(
                 status__in=[
                     WorkforceWorkExtension.Status.REQUESTED,
@@ -3547,7 +3755,7 @@ class WorkforceAdminAssignSpecialistView(APIView):
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Cross-company tenant isolation check
-        if not getattr(request.user, "is_superuser", False):
+        if not is_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
@@ -3583,11 +3791,13 @@ class WorkforceAdminAssignSpecialistView(APIView):
 
             # Create secondary Job for Technician B (is_primary = False)
             secondary_req_id = f"SR-SPEC-{job.id}-{extension.id}"
-            secondary_job = ServiceRequest.objects.create(
-                request_id=secondary_req_id,
-                company=job.company,
-                customer=job.customer,
-                customer_name=job.customer_name,
+            secondary_job = ServiceRequest.objects.filter(request_id=secondary_req_id).first()
+            if not secondary_job:
+                secondary_job = ServiceRequest.objects.create(
+                    request_id=secondary_req_id,
+                    company=job.company,
+                    customer=job.customer,
+                    customer_name=job.customer_name,
                 phone=job.phone,
                 email=job.email,
                 address=job.address,
@@ -4112,17 +4322,23 @@ class WorkforceTimeTrackingView(APIView):
                 "address": getattr(active_job, "address", ""),
             }
 
+        now_dt = timezone.now()
         open_log = TimeLog.objects.filter(employee=emp, clock_out__isnull=True).prefetch_related("breaks").first()
         if open_log:
             active_break = open_log.breaks.filter(break_end__isnull=True).first()
             shift_status = "on_break" if active_break else "clocked_in"
+            worked_sec = open_log.worked_seconds(as_of=now_dt)
+            break_sec = open_log.break_seconds(as_of=now_dt)
             return Response({
                 "is_clocked_in": True,
                 "has_active_job": bool(active_job),
                 "active_job": active_job_data,
                 "shift_status": shift_status,
+                "server_time": now_dt.isoformat(),
                 "clock_in_time": open_log.clock_in.isoformat(),
                 "clock_out_time": None,
+                "worked_seconds": worked_sec,
+                "break_seconds": break_sec,
                 "active_break": {
                     "id": active_break.id,
                     "break_type": active_break.break_type,
@@ -4145,8 +4361,11 @@ class WorkforceTimeTrackingView(APIView):
             "has_active_job": bool(active_job),
             "active_job": active_job_data,
             "shift_status": "clocked_out",
+            "server_time": now_dt.isoformat(),
             "clock_in_time": latest_log.clock_in.isoformat() if latest_log else None,
             "clock_out_time": latest_log.clock_out.isoformat() if latest_log else None,
+            "worked_seconds": latest_log.worked_seconds() if latest_log else 0,
+            "break_seconds": latest_log.break_seconds() if latest_log else 0,
             "active_break": None,
             "time_log": TimeLogSerializer(latest_log).data if latest_log else None,
             "logs": [],
@@ -4304,7 +4523,7 @@ class WorkforceAdminLeaveDecideView(APIView):
         if not emp:
             return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if not getattr(request.user, "is_superuser", False):
+        if not is_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
@@ -4854,6 +5073,23 @@ class WorkforceLocationUpdateView(APIView):
                 # Single authoritative save per session
                 session.save()
 
+                # Update ServiceRequest authoritative live telemetry snapshot
+                try:
+                    job.technician_latitude = round(lat_f, 7)
+                    job.technician_longitude = round(lng_f, 7)
+                    job.technician_accuracy = round(acc_f, 2) if acc_f is not None else None
+                    job.technician_heading = round(heading_f, 1) if heading_f is not None else None
+                    job.technician_speed = round(speed_f, 2) if speed_f is not None else None
+                    job.technician_location_updated_at = captured_dt
+                    job.technician_last_seen_at = now
+                    job.save(update_fields=[
+                        "technician_latitude", "technician_longitude", "technician_accuracy",
+                        "technician_heading", "technician_speed", "technician_location_updated_at",
+                        "technician_last_seen_at", "updated_at"
+                    ])
+                except Exception as snap_err:
+                    logger.warning(f"[SERVICE_REQUEST_SNAPSHOT_UPDATE_ERR] Job #{job.id}: {snap_err}")
+
                 # Realtime event publication with throttling & enrichment
                 current_state_key = f"{job.status}:{geofence_st}:{movement_st}"
                 time_since_last_event = (now - session.last_event_emitted_at).total_seconds() if session.last_event_emitted_at else 999.0
@@ -4864,52 +5100,74 @@ class WorkforceLocationUpdateView(APIView):
                     or time_since_last_event >= 8.0
                 )
 
-                if job.customer and should_emit_event:
-                    try:
-                        freshness_st = _compute_freshness_state(gps_age_s)
-                        WorkforceEventLog.objects.create(
-                            user=job.customer,
-                            event_type="JOB_LOCATION_UPDATE",
-                            payload={
-                                "type": "JOB_LOCATION_UPDATE",
-                                "job_id": job.id,
-                                "company_id": job.company_id,
-                                "employee_id": emp.id,
-                                "employee_name": user.get_full_name() or user.username,
-                                "employee_location": {
-                                    "latitude": round(lat_f, 7),
-                                    "longitude": round(lng_f, 7),
-                                    "accuracy": round(acc_f, 2) if acc_f is not None else None,
-                                    "speed": round(speed_f, 2) if speed_f is not None else None,
-                                    "heading": round(heading_f, 1) if heading_f is not None else None,
-                                    "captured_at": captured_dt.isoformat(),
-                                    "updated_at": now.isoformat(),
-                                },
-                                "status": job.status.upper(),
-                                "distance_m": round(dist_m, 1),
-                                "distance_km": round(dist_m / 1000.0, 2),
-                                "movement_status": movement_st,
-                                "geofence_status": geofence_st,
-                                "freshness_state": freshness_st,
-                                "age_seconds": round(gps_age_s, 1),
-                                "geofence_passed": bool(job.status == "arrived" or session.consecutive_arrival_fixes >= 2),
-                            }
-                        )
+                try:
+                    freshness_st = _compute_freshness_state(gps_age_s)
+                    loc_payload = {
+                        "type": "JOB_LOCATION_UPDATE",
+                        "job_id": job.id,
+                        "jobId": job.id,
+                        "company_id": job.company_id,
+                        "employee_id": emp.id,
+                        "employee_name": user.get_full_name() or user.username,
+                        "latitude": round(lat_f, 7),
+                        "longitude": round(lng_f, 7),
+                        "accuracy": round(acc_f, 2) if acc_f is not None else None,
+                        "speed": round(speed_f, 2) if speed_f is not None else None,
+                        "heading": round(heading_f, 1) if heading_f is not None else None,
+                        "captured_at": captured_dt.isoformat(),
+                        "updated_at": now.isoformat(),
+                        "timestamp": captured_dt.isoformat(),
+                        "employee_location": {
+                            "latitude": round(lat_f, 7),
+                            "longitude": round(lng_f, 7),
+                            "accuracy": round(acc_f, 2) if acc_f is not None else None,
+                            "speed": round(speed_f, 2) if speed_f is not None else None,
+                            "heading": round(heading_f, 1) if heading_f is not None else None,
+                            "captured_at": captured_dt.isoformat(),
+                            "updated_at": now.isoformat(),
+                        },
+                        "status": job.status.upper(),
+                        "distance_m": round(dist_m, 1) if dist_m is not None else None,
+                        "distance_km": round(dist_m / 1000.0, 2) if dist_m is not None else None,
+                        "movement_status": movement_st,
+                        "geofence_status": geofence_st,
+                        "freshness_state": freshness_st,
+                        "age_seconds": round(gps_age_s, 1),
+                        "geofence_passed": bool(job.status == "arrived" or session.consecutive_arrival_fixes >= 2),
+                    }
+                    from workforce_api.services.realtime import publish_job_location_update
+                    # Redis current-location and transient PubSub are updated on every valid GPS update.
+                    # PostgreSQL WorkforceEventLog is created ONLY when should_emit_event is True (throttled).
+                    publish_job_location_update(
+                        job_id=job.id,
+                        payload=loc_payload,
+                        user=job.customer,
+                        persist_db=should_emit_event,
+                    )
+                    if should_emit_event:
                         session.last_event_emitted_at = now
                         session.last_event_state_key = current_state_key
                         session.save(update_fields=["last_event_emitted_at", "last_event_state_key"])
-                    except Exception as ev_err:
-                        logger.error(f"[EVENT_EMIT_ERROR] Error creating WorkforceEventLog for job #{job.id}: {ev_err}")
+                except Exception as ev_err:
+                    logger.error(f"[EVENT_EMIT_ERROR] Error publishing location update for job #{job.id}: {ev_err}")
             except Exception as e:
                 logger.error(f"[LOCATION_UPDATE_ERROR] Error evaluating Job #{job.id}: {e}", exc_info=True)
 
-        # Immediate reconciliation trigger for online technician on fresh GPS telemetry
-        if emp and emp.is_active and emp.is_online and emp.current_availability == "available":
+        # Update Redis GEO candidate discovery index (lightweight O(log N) memory operation, NO synchronous dispatch sweeps)
+        if emp:
             try:
-                from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
-                reconsider_jobs_for_employee(emp)
-            except Exception as loc_recon_err:
-                logger.debug(f"[LOCATION_UPDATE_RECON_ERR] {loc_recon_err}")
+                from workforce_api.services.redis_dispatch import update_technician_dispatch_geo
+                is_eligible_for_dispatch = bool(
+                    emp.is_active and emp.is_online and emp.current_availability == "available" and not active_jobs
+                )
+                update_technician_dispatch_geo(
+                    employee_id=emp.id,
+                    latitude=lat_f,
+                    longitude=lng_f,
+                    is_eligible=is_eligible_for_dispatch,
+                )
+            except Exception as geo_up_err:
+                logger.debug(f"[LOCATION_UPDATE_GEO_ERR] {geo_up_err}")
 
         return Response({
             "message": "Live GPS coordinates updated.",
@@ -4925,8 +5183,9 @@ class WorkforceJobLiveTrackingView(APIView):
       1. The authorized customer who owns the booking
       2. The assigned technician
       3. An authorized workforce admin within the same tenant company
+      4. An authorized tracking token holder (via ?token= or X-Tracking-Token)
     """
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.AllowAny]
 
     def get(self, request, pk):
         user = request.user
@@ -4937,17 +5196,24 @@ class WorkforceJobLiveTrackingView(APIView):
         if not job:
             return Response({"error": "Job not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
-        is_owner_customer = (
+        is_authenticated = user and user.is_authenticated
+        is_owner_customer = is_authenticated and (
             job.customer == user
             or str(getattr(job, "customer_name", "")).lower() == user.username.lower()
             or getattr(job, "phone", "") == getattr(user, "username", "")
         )
-        is_assigned_tech = bool(job.assigned_employee and job.assigned_employee.user == user)
-        is_platform_admin = getattr(user, "is_superuser", False)
-        user_company = resolve_actor_company(request)
-        is_tenant_admin = is_admin_role(user) and bool(job.company_id and user_company and job.company_id == user_company.id)
+        is_assigned_tech = is_authenticated and bool(job.assigned_employee and job.assigned_employee.user == user)
+        is_platform_admin = is_authenticated and getattr(user, "is_superuser", False)
+        user_company = resolve_actor_company(request) if is_authenticated else None
+        is_tenant_admin = is_authenticated and is_admin_role(user) and bool(job.company_id and user_company and job.company_id == user_company.id)
 
-        if not (is_owner_customer or is_assigned_tech or is_platform_admin or is_tenant_admin):
+        token = request.query_params.get("token") or request.headers.get("X-Tracking-Token")
+        is_token_authorized = False
+        if token and job.tracking_token:
+            import secrets
+            is_token_authorized = secrets.compare_digest(str(token).strip(), str(job.tracking_token).strip())
+
+        if not (is_owner_customer or is_assigned_tech or is_platform_admin or is_tenant_admin or is_token_authorized):
             return Response({
                 "error": "Unauthorized to view tracking for this job.",
                 "code": "CROSS_TENANT_FORBIDDEN"
@@ -4991,45 +5257,90 @@ class WorkforceJobLiveTrackingView(APIView):
         movement_status = "UNKNOWN"
         geofence_status = "OUTSIDE"
 
-        # Authoritative: Read active JobTrackingSession first
-        from workforce_api.models import JobTrackingSession
-        active_session = JobTrackingSession.objects.filter(
-            job=job,
-            status=JobTrackingSession.SessionStatus.ACTIVE
-        ).first()
-
-        if active_session and active_session.last_latitude is not None and active_session.last_longitude is not None:
+        # 1. Check Redis for freshest live telemetry snapshot first
+        from workforce_api.services.realtime import get_job_current_location
+        redis_loc = get_job_current_location(job.id)
+        if redis_loc and redis_loc.get("latitude") is not None and redis_loc.get("longitude") is not None:
             tech_loc = {
-                "latitude": float(active_session.last_latitude),
-                "longitude": float(active_session.last_longitude),
-                "accuracy": float(active_session.last_accuracy) if active_session.last_accuracy is not None else None,
-                "speed": float(active_session.last_speed) if active_session.last_speed is not None else None,
-                "heading": float(active_session.last_heading) if active_session.last_heading is not None else None,
-                "captured_at": active_session.last_captured_at.isoformat() if active_session.last_captured_at else None,
-                "received_at": active_session.last_received_at.isoformat() if active_session.last_received_at else None,
+                "latitude": float(redis_loc["latitude"]),
+                "longitude": float(redis_loc["longitude"]),
+                "accuracy": float(redis_loc["accuracy"]) if redis_loc.get("accuracy") is not None else None,
+                "speed": float(redis_loc["speed"]) if redis_loc.get("speed") is not None else None,
+                "heading": float(redis_loc["heading"]) if redis_loc.get("heading") is not None else None,
+                "captured_at": redis_loc.get("captured_at"),
+                "received_at": redis_loc.get("updated_at") or now.isoformat(),
             }
-            movement_status = active_session.movement_status or "UNKNOWN"
-            geofence_status = active_session.geofence_status or "OUTSIDE"
-            cap_dt = active_session.last_captured_at or active_session.last_received_at
-            if cap_dt:
-                if timezone.is_naive(cap_dt):
-                    cap_dt = timezone.make_aware(cap_dt)
-                age_seconds = max(0.0, round((now - cap_dt).total_seconds(), 1))
-                freshness_state = _compute_freshness_state(age_seconds)
-        elif tech and tech.user and tech.user.last_known_location:
-            tech_loc = tech.user.last_known_location
-            cap_str = tech_loc.get("captured_at") or tech_loc.get("updated_at")
+            movement_status = redis_loc.get("movement_status") or "UNKNOWN"
+            geofence_status = redis_loc.get("geofence_status") or "OUTSIDE"
+            cap_str = redis_loc.get("captured_at") or redis_loc.get("updated_at")
             if cap_str:
                 try:
                     from django.utils.dateparse import parse_datetime
-                    loc_dt = parse_datetime(str(cap_str))
-                    if loc_dt:
-                        if timezone.is_naive(loc_dt):
-                            loc_dt = timezone.make_aware(loc_dt)
-                        age_seconds = max(0.0, round((now - loc_dt).total_seconds(), 1))
+                    cap_dt = parse_datetime(str(cap_str))
+                    if cap_dt:
+                        if timezone.is_naive(cap_dt):
+                            cap_dt = timezone.make_aware(cap_dt)
+                        age_seconds = max(0.0, round((now - cap_dt).total_seconds(), 1))
                         freshness_state = _compute_freshness_state(age_seconds)
                 except Exception:
                     pass
+
+        # 2. Database Fallback: Read active JobTrackingSession if Redis key absent or expired
+        if not tech_loc:
+            from workforce_api.models import JobTrackingSession
+            active_session = JobTrackingSession.objects.filter(
+                job=job,
+                status=JobTrackingSession.SessionStatus.ACTIVE
+            ).first()
+
+            if active_session and active_session.last_latitude is not None and active_session.last_longitude is not None:
+                tech_loc = {
+                    "latitude": float(active_session.last_latitude),
+                    "longitude": float(active_session.last_longitude),
+                    "accuracy": float(active_session.last_accuracy) if active_session.last_accuracy is not None else None,
+                    "speed": float(active_session.last_speed) if active_session.last_speed is not None else None,
+                    "heading": float(active_session.last_heading) if active_session.last_heading is not None else None,
+                    "captured_at": active_session.last_captured_at.isoformat() if active_session.last_captured_at else None,
+                    "received_at": active_session.last_received_at.isoformat() if active_session.last_received_at else None,
+                }
+                movement_status = active_session.movement_status or "UNKNOWN"
+                geofence_status = active_session.geofence_status or "OUTSIDE"
+                cap_dt = active_session.last_captured_at or active_session.last_received_at
+                if cap_dt:
+                    if timezone.is_naive(cap_dt):
+                        cap_dt = timezone.make_aware(cap_dt)
+                    age_seconds = max(0.0, round((now - cap_dt).total_seconds(), 1))
+                    freshness_state = _compute_freshness_state(age_seconds)
+            elif job.technician_latitude is not None and job.technician_longitude is not None:
+                tech_loc = {
+                    "latitude": float(job.technician_latitude),
+                    "longitude": float(job.technician_longitude),
+                    "accuracy": float(job.technician_accuracy) if job.technician_accuracy is not None else None,
+                    "speed": float(job.technician_speed) if job.technician_speed is not None else None,
+                    "heading": float(job.technician_heading) if job.technician_heading is not None else None,
+                    "captured_at": job.technician_location_updated_at.isoformat() if job.technician_location_updated_at else None,
+                    "received_at": job.technician_last_seen_at.isoformat() if job.technician_last_seen_at else None,
+                }
+                cap_dt = job.technician_location_updated_at or job.technician_last_seen_at
+                if cap_dt:
+                    if timezone.is_naive(cap_dt):
+                        cap_dt = timezone.make_aware(cap_dt)
+                    age_seconds = max(0.0, round((now - cap_dt).total_seconds(), 1))
+                    freshness_state = _compute_freshness_state(age_seconds)
+            elif tech and tech.user and tech.user.last_known_location:
+                tech_loc = tech.user.last_known_location
+                cap_str = tech_loc.get("captured_at") or tech_loc.get("updated_at")
+                if cap_str:
+                    try:
+                        from django.utils.dateparse import parse_datetime
+                        loc_dt = parse_datetime(str(cap_str))
+                        if loc_dt:
+                            if timezone.is_naive(loc_dt):
+                                loc_dt = timezone.make_aware(loc_dt)
+                            age_seconds = max(0.0, round((now - loc_dt).total_seconds(), 1))
+                            freshness_state = _compute_freshness_state(age_seconds)
+                    except Exception:
+                        pass
 
         distance_m = None
         distance_km = None
@@ -5067,6 +5378,12 @@ class WorkforceJobLiveTrackingView(APIView):
             tech_photo = profile_img.url if hasattr(profile_img, "url") else str(profile_img or "")
             tech_rating = getattr(tech, "rating", None)
 
+        tech_name = job.technician_name or ((tech.user.get_full_name() or tech.user.username) if tech and tech.user else None)
+        tech_phone = job.technician_phone or (tech.phone if tech else "")
+        tech_photo = job.technician_photo or tech_photo
+        tech_rating = job.technician_rating if job.technician_rating is not None else tech_rating
+        tech_id = job.technician_id or (tech.id if tech else None)
+
         logger.info(f"[MAP_RECONCILIATION] job_id={job.id} freshness_state={freshness_state} movement_status={movement_status} geofence_status={geofence_status} distance_m={distance_m} age_seconds={age_seconds}")
 
         return Response({
@@ -5079,14 +5396,14 @@ class WorkforceJobLiveTrackingView(APIView):
                 "address": job.address or "",
             },
             "assigned_technician": {
-                "id": tech.id if tech else None,
-                "name": (tech.user.get_full_name() or tech.user.username) if tech and tech.user else None,
-                "phone": tech.phone if tech else "",
-                "title": (tech.title or "Service Partner") if tech else "",
+                "id": tech_id,
+                "name": tech_name,
+                "phone": tech_phone,
+                "title": (tech.title or "Service Partner") if tech else "Service Partner",
                 "photo": tech_photo,
                 "rating": tech_rating,
                 "location": tech_loc,
-            } if tech else None,
+            } if (tech or tech_name) else None,
             "technician_photo": tech_photo,
             "technician_rating": tech_rating,
             "start_otp": start_otp,
@@ -5245,7 +5562,7 @@ class WorkforceScheduleManageView(APIView):
         else:
             qs = WorkforceEmployeeSchedule.objects.all()
 
-        if not user.is_superuser:
+        if not is_superadmin(user):
             if company:
                 qs = qs.filter(company=company)
             else:
@@ -5275,7 +5592,7 @@ class WorkforceScheduleManageView(APIView):
         if not emp:
             return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if not user.is_superuser and company and emp.company_id != company.id:
+        if not is_superadmin(user) and (not emp.company_id or (company and emp.company_id != company.id)):
             return Response({"error": "Unauthorized: Cross-company access forbidden.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         schedule_items = request.data.get("schedules", [])
@@ -5345,7 +5662,7 @@ class WorkforceSkillManageView(APIView):
     permission_classes = [IsWorkforceAdmin]
 
     def get(self, request):
-        if getattr(request.user, "is_superuser", False):
+        if is_superadmin(request.user):
             skills = WorkforceSkill.objects.all()
         else:
             company = resolve_actor_company(request)
@@ -5367,7 +5684,7 @@ class WorkforceSkillManageView(APIView):
 
     def post(self, request):
         company = resolve_actor_company(request)
-        if not company and not getattr(request.user, "is_superuser", False):
+        if not company and not is_superadmin(request.user):
             return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
         name = request.data.get("name", "").strip()
         code = request.data.get("code", "").strip()
@@ -5414,7 +5731,7 @@ class WorkforceEmployeeSkillAssignView(APIView):
         if not emp:
             return Response({"error": "Employee not found.", "code": "NOT_FOUND", "details": {}}, status=status.HTTP_404_NOT_FOUND)
 
-        if not getattr(request.user, "is_superuser", False):
+        if not is_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
@@ -5485,7 +5802,7 @@ class WorkforceComplianceRequirementView(APIView):
     permission_classes = [IsWorkforceAdmin]
 
     def get(self, request):
-        if getattr(request.user, "is_superuser", False):
+        if is_superadmin(request.user):
             reqs = WorkforceComplianceRequirement.objects.all()
         else:
             company = resolve_actor_company(request)
@@ -5661,38 +5978,205 @@ class WorkforceRealtimeStreamView(APIView):
         logger.info("[Realtime SSE START] Received SSE connection request.")
         user = request.user
         token_str = request.query_params.get("token") or request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+        job_id_str = request.query_params.get("job_id")
 
-        # Step 1: JWT Authentication
+        # Step 1: JWT Authentication (if token provided)
+        jwt_user_id = None
         if (not user or not user.is_authenticated) and token_str:
             try:
                 access_token = AccessToken(token_str)
-                user_id = access_token.get("user_id")
-                if user_id is None:
-                    logger.warning("[Realtime AUTH] Token missing user_id claim.")
-                    return Response({"error": "Invalid token claims.", "code": "INVALID_TOKEN"}, status=status.HTTP_401_UNAUTHORIZED)
+                jwt_user_id = access_token.get("user_id")
             except (InvalidToken, TokenError) as jwt_err:
-                logger.warning("[Realtime AUTH] Authentication token invalid or expired: %s", str(jwt_err))
-                return Response({"error": "Invalid or expired authentication token.", "code": "INVALID_TOKEN"}, status=status.HTTP_401_UNAUTHORIZED)
+                if not job_id_str:
+                    logger.warning("[Realtime AUTH] Authentication token invalid or expired: %s", str(jwt_err))
+                    return Response({"error": "Invalid or expired authentication token.", "code": "INVALID_TOKEN"}, status=status.HTTP_401_UNAUTHORIZED)
             except Exception as gen_err:
-                logger.warning("[Realtime AUTH] Unexpected token validation error: %s", str(gen_err))
-                return Response({"error": "Authentication validation failed.", "code": "AUTH_FAILED"}, status=status.HTTP_401_UNAUTHORIZED)
+                if not job_id_str:
+                    logger.warning("[Realtime AUTH] Unexpected token validation error: %s", str(gen_err))
+                    return Response({"error": "Authentication validation failed.", "code": "AUTH_FAILED"}, status=status.HTTP_401_UNAUTHORIZED)
 
-            # Step 2: Database User Resolution with 503 Handling
-            try:
-                User = get_user_model()
+            if jwt_user_id is not None:
+                # Step 2: Database User Resolution with 503 Handling
                 try:
-                    user = User.objects.filter(id=int(user_id)).first()
-                except (ValueError, TypeError):
-                    user = User.objects.filter(id=user_id).first()
-            except (OperationalError, DatabaseError) as db_err:
-                logger.error("[Realtime DB] CONNECTION_POOL_EXHAUSTED during auth: %s", str(db_err))
-                return Response(
-                    {"error": "Database service temporarily unavailable. Please retry shortly.", "code": "DB_UNAVAILABLE"},
-                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
-                )
+                    User = get_user_model()
+                    try:
+                        user = User.objects.filter(id=int(jwt_user_id)).first()
+                    except (ValueError, TypeError):
+                        user = User.objects.filter(id=jwt_user_id).first()
+                except (OperationalError, DatabaseError) as db_err:
+                    logger.error("[Realtime DB] CONNECTION_POOL_EXHAUSTED during auth: %s", str(db_err))
+                    return Response(
+                        {"error": "Database service temporarily unavailable. Please retry shortly.", "code": "DB_UNAVAILABLE"},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    )
+                finally:
+                    connection.close()
+
+        # ── Handle Job-Specific Tracking Stream (Customer / Tech live GPS) ──────
+        if job_id_str:
+            try:
+                target_job_id = int(job_id_str)
+            except (ValueError, TypeError):
+                return Response({"error": "Invalid job_id.", "code": "INVALID_JOB_ID"}, status=status.HTTP_400_BAD_REQUEST)
+
+            from service_requests.models import ServiceRequest
+            try:
+                job = ServiceRequest.objects.filter(id=target_job_id).select_related("assigned_employee__user", "customer").first()
+            except Exception as db_err:
+                logger.error("[Realtime DB] Error resolving job for stream: %s", str(db_err))
+                job = None
             finally:
                 connection.close()
 
+            if not job:
+                return Response({"error": "Job not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+            # Check authorization: owner customer, assigned tech, superuser, tenant admin, or valid tracking token
+            tracking_tok = request.query_params.get("tracking_token") or token_str
+            is_tok_authorized = False
+            if tracking_tok and job.tracking_token:
+                import secrets
+                is_tok_authorized = secrets.compare_digest(str(tracking_tok).strip(), str(job.tracking_token).strip())
+
+            user_company_id = getattr(user, "company_id", None)
+            is_user_authorized = bool(
+                user and user.is_authenticated and (
+                    job.customer == user
+                    or (job.assigned_employee and job.assigned_employee.user == user)
+                    or getattr(user, "is_superuser", False)
+                    or (is_admin_role(user) and user_company_id and job.company_id == user_company_id)
+                    or str(getattr(job, "customer_name", "")).lower() == user.username.lower()
+                    or getattr(job, "phone", "") == getattr(user, "username", "")
+                )
+            )
+
+            if not (is_user_authorized or is_tok_authorized):
+                logger.warning("[Realtime AUTH] Unauthorized access to Job #%s stream.", target_job_id)
+                return Response({"error": "Unauthorized to stream tracking for this job.", "code": "FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
+            def job_event_stream():
+                heartbeat_interval_seconds = 15
+                last_heartbeat_time = time.time()
+                logger.info("[Realtime SSE START] Job stream generator running for job_id=%s.", target_job_id)
+
+                # 1. Connection confirmation event
+                yield f"event: ping\ndata: {json.dumps({'status': 'connected', 'job_id': target_job_id, 'timestamp': timezone.now().isoformat()})}\n\n"
+
+                # 2. Yield current location snapshot immediately if in Redis
+                from workforce_api.services.realtime import get_job_current_location, get_redis_client
+                initial_loc = get_job_current_location(target_job_id)
+                if initial_loc:
+                    yield f"event: job_location\ndata: {json.dumps(initial_loc, default=str)}\n\n"
+
+                # 3. Subscribe to Redis PubSub channel
+                client = get_redis_client()
+                pubsub = None
+                if client:
+                    try:
+                        pubsub = client.pubsub(ignore_subscribe_messages=True)
+                        pubsub.subscribe(f"job_tracking:{target_job_id}")
+                        logger.info("[Realtime SSE PUBSUB] Subscribed to job_tracking:%s", target_job_id)
+                    except Exception as p_err:
+                        logger.warning("[Realtime SSE PUBSUB ERR] Could not subscribe: %s", p_err)
+                        pubsub = None
+
+                last_db_id = 0
+                try:
+                    latest_ev = WorkforceEventLog.objects.order_by("-id").first()
+                    last_db_id = latest_ev.id if latest_ev else 0
+                except Exception:
+                    last_db_id = 0
+                finally:
+                    connection.close()
+
+                try:
+                    while True:
+                        loop_now = time.time()
+
+                        # Periodic Heartbeat
+                        if loop_now - last_heartbeat_time >= heartbeat_interval_seconds:
+                            last_heartbeat_time = loop_now
+                            yield f": heartbeat\n\n"
+
+                        # Read from Redis Pub/Sub if active
+                        got_pubsub = False
+                        if pubsub:
+                            try:
+                                msg = pubsub.get_message(timeout=1.0)
+                                if msg and msg.get("type") == "message":
+                                    got_pubsub = True
+                                    raw_data = msg["data"]
+                                    if isinstance(raw_data, bytes):
+                                        raw_data = raw_data.decode("utf-8")
+                                    # Yield job_location event immediately
+                                    yield f"event: job_location\ndata: {raw_data}\n\n"
+                                    # Also yield workforce_event for backward compatibility
+                                    try:
+                                        payload_dict = json.loads(raw_data)
+                                    except Exception:
+                                        payload_dict = {"raw": raw_data}
+                                    ev_wrap = {
+                                        "id": None,
+                                        "event_type": "JOB_LOCATION_UPDATE",
+                                        "payload": payload_dict,
+                                        "timestamp": timezone.now().isoformat(),
+                                    }
+                                    yield f"event: workforce_event\ndata: {json.dumps(ev_wrap, default=str)}\n\n"
+                            except Exception as pub_err:
+                                logger.warning("[Realtime SSE PUBSUB READ ERR] %s", pub_err)
+                                pubsub = None
+
+                        # If Pub/Sub not available, attempt reconnection or fallback to DB polling
+                        if not pubsub:
+                            client = get_redis_client()
+                            if client:
+                                try:
+                                    pubsub = client.pubsub(ignore_subscribe_messages=True)
+                                    pubsub.subscribe(f"job_tracking:{target_job_id}")
+                                    logger.info("[Realtime SSE PUBSUB RECOVERED] Resubscribed to job_tracking:%s", target_job_id)
+                                except Exception:
+                                    pubsub = None
+
+                            if not pubsub:
+                                # Fallback: poll PostgreSQL WorkforceEventLog
+                                try:
+                                    db_events = list(
+                                        WorkforceEventLog.objects.filter(
+                                            id__gt=last_db_id,
+                                            event_type="JOB_LOCATION_UPDATE",
+                                            payload__job_id=target_job_id,
+                                        ).values("id", "event_type", "payload", "created_at").order_by("id")[:10]
+                                    )
+                                    for ev in db_events:
+                                        last_db_id = max(last_db_id, ev["id"])
+                                        yield f"event: job_location\ndata: {json.dumps(ev['payload'], default=str)}\n\n"
+                                        yield f"id: {ev['id']}\nevent: workforce_event\ndata: {json.dumps({'id': ev['id'], 'event_type': ev['event_type'], 'payload': ev['payload'], 'timestamp': ev['created_at'].isoformat()}, default=str)}\n\n"
+                                except Exception as db_poll_err:
+                                    logger.debug("[Realtime SSE DB FALLBACK ERR] %s", db_poll_err)
+                                finally:
+                                    connection.close()
+
+                                time.sleep(1.0)
+                except (GeneratorExit, ConnectionResetError, BrokenPipeError):
+                    logger.info("[Realtime SSE END] Client disconnected from Job #%s stream.", target_job_id)
+                except Exception as s_err:
+                    logger.warning("[Realtime SSE EXCEPTION] Job #%s stream error: %s", target_job_id, str(s_err))
+                finally:
+                    if pubsub:
+                        try:
+                            pubsub.unsubscribe()
+                            pubsub.close()
+                        except Exception:
+                            pass
+                    connection.close()
+                    logger.info("[Realtime SSE END] Job #%s stream finished.", target_job_id)
+
+            response = StreamingHttpResponse(job_event_stream(), content_type="text/event-stream")
+            response["Cache-Control"] = "no-cache"
+            response["X-Accel-Buffering"] = "no"
+            return response
+
+        # ── General Workforce Realtime Stream (Employee / Admin Feed) ───────────
         if not user or not user.is_authenticated:
             logger.warning("[Realtime AUTH] Authentication required for realtime stream.")
             return Response({"error": "Authentication required for realtime stream.", "code": "AUTH_REQUIRED"}, status=status.HTTP_401_UNAUTHORIZED)
@@ -5751,7 +6235,6 @@ class WorkforceRealtimeStreamView(APIView):
             last_id = initial_last_id
             heartbeat_interval_seconds = 15
             last_heartbeat_time = time.time()
-            last_reconcile_time = time.time()
 
             logger.info("[Realtime SSE START] Stream generator running for user_id=%s, start_id=%s.", user_id_val, last_id)
             # Initial connection confirmation event
@@ -5767,19 +6250,6 @@ class WorkforceRealtimeStreamView(APIView):
                         last_heartbeat_time = loop_now
                         logger.debug("[Realtime SSE HEARTBEAT] Sending keepalive ping to user_id=%s.", user_id_val)
                         yield f": heartbeat\n\n"
-
-                    # Periodic Discovery / Reconciliation for connected technician (every 10s)
-                    if not is_admin and (loop_now - last_reconcile_time >= 10):
-                        last_reconcile_time = loop_now
-                        try:
-                            emp_obj = getattr(user, "employee_profile", None)
-                            if emp_obj and emp_obj.is_online and emp_obj.current_availability == "available":
-                                from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
-                                reconsider_jobs_for_employee(emp_obj)
-                        except Exception as rec_err:
-                            logger.debug(f"[Realtime SSE RECONCILE ERR] {rec_err}")
-                        finally:
-                            connection.close()
 
                     # Fetch newly emitted events using pure dictionary projection
                     try:
@@ -9017,9 +9487,796 @@ class WorkforceAdminQuoteRetryConversionView(APIView):
             return Response({"error": str(ex), "code": "CONVERSION_RETRY_FAILED"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+# ── Phase 2A: Service Provider Creation & Provider Admin Views ────────────────
+
+class WorkforceSuperadminServiceProviderListView(APIView):
+    """
+    Superadmin-only management for Service Providers (Companies).
+    - GET: Lists all Service Providers with primary admin and technician counts.
+    - POST: Atomically creates a new Company and its primary SERVICE_PROVIDER_ADMIN user.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsSuperadmin]
+
+    def get(self, request):
+        if not is_superadmin(request.user):
+            return Response(
+                {"error": "Unauthorized: Superadmin access required.", "code": "SUPERADMIN_REQUIRED"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        from companies.models import Company
+        from .serializers import ServiceProviderListSerializer
+
+        qs = Company.objects.annotate(
+            emp_count=Count("employees", filter=Q(employees__is_active=True))
+        ).order_by("-created_at")
+
+        q = request.query_params.get("q", "").strip()
+        if q:
+            qs = qs.filter(Q(company_name__icontains=q) | Q(display_id__icontains=q))
+
+        is_active_param = request.query_params.get("is_active")
+        if is_active_param is not None:
+            if is_active_param.lower() in ["true", "1"]:
+                qs = qs.filter(is_active=True)
+            elif is_active_param.lower() in ["false", "0"]:
+                qs = qs.filter(is_active=False)
+
+        providers = qs[:100]
+        serializer = ServiceProviderListSerializer(providers, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        if not is_superadmin(request.user):
+            return Response(
+                {"error": "Unauthorized: Superadmin access required.", "code": "SUPERADMIN_REQUIRED"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        import uuid
+        from django.utils.text import slugify
+        from companies.models import Company
+        from .serializers import ServiceProviderCreateSerializer, ServiceProviderDetailSerializer
+
+        serializer = ServiceProviderCreateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {"error": "Validation failed.", "code": "VALIDATION_ERROR", "details": serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        data = serializer.validated_data
+
+        try:
+            from .services.provider_service import create_service_provider_with_admin
+            company, admin_user = create_service_provider_with_admin(data)
+            detail_serializer = ServiceProviderDetailSerializer(company)
+            return Response(
+                {
+                    "message": f"Service Provider '{company.company_name}' and primary admin '{admin_user.username}' created successfully.",
+                    "provider": detail_serializer.data,
+                    "admin": {
+                        "id": admin_user.id,
+                        "username": admin_user.username,
+                        "email": admin_user.email,
+                        "role": admin_user.role,
+                        "company_id": company.id,
+                    }
+                },
+                status=status.HTTP_201_CREATED
+            )
 
 
+        except Exception as exc:
+            logger.error("[SUPERADMIN CREATE PROVIDER] Failed: %s", str(exc), exc_info=True)
+            return Response(
+                {"error": f"Failed to create service provider: {str(exc)}", "code": "PROVIDER_CREATION_FAILED"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
+class WorkforceSuperadminServiceProviderDetailView(APIView):
+    """
+    Superadmin-only detail view for a specific Service Provider.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsSuperadmin]
+
+    def get(self, request, pk):
+        if not is_superadmin(request.user):
+            return Response(
+                {"error": "Unauthorized: Superadmin access required.", "code": "SUPERADMIN_REQUIRED"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        from companies.models import Company
+        from .serializers import ServiceProviderDetailSerializer
+
+        company = Company.objects.filter(pk=pk).first()
+        if not company:
+            return Response(
+                {"error": "Service Provider not found.", "code": "PROVIDER_NOT_FOUND"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        serializer = ServiceProviderDetailSerializer(company)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def patch(self, request, pk):
+        if not is_superadmin(request.user):
+            return Response(
+                {"error": "Unauthorized: Superadmin access required.", "code": "SUPERADMIN_REQUIRED"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        from companies.models import Company
+        from .serializers import ServiceProviderDetailSerializer
+
+        company = Company.objects.filter(pk=pk).first()
+        if not company:
+            return Response(
+                {"error": "Service Provider not found.", "code": "PROVIDER_NOT_FOUND"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if "is_active" in request.data:
+            company.is_active = bool(request.data["is_active"])
+        if "company_name" in request.data and str(request.data["company_name"]).strip():
+            company.company_name = str(request.data["company_name"]).strip()
+        if "address" in request.data:
+            company.address = str(request.data["address"]).strip()
+        if "industry" in request.data:
+            company.industry = str(request.data["industry"]).strip()
+        if "website" in request.data:
+            company.website = str(request.data["website"]).strip()
+
+        company.save()
+        serializer = ServiceProviderDetailSerializer(company)
+        return Response(
+            {"message": "Service Provider updated.", "provider": serializer.data},
+            status=status.HTTP_200_OK
+        )
+
+
+class WorkforceProviderProfileView(APIView):
+    """
+    GET /api/workforce/provider/profile/
+    Returns the authenticated Provider Admin's provider information.
+    Scope is derived STRICTLY from the authenticated user's company (client inputs are ignored).
+    """
+    permission_classes = [permissions.IsAuthenticated, IsWorkforceAdmin]
+
+    def get(self, request):
+        user = request.user
+
+        if is_superadmin(user):
+            # Superadmin has global platform scope
+            company = getattr(user, "company", None)
+            if company:
+                from .serializers import ProviderProfileSerializer
+                serializer = ProviderProfileSerializer(company)
+                return Response(serializer.data, status=status.HTTP_200_OK)
+            return Response({
+                "is_superadmin": True,
+                "message": "Superadmin platform scope (global authority).",
+                "company": None,
+            }, status=status.HTTP_200_OK)
+
+        if not is_service_provider_admin(user) and not is_admin_role(user):
+            return Response(
+                {"error": "Admin access required.", "code": "FORBIDDEN"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Scoped strictly to authenticated user's company (never trust frontend company params)
+        user_company = resolve_actor_company(request)
+        if not user_company:
+            return Response(
+                {"error": "Tenant company context required.", "code": "TENANT_REQUIRED"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        from .serializers import ProviderProfileSerializer
+        serializer = ProviderProfileSerializer(user_company)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+# ─── Phase 2B: Provider Technician Management Views ──────────────────────────
+
+class WorkforceAdminTechnicianListView(APIView):
+    """
+    Provider Admin / Superadmin Technician Management & Creation Endpoint.
+    - Superadmin: Can list all technicians across providers / independent, or filter by ?company_id=.
+    - Provider Admin: Strictly scoped to their own company (resolve_actor_company(request)).
+      Fails closed with 403 TENANT_REQUIRED if company context is missing.
+    - POST: Provisions a new Technician (User + Employee) under the Provider Admin's company.
+      Superadmin can optionally specify company_id or leave None for independent.
+      Client-supplied company_id from Provider Admins is completely ignored.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsWorkforceAdmin]
+
+    def get(self, request):
+        user = request.user
+        company = resolve_actor_company(request)
+
+        if is_superadmin(user):
+            company_id_param = request.query_params.get("company_id")
+            if company_id_param:
+                try:
+                    qs = Employee.objects.filter(company_id=int(company_id_param))
+                except (ValueError, TypeError):
+                    qs = Employee.objects.all()
+            else:
+                qs = Employee.objects.all()
+        elif company:
+            qs = Employee.objects.filter(company=company)
+        else:
+            return Response(
+                {"error": "Tenant company context required.", "code": "TENANT_REQUIRED"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Filters
+        search_q = request.query_params.get("q", "").strip()
+        if search_q:
+            qs = qs.filter(
+                Q(user__first_name__icontains=search_q) |
+                Q(user__last_name__icontains=search_q) |
+                Q(user__email__icontains=search_q) |
+                Q(user__username__icontains=search_q) |
+                Q(employee_id__icontains=search_q) |
+                Q(user__phone__icontains=search_q) |
+                Q(user__mobile_number__icontains=search_q)
+            )
+
+        is_active_param = request.query_params.get("is_active")
+        if is_active_param is not None:
+            if is_active_param.lower() in ("true", "1"):
+                qs = qs.filter(is_active=True)
+            elif is_active_param.lower() in ("false", "0"):
+                qs = qs.filter(is_active=False)
+
+        qs = qs.select_related("user", "company").prefetch_related("skills__skill").order_by("-id")
+
+        from .serializers import TechnicianListSerializer
+        serializer = TechnicianListSerializer(qs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        from .serializers import TechnicianCreateSerializer, TechnicianDetailSerializer
+        serializer = TechnicianCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        user = request.user
+        target_company = None
+
+        if is_superadmin(user):
+            co_id = data.get("company_id")
+            if co_id:
+                target_company = Company.objects.filter(pk=co_id).first()
+        else:
+            target_company = resolve_actor_company(request)
+            if not target_company:
+                return Response(
+                    {"error": "Tenant company context required to provision technicians.", "code": "TENANT_REQUIRED"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        with transaction.atomic():
+            email = data["email"]
+            first_name = data["first_name"]
+            last_name = data.get("last_name", "")
+            phone = data.get("phone") or data.get("mobile_number") or ""
+            password = data.get("password") or secrets.token_urlsafe(10)
+
+            # Determine username
+            username_candidate = data.get("username") or email.split("@")[0].lower()
+            username = username_candidate
+            counter = 1
+            while User.objects.filter(username=username).exists():
+                username = f"{username_candidate}_{counter}"
+                counter += 1
+
+            new_user = User.objects.create(
+                username=username,
+                email=email,
+                first_name=first_name,
+                last_name=last_name,
+                phone=phone,
+                mobile_number=phone,
+                role="employee",
+                company=target_company,
+                is_active=True,
+                totp_secret="",
+                bio="",
+            )
+            new_user.set_password(password)
+            new_user.save()
+
+            employee_id = generate_next_employee_id(target_company)
+
+            services_list = []
+            for s_name in data.get("services", []):
+                s_id = abs(hash(s_name)) % 100000
+                services_list.append({
+                    "id": s_id,
+                    "name": s_name,
+                    "status": "approved",
+                    "approved_at": timezone.now().isoformat(),
+                    "approved_by": user.username,
+                })
+
+            initial_bank_details = {
+                "onboarding": {
+                    "status": "approved" if services_list else "submitted",
+                    "step": 1,
+                    "draft": {
+                        "personal": {
+                            "first_name": new_user.first_name,
+                            "last_name": new_user.last_name,
+                            "email": new_user.email,
+                            "phone": new_user.phone,
+                            "mobile_number": new_user.mobile_number,
+                        }
+                    },
+                    "documents": {},
+                    "services": services_list,
+                }
+            }
+
+            employee = Employee.objects.create(
+                user=new_user,
+                company=target_company,
+                employee_id=employee_id,
+                title="Technician",
+                exempt_status="non_exempt",
+                hourly_rate=0,
+                is_online=False,
+                current_availability="offline",
+                is_active=True,
+                bank_details=initial_bank_details,
+            )
+
+            # Assign skills if provided
+            for skill_name in data.get("skills", []):
+                from .models import WorkforceSkill, WorkforceEmployeeSkill
+                skill_obj, _ = WorkforceSkill.objects.get_or_create(
+                    name=skill_name,
+                    defaults={"category": "General", "is_active": True}
+                )
+                WorkforceEmployeeSkill.objects.get_or_create(
+                    employee=employee,
+                    skill=skill_obj,
+                    defaults={
+                        "proficiency_level": "INTERMEDIATE",
+                        "is_verified": True,
+                        "verified_by": user,
+                        "verified_at": timezone.now(),
+                    }
+                )
+
+        detail_serializer = TechnicianDetailSerializer(employee)
+        return Response({
+            "message": "Technician created and enrolled successfully.",
+            "technician": detail_serializer.data,
+        }, status=status.HTTP_201_CREATED)
+
+
+class WorkforceAdminTechnicianDetailView(APIView):
+    """
+    Detailed dossier and management view for a specific technician.
+    Enforces strict tenant isolation for Provider Admins.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsWorkforceAdmin]
+
+    def get(self, request, pk):
+        emp = Employee.objects.filter(pk=pk).select_related("user", "company").prefetch_related("skills__skill").first()
+        if not emp:
+            return Response({"error": "Technician not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        if not is_superadmin(request.user):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+            if not emp.company_id or emp.company_id != user_company.id:
+                return Response({"error": "Unauthorized cross-company access.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
+        from .serializers import TechnicianDetailSerializer
+        serializer = TechnicianDetailSerializer(emp)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def patch(self, request, pk):
+        emp = Employee.objects.filter(pk=pk).select_related("user", "company").first()
+        if not emp:
+            return Response({"error": "Technician not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        if not is_superadmin(request.user):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+            if not emp.company_id or emp.company_id != user_company.id:
+                return Response({"error": "Unauthorized cross-company modification.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
+        # Provider admin cannot reassign technician to another company
+        if not is_superadmin(request.user) and "company_id" in request.data:
+            req_co_id = request.data.get("company_id")
+            if req_co_id and req_co_id != emp.company_id:
+                return Response(
+                    {"error": "Provider Admins cannot reassign technician ownership.", "code": "CROSS_TENANT_FORBIDDEN"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        if "is_active" in request.data:
+            active_val = bool(request.data.get("is_active"))
+            emp.is_active = active_val
+            if emp.user:
+                emp.user.is_active = active_val
+                emp.user.save()
+
+        if "first_name" in request.data and emp.user:
+            emp.user.first_name = request.data.get("first_name")
+        if "last_name" in request.data and emp.user:
+            emp.user.last_name = request.data.get("last_name")
+        if "phone" in request.data and emp.user:
+            emp.user.phone = request.data.get("phone")
+            emp.user.mobile_number = request.data.get("phone")
+        if emp.user:
+            emp.user.save()
+
+        emp.save()
+
+        from .serializers import TechnicianDetailSerializer
+        serializer = TechnicianDetailSerializer(emp)
+        return Response({
+            "message": "Technician updated successfully.",
+            "technician": serializer.data,
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceAdminTechnicianToggleActiveView(APIView):
+    """
+    Toggles active/inactive status for a technician within the provider.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsWorkforceAdmin]
+
+    def post(self, request, pk):
+        emp = Employee.objects.filter(pk=pk).select_related("user").first()
+        if not emp:
+            return Response({"error": "Technician not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        if not is_superadmin(request.user):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+            if not emp.company_id or emp.company_id != user_company.id:
+                return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
+        new_status = not emp.is_active
+        emp.is_active = new_status
+        if emp.user:
+            emp.user.is_active = new_status
+            emp.user.save()
+        emp.save()
+
+        return Response({
+            "message": f"Technician {'activated' if new_status else 'deactivated'} successfully.",
+            "is_active": new_status,
+        }, status=status.HTTP_200_OK)
+
+
+# ─── 46. Public Service Providers & Join Request Management (Phase 2C) ────────
+
+class WorkforcePublicServiceProviderListView(APIView):
+    """
+    Public-facing endpoint: GET /api/workforce/service-providers/public/
+    Returns active service providers available for public technician signup.
+    Allows searching by query string (?search= or ?q=).
+    Never exposes internal administration, financial, employee, or sensitive credentials.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        from companies.models import Company
+        from .serializers import PublicServiceProviderListSerializer
+        from django.db.models import Q
+
+        qs = Company.objects.filter(is_active=True).exclude(
+            Q(company_name__icontains="9gate") |
+            Q(company_name__icontains="phase2 enterprise") |
+            Q(company_name__icontains="phase 1 vendor") |
+            Q(company_name__icontains="scenario") |
+            Q(company_name__icontains="audit") |
+            Q(company_name__icontains="validation") |
+            Q(company_name__icontains="workload isolation") |
+            Q(company_name__icontains="integrity test") |
+            Q(company_name__icontains="load benchmark") |
+            Q(company_name__icontains="rapido transit") |
+            Q(company_name__icontains="other transit") |
+            Q(company_name__icontains="certcomp") |
+            Q(company_name__icontains="competitor") |
+            Q(company_name__icontains="rival") |
+            Q(company_name__icontains="test")
+        ).order_by("company_name")
+
+
+        q = request.query_params.get("search") or request.query_params.get("q")
+        if q and str(q).strip():
+            term = str(q).strip()
+            qs = qs.filter(
+                Q(company_name__icontains=term) |
+                Q(display_id__icontains=term) |
+                Q(slug__icontains=term) |
+                Q(industry__icontains=term)
+            )
+
+        serializer = PublicServiceProviderListSerializer(qs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class WorkforceAdminJoinRequestDecideView(APIView):
+    """
+    Decide on a technician's request to join a Service Provider.
+    POST /api/workforce/admin/join-requests/<pk>/decide/
+    POST /api/workforce/admin/applications/<pk>/join-request/decide/
+    """
+    permission_classes = [permissions.IsAuthenticated, IsWorkforceAdmin]
+
+    def post(self, request, pk):
+        from .models import WorkforceProviderJoinRequest
+        # pk can be join_request.id or employee.id
+        join_req = WorkforceProviderJoinRequest.objects.filter(pk=pk).select_related("technician", "technician__user", "provider").first()
+        if not join_req:
+            # Try finding latest pending join request by technician/employee id
+            join_req = WorkforceProviderJoinRequest.objects.filter(
+                technician_id=pk,
+                status=WorkforceProviderJoinRequest.Status.PENDING
+            ).select_related("technician", "technician__user", "provider").first()
+
+        if not join_req:
+            return Response({"error": "Join request not found.", "code": "JOIN_REQUEST_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Cross-company tenant isolation
+        if not is_superadmin(request.user):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+            if join_req.provider_id != user_company.id:
+                return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
+        action = str(request.data.get("action", "")).lower().strip()
+        reason = str(request.data.get("reason", "")).strip()
+
+        if action not in ["approve", "reject"]:
+            return Response({"error": "Action must be 'approve' or 'reject'.", "code": "INVALID_ACTION"}, status=status.HTTP_400_BAD_REQUEST)
+
+        emp = join_req.technician
+        user = emp.user if emp else None
+        now = timezone.now()
+        now_iso = now.isoformat()
+
+        with transaction.atomic():
+            bank_details = emp.bank_details or {}
+            onboarding = bank_details.get("onboarding", {})
+            join_request_dict = onboarding.get("join_request", {}) or {}
+
+            if action == "approve":
+                join_req.status = WorkforceProviderJoinRequest.Status.APPROVED
+                join_req.decided_at = now
+                join_req.decided_by = request.user
+                join_req.save()
+
+                # Atomically assign company ownership
+                emp.company = join_req.provider
+                emp.save(update_fields=["company", "updated_at"])
+
+                if user:
+                    user.company = join_req.provider
+                    user.save(update_fields=["company"])
+
+                join_request_dict["status"] = "APPROVED"
+                join_request_dict["decided_at"] = now_iso
+                join_request_dict["decided_by"] = request.user.username
+                onboarding["join_request"] = join_request_dict
+                bank_details["onboarding"] = onboarding
+                emp.bank_details = bank_details
+                emp.save(update_fields=["bank_details"])
+
+                logger.info(
+                    "[JOIN_REQUEST_APPROVED] Technician #%s (%s) joined Provider #%s (%s) approved by %s",
+                    emp.id, user.username if user else "N/A", join_req.provider.id, join_req.provider.company_name, request.user.username
+                )
+
+                return Response({
+                    "message": f"Join request approved. Technician #{emp.id} is now enrolled under {join_req.provider.company_name}.",
+                    "status": "APPROVED",
+                    "provider_id": join_req.provider.id,
+                    "provider_name": join_req.provider.company_name,
+                }, status=status.HTTP_200_OK)
+
+            else:
+                join_req.status = WorkforceProviderJoinRequest.Status.REJECTED
+                join_req.decided_at = now
+                join_req.decided_by = request.user
+                join_req.rejection_reason = reason or "Join request was declined by the Service Provider."
+                join_req.save()
+
+                # Ensure company remains None (Independent)
+                emp.company = None
+                emp.save(update_fields=["company", "updated_at"])
+
+                if user:
+                    user.company = None
+                    user.save(update_fields=["company"])
+
+                join_request_dict["status"] = "REJECTED"
+                join_request_dict["rejection_reason"] = join_req.rejection_reason
+                join_request_dict["decided_at"] = now_iso
+                join_request_dict["decided_by"] = request.user.username
+                onboarding["join_request"] = join_request_dict
+                bank_details["onboarding"] = onboarding
+                emp.bank_details = bank_details
+                emp.save(update_fields=["bank_details"])
+
+                logger.info(
+                    "[JOIN_REQUEST_REJECTED] Technician #%s (%s) request to join Provider #%s rejected by %s",
+                    emp.id, user.username if user else "N/A", join_req.provider.id, request.user.username
+                )
+
+                return Response({
+                    "message": f"Join request rejected. Technician #{emp.id} remains independent.",
+                    "status": "REJECTED",
+                    "rejection_reason": join_req.rejection_reason,
+                }, status=status.HTTP_200_OK)
+
+
+# ─── 47. Service Provider Self-Registration (Phase 2D) ─────────────────────────
+
+class WorkforceServiceProviderSignupView(APIView):
+    """
+    Public-facing endpoint: POST /api/workforce/service-providers/signup/
+    Self-registration for new Service Providers.
+    Atomically creates a new Company and its primary Service Provider Admin user.
+    Enforces that:
+    - Client cannot supply existing company_id or provider_id.
+    - Company + Admin User creation is strictly atomic.
+    - User is created with role="service_provider_admin", is_staff=True, is_superuser=False.
+    - No Employee record is created.
+    - No Join Request is created.
+    - JWT access and refresh tokens are issued for immediate authenticated session.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        from .serializers import ServiceProviderSelfSignupSerializer
+        from .services.provider_service import create_service_provider_with_admin
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        serializer = ServiceProviderSelfSignupSerializer(data=request.data)
+        if not serializer.is_valid():
+            error_details = serializer.errors
+            first_msg = "Validation failed."
+            for field, errs in error_details.items():
+                field_label = field.replace("_", " ").title()
+                if isinstance(errs, list) and errs:
+                    first_msg = f"{field_label}: {errs[0]}"
+                    break
+                elif isinstance(errs, str):
+                    first_msg = f"{field_label}: {errs}"
+                    break
+            logger.warning("[PROVIDER SELF-SIGNUP] 400 Validation Error: %s | full details: %s", first_msg, error_details)
+            return Response(
+                {"error": first_msg, "code": "VALIDATION_ERROR", "details": error_details},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+
+        data = serializer.validated_data
+
+        try:
+            company, admin_user = create_service_provider_with_admin(data)
+
+            # Issue JWT access and refresh tokens
+            refresh = RefreshToken.for_user(admin_user)
+            refresh["company_id"] = company.id
+            refresh["role"] = admin_user.role
+            access_token_str = str(refresh.access_token)
+            refresh_token_str = str(refresh)
+
+            return Response(
+                {
+                    "message": f"Service Provider '{company.company_name}' registered successfully.",
+                    "access_token": access_token_str,
+                    "refresh_token": refresh_token_str,
+                    "token": access_token_str,
+                    "user": {
+                        "id": admin_user.id,
+                        "username": admin_user.username,
+                        "email": admin_user.email or "",
+                        "first_name": admin_user.first_name or "",
+                        "last_name": admin_user.last_name or "",
+                        "role": admin_user.role,
+                        "company": company.id,
+                        "company_name": company.company_name,
+                        "provider_id": company.id,
+                        "provider_name": company.company_name,
+                        "is_independent": False,
+                        "is_superuser": False,
+                        "is_superadmin": False,
+                        "is_provider_admin": True,
+                        "registration_status": "approved",
+                    },
+                    "company": {
+                        "id": company.id,
+                        "company_name": company.company_name,
+                        "display_id": company.display_id,
+                        "slug": company.slug,
+                        "is_active": company.is_active,
+                    },
+                },
+                status=status.HTTP_201_CREATED,
+            )
+        except Exception as exc:
+            logger.error("[PROVIDER SELF-SIGNUP] Failed: %s", str(exc), exc_info=True)
+            return Response(
+                {"error": f"Failed to register service provider: {str(exc)}", "code": "PROVIDER_REGISTRATION_FAILED"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
+class WorkforceDispatchRadiusConfigView(APIView):
+    """
+    SuperAdmin API endpoint for reading and managing the persistent
+    global automatic job dispatch radius (DISPATCH_RADIUS_KM).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from workforce_api.services.geo_spatial import get_global_dispatch_radius_km
+        from accounts.permissions import is_superadmin
+        radius = get_global_dispatch_radius_km()
+        return Response({
+            "dispatch_radius_km": radius,
+            "default_radius_km": 20.0,
+            "is_superadmin": is_superadmin(request.user),
+        }, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        from accounts.permissions import is_superadmin
+        if not is_superadmin(request.user):
+            return Response({
+                "error": "Only SuperAdmin can modify the global dispatch radius.",
+                "code": "FORBIDDEN"
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        raw_radius = request.data.get("dispatch_radius_km") or request.data.get("radius_km")
+        if raw_radius is None:
+            return Response({
+                "error": "Missing dispatch_radius_km parameter.",
+                "code": "INVALID_INPUT"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            val_float = float(raw_radius)
+        except (TypeError, ValueError):
+            return Response({
+                "error": "Invalid dispatch_radius_km parameter. Must be a numeric value.",
+                "code": "INVALID_INPUT"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        from workforce_api.services.geo_spatial import set_global_dispatch_radius_km
+        ok, msg, current_radius = set_global_dispatch_radius_km(val_float)
+        if not ok:
+            return Response({
+                "error": msg,
+                "code": "INVALID_RADIUS"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            "message": msg,
+            "dispatch_radius_km": current_radius,
+        }, status=status.HTTP_200_OK)
+
+    def put(self, request):
+        return self.post(request)
 
 

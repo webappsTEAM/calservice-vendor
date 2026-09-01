@@ -122,6 +122,28 @@ class WorkforceEmployeeSkill(models.Model):
         return f"{self.employee} - {self.skill.name} ({self.proficiency_level})"
 
 
+class WorkforceServiceSkillRequirement(models.Model):
+    service = models.ForeignKey(
+        "service_requests.Service",
+        on_delete=models.CASCADE,
+        related_name="skill_requirements",
+    )
+    skill = models.ForeignKey(
+        WorkforceSkill,
+        on_delete=models.CASCADE,
+        related_name="service_requirements",
+    )
+    is_mandatory = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "workforce_service_skill_requirement"
+        unique_together = ("service", "skill")
+
+    def __str__(self):
+        return f"{self.service.name} requires {self.skill.name}"
+
+
 class WorkforceRequiredDocument(models.Model):
     company = models.ForeignKey(
         "companies.Company",
@@ -1688,8 +1710,67 @@ class WorkforceMasonQuote(models.Model):
         return f"Mason Details for {self.quote.quote_number} ({self.work_type}, Demolition: {self.requires_demolition})"
 
 
+class WorkforceProviderJoinRequest(models.Model):
+    """
+    Tracks a technician's request to join an existing Service Provider organization during signup.
+    Selecting a Service Provider during signup does NOT grant immediate company membership.
+    The join request remains in status=PENDING until approved by the Service Provider Admin or Superadmin.
+    """
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+
+    technician = models.ForeignKey(
+        "employees.Employee",
+        on_delete=models.CASCADE,
+        related_name="provider_join_requests",
+    )
+    provider = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="technician_join_requests",
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    requested_at = models.DateTimeField(auto_now_add=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    rejection_reason = models.TextField(blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        db_table = "workforce_provider_join_request"
+        ordering = ["-requested_at"]
+
+    def __str__(self):
+        return f"JoinRequest #{self.id}: Tech #{self.technician_id} -> Provider #{self.provider_id} ({self.status})"
 
 
+class WorkforceSystemSetting(models.Model):
+    """
+    Persistent global key-value configuration for CalTrack Workforce.
+    SuperAdmin managed settings (e.g. DISPATCH_RADIUS_KM).
+    """
+    key = models.CharField(max_length=100, unique=True, db_index=True)
+    value = models.CharField(max_length=255)
+    description = models.TextField(blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_system_setting"
+
+    def __str__(self):
+        return f"{self.key} = {self.value}"
 
 
 

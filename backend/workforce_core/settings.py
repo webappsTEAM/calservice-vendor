@@ -237,3 +237,17 @@ else:
         "http://localhost:8001",
         "http://127.0.0.1:8001",
     ]
+
+# ─── Redis Configuration ──────────────────────────────────────────────────────
+# Used for transient live-location state (job_location:<job_id>), SSE Pub/Sub,
+# Redis GEO candidate discovery, and Redis Streams reliable dispatch queue.
+# Supabase PostgreSQL remains the durable source of truth.
+REDIS_URL = os.getenv("REDIS_URL", f"redis://{os.getenv('REDIS_HOST', '127.0.0.1')}:{os.getenv('REDIS_PORT', '6379')}/0")
+
+# ─── Redis Automatic Dispatch Configuration ──────────────────────────────────
+DISPATCH_LOCATION_MAX_AGE_SECONDS = int(os.getenv("DISPATCH_LOCATION_MAX_AGE_SECONDS", "120"))
+DISPATCH_CANDIDATE_RADIUS_KM = float(os.getenv("DISPATCH_CANDIDATE_RADIUS_KM", "20.0"))
+REDIS_DISPATCH_STREAM = os.getenv("REDIS_DISPATCH_STREAM", "workforce:dispatch:jobs")
+REDIS_DISPATCH_GROUP = os.getenv("REDIS_DISPATCH_GROUP", "workforce:dispatch:workers")
+REDIS_GEO_KEY = os.getenv("REDIS_GEO_KEY", "workforce:technicians:geo")
+REDIS_TECH_LAST_SEEN_KEY = os.getenv("REDIS_TECH_LAST_SEEN_KEY", "workforce:technicians:last_seen")

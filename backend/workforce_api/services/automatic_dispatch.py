@@ -72,108 +72,6 @@ def get_booking_discovery_scope(company_id: Optional[int] = None) -> Q:
         return Q(company_id=company_id) | Q(company_id__isnull=True)
     return Q()
 
-# Explicit canonical alias dictionary covering normal and specialized categories
-GENERIC_STOP_WORDS = {
-    "repair", "repairs", "cleaning", "clean", "service", "services",
-    "installation", "maintenance", "work", "job", "and", "the", "for",
-    "fix", "fitting", "uninstallation", "regular", "deep", "inspection",
-    "basic", "standard", "general", "diagnostics", "gas", "refill", "setup"
-}
-
-CANONICAL_DOMAINS = {
-    "electrical": {"electrical", "electrician", "switchboard", "wiring", "wire", "fuse", "socket", "fan", "inverter", "light", "lighting", "geyser", "5 15a"},
-    "plumbing": {"plumbing", "plumber", "pipe", "drainage", "tap", "leakage", "leak", "sanitary", "toilet", "commode", "flush", "sink", "faucet", "water tank"},
-    "hvac": {"hvac", "ac", "air conditioning", "cooling", "refrigerant", "copper piping", "split ac", "window ac"},
-    "kitchen_cleaning": {"kitchen cleaning", "kitchen", "chimney", "empty kitchen", "full kitchen"},
-    "bathroom_cleaning": {"bathroom cleaning", "bathroom", "toilet cleaning"},
-    "sofa_cleaning": {"sofa cleaning", "sofa", "couch", "cushion", "fabric sofa"},
-    "house_cleaning": {"full house cleaning", "house cleaning", "home cleaning", "full home deep cleaning", "classic 1 bhk", "1 bhk", "2 bhk", "3 bhk"},
-    "painting": {"painting", "paintings", "painter", "wall painting", "interior painting", "exterior painting", "waterproofing", "texture decor", "wood and metal", "whitewash"},
-    "carpentry": {"carpentry", "carpenter", "furniture", "wood work", "door", "cupboard", "cabinet", "lock", "drill", "hang"},
-    "pest_control": {"pest control", "cockroach", "termite", "bed bugs", "ants", "pest", "mosquito", "rodent"},
-    "appliance": {"refrigerator", "fridge", "freezer", "washing machine", "washer", "dryer", "tv", "television", "microwave", "oven", "water purifier", "ro service", "ro filter"},
-    "masonry": {"masonry", "mason", "brick", "block", "plastering", "demolition", "wall construction", "tile", "civil work"},
-    "transport": {"goods and transport", "goods transport", "packers and movers", "transport", "logistics", "truck", "tempo", "two wheeler", "shifting", "relocation", "tata ace", "delivery", "mini truck", "two wheeler delivery"},
-    "groceries": {"vegetables", "groceries", "farm fresh", "sweet potato", "amlaa"},
-}
-
-EXPLICIT_SERVICE_ALIASES = {
-    "hvac": {"hvac", "ac", "air conditioning", "ac service", "ac repair", "ac installation", "ac gas", "ac repair and diagnostics", "ac service and cleaning", "ac gas and refrigerant", "ac installation and uninstallation"},
-    "ac": {"hvac", "ac", "air conditioning", "ac service", "ac repair", "ac installation", "ac gas", "ac repair and diagnostics", "ac service and cleaning", "ac gas and refrigerant", "ac installation and uninstallation"},
-    "air conditioning": {"hvac", "ac", "air conditioning", "ac service", "ac repair", "ac installation", "ac gas", "ac repair and diagnostics", "ac service and cleaning", "ac gas and refrigerant", "ac installation and uninstallation"},
-    "ac repair and diagnostics": {"hvac", "ac", "air conditioning", "ac service", "ac repair", "ac installation", "ac gas", "ac repair and diagnostics", "ac service and cleaning", "ac gas and refrigerant", "ac installation and uninstallation"},
-    "ac service and cleaning": {"hvac", "ac", "air conditioning", "ac service", "ac repair", "ac installation", "ac gas", "ac repair and diagnostics", "ac service and cleaning", "ac gas and refrigerant", "ac installation and uninstallation"},
-    "ac gas and refrigerant": {"hvac", "ac", "air conditioning", "ac service", "ac repair", "ac installation", "ac gas", "ac repair and diagnostics", "ac service and cleaning", "ac gas and refrigerant", "ac installation and uninstallation"},
-    "ac installation and uninstallation": {"hvac", "ac", "air conditioning", "ac service", "ac repair", "ac installation", "ac gas", "ac repair and diagnostics", "ac service and cleaning", "ac gas and refrigerant", "ac installation and uninstallation"},
-    "plumbing": {"plumbing", "plumber", "pipe repair", "water leakage", "drainage", "tap repair", "sanitary"},
-    "electrical": {"electrical", "electrician", "wiring", "switchboard", "fan repair", "fuse repair", "light fitting"},
-    "electrician": {"electrical", "electrician", "wiring", "switchboard", "fan repair", "fuse repair", "light fitting"},
-    "refrigerator": {"refrigerator", "fridge", "freezer", "single door fridge", "double door fridge", "appliance repair"},
-    "washing machine": {"washing machine", "washer", "dryer", "top load", "front load", "appliance repair"},
-    "tv and display": {"tv and display", "tv", "television", "led tv", "smart tv", "display", "appliance repair"},
-    "microwave oven repair": {"microwave", "microwave oven", "microwave oven repair", "oven", "appliance repair"},
-    "appliance repair": {"appliance repair", "refrigerator", "fridge", "washing machine", "microwave", "tv", "appliance"},
-    "carpentry services": {"carpentry", "carpenter", "wood work", "furniture repair", "door repair", "carpentry services"},
-    "carpentry": {"carpentry", "carpenter", "wood work", "furniture repair", "door repair", "carpentry services"},
-    "pest control": {"pest control", "cockroach control", "ants and bed bugs control", "termite control", "bed bugs", "cockroach", "termite"},
-    "cockroach control": {"cockroach control", "cockroach", "pest control"},
-    "ants and bed bugs control": {"ants and bed bugs control", "ants", "bed bugs", "pest control"},
-    "termite control": {"termite control", "termite", "pest control"},
-    "cleaning": {"cleaning", "kitchen cleaning", "bathroom cleaning", "full house cleaning", "sofa cleaning", "deep cleaning", "house cleaning"},
-    "kitchen cleaning": {"kitchen cleaning", "kitchen", "empty kitchen cleaning", "full kitchen cleaning", "full kitchen cleaning – deep clean"},
-    "bathroom cleaning": {"bathroom cleaning", "bathroom", "toilet cleaning"},
-    "full house cleaning": {"full house cleaning", "cleaning", "deep cleaning", "house cleaning"},
-    "sofa cleaning": {"sofa cleaning", "couch cleaning"},
-    "two wheeler": {"two wheeler", "bike", "scooter", "motorcycle", "bike repair", "two wheeler repair"},
-    "goods and transport": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting", "commercial transport", "packers and movers", "packer and mover", "packers movers", "packer mover", "house shifting", "home shifting", "office shifting", "mini truck", "tempo", "goods transport truck", "goods transport two wheeler", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
-    "goods transport": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting", "commercial transport", "packers and movers", "packer and mover", "packers movers", "packer mover", "house shifting", "home shifting", "office shifting", "mini truck", "tempo", "goods transport truck", "goods transport two wheeler", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
-    "goods transport truck": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting", "commercial transport", "packers and movers", "packer and mover", "packers movers", "packer mover", "house shifting", "home shifting", "office shifting", "mini truck", "tempo", "goods transport truck", "goods transport two wheeler", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
-    "goods transport two wheeler": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting", "commercial transport", "packers and movers", "packer and mover", "packers movers", "packer mover", "house shifting", "home shifting", "office shifting", "mini truck", "tempo", "goods transport truck", "goods transport two wheeler", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
-    "transport": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting", "commercial transport", "packers and movers", "packer and mover", "packers movers", "packer mover", "house shifting", "home shifting", "office shifting", "mini truck", "tempo", "goods transport truck", "goods transport two wheeler", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
-    "logistics": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting", "commercial transport", "packers and movers", "packer and mover", "packers movers", "packer mover", "house shifting", "home shifting", "office shifting", "mini truck", "tempo", "goods transport truck", "goods transport two wheeler", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
-    "packers and movers": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "cargo", "mini truck", "tempo", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
-    "packers movers": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "cargo", "mini truck", "tempo", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
-    "packer and mover": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "cargo", "mini truck", "tempo", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
-    "packer mover": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "cargo", "mini truck", "tempo", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
-    "packers": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "cargo", "mini truck", "tempo", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
-    "movers": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "cargo", "mini truck", "tempo", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
-    "packer": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "cargo", "mini truck", "tempo", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
-    "mover": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "cargo", "mini truck", "tempo", "packers", "movers", "packer", "mover", "relocation services", "shifting services"},
-    "shifting": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "relocation services", "shifting services"},
-    "relocation": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "relocation services", "shifting services"},
-    "house shifting": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "relocation services", "shifting services"},
-    "home shifting": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "relocation services", "shifting services"},
-    "office shifting": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "home shifting", "office shifting", "goods and transport", "goods transport", "transport", "logistics", "relocation services", "shifting services"},
-    "truck": {"truck", "packer and mover", "packers and movers", "packers movers", "packer mover", "logistics", "shifting", "goods and transport", "goods transport", "transport", "relocation", "mini truck", "tempo"},
-    "painting": {"painting", "paintings", "painter", "wall painting", "interior painting", "exterior painting", "waterproofing", "texture decor", "painting and waterproofing", "wood and metal", "cabinets"},
-    "paintings": {"painting", "paintings", "painter", "wall painting", "interior painting", "exterior painting", "waterproofing", "texture decor", "painting and waterproofing", "wood and metal", "cabinets"},
-    "interior painting": {"painting", "paintings", "painter", "wall painting", "interior painting", "exterior painting", "waterproofing", "texture decor", "painting and waterproofing"},
-    "exterior painting": {"painting", "paintings", "painter", "wall painting", "interior painting", "exterior painting", "waterproofing", "texture decor", "painting and waterproofing"},
-    "waterproofing": {"painting", "paintings", "painter", "wall painting", "interior painting", "exterior painting", "waterproofing", "texture decor", "painting and waterproofing"},
-    "cabinets": {"painting", "paintings", "painter", "wood and metal", "carpentry", "cabinets", "interior painting"},
-    "security": {"security", "cctv", "security and cctv", "cctv installation", "cctv repair", "camera installation"},
-    "cctv": {"security", "cctv", "security and cctv", "cctv installation", "cctv repair", "camera installation"},
-    "masonry": {"masonry", "mason", "brick work", "block work", "plastering", "wall repair", "civil work", "brick and block work", "brick wall construction", "wall and partition construction"},
-    "brick wall construction": {"masonry", "mason", "brick work", "block work", "plastering", "wall repair", "civil work", "brick and block work", "brick wall construction", "wall and partition construction"},
-    "general": {"general", "general maintenance", "handyman", "maintenance"},
-    "general maintenance": {"general", "general maintenance", "handyman", "maintenance"},
-    "vegetables_groceries": {"vegetables_groceries", "vegetables and groceries", "vegetables", "vegetable", "groceries", "grocery", "farm fresh", "farm fresh vegetable", "groceries and essentials", "sweet potato", "sweet potato (sakkaraivalli)", "amlaa", "amla", "nellikaai"},
-    "vegetables and groceries": {"vegetables_groceries", "vegetables and groceries", "vegetables", "vegetable", "groceries", "grocery", "farm fresh", "farm fresh vegetable", "groceries and essentials", "sweet potato", "sweet potato (sakkaraivalli)", "amlaa", "amla", "nellikaai"},
-    "vegetables": {"vegetables_groceries", "vegetables and groceries", "vegetables", "vegetable", "groceries", "grocery", "farm fresh", "farm fresh vegetable", "groceries and essentials", "sweet potato", "sweet potato (sakkaraivalli)", "amlaa", "amla", "nellikaai"},
-    "groceries": {"vegetables_groceries", "vegetables and groceries", "vegetables", "vegetable", "groceries", "grocery", "farm fresh", "farm fresh vegetable", "groceries and essentials", "sweet potato", "sweet potato (sakkaraivalli)", "amlaa", "amla", "nellikaai"},
-    "farm fresh vegetable": {"vegetables_groceries", "vegetables and groceries", "vegetables", "vegetable", "groceries", "grocery", "farm fresh", "farm fresh vegetable", "groceries and essentials", "sweet potato", "sweet potato (sakkaraivalli)", "amlaa", "amla", "nellikaai"},
-    "sweet potato (sakkaraivalli)": {"vegetables_groceries", "vegetables and groceries", "vegetables", "vegetable", "groceries", "grocery", "farm fresh", "farm fresh vegetable", "sweet potato", "sweet potato (sakkaraivalli)"},
-    "amlaa (nellikaai)": {"vegetables_groceries", "vegetables and groceries", "vegetables", "vegetable", "groceries", "grocery", "farm fresh", "farm fresh vegetable", "amlaa", "amla", "nellikaai"},
-    "kitchen_cleaning": {"kitchen_cleaning", "kitchen cleaning", "empty kitchen cleaning", "full kitchen cleaning", "full kitchen cleaning – deep clean"},
-    "empty kitchen cleaning": {"kitchen_cleaning", "kitchen cleaning", "empty kitchen cleaning", "full kitchen cleaning"},
-    "full kitchen cleaning – deep clean": {"kitchen_cleaning", "kitchen cleaning", "empty kitchen cleaning", "full kitchen cleaning", "full kitchen cleaning – deep clean"},
-    "goods_transport_two_wheeler": {"goods_transport_two_wheeler", "two wheeler", "two-wheeler delivery", "two wheeler delivery", "goods and transport", "goods transport", "transport", "delivery", "packer and mover", "packers and movers"},
-    "goods_transport_truck": {"goods_transport_truck", "truck", "mini truck delivery", "mini truck", "tempo", "tata ace", "goods and transport", "goods transport", "transport", "delivery", "packer and mover", "packers and movers"},
-    "two-wheeler delivery — 2 wheeler (general goods)": {"goods_transport_two_wheeler", "two wheeler", "two-wheeler delivery", "two wheeler delivery", "goods and transport", "goods transport", "transport", "delivery"},
-    "mini truck delivery — tata ace (general goods)": {"goods_transport_truck", "truck", "mini truck delivery", "mini truck", "tempo", "tata ace", "goods and transport", "goods transport", "transport", "delivery"},
-}
-
-
 def normalize_service_name(name: str) -> str:
     """
     Normalizes service names by lowercasing, replacing dashes, underscores,
@@ -187,22 +85,6 @@ def normalize_service_name(name: str) -> str:
     s = s.replace("&", " and ")
     return " ".join(s.split())
 
-
-def detect_service_domains(text: str) -> Set[str]:
-    """
-    Identifies the canonical service domain(s) for a given text by regex word-boundary
-    matching against CANONICAL_DOMAINS.
-    """
-    if not text:
-        return set()
-    clean = normalize_service_name(text)
-    matched_domains = set()
-    for dom, kws in CANONICAL_DOMAINS.items():
-        for kw in kws:
-            pattern = rf"\b{re.escape(kw)}\b"
-            if re.search(pattern, clean):
-                matched_domains.add(dom)
-    return matched_domains
 
 
 def resolve_service_identifiers(category_raw: Any, issue_title_raw: Any, cart_data: Any) -> List[str]:
@@ -281,10 +163,9 @@ def resolve_service_identifiers(category_raw: Any, issue_title_raw: Any, cart_da
 
 def canonical_service_match(requested_service: str, approved_services: List[str], verified_skills: List[str]) -> Tuple[bool, str, str]:
     """
-    Evaluates whether a requested service matches an employee's authorized services or verified skills.
-    Uses database-authoritative domain matching and domain keyword extraction.
-    Generic words (e.g. 'repair', 'cleaning', 'service', 'installation') CANNOT independently establish a match.
-    Returns (is_match, match_method, matched_term).
+    Evaluates whether a requested service matches an employee's authorized services or verified skills
+    using 100% database-driven relationships:
+    ServiceRequest → Service → required Skill/Capability → verified Employee Skill.
     """
     if not requested_service:
         return True, "EMPTY_SERVICE_BYPASS", ""
@@ -293,76 +174,98 @@ def canonical_service_match(requested_service: str, approved_services: List[str]
     if not req_clean:
         return False, "EMPTY_SERVICE", ""
 
-    # 1. Exact match against approved employee services
-    for it in approved_services:
-        if not it:
-            continue
-        it_clean = normalize_service_name(it)
-        if req_clean == it_clean:
-            return True, "EXACT_SERVICE", it
+    # Direct match against approved services or verified skills (normalized)
+    for app_s in approved_services:
+        if app_s and normalize_service_name(app_s) == req_clean:
+            return True, "EXACT_APPROVED_SERVICE_MATCH", app_s
 
-    # 2. Exact match against verified skills
-    for sk in verified_skills:
-        if not sk:
-            continue
-        sk_clean = normalize_service_name(sk)
-        if req_clean == sk_clean:
-            return True, "EXACT_SKILL", sk
+    for vs in verified_skills:
+        if vs and normalize_service_name(vs) == req_clean:
+            return True, "EXACT_VERIFIED_SKILL_MATCH", vs
 
-    # 3. Domain-based matching (Domain Authority)
-    req_domains = detect_service_domains(req_clean)
-    if req_domains:
-        for it in approved_services:
-            if not it:
-                continue
-            it_domains = detect_service_domains(it)
-            shared = req_domains.intersection(it_domains)
-            if shared:
-                return True, f"DOMAIN_MATCH_{list(shared)[0].upper()}", it
+    # Database Service Resolution
+    try:
+        from service_requests.models import Service, CatalogCategory
+        from workforce_api.models import WorkforceSkill, WorkforceServiceSkillRequirement
 
-        for sk in verified_skills:
-            if not sk:
-                continue
-            sk_domains = detect_service_domains(sk)
-            shared = req_domains.intersection(sk_domains)
-            if shared:
-                return True, f"DOMAIN_MATCH_SKILL_{list(shared)[0].upper()}", sk
+        svc = None
+        if req_clean.isdigit():
+            svc = Service.objects.filter(pk=int(req_clean)).select_related("category").first()
+        if not svc:
+            svc = Service.objects.filter(Q(slug=req_clean) | Q(name__iexact=req_clean)).select_related("category").first()
 
-    # 4. Non-generic substring match (guarded by domain check and stop-word protection)
-    if req_clean not in GENERIC_STOP_WORDS:
-        for it in approved_services:
-            if not it:
-                continue
-            it_clean = normalize_service_name(it)
-            if it_clean not in GENERIC_STOP_WORDS:
-                if (len(req_clean) >= 4 and req_clean in it_clean) or (len(it_clean) >= 4 and it_clean in req_clean):
-                    it_doms = detect_service_domains(it_clean)
-                    if not req_domains or not it_doms or req_domains.intersection(it_doms):
-                        return True, "NON_GENERIC_SUBSTRING_SERVICE", it
+        if svc:
+            # 1. Relational requirements: WorkforceServiceSkillRequirement
+            req_skills = list(WorkforceServiceSkillRequirement.objects.filter(service=svc).select_related("skill"))
+            if req_skills:
+                req_names = {normalize_service_name(r.skill.name) for r in req_skills}
+                req_codes = {normalize_service_name(r.skill.code) for r in req_skills if r.skill.code}
+                for vs in verified_skills:
+                    vs_clean = normalize_service_name(vs)
+                    if vs_clean in req_names or vs_clean in req_codes:
+                        return True, "DB_SERVICE_SKILL_REQUIREMENT_MATCH", vs
 
-        for sk in verified_skills:
-            if not sk:
-                continue
-            sk_clean = normalize_service_name(sk)
-            if sk_clean not in GENERIC_STOP_WORDS:
-                if (len(req_clean) >= 4 and req_clean in sk_clean) or (len(sk_clean) >= 4 and sk_clean in req_clean):
-                    sk_doms = detect_service_domains(sk_clean)
-                    if not req_domains or not sk_doms or req_domains.intersection(sk_doms):
-                        return True, "NON_GENERIC_SUBSTRING_SKILL", sk
+            # 2. Match service name / slug against employee verified skills
+            svc_name_norm = normalize_service_name(svc.name)
+            svc_slug_norm = normalize_service_name(svc.slug or "")
+            for vs in verified_skills:
+                vs_clean = normalize_service_name(vs)
+                if vs_clean and (vs_clean == svc_name_norm or vs_clean == svc_slug_norm):
+                    return True, "DB_SERVICE_SKILL_MATCH", vs
 
-    # 5. Explicit alias table matching (full alias match only)
-    for alias_key, alias_group in EXPLICIT_SERVICE_ALIASES.items():
-        if req_clean == alias_key or req_clean in alias_group:
-            for it in approved_services:
-                it_clean = normalize_service_name(it)
-                if it_clean in alias_group and it_clean not in GENERIC_STOP_WORDS:
-                    return True, "EXPLICIT_ALIAS_SERVICE", it
-            for sk in verified_skills:
-                sk_clean = normalize_service_name(sk)
-                if sk_clean in alias_group and sk_clean not in GENERIC_STOP_WORDS:
-                    return True, "EXPLICIT_ALIAS_SKILL", sk
+            # 3. Match service name / slug / ID against employee approved services
+            for app_s in approved_services:
+                app_clean = normalize_service_name(app_s)
+                if app_clean and (app_clean == svc_name_norm or app_clean == svc_slug_norm or str(app_s) == str(svc.id)):
+                    return True, "DB_SERVICE_APPROVED_MATCH", app_s
 
-    return False, "NO_MATCH", ""
+            # 4. Service's CatalogCategory
+            if svc.category:
+                cat_name_norm = normalize_service_name(svc.category.name)
+                cat_slug_norm = normalize_service_name(svc.category.slug or "")
+                for app_s in approved_services:
+                    app_clean = normalize_service_name(app_s)
+                    if app_clean and (app_clean == cat_name_norm or app_clean == cat_slug_norm or str(app_s) == str(svc.category_id)):
+                        return True, "DB_CATEGORY_APPROVED_MATCH", app_s
+                for vs in verified_skills:
+                    vs_clean = normalize_service_name(vs)
+                    if vs_clean and (vs_clean == cat_name_norm or vs_clean == cat_slug_norm):
+                        return True, "DB_CATEGORY_SKILL_MATCH", vs
+
+        # Database Category Resolution
+        cat = None
+        if req_clean.isdigit():
+            cat = CatalogCategory.objects.filter(pk=int(req_clean)).first()
+        if not cat:
+            cat = CatalogCategory.objects.filter(Q(slug=req_clean) | Q(name__iexact=req_clean)).first()
+
+        if cat:
+            cat_name_norm = normalize_service_name(cat.name)
+            cat_slug_norm = normalize_service_name(cat.slug or "")
+            for app_s in approved_services:
+                app_clean = normalize_service_name(app_s)
+                if app_clean and (app_clean == cat_name_norm or app_clean == cat_slug_norm or str(app_s) == str(cat.id)):
+                    return True, "DB_CATEGORY_MATCH", app_s
+            for vs in verified_skills:
+                vs_clean = normalize_service_name(vs)
+                if vs_clean and (vs_clean == cat_name_norm or vs_clean == cat_slug_norm):
+                    return True, "DB_CATEGORY_SKILL_MATCH", vs
+
+        # Database Skill Resolution
+        db_skill = WorkforceSkill.objects.filter(Q(name__iexact=req_clean) | Q(code__iexact=req_clean)).first()
+        if db_skill:
+            sk_name_norm = normalize_service_name(db_skill.name)
+            sk_code_norm = normalize_service_name(db_skill.code or "")
+            for vs in verified_skills:
+                vs_clean = normalize_service_name(vs)
+                if vs_clean and (vs_clean == sk_name_norm or vs_clean == sk_code_norm):
+                    return True, "DB_SKILL_MATCH", vs
+
+    except Exception as e:
+        logger.debug(f"[CANONICAL_DB_MATCH_ERR] {e}")
+
+    return False, "NO_DB_RELATIONSHIP_MATCH", ""
+
 
 
 _MANDATORY_DOC_REQS_CACHE: Dict[int, List[Any]] = {}
@@ -597,16 +500,22 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
 def get_eligible_candidates(
     job_id_or_obj,
     max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS,
-    radius_km: float = MAX_DISPATCH_RADIUS_KM,
+    radius_km: Optional[float] = None,
     exclude_employee_ids: Optional[List[int]] = None,
+    candidate_employee_ids: Optional[List[int]] = None,
     check_workload: bool = False,
 ) -> List[Dict[str, Any]]:
     """
-    Finds and ranks all eligible candidate employees for a given ServiceRequest within 20 km.
+    Finds and ranks all eligible candidate employees for a given ServiceRequest within the configured global radius.
     Uses mathematical bounding-box prefiltering and exact Haversine distance calculation.
     
+    If candidate_employee_ids is provided (e.g. from Redis GEO candidate discovery),
+    evaluates only those candidate IDs, drastically reducing Supabase/PostgreSQL roundtrips.
     By default check_workload=False so busy employees are eligible to receive and view offers.
     """
+    from workforce_api.services.geo_spatial import get_global_dispatch_radius_km
+    if radius_km is None:
+        radius_km = get_global_dispatch_radius_km()
     if hasattr(job_id_or_obj, "latitude"):
         job_obj = job_id_or_obj
     else:
@@ -614,6 +523,10 @@ def get_eligible_candidates(
         if not job_obj:
             logger.warning(f"[DISPATCH_JOB_NOT_FOUND] Job #{job_id_or_obj} not found.")
             return []
+
+    if candidate_employee_ids is not None and not candidate_employee_ids:
+        logger.debug(f"[DISPATCH_EMPTY_CANDIDATE_LIST] Empty candidate_employee_ids supplied for Job #{job_obj.id}.")
+        return []
 
     is_valid_coords, cust_lat, cust_lon, coord_err = validate_coordinates(job_obj.latitude, job_obj.longitude)
     if not is_valid_coords:
@@ -639,6 +552,9 @@ def get_eligible_candidates(
 
     if exclude_employee_ids:
         candidates_qs = candidates_qs.exclude(pk__in=exclude_employee_ids)
+
+    if candidate_employee_ids is not None:
+        candidates_qs = candidates_qs.filter(pk__in=candidate_employee_ids)
 
     candidates_qs = (
         candidates_qs
@@ -671,11 +587,10 @@ def get_eligible_candidates(
 
     now = timezone.now()
 
-    # Exclude candidates who have explicitly DECLINED, REJECTED, or whose offer EXPIRED for this job
-    declined_or_expired_emp_ids = set(
+    declined_emp_ids = set(
         WorkforceJobOffer.objects.filter(
             job=job_obj,
-            status__in=["DECLINED", "REJECTED", "EXPIRED"],
+            status__in=["DECLINED", "REJECTED"],
         ).values_list("employee_id", flat=True)
     )
     # Exclude candidates who currently have an active unexpired offer
@@ -686,7 +601,7 @@ def get_eligible_candidates(
             expires_at__gt=now,
         ).values_list("employee_id", flat=True)
     )
-    excluded_emp_ids = declined_or_expired_emp_ids | active_offer_emp_ids
+    excluded_emp_ids = declined_emp_ids | active_offer_emp_ids
     if exclude_employee_ids:
         excluded_emp_ids.update(exclude_employee_ids)
 
@@ -741,14 +656,14 @@ def get_eligible_candidates(
         # Exact geodesic distance
         dist_km = calculate_distance_km(cust_lat, cust_lon, emp_lat_f, emp_lon_f)
 
-        # Strict boundary enforcement: strictly <= 20.0 km
-        if not is_within_automatic_radius(dist_km):
-            rejected_reasons[emp.id] = f"Outside dispatch radius ({dist_km:.2f}km > 20.0km)"
+        # Strict boundary enforcement using configured global radius
+        if not is_within_automatic_radius(dist_km, max_radius_km=radius_km):
+            rejected_reasons[emp.id] = f"Outside dispatch radius ({dist_km:.2f}km > {radius_km:.1f}km)"
             logger.info(f"[DISPATCH_REJECT] job={job_obj.id} employee={emp.id} reason=RADIUS_EXCEEDED distance_km={dist_km}")
             continue
 
-        # Classify sequential distance wave (1 to 6)
-        wave_number = classify_wave(dist_km)
+        # Classify sequential distance wave (1 to 6) using configured global radius
+        wave_number = classify_wave(dist_km, max_radius_km=radius_km)
         if wave_number is None:
             rejected_reasons[emp.id] = f"Outside automatic waves ({dist_km:.2f}km)"
             logger.info(f"[DISPATCH_REJECT] job={job_obj.id} employee={emp.id} reason=OUTSIDE_AUTOMATIC_WAVES distance_km={dist_km}")
@@ -854,7 +769,12 @@ def sweep_job_expired_offers(job_obj) -> int:
     ).update(status=WorkforceJobOffer.Status.EXPIRED)
 
 
-def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, exclude_employee_ids: Optional[List[int]] = None) -> Tuple[bool, str]:
+def dispatch_job(
+    job_id_or_obj,
+    max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS,
+    exclude_employee_ids: Optional[List[int]] = None,
+    candidate_employee_ids: Optional[List[int]] = None,
+) -> Tuple[bool, str]:
     """
     Authoritative sequential distance-wave dispatch engine (Phase 1):
     1. Locks ServiceRequest row with select_for_update inside transaction.atomic()
@@ -893,7 +813,81 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
     )
 
     if active_offers:
-        current_wave_num = active_offers[0].wave_number
+        first_offer = active_offers[0]
+        current_wave_num = first_offer.wave_number
+        current_wave_id = first_offer.wave_id
+        current_expires_at = first_offer.expires_at
+
+        # Check if any newly eligible technicians within this active wave boundary need to be added
+        already_offered_ids = set(o.employee_id for o in active_offers)
+        declined_or_past_ids = set(
+            WorkforceJobOffer.objects.filter(
+                job=job_obj,
+                status__in=["DECLINED", "REJECTED", "ACCEPTED", "SUPERSEDED_BY_ACCEPTANCE"]
+            ).values_list("employee_id", flat=True)
+        )
+        exclude_joining_ids = list(already_offered_ids | declined_or_past_ids | set(exclude_employee_ids or []))
+
+        candidates = get_eligible_candidates(
+            job_obj,
+            max_gps_age_seconds=max_gps_age_seconds,
+            radius_km=MAX_DISPATCH_RADIUS_KM,
+            exclude_employee_ids=exclude_joining_ids,
+            check_workload=False,
+        )
+        new_wave_candidates = [c for c in candidates if c.get("wave_number") == current_wave_num]
+
+        if new_wave_candidates:
+            with transaction.atomic():
+                locked_job = ServiceRequest.objects.select_for_update().filter(pk=job_id).first()
+                if not locked_job or locked_job.status in ["completed", "cancelled"]:
+                    return False, f"Job #{job_id} is {locked_job.status if locked_job else 'missing'}."
+                if locked_job.assigned_employee and locked_job.status not in ["unassigned", "redispatching"]:
+                    return False, f"Job #{job_id} already assigned."
+
+                for cand in new_wave_candidates:
+                    emp_cand = cand["employee"]
+                    if WorkforceJobOffer.objects.filter(job=locked_job, employee=emp_cand, status=WorkforceJobOffer.Status.OFFERED, expires_at__gt=now).exists():
+                        continue
+                    if WorkforceJobOffer.objects.filter(job=locked_job, employee=emp_cand, status__in=["DECLINED", "REJECTED"]).exists():
+                        continue
+
+                    offer = WorkforceJobOffer.objects.create(
+                        job=locked_job,
+                        employee=emp_cand,
+                        wave_id=current_wave_id,
+                        wave_number=current_wave_num,
+                        status=WorkforceJobOffer.Status.OFFERED,
+                        expires_at=current_expires_at,
+                    )
+                    WorkforceEventLog.objects.create(
+                        user=emp_cand.user,
+                        event_type="JOB_OFFERED",
+                        payload={
+                            "offer_id": offer.id,
+                            "job_id": locked_job.id,
+                            "wave_id": str(current_wave_id),
+                            "wave_number": current_wave_num,
+                            "expires_at": current_expires_at.isoformat(),
+                            "joined_active_wave": True,
+                        }
+                    )
+                    service_display = locked_job.issue_title or locked_job.service_category or "Service Request"
+                    WorkforceNotification.objects.create(
+                        recipient=emp_cand.user,
+                        title=f"New Job Offer: {service_display}",
+                        message=f"Wave {current_wave_num}: Job #{locked_job.id} offered to you ({cand.get('distance_km', 0.0):.1f} km away). Expires shortly.",
+                        notification_type="JOB_OFFER",
+                        company=locked_job.company,
+                        related_object_id=str(offer.id),
+                    )
+
+            logger.info(
+                f"[DISPATCH_WAVE_JOINED] Added {len(new_wave_candidates)} newly eligible technician(s) "
+                f"to active Wave {current_wave_num} for Job #{job_id}."
+            )
+            return True, f"Added {len(new_wave_candidates)} technician(s) to active Wave {current_wave_num}."
+
         logger.info(
             f"[DISPATCH_WAVE_ACTIVE] Job #{job_id} already has active Wave {current_wave_num} "
             f"with {len(active_offers)} pending offer(s)."
@@ -917,11 +911,21 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
     )
 
     # Step 4: Find eligible candidate technicians across 0 to 20 km (OUTSIDE TRANSACTION)
+    auto_exclude_ids = set(exclude_employee_ids or [])
+    past_offer_ids = set(
+        WorkforceJobOffer.objects.filter(
+            job=job_obj,
+            status__in=["DECLINED", "REJECTED", "EXPIRED", "ACCEPTED", "SUPERSEDED_BY_ACCEPTANCE"]
+        ).values_list("employee_id", flat=True)
+    )
+    all_excluded = list(auto_exclude_ids | past_offer_ids)
+
     candidates = get_eligible_candidates(
         job_obj,
         max_gps_age_seconds=max_gps_age_seconds,
         radius_km=MAX_DISPATCH_RADIUS_KM,
-        exclude_employee_ids=exclude_employee_ids,
+        exclude_employee_ids=all_excluded,
+        candidate_employee_ids=candidate_employee_ids,
         check_workload=False,
     )
 
@@ -1058,10 +1062,20 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
 def dispatch_next_candidate(job_id_or_obj, exclude_employee_ids: Optional[List[int]] = None) -> Tuple[bool, str]:
     """
     Triggered when a wave expires or all offers in a wave are declined:
-    Advances dispatch through canonical reconciliation.
+    Advances dispatch through canonical reconciliation, excluding past candidates.
     """
-    logger.info(f"[DISPATCH_FALLBACK] Triggering next wave dispatch for Job #{job_id_or_obj}.")
-    return reconcile_booking_for_dispatch(job_id_or_obj, exclude_employee_ids=exclude_employee_ids)
+    job_id = job_id_or_obj.pk if hasattr(job_id_or_obj, "pk") else job_id_or_obj
+    past_candidates = list(
+        WorkforceJobOffer.objects.filter(
+            job_id=job_id,
+            status__in=["DECLINED", "REJECTED", "EXPIRED", "SUPERSEDED_BY_ACCEPTANCE"]
+        ).values_list("employee_id", flat=True)
+    )
+    if exclude_employee_ids is None:
+        exclude_employee_ids = []
+    combined_excludes = list(set(exclude_employee_ids) | set(past_candidates))
+    logger.info(f"[DISPATCH_FALLBACK] Triggering next wave dispatch for Job #{job_id}, excluding {len(combined_excludes)} past candidates.")
+    return reconcile_booking_for_dispatch(job_id, exclude_employee_ids=combined_excludes)
 
 
 def expire_and_reassign_offers(company_id=None, limit: int = 50) -> int:
@@ -1098,7 +1112,7 @@ def expire_and_reassign_offers(company_id=None, limit: int = 50) -> int:
         ).exists()
         if not has_active_peers:
             logger.info(f"[DISPATCH_WAVE_EXPIRED] All offers for Job #{j_id} expired. Advancing to next wave via canonical reconciliation.")
-            reconcile_booking_for_dispatch(j_id)
+            dispatch_next_candidate(j_id)
 
     return count
 
@@ -1182,10 +1196,10 @@ def reconsider_jobs_for_employee(employee_or_id) -> int:
 
     cutoff = now - timedelta(days=2)
 
-    # Exclude jobs where ANY active unexpired offer is currently pending,
-    # or where this employee explicitly DECLINED/REJECTED.
-    active_offered_ids = set(
+    # Exclude jobs where THIS employee already has an active offer or has DECLINED/REJECTED.
+    emp_active_offered_ids = set(
         WorkforceJobOffer.objects.filter(
+            employee_id=emp.id,
             status=WorkforceJobOffer.Status.OFFERED,
             expires_at__gt=now,
         ).values_list("job_id", flat=True)
@@ -1196,7 +1210,7 @@ def reconsider_jobs_for_employee(employee_or_id) -> int:
             status__in=["DECLINED", "REJECTED"],
         ).values_list("job_id", flat=True)
     )
-    excluded_job_ids = list(active_offered_ids | declined_ids)
+    excluded_job_ids = list(emp_active_offered_ids | declined_ids)
 
     # Determine employee's domains from approved services and service_roles
     emp_services = []
@@ -1213,10 +1227,6 @@ def reconsider_jobs_for_employee(employee_or_id) -> int:
             if sr:
                 emp_services.append(str(sr))
 
-    emp_domains = set()
-    for s in emp_services:
-        emp_domains.update(detect_service_domains(s))
-
     # Scope: Company-scoped bookings for this employee's company + Marketplace bookings (company_id=NULL)
     scope_q = get_booking_discovery_scope(emp.company_id)
 
@@ -1228,18 +1238,11 @@ def reconsider_jobs_for_employee(employee_or_id) -> int:
             latitude__isnull=False,
             longitude__isnull=False,
             created_at__gte=cutoff,
-        ).exclude(id__in=excluded_job_ids).order_by("-created_at")[:5]
+        ).exclude(id__in=excluded_job_ids).order_by("-id")[:30]
     )
 
     dispatched_count = 0
     for job in pending_jobs:
-        # Fast domain pre-filter: skip bookings whose service domain is completely unrelated to employee's domains
-        job_label = f"{job.issue_title or ''} {job.service_category or ''}".strip()
-        if emp_domains and job_label:
-            job_domains = detect_service_domains(job_label)
-            if job_domains and not (job_domains & emp_domains):
-                continue
-
         logger.info(f"[DISPATCH_GPS_TRIGGER] Fresh GPS / presence for Employee #{emp.id} triggered evaluation for Job #{job.id}.")
         success, msg = reconcile_booking_for_dispatch(job)
         if success:
@@ -1259,7 +1262,8 @@ def reconsider_jobs_for_employee(employee_or_id) -> int:
 def reconcile_booking_for_dispatch(
     job_or_id,
     max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS,
-    exclude_employee_ids: Optional[List[int]] = None
+    exclude_employee_ids: Optional[List[int]] = None,
+    use_redis_geo: bool = True,
 ) -> Tuple[bool, str]:
     """
     Single authoritative entry point for all dispatch triggers.
@@ -1332,8 +1336,30 @@ def reconcile_booking_for_dispatch(
                 )
                 return False, "Customer booking is missing valid GPS coordinates."
 
+        candidate_ids = None
+        if use_redis_geo and is_valid_coords:
+            try:
+                from workforce_api.services.redis_dispatch import find_nearby_technician_candidates
+                geo_candidates = find_nearby_technician_candidates(
+                    latitude=cust_lat,
+                    longitude=cust_lon,
+                    radius_km=MAX_DISPATCH_RADIUS_KM,
+                    max_age_seconds=max_gps_age_seconds,
+                )
+                if geo_candidates is not None:
+                    candidate_ids = geo_candidates
+            except Exception as geo_err:
+                logger.debug(f"[DISPATCH_REDIS_GEO_ERR] {geo_err}")
+                candidate_ids = None
+
         logger.info(
             f"[RECONCILE_DISPATCH] Evaluating Job #{job.id} ({job.request_id}, "
-            f"status={job.status}, company_id={job.company_id}, coords=({job.latitude}, {job.longitude}))."
+            f"status={job.status}, company_id={job.company_id}, coords=({job.latitude}, {job.longitude}), "
+            f"redis_geo_candidates={len(candidate_ids) if candidate_ids is not None else 'DB_FALLBACK'})."
         )
-        return dispatch_job(job, max_gps_age_seconds=max_gps_age_seconds, exclude_employee_ids=exclude_employee_ids)
+        return dispatch_job(
+            job,
+            max_gps_age_seconds=max_gps_age_seconds,
+            exclude_employee_ids=exclude_employee_ids,
+            candidate_employee_ids=candidate_ids,
+        )
