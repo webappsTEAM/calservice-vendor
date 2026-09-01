@@ -206,12 +206,14 @@ export function TechnicianDashboard({
   const activeOffer = incomingOffers?.[0] || null;
   const [offerCountdown, setOfferCountdown] = useState('');
 
+  const offerExpiresAt = activeOffer?.active_offer?.expires_at || activeOffer?.offer_expires_at;
+
   useEffect(() => {
-    if (!activeOffer?.active_offer?.expires_at) {
+    if (!offerExpiresAt) {
       setOfferCountdown('');
       return;
     }
-    const targetMs = new Date(activeOffer.active_offer.expires_at).getTime();
+    const targetMs = new Date(offerExpiresAt).getTime();
     const tick = () => {
       const remainingSecs = Math.max(0, Math.floor((targetMs - Date.now()) / 1000));
       if (remainingSecs <= 0) {
@@ -225,7 +227,7 @@ export function TechnicianDashboard({
     tick();
     const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
-  }, [activeOffer?.active_offer?.expires_at]);
+  }, [offerExpiresAt]);
 
   // ── Active Job Resolution ──
   const currentJob = useMemo(() => {
@@ -375,6 +377,76 @@ export function TechnicianDashboard({
 
       {/* ── 3. CURRENT JOB / OPERATIONAL STATE (THE HEART OF THE DASHBOARD) ── */}
       <main className="space-y-4">
+        {/* STATE B: INCOMING DISPATCH OFFER (Always visible whenever activeOffer exists!) */}
+        {activeOffer && (
+          <div className="bg-white border-2 border-amber-400 rounded-lg p-5 space-y-4 shadow-md bg-amber-50/20">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="relative flex h-2.5 w-2.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500"></span>
+                </span>
+                <span className="text-[11px] font-bold uppercase tracking-wider text-[#D97706]">
+                  Incoming Offer {incomingOffers?.length > 1 ? `(1 of ${incomingOffers.length})` : ''}
+                </span>
+              </div>
+              {offerCountdown && (
+                <span className="text-xs font-mono font-bold text-[#D97706] bg-amber-100/80 px-2 py-0.5 rounded border border-amber-300">
+                  Offer expires in {offerCountdown}
+                </span>
+              )}
+            </div>
+
+            <div>
+              <h2 className="text-xl font-bold text-[#0F172A] leading-tight">
+                {activeOffer.service_title || activeOffer.service_category || activeOffer.issue_title || 'Service Request'}
+              </h2>
+              <p className="text-xs text-[#64748B] mt-1">
+                {activeOffer.distance_km != null
+                  ? `${formatDistanceDisplay(activeOffer.distance_km)} · Customer nearby`
+                  : 'Customer nearby'}
+                {activeOffer.total_amount ? ` · Estimated ₹${activeOffer.total_amount}` : ''}
+              </p>
+              {activeOffer.address && (
+                <p className="text-xs text-slate-600 mt-1.5 flex items-start gap-1.5 leading-relaxed">
+                  <MapPin className="w-3.5 h-3.5 text-[#2563EB] shrink-0 mt-0.5" />
+                  <span>{activeOffer.address}</span>
+                </p>
+              )}
+            </div>
+
+            {/* Dominant Primary Action: Accept Job */}
+            <div className="space-y-2 pt-1">
+              <button
+                type="button"
+                onClick={() => handleAcceptOffer(activeOffer.id)}
+                disabled={actionLoading === activeOffer.id || hasActiveJob}
+                className="w-full min-h-[48px] py-3 px-4 bg-[#2563EB] hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50 text-white font-bold text-sm rounded-md transition-colors flex items-center justify-center gap-2 cursor-pointer"
+              >
+                {actionLoading === activeOffer.id ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="w-4 h-4" />
+                )}
+                <span>
+                  {hasActiveJob ? 'Finish current job first' : 'ACCEPT JOB'}
+                </span>
+              </button>
+
+              <div className="text-center">
+                <button
+                  type="button"
+                  onClick={() => handleRejectOffer(activeOffer.id)}
+                  disabled={actionLoading === activeOffer.id}
+                  className="text-xs text-[#64748B] hover:text-[#DC2626] font-medium transition-colors cursor-pointer py-1"
+                >
+                  Decline
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* STATE A: ACTIVE JOB IN PROGRESS */}
         {currentJob ? (
           <div className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 shadow-xs">
@@ -610,63 +682,7 @@ export function TechnicianDashboard({
                 )}
             </div>
           </div>
-        ) : activeOffer ? (
-          /* STATE B: INCOMING DISPATCH OFFER */
-          <div className="bg-white border border-amber-300 rounded-lg p-5 space-y-4 shadow-xs">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-[#D97706]">
-                Incoming Offer
-              </span>
-              {offerCountdown && (
-                <span className="text-xs font-mono font-bold text-[#D97706]">
-                  Offer expires in {offerCountdown}
-                </span>
-              )}
-            </div>
-
-            <div>
-              <h2 className="text-xl font-bold text-[#0F172A] leading-tight">
-                {activeOffer.service_title || activeOffer.service_category || 'Service Request'}
-              </h2>
-              <p className="text-xs text-[#64748B] mt-1">
-                {activeOffer.distance_km != null
-                  ? `${formatDistanceDisplay(activeOffer.distance_km)} · Customer nearby`
-                  : 'Customer nearby'}
-                {activeOffer.total_amount ? ` · Estimated ₹${activeOffer.total_amount}` : ''}
-              </p>
-            </div>
-
-            {/* Dominant Primary Action: Accept Job */}
-            <div className="space-y-2 pt-1">
-              <button
-                type="button"
-                onClick={() => handleAcceptOffer(activeOffer.id)}
-                disabled={actionLoading === activeOffer.id || hasActiveJob}
-                className="w-full min-h-[48px] py-3 px-4 bg-[#2563EB] hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50 text-white font-bold text-sm rounded-md transition-colors flex items-center justify-center gap-2 cursor-pointer"
-              >
-                {actionLoading === activeOffer.id ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <CheckCircle2 className="w-4 h-4" />
-                )}
-                <span>
-                  {hasActiveJob ? 'Finish current job first' : 'ACCEPT JOB'}
-                </span>
-              </button>
-
-              <div className="text-center">
-                <button
-                  type="button"
-                  onClick={() => handleRejectOffer(activeOffer.id)}
-                  disabled={actionLoading === activeOffer.id}
-                  className="text-xs text-[#64748B] hover:text-[#DC2626] font-medium transition-colors cursor-pointer py-1"
-                >
-                  Decline
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : (
+        ) : !activeOffer ? (
           /* STATE C: STANDBY / READINESS */
           <div className="bg-white border border-slate-200 rounded-lg p-5 space-y-3 shadow-xs">
             <span className="text-[11px] font-bold uppercase tracking-wider text-[#64748B]">
@@ -711,7 +727,7 @@ export function TechnicianDashboard({
               )}
             </div>
           </div>
-        )}
+        ) : null}
       </main>
 
       {/* ── 4. SHIFT / ATTENDANCE (Compact Operational Control) ── */}

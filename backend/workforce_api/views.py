@@ -1416,7 +1416,8 @@ class WorkforceJobListView(APIView):
         emp = getattr(user, "employee_profile", None)
         company = emp.company if emp else getattr(user, "company", None)
 
-        if is_admin_role(user):
+        is_admin_view = (request.query_params.get("view_as") == "admin" or request.query_params.get("scope") == "admin")
+        if is_admin_role(user) and (not emp or is_admin_view):
             # Admin list path: use lightweight list serializer.
             # The admin jobs page only renders a table row — it does not need
             # cart_data, extensions, payments, or wave details per row.
@@ -1437,7 +1438,10 @@ class WorkforceJobListView(APIView):
                 qs = ServiceRequest.objects.none()
 
             if status_filter and status_filter != "all":
-                qs = qs.filter(status=status_filter)
+                if status_filter == "active":
+                    qs = qs.exclude(status__in=["completed", "cancelled", "unable_to_complete"])
+                else:
+                    qs = qs.filter(status=status_filter)
 
             jobs = qs[:50]
             serializer = WorkforceJobListSerializer(jobs, many=True)
@@ -6231,7 +6235,6 @@ class WorkforceRealtimeStreamView(APIView):
             last_id = initial_last_id
             heartbeat_interval_seconds = 15
             last_heartbeat_time = time.time()
-            last_reconcile_time = time.time()
 
             logger.info("[Realtime SSE START] Stream generator running for user_id=%s, start_id=%s.", user_id_val, last_id)
             # Initial connection confirmation event
@@ -6247,19 +6250,6 @@ class WorkforceRealtimeStreamView(APIView):
                         last_heartbeat_time = loop_now
                         logger.debug("[Realtime SSE HEARTBEAT] Sending keepalive ping to user_id=%s.", user_id_val)
                         yield f": heartbeat\n\n"
-
-                    # Periodic Discovery / Reconciliation for connected technician (every 10s)
-                    if not is_admin and (loop_now - last_reconcile_time >= 10):
-                        last_reconcile_time = loop_now
-                        try:
-                            emp_obj = getattr(user, "employee_profile", None)
-                            if emp_obj and emp_obj.is_online and emp_obj.current_availability == "available":
-                                from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
-                                reconsider_jobs_for_employee(emp_obj)
-                        except Exception as rec_err:
-                            logger.debug(f"[Realtime SSE RECONCILE ERR] {rec_err}")
-                        finally:
-                            connection.close()
 
                     # Fetch newly emitted events using pure dictionary projection
                     try:
@@ -10231,4 +10221,62 @@ class WorkforceServiceProviderSignupView(APIView):
                 {"error": f"Failed to register service provider: {str(exc)}", "code": "PROVIDER_REGISTRATION_FAILED"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+
+class WorkforceDispatchRadiusConfigView(APIView):
+    """
+    SuperAdmin API endpoint for reading and managing the persistent
+    global automatic job dispatch radius (DISPATCH_RADIUS_KM).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from workforce_api.services.geo_spatial import get_global_dispatch_radius_km
+        from accounts.permissions import is_superadmin
+        radius = get_global_dispatch_radius_km()
+        return Response({
+            "dispatch_radius_km": radius,
+            "default_radius_km": 20.0,
+            "is_superadmin": is_superadmin(request.user),
+        }, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        from accounts.permissions import is_superadmin
+        if not is_superadmin(request.user):
+            return Response({
+                "error": "Only SuperAdmin can modify the global dispatch radius.",
+                "code": "FORBIDDEN"
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        raw_radius = request.data.get("dispatch_radius_km") or request.data.get("radius_km")
+        if raw_radius is None:
+            return Response({
+                "error": "Missing dispatch_radius_km parameter.",
+                "code": "INVALID_INPUT"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            val_float = float(raw_radius)
+        except (TypeError, ValueError):
+            return Response({
+                "error": "Invalid dispatch_radius_km parameter. Must be a numeric value.",
+                "code": "INVALID_INPUT"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        from workforce_api.services.geo_spatial import set_global_dispatch_radius_km
+        ok, msg, current_radius = set_global_dispatch_radius_km(val_float)
+        if not ok:
+            return Response({
+                "error": msg,
+                "code": "INVALID_RADIUS"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            "message": msg,
+            "dispatch_radius_km": current_radius,
+        }, status=status.HTTP_200_OK)
+
+    def put(self, request):
+        return self.post(request)
+
 
