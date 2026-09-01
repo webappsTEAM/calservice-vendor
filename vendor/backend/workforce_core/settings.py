@@ -284,6 +284,16 @@ RAZORPAYX_KEY_SECRET = os.getenv("RAZORPAYX_KEY_SECRET", "")
 RAZORPAYX_ACCOUNT_NUMBER = os.getenv("RAZORPAYX_ACCOUNT_NUMBER", "")
 RAZORPAYX_WEBHOOK_SECRET = os.getenv("RAZORPAYX_WEBHOOK_SECRET", "")
 
+# Local-testing-only bypass: when true (and only when DEBUG is also
+# true -- see is_mock_mode() in services/payouts.py, which hard-ANDs
+# this with settings.DEBUG so it can never activate in production
+# regardless of what this env var is set to), a withdrawal simulates a
+# successful RazorpayX payout locally instead of calling the real API.
+# Lets the whole wallet flow be exercised end-to-end before a real
+# RazorpayX current account is activated. NEVER enable outside local/
+# staging testing -- it fabricates a successful payout.
+RAZORPAYX_MOCK_MODE = (os.getenv("RAZORPAYX_MOCK_MODE", "0") or "0").lower() in ("true", "1", "t")
+
 # ----------------------------------------------------------------------------
 # SEVO business plan (Section 3): differentiated commission rates and the
 # post-completion dispute-hold window (Section 4). See

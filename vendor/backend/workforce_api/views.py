@@ -483,6 +483,9 @@ class WalletWithdrawView(APIView):
             "amount": str(withdrawal.amount),
             "status": withdrawal.status,
             "requested_at": withdrawal.requested_at.isoformat(),
+            # True when this was simulated via RAZORPAYX_MOCK_MODE rather than
+            # a real RazorpayX payout -- see services.payouts.is_mock_mode().
+            "is_mock": (withdrawal.razorpayx_payout_id or "").startswith("mock_payout_"),
         }, status=status.HTTP_201_CREATED)
 
 

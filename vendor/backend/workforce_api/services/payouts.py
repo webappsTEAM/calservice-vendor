@@ -33,6 +33,18 @@ def is_configured() -> bool:
     )
 
 
+def is_mock_mode() -> bool:
+    """
+    True only when RAZORPAYX_MOCK_MODE is explicitly enabled AND the
+    environment is running with DEBUG on. That AND is deliberate and not
+    just belt-and-suspenders: it means a stray RAZORPAYX_MOCK_MODE=1 left
+    in a shared .env can never fabricate a successful payout on a real
+    (DEBUG=False) deployment -- production always takes the real-or-queue
+    path in execute_withdrawal() below, never the mock one.
+    """
+    return bool(getattr(settings, "RAZORPAYX_MOCK_MODE", False)) and bool(getattr(settings, "DEBUG", False))
+
+
 def _client():
     """Lazily import + construct the razorpay SDK client. Imported lazily
     (not at module load) so this file imports cleanly even in an
@@ -111,6 +123,45 @@ def ensure_fund_account(wallet) -> str:
 
 
 @transaction.atomic
+def _execute_mock_withdrawal(withdrawal) -> "object":
+    """
+    The RAZORPAYX_MOCK_MODE path (see is_mock_mode() above) -- simulates a
+    successful RazorpayX payout without calling the real API, so the
+    withdrawal flow can be exercised end-to-end before a real RazorpayX
+    current account is activated. Mirrors the real success path in
+    execute_withdrawal() below exactly (same status transition, same
+    WITHDRAWAL_DEBIT ledger entry) except no HTTP call is made and every
+    identifier is prefixed "mock_"/"MOCKUTR" so a mock payout is never
+    mistakable for a real one in the database, logs, or the API response
+    (WalletWithdrawView surfaces this to the frontend via is_mock).
+    """
+    import uuid
+    from workforce_api.models import WalletLedgerEntry, WithdrawalRequest
+
+    withdrawal.status = WithdrawalRequest.Status.SUCCESS
+    withdrawal.razorpayx_payout_id = f"mock_payout_{uuid.uuid4().hex[:16]}"
+    withdrawal.razorpayx_utr = f"MOCKUTR{uuid.uuid4().hex[:12].upper()}"
+    withdrawal.processed_at = timezone.now()
+    withdrawal.save(update_fields=["status", "razorpayx_payout_id", "razorpayx_utr", "processed_at"])
+
+    entry = WalletLedgerEntry.objects.create(
+        wallet=withdrawal.wallet,
+        entry_type=WalletLedgerEntry.EntryType.WITHDRAWAL_DEBIT,
+        signed_amount=-withdrawal.amount,
+        status=WalletLedgerEntry.Status.RELEASED,
+        notes=f"[MOCK] Withdrawal #{withdrawal.id} -- RazorpayX not yet activated, simulated locally.",
+    )
+    withdrawal.debit_ledger_entry = entry
+    withdrawal.save(update_fields=["debit_ledger_entry"])
+
+    logger.info(
+        f"[PAYOUT_MOCK] Withdrawal #{withdrawal.id} for wallet #{withdrawal.wallet_id} "
+        f"simulated as SUCCESS (RAZORPAYX_MOCK_MODE) -- no real money moved."
+    )
+    return withdrawal
+
+
+@transaction.atomic
 def execute_withdrawal(withdrawal) -> "object":
     """
     Attempts to actually move money for a WithdrawalRequest. Called
@@ -124,6 +175,9 @@ def execute_withdrawal(withdrawal) -> "object":
     retried once credentials exist (see retry_pending_activations below).
     """
     from workforce_api.models import WalletLedgerEntry, WithdrawalRequest
+
+    if is_mock_mode():
+        return _execute_mock_withdrawal(withdrawal)
 
     if not is_configured():
         withdrawal.status = WithdrawalRequest.Status.AWAITING_RAZORPAYX_ACTIVATION

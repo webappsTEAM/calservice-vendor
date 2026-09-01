@@ -127,7 +127,9 @@ export function AdminWalletPage() {
       setWithdrawError('');
       const res = await apiWithdrawFromWallet(withdrawAmount);
       setWithdrawMessage(
-        res.status === 'AWAITING_RAZORPAYX_ACTIVATION'
+        res.is_mock
+          ? `Withdrawal of ${money(res.amount)} simulated (SUCCESS) -- RazorpayX isn't activated on this environment yet, so no real money moved.`
+          : res.status === 'AWAITING_RAZORPAYX_ACTIVATION'
           ? `Withdrawal of ${money(res.amount)} queued -- payouts aren't live on this environment yet.`
           : `Withdrawal of ${money(res.amount)} requested (${res.status}).`
       );
