@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthProvider.jsx';
+import { useTheme } from '../../context/ThemeContext.jsx';
 import {
   Home,
   Users,
@@ -26,10 +27,12 @@ import {
   Activity,
   Calculator,
   Building2,
+  Sparkles,
 } from 'lucide-react';
 
 export function Sidebar({ onCloseMobile = () => {} }) {
   const { user, isAdmin, isEmployee, registrationStatus } = useAuth();
+  const { accent } = useTheme();
   const location = useLocation();
 
   // Collapsible sections state
@@ -47,509 +50,311 @@ export function Sidebar({ onCloseMobile = () => {} }) {
     setCollapsed((prev) => ({ ...prev, [section]: !prev[section] }));
   };
 
-  const navItemClass = ({ isActive }) =>
-    `flex items-center gap-2.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${
-      isActive
-        ? 'bg-blue-50 text-blue-700 font-bold border-l-2 border-blue-600'
-        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/80'
-    }`;
+  const renderNavLink = (to, icon, label, badge = null, end = false) => {
+    const Icon = icon;
+    return (
+      <NavLink
+        key={to}
+        to={to}
+        end={end}
+        onClick={onCloseMobile}
+        className={({ isActive }) =>
+          `group relative flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold transition-all select-none cursor-pointer ${
+            isActive
+              ? 'bg-slate-100/90 text-slate-900 font-bold shadow-xs'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+          }`
+        }
+      >
+        {({ isActive }) => (
+          <>
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div
+                className={`w-7 h-7 rounded-md flex items-center justify-center transition-all shrink-0 ${
+                  isActive
+                    ? 'bg-white shadow-xs border border-slate-200/90'
+                    : 'text-slate-500 group-hover:text-slate-900 group-hover:bg-slate-100/80'
+                }`}
+                style={isActive ? { color: 'var(--accent-primary)' } : {}}
+              >
+                <Icon className="w-4 h-4" />
+              </div>
+              <span className="truncate">{label}</span>
+            </div>
+            {isActive && (
+              <span
+                className="w-1.5 h-4 rounded-full shrink-0"
+                style={{ backgroundColor: 'var(--accent-primary)' }}
+              />
+            )}
+            {badge && !isActive && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold bg-slate-100 text-slate-600 border border-slate-200">
+                {badge}
+              </span>
+            )}
+          </>
+        )}
+      </NavLink>
+    );
+  };
 
+  // ── ADMIN SIDEBAR ──
   if (isAdmin) {
     return (
-      <aside className="w-56 bg-white border-r border-slate-200 h-full flex flex-col overflow-y-auto text-xs select-none">
-        <div className="p-3 space-y-4">
-          {/* Home */}
+      <aside className="w-60 bg-white border-r border-slate-200/90 h-full flex flex-col justify-between overflow-y-auto text-xs select-none shadow-xs">
+        <div className="p-3.5 space-y-4">
+          {/* Top Home Link */}
           <div>
-            <NavLink
-              to="/workforce/admin"
-              end
-              onClick={onCloseMobile}
-              className={navItemClass}
-            >
-              <Home className="w-4 h-4 text-slate-500" />
-              <span>Home</span>
-            </NavLink>
+            {renderNavLink('/workforce/admin', Home, 'Overview', null, true)}
           </div>
 
           {/* Group 1: WORKFORCE */}
-          <div>
+          <div className="space-y-1">
             <button
               type="button"
               onClick={() => toggleSection('workforce')}
-              className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider hover:text-slate-600 transition-colors"
+              className="w-full flex items-center justify-between px-2.5 py-1 text-[10px] font-bold text-zinc-400 uppercase tracking-widest hover:text-zinc-700 transition-colors"
             >
               <span>Workforce</span>
               {collapsed.workforce ? (
-                <ChevronRight className="w-3 h-3" />
+                <ChevronRight className="w-3 h-3 text-zinc-400" />
               ) : (
-                <ChevronDown className="w-3 h-3" />
+                <ChevronDown className="w-3 h-3 text-zinc-400" />
               )}
             </button>
             {!collapsed.workforce && (
-              <div className="mt-1 space-y-0.5 pl-1">
-                {user?.isSuperadmin && (
-                  <NavLink
-                    to="/workforce/admin/service-providers"
-                    onClick={onCloseMobile}
-                    className={navItemClass}
-                  >
-                    <Building2 className="w-3.5 h-3.5 text-blue-600" />
-                    <span>Service Providers</span>
-                  </NavLink>
-                )}
-                {user?.isServiceProviderAdmin && (
-                  <NavLink
-                    to="/workforce/admin/provider-profile"
-                    onClick={onCloseMobile}
-                    className={navItemClass}
-                  >
-                    <Building2 className="w-3.5 h-3.5 text-blue-600" />
-                    <span>Provider Profile</span>
-                  </NavLink>
-                )}
-                <NavLink
-                  to="/workforce/admin/employees"
-                  onClick={onCloseMobile}
-                  className={navItemClass}
-                >
-                  <Users className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Employees</span>
-                </NavLink>
-                <NavLink
-                  to="/workforce/admin/applications"
-                  onClick={onCloseMobile}
-                  className={navItemClass}
-                >
-                  <ClipboardList className="w-3.5 h-3.5 text-blue-500" />
-                  <span>Applications</span>
-                </NavLink>
-                <NavLink
-                  to="/workforce/admin/services"
-                  onClick={onCloseMobile}
-                  className={navItemClass}
-                >
-                  <Wrench className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Services</span>
-                </NavLink>
-                <NavLink
-                  to="/workforce/admin/skills"
-                  onClick={onCloseMobile}
-                  className={navItemClass}
-                >
-                  <Award className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Skills</span>
-                </NavLink>
+              <div className="space-y-0.5">
+                {user?.isSuperadmin &&
+                  renderNavLink('/workforce/admin/service-providers', Building2, 'Service Providers')}
+                {user?.isServiceProviderAdmin &&
+                  renderNavLink('/workforce/admin/provider-profile', Building2, 'Company Profile')}
+                {renderNavLink('/workforce/admin/applications', ClipboardList, 'Applications')}
+                {renderNavLink('/workforce/admin/employees', Users, 'Employees')}
+                {renderNavLink('/workforce/admin/skills', Award, 'Skills & Trades')}
               </div>
             )}
           </div>
 
           {/* Group 2: OPERATIONS */}
-          <div>
+          <div className="space-y-1">
             <button
               type="button"
               onClick={() => toggleSection('operations')}
-              className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider hover:text-slate-600 transition-colors"
+              className="w-full flex items-center justify-between px-2.5 py-1 text-[10px] font-bold text-zinc-400 uppercase tracking-widest hover:text-zinc-700 transition-colors"
             >
               <span>Operations</span>
               {collapsed.operations ? (
-                <ChevronRight className="w-3 h-3" />
+                <ChevronRight className="w-3 h-3 text-zinc-400" />
               ) : (
-                <ChevronDown className="w-3 h-3" />
+                <ChevronDown className="w-3 h-3 text-zinc-400" />
               )}
             </button>
             {!collapsed.operations && (
-              <div className="mt-1 space-y-0.5 pl-1">
-                <NavLink
-                  to="/workforce/admin/jobs"
-                  onClick={onCloseMobile}
-                  className={navItemClass}
-                >
-                  <Briefcase className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Jobs</span>
-                </NavLink>
-                <NavLink
-                  to="/workforce/admin/dispatch"
-                  onClick={onCloseMobile}
-                  className={navItemClass}
-                >
-                  <Send className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>Dispatch</span>
-                </NavLink>
-                <NavLink
-                  to="/workforce/admin/operations"
-                  onClick={onCloseMobile}
-                  className={navItemClass}
-                >
-                  <Navigation className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Live Workforce</span>
-                </NavLink>
+              <div className="space-y-0.5">
+                {renderNavLink('/workforce/admin/jobs', Briefcase, 'Field Jobs')}
+                {renderNavLink('/workforce/admin/dispatch', Send, 'Dispatch Radar')}
               </div>
             )}
           </div>
 
-          {/* Group 3: FINANCE */}
-          <div>
+          {/* Group 3: FINANCE & WALLET */}
+          <div className="space-y-1">
             <button
               type="button"
               onClick={() => toggleSection('finance')}
-              className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider hover:text-slate-600 transition-colors"
+              className="w-full flex items-center justify-between px-2.5 py-1 text-[10px] font-bold text-zinc-400 uppercase tracking-widest hover:text-zinc-700 transition-colors"
             >
-              <span>Finance</span>
+              <span>Finance & Ledger</span>
               {collapsed.finance ? (
-                <ChevronRight className="w-3 h-3" />
+                <ChevronRight className="w-3 h-3 text-zinc-400" />
               ) : (
-                <ChevronDown className="w-3 h-3" />
+                <ChevronDown className="w-3 h-3 text-zinc-400" />
               )}
             </button>
             {!collapsed.finance && (
-              <div className="mt-1 space-y-0.5 pl-1">
-                <NavLink
-                  to="/workforce/admin/wallet"
-                  end
-                  onClick={onCloseMobile}
-                  className={navItemClass}
-                >
-                  <Wallet className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>Wallet</span>
-                </NavLink>
-                <NavLink
-                  to="/workforce/admin/wallet/transactions"
-                  onClick={onCloseMobile}
-                  className={navItemClass}
-                >
-                  <ReceiptText className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Transactions</span>
-                </NavLink>
-                <NavLink
-                  to="/workforce/admin/wallet/withdrawals"
-                  onClick={onCloseMobile}
-                  className={navItemClass}
-                >
-                  <ArrowDownCircle className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Withdrawals</span>
-                </NavLink>
-                <NavLink
-                  to="/workforce/admin/wallet/payout-accounts"
-                  onClick={onCloseMobile}
-                  className={navItemClass}
-                >
-                  <CreditCard className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Bank Accounts</span>
-                </NavLink>
+              <div className="space-y-0.5">
+                {renderNavLink('/workforce/admin/wallet', Wallet, 'Wallet Governance')}
+                {renderNavLink('/workforce/admin/wallet/transactions', ReceiptText, 'Transactions')}
+                {renderNavLink('/workforce/admin/wallet/withdrawals', ArrowDownCircle, 'Withdrawals')}
+                {renderNavLink('/workforce/admin/wallet/payout-accounts', CreditCard, 'Payout Accounts')}
               </div>
             )}
           </div>
 
-          {/* Group 4: MONITORING */}
-          <div>
+          {/* Group 4: MONITORING & REPORTS */}
+          <div className="space-y-1">
             <button
               type="button"
               onClick={() => toggleSection('monitoring')}
-              className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider hover:text-slate-600 transition-colors"
+              className="w-full flex items-center justify-between px-2.5 py-1 text-[10px] font-bold text-zinc-400 uppercase tracking-widest hover:text-zinc-700 transition-colors"
             >
-              <span>Monitoring</span>
+              <span>Telemetry</span>
               {collapsed.monitoring ? (
-                <ChevronRight className="w-3 h-3" />
+                <ChevronRight className="w-3 h-3 text-zinc-400" />
               ) : (
-                <ChevronDown className="w-3 h-3" />
+                <ChevronDown className="w-3 h-3 text-zinc-400" />
               )}
             </button>
             {!collapsed.monitoring && (
-              <div className="mt-1 space-y-0.5 pl-1">
-                <NavLink
-                  to="/workforce/admin/monitoring/database-egress"
-                  onClick={onCloseMobile}
-                  className={navItemClass}
-                >
-                  <Activity className="w-3.5 h-3.5 text-blue-500" />
-                  <span>Database & Egress</span>
-                </NavLink>
+              <div className="space-y-0.5">
+                {renderNavLink('/workforce/admin/monitoring/database-egress', Activity, 'Database & Egress')}
+                {renderNavLink('/workforce/admin/reports', BarChart3, 'Reports & Audits')}
               </div>
             )}
           </div>
+        </div>
 
-          {/* Reports & Settings */}
-          <div className="space-y-0.5 pt-2 border-t border-slate-100">
-            <NavLink
-              to="/workforce/admin/reports"
-              onClick={onCloseMobile}
-              className={navItemClass}
-            >
-              <BarChart3 className="w-3.5 h-3.5 text-slate-400" />
-              <span>Reports</span>
-            </NavLink>
-            <NavLink
-              to="/workforce/admin/settings"
-              onClick={onCloseMobile}
-              className={navItemClass}
-            >
-              <Settings className="w-3.5 h-3.5 text-slate-400" />
-              <span>Settings</span>
-            </NavLink>
-          </div>
+        {/* Admin Footer Settings */}
+        <div className="p-3 border-t border-zinc-100">
+          {renderNavLink('/workforce/admin/settings', Settings, 'System Settings')}
         </div>
       </aside>
     );
   }
 
-  // Employee Sidebar
+  // ── ONBOARDING EMPLOYEE SIDEBAR ──
   const isApproved = registrationStatus === 'approved';
 
   if (!isApproved) {
     let statusText = 'Registration Wizard';
-    let statusBadgeColor = 'bg-amber-50 text-amber-800 border-amber-200';
+    let statusBadgeColor = 'bg-amber-50 text-amber-900 border-amber-200/90';
     let statusRoute = '/workforce/onboarding/wizard';
 
     if (registrationStatus === 'submitted' || registrationStatus === 'under_review') {
       statusText = 'Under Review';
-      statusBadgeColor = 'bg-blue-50 text-blue-800 border-blue-200';
+      statusBadgeColor = 'bg-zinc-100 text-zinc-900 border-zinc-300';
       statusRoute = '/workforce/onboarding/pending-review';
     } else if (registrationStatus === 'correction_required') {
       statusText = 'Action Required';
-      statusBadgeColor = 'bg-orange-50 text-orange-800 border-orange-200';
+      statusBadgeColor = 'bg-amber-50 text-amber-900 border-amber-300';
       statusRoute = '/workforce/onboarding/corrections';
     } else if (registrationStatus === 'rejected') {
       statusText = 'Application Declined';
-      statusBadgeColor = 'bg-red-50 text-red-800 border-red-200';
+      statusBadgeColor = 'bg-rose-50 text-rose-900 border-rose-200/90';
       statusRoute = '/workforce/onboarding/rejected';
     }
 
     return (
-      <aside className="w-56 bg-white border-r border-slate-200 h-full flex flex-col overflow-y-auto text-xs select-none">
-        <div className="p-3 space-y-4">
+      <aside className="w-60 bg-white border-r border-slate-200/90 h-full flex flex-col justify-between overflow-y-auto text-xs select-none shadow-xs">
+        <div className="p-3.5 space-y-4">
           {/* Status Banner */}
-          <div className={`p-2.5 rounded border text-[11px] font-medium space-y-1 ${statusBadgeColor}`}>
+          <div className={`p-3.5 rounded-lg border text-[11px] font-medium space-y-1.5 ${statusBadgeColor}`}>
             <p className="font-bold flex items-center gap-1.5">
-              <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+              <ShieldCheck className="w-4 h-4 shrink-0" />
               <span>{statusText}</span>
             </p>
-            <p className="text-[10px] opacity-90 leading-tight">
-              Operational modules unlock once Admin approves your application.
+            <p className="text-[10px] opacity-80 leading-relaxed">
+              Operational modules unlock once Admin verifies your credentials.
             </p>
           </div>
 
           {/* Onboarding Navigation */}
-          <div>
-            <div className="px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-              Registration
+          <div className="space-y-1">
+            <div className="px-2.5 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+              Application
             </div>
-            <div className="mt-1 space-y-0.5 pl-1">
-              <NavLink
-                to={statusRoute}
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <FileText className="w-3.5 h-3.5 text-blue-600" />
-                <span>{statusText}</span>
-              </NavLink>
-              <NavLink
-                to="/workforce/employee/profile"
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <User className="w-3.5 h-3.5 text-slate-400" />
-                <span>My Profile</span>
-              </NavLink>
+            <div className="space-y-0.5">
+              {renderNavLink(statusRoute, FileText, statusText)}
+              {renderNavLink('/workforce/employee/profile', User, 'My Profile')}
             </div>
           </div>
+        </div>
 
-          {/* Settings */}
-          <div className="pt-2 border-t border-slate-100">
-            <NavLink
-              to="/workforce/employee/settings"
-              onClick={onCloseMobile}
-              className={navItemClass}
-            >
-              <Settings className="w-3.5 h-3.5 text-slate-400" />
-              <span>Settings</span>
-            </NavLink>
-          </div>
+        {/* Footer */}
+        <div className="p-3 border-t border-slate-100">
+          {renderNavLink('/workforce/employee/settings', Settings, 'Settings')}
         </div>
       </aside>
     );
   }
 
-  // Approved Employee Sidebar
+  // ── APPROVED TECHNICIAN EMPLOYEE SIDEBAR ──
   return (
-    <aside className="w-56 bg-white border-r border-slate-200 h-full flex flex-col overflow-y-auto text-xs select-none">
-      <div className="p-3 space-y-4">
-        {/* Home */}
+    <aside className="w-60 bg-white border-r border-slate-200/90 h-full flex flex-col justify-between overflow-y-auto text-xs select-none shadow-xs">
+      <div className="p-3.5 space-y-4">
+        {/* Dashboard Link */}
         <div>
-          <NavLink
-            to="/workforce/employee/dashboard"
-            end
-            onClick={onCloseMobile}
-            className={navItemClass}
-          >
-            <Home className="w-4 h-4 text-slate-500" />
-            <span>Home</span>
-          </NavLink>
+          {renderNavLink('/workforce/employee/dashboard', Home, 'Dashboard', null, true)}
         </div>
 
-        {/* Group: MY WORK */}
-        <div>
+        {/* Group 1: MY WORK */}
+        <div className="space-y-1">
           <button
             type="button"
             onClick={() => toggleSection('myWork')}
-            className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider hover:text-slate-600 transition-colors"
+            className="w-full flex items-center justify-between px-2.5 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-widest hover:text-slate-700 transition-colors"
           >
             <span>My Work</span>
             {collapsed.myWork ? (
-              <ChevronRight className="w-3 h-3" />
+              <ChevronRight className="w-3 h-3 text-zinc-400" />
             ) : (
-              <ChevronDown className="w-3 h-3" />
+              <ChevronDown className="w-3 h-3 text-zinc-400" />
             )}
           </button>
           {!collapsed.myWork && (
-            <div className="mt-1 space-y-0.5 pl-1">
-              <NavLink
-                to="/workforce/employee/jobs"
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <Briefcase className="w-3.5 h-3.5 text-blue-500" />
-                <span>Jobs</span>
-              </NavLink>
-              <NavLink
-                to="/workforce/employee/estimates"
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <Calculator className="w-3.5 h-3.5 text-indigo-500" />
-                <span>Estimates</span>
-              </NavLink>
-              <NavLink
-                to="/workforce/employee/performance"
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <Star className="w-3.5 h-3.5 text-amber-500" />
-                <span>Performance</span>
-              </NavLink>
+            <div className="space-y-0.5">
+              {renderNavLink('/workforce/employee/jobs', Briefcase, 'Jobs')}
+              {renderNavLink('/workforce/employee/estimates', Calculator, 'Estimates')}
+              {renderNavLink('/workforce/employee/performance', Star, 'Performance')}
             </div>
           )}
         </div>
 
-        {/* Group: PROFILE */}
-        <div>
+        {/* Group 2: PROFILE & CREDENTIALS */}
+        <div className="space-y-1">
           <button
             type="button"
             onClick={() => toggleSection('profile')}
-            className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider hover:text-slate-600 transition-colors"
+            className="w-full flex items-center justify-between px-2.5 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-widest hover:text-slate-700 transition-colors"
           >
-            <span>Profile</span>
+            <span>Credentials</span>
             {collapsed.profile ? (
-              <ChevronRight className="w-3 h-3" />
+              <ChevronRight className="w-3 h-3 text-slate-400" />
             ) : (
-              <ChevronDown className="w-3 h-3" />
+              <ChevronDown className="w-3 h-3 text-slate-400" />
             )}
           </button>
           {!collapsed.profile && (
-            <div className="mt-1 space-y-0.5 pl-1">
-              <NavLink
-                to="/workforce/employee/profile"
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <User className="w-3.5 h-3.5 text-slate-400" />
-                <span>My Profile</span>
-              </NavLink>
-              <NavLink
-                to="/workforce/employee/documents"
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <ShieldCheck className="w-3.5 h-3.5 text-slate-400" />
-                <span>Documents</span>
-              </NavLink>
-              <NavLink
-                to="/workforce/employee/services"
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <Wrench className="w-3.5 h-3.5 text-slate-400" />
-                <span>Services</span>
-              </NavLink>
-              <NavLink
-                to="/workforce/employee/location"
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <MapPin className="w-3.5 h-3.5 text-slate-400" />
-                <span>My Locations</span>
-              </NavLink>
+            <div className="space-y-0.5">
+              {renderNavLink('/workforce/employee/profile', User, 'My Profile')}
+              {renderNavLink('/workforce/employee/documents', ShieldCheck, 'Documents')}
+              {renderNavLink('/workforce/employee/services', Wrench, 'Services & Skills')}
+              {renderNavLink('/workforce/employee/location', MapPin, 'Locations')}
             </div>
           )}
         </div>
 
-        {/* Group: EARNINGS */}
-        <div>
+        {/* Group 3: EARNINGS & WALLET */}
+        <div className="space-y-1">
           <button
             type="button"
             onClick={() => toggleSection('earnings')}
-            className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider hover:text-slate-600 transition-colors"
+            className="w-full flex items-center justify-between px-2.5 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-widest hover:text-slate-700 transition-colors"
           >
-            <span>Earnings</span>
+            <span>Earnings & Wallet</span>
             {collapsed.earnings ? (
-              <ChevronRight className="w-3 h-3" />
+              <ChevronRight className="w-3 h-3 text-slate-400" />
             ) : (
-              <ChevronDown className="w-3 h-3" />
+              <ChevronDown className="w-3 h-3 text-slate-400" />
             )}
           </button>
           {!collapsed.earnings && (
-            <div className="mt-1 space-y-0.5 pl-1">
-              <NavLink
-                to="/workforce/employee/wallet"
-                end
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <Wallet className="w-3.5 h-3.5 text-emerald-500" />
-                <span>My Wallet</span>
-              </NavLink>
-              <NavLink
-                to="/workforce/employee/wallet/transactions"
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <ReceiptText className="w-3.5 h-3.5 text-slate-400" />
-                <span>Transactions</span>
-              </NavLink>
-              <NavLink
-                to="/workforce/employee/wallet/withdrawals"
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <ArrowDownCircle className="w-3.5 h-3.5 text-slate-400" />
-                <span>Withdrawals</span>
-              </NavLink>
-              <NavLink
-                to="/workforce/employee/wallet/payout-accounts"
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <CreditCard className="w-3.5 h-3.5 text-slate-400" />
-                <span>Bank Accounts</span>
-              </NavLink>
+            <div className="space-y-0.5">
+              {renderNavLink('/workforce/employee/wallet', Wallet, 'Wallet')}
+              {renderNavLink('/workforce/employee/wallet/transactions', ReceiptText, 'Transactions')}
+              {renderNavLink('/workforce/employee/wallet/withdrawals', ArrowDownCircle, 'Withdrawals')}
+              {renderNavLink('/workforce/employee/wallet/payout-accounts', CreditCard, 'Bank Accounts')}
             </div>
           )}
         </div>
+      </div>
 
-        {/* Settings */}
-        <div className="pt-2 border-t border-slate-100">
-          <NavLink
-            to="/workforce/employee/settings"
-            onClick={onCloseMobile}
-            className={navItemClass}
-          >
-            <Settings className="w-3.5 h-3.5 text-slate-400" />
-            <span>Settings</span>
-          </NavLink>
-        </div>
+      {/* Footer Settings */}
+      <div className="p-3 border-t border-slate-100">
+        {renderNavLink('/workforce/employee/settings', Settings, 'Settings')}
       </div>
     </aside>
   );
 }
 
 export default Sidebar;
-

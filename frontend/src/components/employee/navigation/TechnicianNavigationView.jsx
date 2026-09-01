@@ -27,34 +27,26 @@ export function TechnicianNavigationView({
 }) {
   const status = (job?.status || job?.job_status || '').toLowerCase();
 
-  switch (status) {
-    case 'accepted':
-    case 'on_the_way':
-    case 'en_route':
-      return (
-        <TechnicianFirstPersonNavView
-          job={job}
-          technicianLocation={technicianLocation}
-          preServiceState={preServiceState}
-          geofenceRadius={geofenceRadius}
-          onLocationReport={onLocationReport}
-          onExitNavigation={onExitNavigation}
-        />
-      );
+  const isOtpDone = Boolean(preServiceState?.otp_verified || status === 'in_progress' || status === 'completed');
 
-    case 'arrived':
-      return (
-        <TechnicianArrivalView
-          job={job}
-          technicianLocation={technicianLocation}
-          geofenceRadius={geofenceRadius}
-        />
-      );
-
-    case 'in_progress':
-    case 'completed':
-    case 'cancelled':
-    default:
-      return null;
+  if (isOtpDone || status === 'in_progress' || status === 'inspection' || status === 'proof_submitted' || status === 'completed') {
+    return (
+      <TechnicianArrivalView
+        job={job}
+        technicianLocation={technicianLocation}
+        geofenceRadius={geofenceRadius}
+      />
+    );
   }
+
+  return (
+    <TechnicianFirstPersonNavView
+      job={job}
+      technicianLocation={technicianLocation}
+      preServiceState={preServiceState}
+      geofenceRadius={geofenceRadius}
+      onLocationReport={onLocationReport}
+      onExitNavigation={onExitNavigation}
+    />
+  );
 }

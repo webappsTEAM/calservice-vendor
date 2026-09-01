@@ -247,8 +247,8 @@ export function AdminEmployeesPage() {
               <span>{row.company_name}</span>
             </span>
           ) : (
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-medium">
-              <ShieldCheck className="w-3 h-3 text-slate-500" />
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-zinc-100 text-zinc-800 font-semibold text-[11px]">
+              <ShieldCheck className="w-3.5 h-3.5 text-zinc-500" />
               <span>Independent Technician</span>
             </span>
           )}
@@ -262,10 +262,10 @@ export function AdminEmployeesPage() {
         const approved = row.approved_services || [];
         return (
           <div>
-            <span className="font-semibold text-slate-800 text-xs">
+            <span className="font-bold text-zinc-900 text-xs">
               {approved.length} Services
             </span>
-            <p className="text-[10px] text-slate-500 truncate max-w-[180px]">
+            <p className="text-[10px] text-zinc-500 truncate max-w-[180px] mt-0.5">
               {approved.map((s) => s.name).join(', ') || 'No approved services'}
             </p>
           </div>
@@ -286,7 +286,7 @@ export function AdminEmployeesPage() {
       key: 'phone',
       header: 'Contact',
       render: (_, row) => (
-        <span className="font-mono text-slate-600 text-xs">{row.phone || row.mobile_number || '—'}</span>
+        <span className="font-mono text-zinc-600 text-xs">{row.phone || row.mobile_number || '—'}</span>
       ),
     },
     {
@@ -297,10 +297,10 @@ export function AdminEmployeesPage() {
           type="button"
           onClick={(e) => handleToggleActive(row.id, e)}
           title={`Click to ${val ? 'deactivate' : 'activate'}`}
-          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold transition-colors ${
+          className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold transition-all cursor-pointer ${
             val
-              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-rose-50 hover:text-rose-700 hover:border-rose-200'
-              : 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200'
+              ? 'bg-emerald-50 text-emerald-900 border border-emerald-200 hover:bg-rose-50 hover:text-rose-900 hover:border-rose-200'
+              : 'bg-rose-50 text-rose-900 border border-rose-200 hover:bg-emerald-50 hover:text-emerald-900 hover:border-emerald-200'
           }`}
         >
           <Power className="w-3 h-3" />
@@ -319,7 +319,7 @@ export function AdminEmployeesPage() {
             e.stopPropagation();
             setSelectedTech(row);
           }}
-          className="px-2.5 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs transition-colors"
+          className="px-3 py-1.5 rounded-lg bg-zinc-100 hover:bg-zinc-200 active:bg-zinc-300 text-zinc-900 font-bold text-xs transition-all cursor-pointer shadow-xs"
         >
           View Dossier
         </button>
@@ -342,9 +342,9 @@ export function AdminEmployeesPage() {
               setFeedback(null);
               setIsAddModalOpen(true);
             }}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors shrink-0"
+            className="inline-flex items-center gap-2 px-4 py-2 min-h-[38px] bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-950 text-white text-xs font-bold rounded-lg shadow-xs transition-all shrink-0 cursor-pointer"
           >
-            <UserPlus className="w-4 h-4" />
+            <UserPlus className="w-4 h-4 text-zinc-200" />
             <span>Add Technician</span>
           </button>
         </div>
@@ -352,22 +352,22 @@ export function AdminEmployeesPage() {
         {/* Global Feedback Banner */}
         {feedback && (
           <div
-            className={`p-3 rounded-xl border flex items-start gap-3 text-xs ${
+            className={`p-3.5 rounded-lg border flex items-start gap-3 text-xs ${
               feedback.type === 'success'
                 ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
                 : 'bg-rose-50 border-rose-200 text-rose-900'
             }`}
           >
             {feedback.type === 'success' ? (
-              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+              <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
             ) : (
-              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+              <AlertCircle className="w-4 h-4 text-rose-700 shrink-0 mt-0.5" />
             )}
-            <div className="flex-1 font-medium">{feedback.message}</div>
+            <div className="flex-1 font-medium leading-relaxed">{feedback.message}</div>
             <button
               type="button"
               onClick={() => setFeedback(null)}
-              className="text-slate-400 hover:text-slate-600"
+              className="text-zinc-400 hover:text-zinc-700 p-0.5"
             >
               <X className="w-3.5 h-3.5" />
             </button>
@@ -378,6 +378,7 @@ export function AdminEmployeesPage() {
         <Toolbar
           searchValue={searchTerm}
           onSearchChange={setSearchTerm}
+
           searchPlaceholder="Search by name, ID, phone, or provider..."
           filters={[
             ...(isSuperadmin

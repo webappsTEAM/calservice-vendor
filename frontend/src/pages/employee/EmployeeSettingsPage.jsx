@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthProvider.jsx';
+import { useTheme, ACCENT_PALETTES } from '../../context/ThemeContext.jsx';
 import {
   apiGetPreferences,
   apiSavePreferences,
@@ -42,10 +43,20 @@ import {
   Sun,
   Layout,
   Type,
+  Sparkles,
 } from 'lucide-react';
 
 export function EmployeeSettingsPage() {
   const { user, logout } = useAuth();
+  const {
+    accentColor,
+    setAccentColor,
+    themeMode,
+    setThemeMode,
+    density,
+    setDensity,
+    availablePalettes,
+  } = useTheme();
 
   const [activeTab, setActiveTab] = useState('security');
   const [isLoading, setIsLoading] = useState(true);
@@ -282,7 +293,7 @@ export function EmployeeSettingsPage() {
         )}
 
         {/* Tab Navigation Header */}
-        <div className="bg-white border border-slate-200 rounded p-1.5 shadow-sm flex items-center gap-1 overflow-x-auto text-xs">
+        <div className="bg-white border border-zinc-200/90 rounded-md p-1.5 shadow-card flex items-center gap-1.5 overflow-x-auto text-xs">
           {tabs.map((t) => {
             const Icon = t.icon;
             const isActive = activeTab === t.id;
@@ -291,13 +302,13 @@ export function EmployeeSettingsPage() {
                 key={t.id}
                 type="button"
                 onClick={() => setActiveTab(t.id)}
-                className={`flex items-center gap-2 px-3.5 py-2 rounded font-semibold transition-colors shrink-0 ${
+                className={`flex items-center gap-2 px-4 py-2 min-h-[36px] rounded-lg font-bold transition-all shrink-0 cursor-pointer ${
                   isActive
-                    ? 'bg-blue-50 text-blue-700 font-bold border border-blue-200 shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                    ? 'bg-zinc-900 text-white shadow-xs'
+                    : 'text-zinc-600 hover:text-zinc-950 hover:bg-zinc-100'
                 }`}
               >
-                <Icon className={`w-4 h-4 ${isActive ? 'text-blue-600' : 'text-slate-400'}`} />
+                <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-zinc-400'}`} />
                 <span>{t.label}</span>
               </button>
             );
@@ -309,26 +320,26 @@ export function EmployeeSettingsPage() {
           <div className="space-y-4">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {/* Change Password Card */}
-              <div className="bg-white border border-slate-200 rounded overflow-hidden shadow-sm flex flex-col">
-                <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 font-bold text-xs text-slate-800 flex items-center gap-2">
-                  <Key className="w-4 h-4 text-blue-600" />
+              <div className="bg-white border border-zinc-200/90 rounded-md overflow-hidden shadow-card flex flex-col">
+                <div className="bg-zinc-50/80 px-4 py-3 border-b border-zinc-200/80 font-bold text-xs text-zinc-950 flex items-center gap-2">
+                  <Key className="w-4 h-4 text-zinc-800" />
                   <span>Change Account Password</span>
                 </div>
-                <form onSubmit={handlePasswordChange} className="p-4 space-y-3 text-xs flex-1 flex flex-col justify-between">
-                  <div className="space-y-3">
+                <form onSubmit={handlePasswordChange} className="p-5 space-y-4 text-xs flex-1 flex flex-col justify-between">
+                  <div className="space-y-3.5">
                     <div>
-                      <label className="block text-slate-700 font-semibold mb-1">Current Password</label>
+                      <label className="block text-zinc-700 font-bold mb-1">Current Password</label>
                       <input
                         type="password"
                         required
                         value={currentPassword}
                         onChange={(e) => setCurrentPassword(e.target.value)}
                         placeholder="••••••••"
-                        className="w-full border border-slate-300 rounded px-3 py-1.5 text-slate-800 text-xs focus:ring-1 focus:ring-blue-500"
+                        className="w-full border border-zinc-300 rounded-lg px-3 py-2 min-h-[38px] text-zinc-900 text-xs focus:outline-none focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs"
                       />
                     </div>
                     <div>
-                      <label className="block text-slate-700 font-semibold mb-1">New Password (min 6 chars)</label>
+                      <label className="block text-zinc-700 font-bold mb-1">New Password (min 6 chars)</label>
                       <input
                         type="password"
                         required
@@ -336,11 +347,11 @@ export function EmployeeSettingsPage() {
                         value={newPassword}
                         onChange={(e) => setNewPassword(e.target.value)}
                         placeholder="••••••••"
-                        className="w-full border border-slate-300 rounded px-3 py-1.5 text-slate-800 text-xs focus:ring-1 focus:ring-blue-500"
+                        className="w-full border border-zinc-300 rounded-lg px-3 py-2 min-h-[38px] text-zinc-900 text-xs focus:outline-none focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs"
                       />
                     </div>
                     <div>
-                      <label className="block text-slate-700 font-semibold mb-1">Confirm New Password</label>
+                      <label className="block text-zinc-700 font-bold mb-1">Confirm New Password</label>
                       <input
                         type="password"
                         required
@@ -348,15 +359,15 @@ export function EmployeeSettingsPage() {
                         value={confirmPassword}
                         onChange={(e) => setConfirmPassword(e.target.value)}
                         placeholder="••••••••"
-                        className="w-full border border-slate-300 rounded px-3 py-1.5 text-slate-800 text-xs focus:ring-1 focus:ring-blue-500"
+                        className="w-full border border-zinc-300 rounded-lg px-3 py-2 min-h-[38px] text-zinc-900 text-xs focus:outline-none focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs"
                       />
                     </div>
                   </div>
-                  <div className="pt-3 border-t border-slate-100 flex justify-end">
+                  <div className="pt-4 border-t border-zinc-100 flex justify-end">
                     <button
                       type="submit"
                       disabled={isSaving}
-                      className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded text-xs transition-colors shadow-sm disabled:opacity-50 inline-flex items-center gap-1"
+                      className="px-4 py-2 min-h-[38px] bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-950 text-white font-bold rounded-lg text-xs transition-all shadow-xs disabled:opacity-50 inline-flex items-center gap-2 cursor-pointer"
                     >
                       <Save className="w-3.5 h-3.5" />
                       <span>{isSaving ? 'Updating...' : 'Update Password'}</span>
@@ -368,16 +379,17 @@ export function EmployeeSettingsPage() {
               {/* Change Email & 2FA Card */}
               <div className="space-y-4">
                 {/* Change Email */}
-                <div className="bg-white border border-slate-200 rounded overflow-hidden shadow-sm">
-                  <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 font-bold text-xs text-slate-800 flex items-center gap-2">
-                    <Mail className="w-4 h-4 text-blue-600" />
+                <div className="bg-white border border-zinc-200/90 rounded-md overflow-hidden shadow-card">
+                  <div className="bg-zinc-50/80 px-4 py-3 border-b border-zinc-200/80 font-bold text-xs text-zinc-950 flex items-center gap-2">
+                    <Mail className="w-4 h-4 text-zinc-800" />
                     <span>Update Email Address</span>
                   </div>
-                  <form onSubmit={handleEmailChange} className="p-4 space-y-3 text-xs">
+                  <form onSubmit={handleEmailChange} className="p-5 space-y-4 text-xs">
                     <div>
-                      <label className="block text-slate-700 font-semibold mb-1">New Email Address</label>
+                      <label className="block text-zinc-700 font-bold mb-1">New Email Address</label>
                       <input
                         type="email"
+
                         required
                         value={newEmail}
                         onChange={(e) => setNewEmail(e.target.value)}
@@ -490,98 +502,158 @@ export function EmployeeSettingsPage() {
 
         {/* ── TAB 2: APPEARANCE & PREFERENCES ── */}
         {activeTab === 'appearance' && (
-          <div className="bg-white border border-slate-200 rounded overflow-hidden shadow-sm p-5 space-y-4">
-            <div className="border-b border-slate-200 pb-3 flex items-center justify-between">
+          <div className="bg-white border border-zinc-200/90 rounded-md overflow-hidden shadow-card p-6 space-y-6">
+            <div className="border-b border-zinc-200/80 pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
-                <h2 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2">
-                  <Palette className="w-4 h-4 text-blue-600" />
-                  Display & Visual Preferences
+                <h2 className="text-xs font-bold text-zinc-950 uppercase tracking-wider flex items-center gap-2">
+                  <Palette className="w-4 h-4 text-zinc-800" />
+                  <span>Display & Accent Color Customizer</span>
                 </h2>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  Preferences are stored in PostgreSQL and persist across browser reloads.
+                <p className="text-[11px] text-zinc-500 mt-0.5">
+                  Select your primary accent highlight color and theme density. Changes apply instantly across the entire interface.
                 </p>
               </div>
             </div>
 
-            <form onSubmit={handleSaveAppearance} className="space-y-4 text-xs">
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                {/* Theme */}
-                <div>
-                  <label className="block text-slate-700 font-semibold mb-1 flex items-center gap-1.5">
-                    <Sun className="w-3.5 h-3.5 text-amber-500" />
-                    <span>Interface Theme</span>
+            <form onSubmit={handleSaveAppearance} className="space-y-6 text-xs">
+              {/* 1. Accent Color Palette Selector */}
+              <div className="space-y-3">
+                <label className="block text-zinc-800 font-bold text-xs uppercase tracking-wider">
+                  Select Primary Accent & Secondary Highlight Color
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                  {Object.values(availablePalettes || ACCENT_PALETTES).map((pal) => {
+                    const isSelected = accentColor === pal.id;
+                    return (
+                      <button
+                        key={pal.id}
+                        type="button"
+                        onClick={() => {
+                          setAccentColor(pal.id);
+                          setAppearance((prev) => ({ ...prev, accent_color: pal.id }));
+                        }}
+                        className={`p-3.5 rounded-lg border text-left transition-all flex items-center gap-3 cursor-pointer shadow-xs ${
+                          isSelected
+                            ? 'border-slate-800 bg-slate-50 ring-2 ring-slate-800/20'
+                            : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/50'
+                        }`}
+                      >
+                        <div
+                          className="w-7 h-7 rounded-full shadow-xs shrink-0 flex items-center justify-center text-white"
+                          style={{ backgroundColor: pal.primary }}
+                        >
+                          {isSelected && <CheckCircle2 className="w-4 h-4 fill-white text-slate-900" />}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-bold text-slate-950 truncate text-xs">{pal.name}</div>
+                          <div className="text-[10px] text-slate-400 font-mono uppercase">{pal.id}</div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* 2. Theme Mode & Density Controls */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                {/* Theme Mode */}
+                <div className="p-4 bg-slate-50 border border-slate-200/80 rounded-lg space-y-2">
+                  <label className="block text-slate-800 font-bold flex items-center gap-1.5">
+                    <Sun className="w-3.5 h-3.5 text-slate-600" />
+                    <span>Interface Theme Mode</span>
                   </label>
                   <select
-                    value={appearance.theme}
-                    onChange={(e) => setAppearance({ ...appearance, theme: e.target.value })}
-                    className="w-full border border-slate-300 rounded px-3 py-1.5 text-slate-800 text-xs bg-white focus:ring-1 focus:ring-blue-500"
+                    value={themeMode}
+                    onChange={(e) => {
+                      setThemeMode(e.target.value);
+                      setAppearance((prev) => ({ ...prev, theme: e.target.value }));
+                    }}
+                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 min-h-[38px] text-slate-900 text-xs focus:outline-none focus:ring-2 focus:ring-slate-800/10 focus:border-slate-700 shadow-xs"
                   >
-                    <option value="light">Light Mode (Default)</option>
-                    <option value="dark">Dark Mode</option>
-                    <option value="system">Follow System</option>
-                  </select>
-                </div>
-
-                {/* Accent Color */}
-                <div>
-                  <label className="block text-slate-700 font-semibold mb-1">Accent Highlight Color</label>
-                  <select
-                    value={appearance.accent_color}
-                    onChange={(e) => setAppearance({ ...appearance, accent_color: e.target.value })}
-                    className="w-full border border-slate-300 rounded px-3 py-1.5 text-slate-800 text-xs bg-white focus:ring-1 focus:ring-blue-500"
-                  >
-                    <option value="blue">CalServices Blue (Primary)</option>
-                    <option value="emerald">Emerald Green</option>
-                    <option value="indigo">Indigo Corporate</option>
-                    <option value="violet">Violet Modern</option>
-                    <option value="amber">Amber Warm</option>
+                    <option value="light">Light Mode (Clean Slate & Neutral)</option>
+                    <option value="dark">Dark Mode (Deep Slate & Steel)</option>
+                    <option value="system">Follow System Appearance</option>
                   </select>
                 </div>
 
                 {/* Density */}
-                <div>
-                  <label className="block text-slate-700 font-semibold mb-1 flex items-center gap-1.5">
-                    <Layout className="w-3.5 h-3.5 text-slate-500" />
+                <div className="p-4 bg-slate-50 border border-slate-200/80 rounded-lg space-y-2">
+                  <label className="block text-slate-800 font-bold flex items-center gap-1.5">
+                    <Layout className="w-3.5 h-3.5 text-slate-600" />
                     <span>Layout Density</span>
                   </label>
                   <select
-                    value={appearance.layout_density}
-                    onChange={(e) => setAppearance({ ...appearance, layout_density: e.target.value })}
-                    className="w-full border border-slate-300 rounded px-3 py-1.5 text-slate-800 text-xs bg-white focus:ring-1 focus:ring-blue-500"
+                    value={density}
+                    onChange={(e) => {
+                      setDensity(e.target.value);
+                      setAppearance((prev) => ({ ...prev, layout_density: e.target.value }));
+                    }}
+                    className="w-full bg-white border border-zinc-300 rounded-lg px-3 py-2 min-h-[38px] text-zinc-900 text-xs focus:outline-none focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs"
                   >
-                    <option value="comfortable">Comfortable (Standard)</option>
-                    <option value="compact">Compact (Dense Enterprise)</option>
+                    <option value="comfortable">Comfortable (Standard Touch-Friendly Spacing)</option>
+                    <option value="compact">Compact (High-Density Data Grid)</option>
                   </select>
                 </div>
               </div>
 
+              {/* 3. Live UI Component Preview Card */}
+              <div className="p-4 border border-zinc-200 rounded-lg bg-white space-y-3">
+                <div className="flex items-center justify-between border-b border-zinc-100 pb-2">
+                  <span className="text-[11px] font-bold text-zinc-700 uppercase tracking-wider flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-zinc-500" />
+                    <span>Live Accent Preview</span>
+                  </span>
+                  <span className="badge-accent px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                    Active Palette: {availablePalettes[accentColor]?.name || accentColor}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-3 pt-1">
+                  <button
+                    type="button"
+                    className="btn-accent px-4 py-2 min-h-[36px] font-bold text-xs rounded-lg shadow-xs cursor-pointer"
+                  >
+                    Primary Button
+                  </button>
+                  <button
+                    type="button"
+                    className="bg-accent-subtle text-accent-dynamic border border-accent-dynamic px-4 py-2 min-h-[36px] font-bold text-xs rounded-lg shadow-xs cursor-pointer"
+                  >
+                    Secondary Pill
+                  </button>
+                  <div className="inline-flex items-center gap-1.5 font-bold text-xs text-accent-dynamic">
+                    <CheckCircle2 className="w-4 h-4 fill-current text-white" style={{ fill: 'var(--accent-primary)' }} />
+                    <span>Verified Active Telemetry</span>
+                  </div>
+                </div>
+              </div>
+
               {/* Toggles */}
-              <div className="pt-3 border-t border-slate-100 space-y-2">
-                <label className="flex items-center gap-2 cursor-pointer">
+              <div className="pt-2 border-t border-zinc-100 space-y-2.5">
+                <label className="flex items-center gap-2.5 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={appearance.high_contrast}
                     onChange={(e) => setAppearance({ ...appearance, high_contrast: e.target.checked })}
-                    className="rounded text-blue-600 focus:ring-blue-500"
+                    className="w-4 h-4 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-950/20 cursor-pointer"
                   />
-                  <span className="text-slate-800 font-medium">Enable High Contrast Mode</span>
+                  <span className="text-zinc-800 font-bold text-xs">Enable High Contrast Mode</span>
                 </label>
-                <label className="flex items-center gap-2 cursor-pointer">
+                <label className="flex items-center gap-2.5 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={appearance.reduced_motion}
                     onChange={(e) => setAppearance({ ...appearance, reduced_motion: e.target.checked })}
-                    className="rounded text-blue-600 focus:ring-blue-500"
+                    className="w-4 h-4 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-950/20 cursor-pointer"
                   />
-                  <span className="text-slate-800 font-medium">Reduce Animations & Transitions</span>
+                  <span className="text-zinc-800 font-bold text-xs">Reduce Animations & Transitions</span>
                 </label>
               </div>
 
-              <div className="pt-3 border-t border-slate-100 flex justify-end">
+              <div className="pt-4 border-t border-zinc-100 flex justify-end">
                 <button
                   type="submit"
                   disabled={isSaving}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded text-xs transition-colors shadow-sm inline-flex items-center gap-1.5 disabled:opacity-50"
+                  className="px-5 py-2.5 min-h-[40px] bg-zinc-900 hover:bg-zinc-800 text-white font-bold rounded-lg text-xs transition-all shadow-xs inline-flex items-center gap-2 disabled:opacity-50 cursor-pointer"
                 >
                   <Save className="w-3.5 h-3.5" />
                   <span>{isSaving ? 'Saving...' : 'Save Appearance Preferences'}</span>

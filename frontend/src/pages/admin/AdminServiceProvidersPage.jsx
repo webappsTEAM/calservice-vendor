@@ -203,22 +203,22 @@ export function AdminServiceProvidersPage() {
         )}
 
         {/* Filters */}
-        <div className="flex flex-col sm:flex-row gap-3 items-center justify-between bg-white p-3 rounded-xl border border-slate-200 shadow-sm text-xs">
+        <div className="flex flex-col sm:flex-row gap-3 items-center justify-between bg-white p-3.5 rounded-md border border-zinc-200/90 shadow-card text-xs">
           <div className="relative w-full sm:w-80">
-            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
             <input
               type="text"
               placeholder="Search providers or display ID..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-8 pr-3 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              className="w-full pl-9 pr-3 py-2 min-h-[38px] border border-zinc-300 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs transition-all"
             />
           </div>
           <div className="flex items-center gap-2 w-full sm:w-auto">
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
-              className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              className="px-3 py-2 min-h-[38px] border border-zinc-300 rounded-lg text-xs text-zinc-800 bg-white focus:outline-none focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs transition-all"
             >
               <option value="all">All Statuses</option>
               <option value="active">Active Only</option>
@@ -231,93 +231,93 @@ export function AdminServiceProvidersPage() {
         {isLoading ? (
           <LoadingState message="Loading service providers..." />
         ) : providers.length === 0 ? (
-          <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
-            <Building2 className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-            <h3 className="text-sm font-bold text-slate-800">No Service Providers Found</h3>
-            <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
+          <div className="bg-white rounded-md border border-zinc-200/90 shadow-card p-12 text-center">
+            <Building2 className="w-12 h-12 text-zinc-300 mx-auto mb-3" />
+            <h3 className="text-sm font-bold text-zinc-900">No Service Providers Found</h3>
+            <p className="text-xs text-zinc-500 max-w-md mx-auto mt-1 leading-relaxed">
               {searchQuery
                 ? 'No providers match your search query. Try clearing filters.'
                 : 'Click "Create Service Provider" above to add the first service provider and primary admin.'}
             </p>
           </div>
         ) : (
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden text-xs">
+          <div className="bg-white rounded-md border border-zinc-200/90 shadow-card overflow-hidden text-xs">
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-slate-600">
-                <thead className="bg-slate-50/80 text-[11px] font-semibold text-slate-500 uppercase tracking-wider border-b border-slate-200">
+              <table className="w-full text-left text-zinc-600">
+                <thead className="bg-zinc-50/80 text-[11px] font-bold text-zinc-500 uppercase tracking-wider border-b border-zinc-200">
                   <tr>
-                    <th className="px-5 py-3">Provider / Organization</th>
-                    <th className="px-5 py-3">Display ID</th>
-                    <th className="px-5 py-3">Primary Administrator</th>
-                    <th className="px-5 py-3 text-center">Technicians</th>
-                    <th className="px-5 py-3">Status</th>
-                    <th className="px-5 py-3">Created</th>
-                    <th className="px-5 py-3 text-right">Actions</th>
+                    <th className="px-5 py-3.5">Provider / Organization</th>
+                    <th className="px-5 py-3.5">Display ID</th>
+                    <th className="px-5 py-3.5">Primary Administrator</th>
+                    <th className="px-5 py-3.5 text-center">Technicians</th>
+                    <th className="px-5 py-3.5">Status</th>
+                    <th className="px-5 py-3.5">Created</th>
+                    <th className="px-5 py-3.5 text-right">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100">
+                <tbody className="divide-y divide-zinc-100">
                   {providers.map((p) => {
                     const admin = p.primary_admin;
                     return (
                       <tr
                         key={p.id}
                         onClick={() => setSelectedProvider(p)}
-                        className="hover:bg-slate-50/70 transition-colors cursor-pointer"
+                        className="hover:bg-zinc-50/80 transition-colors cursor-pointer"
                       >
-                        <td className="px-5 py-3.5">
-                          <div className="flex items-center gap-2.5">
-                            <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 border border-blue-200 flex items-center justify-center font-bold text-xs shrink-0">
+                        <td className="px-5 py-4">
+                          <div className="flex items-center gap-3">
+                            <div className="w-8 h-8 rounded-lg bg-zinc-100 text-zinc-800 border border-zinc-200 flex items-center justify-center font-bold text-xs shrink-0">
                               <Building2 className="w-4 h-4" />
                             </div>
                             <div>
-                              <div className="font-bold text-slate-900">{p.company_name}</div>
+                              <div className="font-bold text-zinc-950">{p.company_name}</div>
                               {p.industry && (
-                                <div className="text-[10px] text-slate-400">{p.industry}</div>
+                                <div className="text-[10px] text-zinc-400 font-medium">{p.industry}</div>
                               )}
                             </div>
                           </div>
                         </td>
-                        <td className="px-5 py-3.5">
-                          <span className="font-mono text-[11px] px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-medium">
+                        <td className="px-5 py-4">
+                          <span className="font-mono text-[11px] px-2.5 py-0.5 rounded-full bg-zinc-100 text-zinc-800 font-bold border border-zinc-200">
                             {p.display_id || `ID: ${p.id}`}
                           </span>
                         </td>
-                        <td className="px-5 py-3.5">
+                        <td className="px-5 py-4">
                           {admin ? (
                             <div>
-                              <div className="font-semibold text-slate-900 flex items-center gap-1">
-                                <User className="w-3 h-3 text-slate-400" />
+                              <div className="font-bold text-zinc-900 flex items-center gap-1.5">
+                                <User className="w-3.5 h-3.5 text-zinc-400" />
                                 <span>{admin.full_name || admin.username}</span>
                               </div>
-                              <div className="text-[11px] text-slate-500 flex items-center gap-1 mt-0.5">
-                                <Mail className="w-3 h-3 text-slate-400" />
+                              <div className="text-[11px] text-zinc-500 flex items-center gap-1.5 mt-0.5">
+                                <Mail className="w-3.5 h-3.5 text-zinc-400" />
                                 <span className="truncate max-w-[160px]">{admin.email || 'No email'}</span>
                               </div>
                             </div>
                           ) : (
-                            <span className="text-[11px] text-slate-400 italic">No admin assigned</span>
+                            <span className="text-[11px] text-zinc-400 italic">No admin assigned</span>
                           )}
                         </td>
-                        <td className="px-5 py-3.5 text-center">
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 font-semibold text-[11px]">
-                            <Users className="w-3 h-3 text-slate-400" />
+                        <td className="px-5 py-4 text-center">
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-zinc-100 text-zinc-800 font-bold text-[11px]">
+                            <Users className="w-3.5 h-3.5 text-zinc-400" />
                             <span>{p.employee_count ?? 0}</span>
                           </span>
                         </td>
-                        <td className="px-5 py-3.5">
+                        <td className="px-5 py-4">
                           <StatusBadge status={p.is_active ? 'active' : 'inactive'} />
                         </td>
-                        <td className="px-5 py-3.5 text-slate-500 text-[11px]">
+                        <td className="px-5 py-4 text-zinc-500 font-mono text-[11px]">
                           {p.created_at ? new Date(p.created_at).toLocaleDateString() : '—'}
                         </td>
-                        <td className="px-5 py-3.5 text-right">
+                        <td className="px-5 py-4 text-right">
                           <button
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
                               setSelectedProvider(p);
                             }}
-                            className="px-2.5 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-[11px] transition-colors"
+                            className="px-3 py-1.5 rounded-lg bg-zinc-100 hover:bg-zinc-200 text-zinc-900 font-bold text-xs shadow-xs transition-all cursor-pointer"
                           >
                             Inspect
                           </button>
@@ -330,6 +330,7 @@ export function AdminServiceProvidersPage() {
             </div>
           </div>
         )}
+
 
         {/* Modal: Create Service Provider */}
         {isModalOpen && (

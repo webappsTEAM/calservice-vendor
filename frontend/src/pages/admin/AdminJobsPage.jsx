@@ -59,25 +59,25 @@ export function AdminJobsPage() {
       key: 'request_id',
       header: 'Job ID',
       render: (val, row) => (
-        <span className="font-mono font-bold text-blue-600">{val || `SR-${row.id}`}</span>
+        <span className="font-mono font-bold text-zinc-950">{val || `SR-${row.id}`}</span>
       ),
     },
     {
       key: 'customer_display_name',
       header: 'Customer',
-      render: (val) => <span className="font-medium text-slate-800">{val || '—'}</span>,
+      render: (val) => <span className="font-medium text-zinc-800">{val || '—'}</span>,
     },
     {
       key: 'service_category',
       header: 'Service Requested',
       render: (val, row) => (
-        <span className="text-slate-800 font-semibold">{row.service_title || val || '—'}</span>
+        <span className="text-zinc-900 font-bold">{row.service_title || val || '—'}</span>
       ),
     },
     {
       key: 'address',
       header: 'Location / Territory',
-      render: (val) => <span className="text-slate-500 truncate max-w-xs block">{val || '—'}</span>,
+      render: (val) => <span className="text-zinc-500 truncate max-w-xs block">{val || '—'}</span>,
     },
     {
       key: 'status',
@@ -99,7 +99,7 @@ export function AdminJobsPage() {
       key: 'preferred_date',
       header: 'Scheduled Date',
       render: (val, row) => (
-        <span className="text-slate-500 font-mono text-[11px]">
+        <span className="text-zinc-500 font-mono text-[11px]">
           {val ? `${val}${row.preferred_time ? ` ${row.preferred_time}` : ''}` : '—'}
         </span>
       ),
@@ -116,19 +116,19 @@ export function AdminJobsPage() {
               <button
                 type="button"
                 onClick={() => setLiveTrackingJobId(row.id)}
-                className="px-2 py-1 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold text-xs border border-emerald-200 transition-colors inline-flex items-center gap-1"
+                className="px-2.5 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 active:bg-emerald-200 text-emerald-900 font-bold text-xs border border-emerald-200 transition-all shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
                 title="View Live Road Tracking"
               >
-                <Navigation className="w-3 h-3 text-emerald-600" />
+                <Navigation className="w-3.5 h-3.5 text-emerald-700" />
                 <span>Track</span>
               </button>
             )}
             <Link
               to="/workforce/admin/dispatch"
-              className="px-2.5 py-1 rounded bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold text-xs border border-blue-200 transition-colors inline-flex items-center gap-1"
+              className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-950 text-white font-bold text-xs shadow-xs transition-all inline-flex items-center gap-1.5 cursor-pointer"
             >
               <span>Dispatch</span>
-              <ArrowRight className="w-3 h-3" />
+              <ArrowRight className="w-3.5 h-3.5" />
             </Link>
           </div>
         );
@@ -138,7 +138,8 @@ export function AdminJobsPage() {
 
   return (
     <AppShell breadcrumbs={[{ label: 'Home', to: '/workforce/admin' }, { label: 'Jobs' }]}>
-      <div className="space-y-3">
+      <div className="space-y-4">
+
         {/* Header */}
         <PageHeader
           title="Customer Jobs & Field Work Orders"

@@ -151,57 +151,57 @@ export function AdminDatabaseMonitoringPage() {
     >
       <div className="space-y-6">
         {/* Page Header with Mode Switcher */}
-        <div className="bg-white border border-slate-200 p-4 sm:p-5 rounded-lg shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="bg-white border border-zinc-200/90 p-5 rounded-md shadow-card flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-md bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600">
+              <div className="w-9 h-9 rounded-lg bg-zinc-100 border border-zinc-300 flex items-center justify-center text-zinc-900 shadow-xs">
                 <Activity className="w-4 h-4" />
               </div>
               <div>
-                <h1 className="text-base sm:text-lg font-bold text-slate-900 flex items-center gap-2">
+                <h1 className="text-base sm:text-lg font-bold text-zinc-950 flex items-center gap-2 tracking-tight">
                   <span>Database & Egress Monitoring</span>
-                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-900 border border-emerald-200">
                     Live Telemetry
                   </span>
                 </h1>
               </div>
             </div>
-            <p className="text-xs text-slate-500 mt-1">
-              Plain-English performance analytics, search shortcut usage, storage health, and network egress optimizations.
+            <p className="text-xs text-zinc-500 mt-1 leading-relaxed">
+              Performance analytics, search shortcut usage, storage health, and network egress optimizations.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5 text-xs">
             {/* View Mode Toggle */}
-            <div className="bg-slate-100 p-0.5 rounded-md border border-slate-200 flex items-center">
+            <div className="bg-zinc-100 p-1 rounded-lg border border-zinc-200 flex items-center">
               <button
                 type="button"
                 onClick={() => setViewMode('simple')}
-                className={`px-3 py-1 rounded text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
                   viewMode === 'simple'
-                    ? 'bg-white text-blue-700 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
+                    ? 'bg-zinc-950 text-white shadow-xs'
+                    : 'text-zinc-600 hover:text-zinc-950'
                 }`}
               >
-                <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                <Sparkles className="w-3.5 h-3.5 text-zinc-300" />
                 <span>Plain English</span>
               </button>
               <button
                 type="button"
                 onClick={() => setViewMode('technical')}
-                className={`px-3 py-1 rounded text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
                   viewMode === 'technical'
-                    ? 'bg-white text-indigo-700 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
+                    ? 'bg-zinc-950 text-white shadow-xs'
+                    : 'text-zinc-600 hover:text-zinc-950'
                 }`}
               >
-                <Code2 className="w-3.5 h-3.5 text-indigo-500" />
+                <Code2 className="w-3.5 h-3.5 text-zinc-300" />
                 <span>Technical SQL</span>
               </button>
             </div>
 
             {lastUpdated && (
-              <span className="text-slate-400 text-[11px] flex items-center gap-1">
+              <span className="text-zinc-400 font-mono text-[11px] flex items-center gap-1">
                 <Clock className="w-3.5 h-3.5" />
                 {lastUpdated.toLocaleTimeString()}
               </span>
@@ -210,10 +210,10 @@ export function AdminDatabaseMonitoringPage() {
             <button
               type="button"
               onClick={() => setAutoRefresh(!autoRefresh)}
-              className={`px-2.5 py-1.5 rounded border text-[11px] font-medium transition-colors ${
+              className={`px-3 py-1.5 rounded-lg border text-[11px] font-semibold transition-all shadow-xs cursor-pointer ${
                 autoRefresh
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
-                  : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                  ? 'bg-emerald-50 text-emerald-900 border-emerald-200 hover:bg-emerald-100'
+                  : 'bg-zinc-50 text-zinc-600 border-zinc-200 hover:bg-zinc-100'
               }`}
             >
               {autoRefresh ? '● Auto-refresh (60s)' : '○ Auto-refresh Off'}
@@ -223,7 +223,7 @@ export function AdminDatabaseMonitoringPage() {
               type="button"
               onClick={() => fetchTelemetry(currentPage, pageSize, false)}
               disabled={isLoading}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded font-medium shadow-xs disabled:opacity-50 transition-colors"
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 min-h-[34px] bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-950 text-white rounded-lg font-bold shadow-xs disabled:opacity-50 transition-all cursor-pointer"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
               <span>Refresh</span>
@@ -233,13 +233,13 @@ export function AdminDatabaseMonitoringPage() {
 
         {/* Loading / Error States */}
         {isLoading && !data && (
-          <div className="bg-white border border-slate-200 rounded-lg p-12">
+          <div className="bg-white border border-zinc-200/90 rounded-md p-12 shadow-card">
             <LoadingState message="Connecting to database and calculating analytics..." />
           </div>
         )}
 
         {error && !data && (
-          <div className="bg-white border border-slate-200 rounded-lg p-6">
+          <div className="bg-white border border-zinc-200/90 rounded-md p-6 shadow-card">
             <ErrorState
               title="Database Telemetry Unavailable"
               message={error}
@@ -251,13 +251,14 @@ export function AdminDatabaseMonitoringPage() {
         {data && (
           <>
             {/* EXECUTIVE SUMMARY IN PLAIN ENGLISH (For Non-Technical Users) */}
-            <div className="bg-gradient-to-r from-blue-900 via-indigo-900 to-slate-900 rounded-xl p-5 sm:p-6 text-white shadow-md space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-white/10 pb-4">
+            <div className="bg-zinc-950 border border-zinc-800 rounded-md p-6 text-white shadow-card space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-zinc-800 pb-4">
                 <div className="flex items-center gap-2.5">
                   <div className="p-2 bg-emerald-500/20 border border-emerald-400/30 rounded-lg text-emerald-300">
                     <CheckCircle2 className="w-5 h-5" />
                   </div>
                   <div>
+
                     <h2 className="text-sm sm:text-base font-bold text-white flex items-center gap-2">
                       <span>Executive System Summary</span>
                       <span className="text-[10px] uppercase tracking-wider bg-emerald-500/30 text-emerald-200 px-2 py-0.5 rounded font-bold">

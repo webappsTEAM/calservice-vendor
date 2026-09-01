@@ -103,24 +103,24 @@ export function EmployeePayoutAccountsPage() {
         { label: 'Bank Accounts' },
       ]}
     >
-      <div className="space-y-5 max-w-5xl mx-auto">
+      <div className="space-y-5 max-w-5xl mx-auto text-xs">
         {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 sm:p-5 rounded-lg border border-slate-200 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-5 rounded-md border border-zinc-200/90 shadow-card">
           <div>
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex items-center gap-2 mb-1.5">
               <Link
                 to="/workforce/employee/wallet"
-                className="text-xs font-semibold text-blue-600 hover:underline flex items-center gap-1"
+                className="text-xs font-bold text-zinc-600 hover:text-zinc-950 flex items-center gap-1 transition-colors"
               >
                 <ArrowLeft className="w-3.5 h-3.5" />
-                Back to Wallet
+                <span>Back to Wallet</span>
               </Link>
             </div>
-            <h1 className="text-lg sm:text-xl font-bold text-slate-900 flex items-center gap-2">
-              <CreditCard className="w-5 h-5 text-blue-600" />
-              Payout Bank Accounts
+            <h1 className="text-base sm:text-lg font-bold text-zinc-950 flex items-center gap-2 tracking-tight">
+              <CreditCard className="w-5 h-5 text-zinc-800" />
+              <span>Payout Bank Accounts</span>
             </h1>
-            <p className="text-xs text-slate-500 mt-0.5">
+            <p className="text-xs text-zinc-500 mt-1">
               Manage your linked bank accounts for direct commission withdrawals.
             </p>
           </div>
@@ -128,41 +128,41 @@ export function EmployeePayoutAccountsPage() {
           <div className="flex items-center gap-2">
             <button
               onClick={loadAccounts}
-              className="px-3 py-1.5 text-xs font-semibold text-slate-600 bg-white border border-slate-200 rounded-md hover:bg-slate-50 flex items-center gap-1.5 transition-colors"
+              className="px-3.5 py-2 min-h-[38px] text-xs font-bold text-zinc-800 bg-white border border-zinc-300 rounded-lg hover:bg-zinc-50 active:bg-zinc-100 flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
             >
               <RefreshCw className="w-3.5 h-3.5" />
-              Refresh
+              <span>Refresh</span>
             </button>
             <button
               onClick={() => setShowModal(true)}
-              className="px-3.5 py-1.5 text-xs font-bold text-white bg-blue-600 rounded-md hover:bg-blue-700 active:scale-95 flex items-center gap-1.5 shadow-xs transition-all"
+              className="px-4 py-2 min-h-[38px] text-xs font-bold text-white bg-slate-800 rounded-lg hover:bg-slate-700 active:bg-slate-900 flex items-center gap-2 shadow-xs transition-all cursor-pointer"
             >
               <PlusCircle className="w-4 h-4" />
-              Add Bank Account
+              <span>Add Bank Account</span>
             </button>
           </div>
         </div>
 
         {error && (
-          <div className="p-3.5 rounded-lg bg-rose-50 border border-rose-200 text-xs font-medium text-rose-800 flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+          <div className="p-3.5 rounded-lg bg-rose-50 border border-rose-200 text-xs font-semibold text-rose-900 flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-700 shrink-0" />
             <span>{error}</span>
           </div>
         )}
 
         {successMsg && (
-          <div className="p-3.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-medium text-emerald-800 flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+          <div className="p-3.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-900 flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
             <span>{successMsg}</span>
           </div>
         )}
 
         {/* Security Masking Notice */}
-        <div className="enterprise-card p-4 rounded-lg border border-slate-200 bg-slate-50 text-xs text-slate-600 flex items-start gap-3">
-          <ShieldCheck className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+        <div className="p-4 rounded-md border border-zinc-200/90 bg-zinc-50/80 text-xs text-zinc-600 flex items-start gap-3 shadow-card">
+          <ShieldCheck className="w-5 h-5 text-zinc-800 shrink-0 mt-0.5" />
           <div>
-            <p className="font-bold text-slate-800">Secure Account Masking</p>
-            <p className="text-[11px] text-slate-500 mt-0.5">
+            <p className="font-bold text-zinc-950">Secure Account Masking</p>
+            <p className="text-[11px] text-zinc-500 mt-0.5 leading-relaxed">
               Full bank account numbers are submitted via encrypted transport and discarded immediately after extracting the last 4 digits.
             </p>
           </div>
@@ -171,52 +171,52 @@ export function EmployeePayoutAccountsPage() {
         {/* Accounts Grid */}
         <div className="space-y-3.5">
           {loading ? (
-            <div className="py-14 text-center text-slate-400 text-xs flex items-center justify-center gap-2">
-              <RefreshCw className="w-4 h-4 animate-spin text-blue-600" />
-              Loading bank accounts...
+            <div className="py-14 text-center text-zinc-400 text-xs flex items-center justify-center gap-2">
+              <RefreshCw className="w-4 h-4 animate-spin text-zinc-800" />
+              <span>Loading bank accounts...</span>
             </div>
           ) : accounts.length === 0 ? (
-            <div className="enterprise-card rounded-lg border border-slate-200 bg-white p-10 text-center text-slate-400 text-xs space-y-3">
-              <Building2 className="w-8 h-8 text-slate-300 mx-auto" />
+            <div className="rounded-md border border-zinc-200/90 bg-white p-12 text-center text-zinc-400 text-xs space-y-3 shadow-card">
+              <Building2 className="w-8 h-8 text-zinc-300 mx-auto" />
               <div>
-                <p className="font-bold text-slate-700 text-sm">No Bank Accounts Linked</p>
-                <p className="text-slate-400 text-[11px] mt-0.5">Add a verified bank account to enable self-service payouts.</p>
+                <p className="font-bold text-zinc-900 text-sm">No Bank Accounts Linked</p>
+                <p className="text-zinc-500 text-xs mt-1">Add a verified bank account to enable self-service payouts.</p>
               </div>
               <button
                 onClick={() => setShowModal(true)}
-                className="px-4 py-1.5 bg-blue-600 text-white font-bold rounded text-xs hover:bg-blue-700"
+                className="px-4 py-2 min-h-[38px] bg-slate-800 text-white font-bold rounded-lg text-xs hover:bg-slate-700 cursor-pointer shadow-xs transition-all"
               >
                 Add Bank Account
               </button>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {accounts.map((acc) => {
                 const isVerified = acc.verification_status === 'VERIFIED';
                 return (
                   <div
                     key={acc.id}
-                    className="enterprise-card p-4 sm:p-5 rounded-lg border border-slate-200 bg-white shadow-xs space-y-3 text-xs"
+                    className="p-5 rounded-md border border-zinc-200/90 bg-white shadow-card space-y-3 text-xs"
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <Building2 className="w-4 h-4 text-blue-600" />
-                        <span className="font-bold text-slate-900 text-sm">{acc.bank_name || 'Bank Account'}</span>
+                        <Building2 className="w-4 h-4 text-zinc-800" />
+                        <span className="font-bold text-zinc-950 text-sm">{acc.bank_name || 'Bank Account'}</span>
                       </div>
                       <span
-                        className={`text-[9px] font-bold px-2 py-0.5 rounded border ${
+                        className={`text-[9px] font-bold px-2.5 py-0.5 rounded-full border ${
                           isVerified
-                            ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                            : 'bg-amber-50 text-amber-800 border-amber-200'
+                            ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                            : 'bg-amber-50 text-amber-900 border-amber-200'
                         }`}
                       >
                         {acc.verification_status}
                       </span>
                     </div>
 
-                    <div className="p-2.5 bg-slate-50 border border-slate-100 rounded space-y-0.5 font-mono">
-                      <div className="text-slate-400 text-[10px]">Account Number</div>
-                      <div className="font-bold text-slate-800 text-xs tracking-wider">
+                    <div className="p-3 bg-zinc-50 border border-zinc-200/80 rounded-lg space-y-0.5 font-mono">
+                      <div className="text-zinc-400 text-[10px] uppercase font-bold">Account Number</div>
+                      <div className="font-bold text-zinc-950 text-xs tracking-wider">
                         •••• •••• •••• {acc.account_number_last4}
                       </div>
                     </div>
@@ -254,77 +254,77 @@ export function EmployeePayoutAccountsPage() {
 
         {/* Add Modal */}
         {showModal && (
-          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-            <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-5 space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                  <Building2 className="w-4 h-4 text-blue-600" />
-                  Add Bank Account
+          <div className="fixed inset-0 z-50 bg-zinc-950/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-md shadow-modal max-w-md w-full p-6 space-y-4 border border-zinc-200/90">
+              <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+                <h3 className="text-sm font-bold text-zinc-950 flex items-center gap-2">
+                  <Building2 className="w-4 h-4 text-zinc-800" />
+                  <span>Add Bank Account</span>
                 </h3>
-                <button onClick={() => setShowModal(false)} className="text-slate-400 hover:text-slate-600">
+                <button onClick={() => setShowModal(false)} className="text-zinc-400 hover:text-zinc-700 p-1 cursor-pointer">
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
               {modalError && (
-                <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-700 rounded text-xs">
+                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-xs font-semibold">
                   {modalError}
                 </div>
               )}
 
-              <form onSubmit={handleCreateSubmit} className="space-y-2.5 text-xs">
+              <form onSubmit={handleCreateSubmit} className="space-y-3.5 text-xs">
                 <div>
-                  <label className="block font-bold text-slate-700 mb-0.5">Account Holder Name *</label>
+                  <label className="block font-bold text-zinc-700 mb-1">Account Holder Name *</label>
                   <input
                     type="text"
                     value={form.account_holder_name}
                     onChange={(e) => setForm({ ...form, account_holder_name: e.target.value })}
                     placeholder="As per bank passbook / statement"
                     required
-                    className="w-full px-2.5 py-1.5 border border-slate-300 rounded outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 border border-zinc-300 rounded-lg outline-none focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs"
                   />
                 </div>
 
                 <div>
-                  <label className="block font-bold text-slate-700 mb-0.5">Bank Name</label>
+                  <label className="block font-bold text-zinc-700 mb-1">Bank Name</label>
                   <input
                     type="text"
                     value={form.bank_name}
                     onChange={(e) => setForm({ ...form, bank_name: e.target.value })}
                     placeholder="e.g. State Bank of India, HDFC Bank"
-                    className="w-full px-2.5 py-1.5 border border-slate-300 rounded outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 border border-zinc-300 rounded-lg outline-none focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs"
                   />
                 </div>
 
                 <div>
-                  <label className="block font-bold text-slate-700 mb-0.5">Account Number *</label>
+                  <label className="block font-bold text-zinc-700 mb-1">Account Number *</label>
                   <input
                     type="password"
                     value={form.account_number}
                     onChange={(e) => setForm({ ...form, account_number: e.target.value })}
                     placeholder="Full account number"
                     required
-                    className="w-full px-2.5 py-1.5 border border-slate-300 rounded outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                    className="w-full px-3 py-2 border border-zinc-300 rounded-lg outline-none focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 font-mono shadow-xs"
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-2.5">
+                <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block font-bold text-slate-700 mb-0.5">IFSC Code</label>
+                    <label className="block font-bold text-zinc-700 mb-1">IFSC Code</label>
                     <input
                       type="text"
                       value={form.ifsc_code}
                       onChange={(e) => setForm({ ...form, ifsc_code: e.target.value.toUpperCase() })}
                       placeholder="e.g. SBIN0001234"
-                      className="w-full px-2.5 py-1.5 border border-slate-300 rounded outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                      className="w-full px-3 py-2 border border-zinc-300 rounded-lg outline-none focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 font-mono shadow-xs"
                     />
                   </div>
                   <div>
-                    <label className="block font-bold text-slate-700 mb-0.5">Account Type</label>
+                    <label className="block font-bold text-zinc-700 mb-1">Account Type</label>
                     <select
                       value={form.account_type}
                       onChange={(e) => setForm({ ...form, account_type: e.target.value })}
-                      className="w-full px-2.5 py-1.5 border border-slate-300 rounded outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full px-3 py-2 border border-zinc-300 rounded-lg outline-none focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs bg-white"
                     >
                       <option value="SAVINGS">Savings</option>
                       <option value="CURRENT">Current</option>
@@ -332,21 +332,21 @@ export function EmployeePayoutAccountsPage() {
                   </div>
                 </div>
 
-                <div className="pt-2 flex gap-2 justify-end">
+                <div className="pt-3 flex gap-2 justify-end">
                   <button
                     type="button"
                     onClick={() => setShowModal(false)}
-                    className="px-3.5 py-1.5 border border-slate-300 text-slate-700 font-bold rounded hover:bg-slate-50"
+                    className="px-4 py-2 min-h-[38px] border border-zinc-300 text-zinc-700 font-bold rounded-lg hover:bg-zinc-50 transition-all cursor-pointer shadow-xs"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
                     disabled={submitting}
-                    className="px-4 py-1.5 bg-blue-600 text-white font-bold rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1.5"
+                    className="px-4 py-2 min-h-[38px] bg-slate-800 text-white font-bold rounded-lg hover:bg-slate-700 active:bg-slate-900 disabled:opacity-50 flex items-center gap-2 transition-all cursor-pointer shadow-xs"
                   >
-                    {submitting && <RefreshCw className="w-3 h-3 animate-spin" />}
-                    Save Account
+                    {submitting && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                    <span>Save Account</span>
                   </button>
                 </div>
               </form>

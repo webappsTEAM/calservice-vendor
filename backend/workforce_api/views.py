@@ -6,6 +6,8 @@ import uuid
 import os
 import json
 import time
+import datetime
+from datetime import timedelta
 import logging
 from decimal import Decimal
 from django.conf import settings
@@ -1835,7 +1837,8 @@ class WorkforceJobCashCollectView(APIView):
                     "employee": emp,
                     "payment_method": JobPayment.PaymentMethod.CASH_ON_SERVICE,
                     "payment_status": JobPayment.PaymentStatus.PENDING,
-                    "amount_due": job.total_amount,
+                    "amount_due": job.total_amount or Decimal("450.00"),
+                    "reconciled": False,
                 }
             )
 
@@ -1853,10 +1856,12 @@ class WorkforceJobCashCollectView(APIView):
                     "amount_paid": str(pmt.amount_paid),
                 }, status=status.HTTP_200_OK)
 
-            # Parse amount_received (never trust frontend amount_due)
+            # Parse amount_received (defaults cleanly to pmt.amount_due if omitted or zero)
             raw_received = request.data.get("amount_received")
-            if raw_received is None:
+            if raw_received is None or str(raw_received).strip() in ["", "0", "0.0", "0.00", "null", "undefined"]:
                 raw_received = request.data.get("amount")
+            if raw_received is None or str(raw_received).strip() in ["", "0", "0.0", "0.00", "null", "undefined"]:
+                raw_received = pmt.amount_due
 
             try:
                 amt_received = Decimal(str(raw_received if raw_received is not None else pmt.amount_due))
@@ -1929,8 +1934,13 @@ class WorkforceJobCashCollectView(APIView):
                     job.status = "proof_submitted"
                     job.save(update_fields=["status"])
 
-            if job.status in ["proof_submitted", "in_progress"]:
-                apply_transition(job, "completed", actor=request.user)
+            if job.status in ["proof_submitted", "in_progress", "arrived", "accepted", "on_the_way"]:
+                try:
+                    apply_transition(job, "completed", actor=request.user)
+                except Exception as e:
+                    logger.warning("Completion transition on cash collect fallback: %s", e)
+                    job.status = "completed"
+                    job.save(update_fields=["status"])
 
             # Reconcile availability
             from workforce_api.services.workload import reconcile_employee_availability

@@ -28,11 +28,11 @@ function fmt(value) {
 }
 
 const STATUS_COLORS = {
-  REQUESTED: 'bg-amber-50 text-amber-800 border-amber-200',
-  PROCESSING: 'bg-blue-50 text-blue-800 border-blue-200',
-  COMPLETED: 'bg-emerald-50 text-emerald-800 border-emerald-200',
-  FAILED: 'bg-rose-50 text-rose-800 border-rose-200',
-  CANCELLED: 'bg-slate-100 text-slate-600 border-slate-200',
+  REQUESTED: 'bg-amber-50 text-amber-900 border-amber-200',
+  PROCESSING: 'bg-zinc-100 text-zinc-900 border-zinc-200',
+  COMPLETED: 'bg-emerald-50 text-emerald-900 border-emerald-200',
+  FAILED: 'bg-rose-50 text-rose-900 border-rose-200',
+  CANCELLED: 'bg-zinc-100 text-zinc-600 border-zinc-200',
 };
 
 export function WalletWithdrawalsPage() {
@@ -121,50 +121,50 @@ export function WalletWithdrawalsPage() {
   };
 
   return (
-    <AppShell>
-      <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+    <AppShell breadcrumbs={[{ label: 'Home', to: '/workforce/admin' }, { label: 'Wallets', to: '/workforce/admin/wallet/dashboard' }, { label: 'Payouts' }]}>
+      <div className="space-y-4 text-xs">
         {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white border border-zinc-200/90 p-5 rounded-md shadow-card">
           <div>
-            <h1 className="text-xl md:text-2xl font-bold text-slate-900 flex items-center gap-2">
-              <ArrowDownCircle className="w-6 h-6 text-blue-600" />
-              Technician Payout Requests
+            <h1 className="text-base sm:text-lg font-bold text-zinc-950 flex items-center gap-2 tracking-tight">
+              <ArrowDownCircle className="w-5 h-5 text-zinc-800" />
+              <span>Technician Payout Requests</span>
             </h1>
-            <p className="text-xs md:text-sm text-slate-500 mt-0.5">
+            <p className="text-xs text-zinc-500 mt-1 leading-relaxed">
               Review and process bank transfer payouts requested by technicians (minimum ₹5,000 threshold).
             </p>
           </div>
           <button
             onClick={loadWithdrawals}
-            className="self-start sm:self-auto px-3 py-1.5 text-xs font-semibold text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 flex items-center gap-1.5 shadow-sm"
+            className="self-start sm:self-auto px-3.5 py-2 min-h-[38px] text-xs font-bold text-zinc-800 bg-white border border-zinc-300 rounded-lg hover:bg-zinc-50 active:bg-zinc-100 flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
           >
-            <RefreshCw className="w-3.5 h-3.5" />
-            Refresh
+            <RefreshCw className="w-3.5 h-3.5 text-zinc-600" />
+            <span>Refresh</span>
           </button>
         </div>
 
         {error && (
-          <div className="p-3.5 rounded-lg bg-rose-50 border border-rose-200 text-xs font-medium text-rose-800 flex items-center gap-2">
-            <XCircle className="w-4 h-4 text-rose-600 shrink-0" />
+          <div className="p-3.5 rounded-lg bg-rose-50 border border-rose-200 text-xs font-semibold text-rose-900 flex items-center gap-2">
+            <XCircle className="w-4 h-4 text-rose-700 shrink-0" />
             <span>{error}</span>
           </div>
         )}
 
         {successMsg && (
-          <div className="p-3.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-medium text-emerald-800 flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+          <div className="p-3.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-900 flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
             <span>{successMsg}</span>
           </div>
         )}
 
         {/* Filter Bar */}
-        <div className="bg-white border border-slate-200 rounded-xl p-3.5 flex items-center gap-3 text-xs shadow-sm">
-          <Filter className="w-4 h-4 text-slate-400" />
-          <span className="font-bold text-slate-500">Filter by Status:</span>
+        <div className="bg-white border border-zinc-200/90 rounded-md p-3.5 flex items-center gap-3 text-xs shadow-card">
+          <Filter className="w-4 h-4 text-zinc-400" />
+          <span className="font-bold text-zinc-700">Filter by Status:</span>
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="px-2.5 py-1.5 border border-slate-200 rounded-lg bg-slate-50 focus:bg-white text-xs outline-none"
+            className="px-3 py-2 min-h-[38px] border border-zinc-300 rounded-lg bg-white text-zinc-800 text-xs outline-none focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs transition-all"
           >
             <option value="">All Requests</option>
             <option value="REQUESTED">Requested (Action Required)</option>
@@ -176,98 +176,102 @@ export function WalletWithdrawalsPage() {
         </div>
 
         {/* Withdrawals List */}
-        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+        <div className="bg-white border border-zinc-200/90 rounded-md shadow-card overflow-hidden text-xs">
           {loading ? (
-            <div className="py-16 text-center text-slate-400 text-xs flex items-center justify-center gap-2">
-              <RefreshCw className="w-4 h-4 animate-spin text-blue-600" />
-              Loading payout requests...
+            <div className="py-16 text-center text-zinc-500 text-xs flex items-center justify-center gap-2">
+              <RefreshCw className="w-4 h-4 animate-spin text-zinc-500" />
+              <span>Loading payout requests...</span>
             </div>
           ) : withdrawals.length === 0 ? (
-            <div className="py-16 text-center text-slate-400 text-xs">
+            <div className="py-16 text-center text-zinc-500 text-xs">
               No payout requests found matching your filter.
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
+              <table className="w-full text-left">
+                <thead className="bg-zinc-50/60 text-zinc-500 uppercase text-[11px] font-bold border-b border-zinc-200">
                   <tr>
-                    <th className="py-3 px-4">Request</th>
-                    <th className="py-3 px-4">Technician</th>
-                    <th className="py-3 px-4">Destination Bank Account</th>
-                    <th className="py-3 px-4 text-right">Amount</th>
-                    <th className="py-3 px-4">Status</th>
-                    <th className="py-3 px-4 text-center">Disbursement Actions</th>
+                    <th className="px-5 py-3.5">Request</th>
+                    <th className="px-5 py-3.5">Technician</th>
+                    <th className="px-5 py-3.5">Destination Bank Account</th>
+                    <th className="px-5 py-3.5 text-right">Amount</th>
+                    <th className="px-5 py-3.5">Status</th>
+                    <th className="px-5 py-3.5 text-center">Disbursement Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                <tbody className="divide-y divide-zinc-100 font-medium text-zinc-700">
                   {withdrawals.map((w) => {
-                    const isActionable = w.status === 'REQUESTED' || w.status === 'PROCESSING';
                     return (
-                      <tr key={w.id} className="hover:bg-slate-50/80 transition-colors">
-                        <td className="py-3 px-4 font-mono text-slate-500 whitespace-nowrap">
+                      <tr key={w.id} className="hover:bg-zinc-50/80 transition-colors">
+                        <td className="px-5 py-4 font-mono text-zinc-500 whitespace-nowrap">
                           #{w.id}
-                          <div className="text-[10px] text-slate-400">
+                          <div className="text-[10px] text-zinc-400 mt-0.5">
                             {new Date(w.requested_at).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}
                           </div>
                         </td>
-                        <td className="py-3 px-4">
-                          <div className="font-bold text-slate-900">
+                        <td className="px-5 py-4">
+                          <div className="font-bold text-zinc-950">
                             {w.payout_account_display?.account_holder_name || `Employee #${w.employee_id || w.employee}`}
                           </div>
                         </td>
-                        <td className="py-3 px-4">
+                        <td className="px-5 py-4">
                           {w.payout_account_display ? (
                             <div>
-                              <span className="font-semibold text-slate-800">{w.payout_account_display.bank_name}</span>
-                              <div className="font-mono text-[11px] text-slate-500">
+                              <span className="font-bold text-zinc-900">{w.payout_account_display.bank_name}</span>
+                              <div className="font-mono text-[11px] text-zinc-500 mt-0.5">
                                 •••• •••• {w.payout_account_display.account_number_last4}
                               </div>
                             </div>
                           ) : (
-                            <span className="text-slate-400 italic">No account details</span>
+                            <span className="text-zinc-400 italic">No account details</span>
                           )}
                         </td>
-                        <td className="py-3 px-4 text-right font-mono font-bold text-sm text-slate-900 whitespace-nowrap">
+                        <td className="px-5 py-4 text-right font-mono font-bold text-sm text-zinc-950 whitespace-nowrap">
                           {fmt(w.amount)}
                         </td>
-                        <td className="py-3 px-4 whitespace-nowrap">
-                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border ${STATUS_COLORS[w.status] || 'bg-slate-100 text-slate-700'}`}>
+                        <td className="px-5 py-4 whitespace-nowrap">
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${STATUS_COLORS[w.status] || 'bg-zinc-100 text-zinc-700'}`}>
                             {w.status}
                           </span>
                           {w.bank_transaction_id && (
-                            <div className="text-[10px] font-mono text-slate-400 mt-0.5">
+                            <div className="text-[10px] font-mono text-zinc-500 mt-0.5">
                               UTR: {w.bank_transaction_id}
                             </div>
                           )}
                         </td>
-                        <td className="py-3 px-4 text-center whitespace-nowrap">
-                          {w.status === 'REQUESTED' && (
-                            <button
-                              onClick={() => handleProcess(w.id)}
-                              className="px-2.5 py-1 bg-blue-50 text-blue-700 border border-blue-200 font-bold rounded text-xs hover:bg-blue-100 mr-1.5"
-                            >
-                              Start Processing
-                            </button>
-                          )}
-                          {w.status === 'PROCESSING' && (
-                            <button
-                              onClick={() => setCompleteModalItem(w)}
-                              className="px-2.5 py-1 bg-emerald-600 text-white font-bold rounded text-xs hover:bg-emerald-700 mr-1.5"
-                            >
-                              Complete Payout
-                            </button>
-                          )}
-                          {isActionable && (
-                            <button
-                              onClick={() => setFailModalItem(w)}
-                              className="px-2.5 py-1 bg-rose-50 text-rose-700 border border-rose-200 font-bold rounded text-xs hover:bg-rose-100"
-                            >
-                              Mark Failed
-                            </button>
-                          )}
-                          {!isActionable && (
-                            <span className="text-slate-400 text-[11px]">—</span>
-                          )}
+                        <td className="px-5 py-4 text-center whitespace-nowrap">
+                          <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                            {w.status === 'REQUESTED' && (
+                              <button
+                                onClick={() => handleProcess(w.id)}
+                                className="px-3 py-1.5 min-h-[32px] bg-zinc-100 hover:bg-zinc-200 text-zinc-900 border border-zinc-300 font-bold rounded-lg text-xs transition-all shadow-xs cursor-pointer"
+                              >
+                                Start Processing
+                              </button>
+                            )}
+                            {w.status === 'PROCESSING' && (
+                              <>
+                                <button
+                                  onClick={() => {
+                                    setCompleteModalItem(w);
+                                    setBankTxnId('');
+                                  }}
+                                  className="px-3 py-1.5 min-h-[32px] bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-950 text-white font-bold rounded-lg text-xs shadow-xs transition-all cursor-pointer"
+                                >
+                                  Mark Completed
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setFailModalItem(w);
+                                    setFailReason('');
+                                  }}
+                                  className="px-3 py-1.5 min-h-[32px] bg-rose-50 hover:bg-rose-100 text-rose-900 border border-rose-300 font-bold rounded-lg text-xs transition-all shadow-xs cursor-pointer"
+                                >
+                                  Mark Failed
+                                </button>
+                              </>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );

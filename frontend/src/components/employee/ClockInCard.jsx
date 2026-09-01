@@ -437,12 +437,12 @@ export function ClockInCard({
           {!isClockedIn ? (
             currentActiveJob ? (
               <div className="space-y-2">
-                <div className="flex items-center justify-between p-2.5 rounded bg-blue-50 border border-blue-200 text-xs">
+                <div className="flex items-center justify-between p-3 rounded-lg bg-zinc-100/90 border border-zinc-200 text-xs gap-3">
                   <div>
-                    <span className="font-bold text-blue-900">
+                    <span className="font-bold text-zinc-950 font-mono">
                       Active Job #{currentActiveJob.request_id || currentActiveJob.id}
                     </span>
-                    <p className="text-[11px] text-blue-700 font-medium mt-0.5">
+                    <p className="text-[11px] text-zinc-600 font-medium mt-0.5">
                       {currentActiveJob.issue_title || currentActiveJob.service_category || 'Assigned Service'}
                     </p>
                   </div>
@@ -452,18 +452,18 @@ export function ClockInCard({
                       const el = document.getElementById('arrival-verification-checklist');
                       if (el) el.scrollIntoView({ behavior: 'smooth' });
                     }}
-                    className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded text-xs transition-colors shrink-0 shadow-xs active:scale-95"
+                    className="px-3 py-1.5 min-h-[32px] bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-950 text-white font-bold rounded-lg text-xs transition-all shrink-0 shadow-xs cursor-pointer"
                   >
-                    Go to Verification Checklist &darr;
+                    Go to Checklist &darr;
                   </button>
                 </div>
 
-                <p className="text-[11px] text-slate-500">
+                <p className="text-[11px] text-zinc-500">
                   Mandatory Before Clock-In: 1. Auto-Arrival (&le;250m) &bull; 2. Customer OTP &bull; 3. Presence Selfie
                 </p>
 
                 {readiness.canClockIn ? (
-                  <div className="w-full py-2.5 px-4 rounded font-bold text-xs flex items-center justify-center gap-2 shadow-xs bg-emerald-50 border border-emerald-300 text-emerald-800">
+                  <div className="w-full py-2.5 px-4 rounded-lg font-bold text-xs flex items-center justify-center gap-2 shadow-xs bg-emerald-50 border border-emerald-300 text-emerald-900">
                     <span className="w-2 h-2 rounded-full bg-emerald-600 animate-ping" />
                     <span>
                       {loading ? 'Clocking In...' : '✓ Pre-Verification Complete — Auto Clocking In...'}
@@ -477,7 +477,7 @@ export function ClockInCard({
                       if (el) el.scrollIntoView({ behavior: 'smooth' });
                     }}
                     disabled={true}
-                    className="w-full py-2 px-4 rounded font-bold text-xs flex items-center justify-center gap-2 bg-slate-100 border border-slate-200 text-slate-400 cursor-not-allowed opacity-75"
+                    className="w-full py-2.5 px-4 rounded-lg font-bold text-xs flex items-center justify-center gap-2 bg-zinc-100 border border-zinc-200 text-zinc-400 cursor-not-allowed"
                   >
                     <Play className="w-4 h-4" />
                     <span>{`Clock In Locked (${readiness.label})`}</span>
@@ -486,19 +486,19 @@ export function ClockInCard({
               </div>
             ) : (
               <div className="space-y-2">
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="p-3.5 bg-zinc-50 border border-zinc-200/80 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shrink-0"></span>
                     <div>
-                      <p className="text-xs font-bold text-slate-800">
+                      <p className="text-xs font-bold text-zinc-950">
                         {isOnline ? 'Online — Available for Dispatch' : 'Technician Standby'}
                       </p>
-                      <p className="text-[11px] text-slate-500">
+                      <p className="text-[11px] text-zinc-500">
                         Waiting for customer job offers. Clock-in activates once you accept a job and arrive at the customer site.
                       </p>
                     </div>
                   </div>
-                  <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 bg-slate-200 text-slate-700 rounded self-start sm:self-auto shrink-0">
+                  <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-1 bg-zinc-200 text-zinc-800 rounded-full self-start sm:self-auto shrink-0 border border-zinc-300">
                     Standby
                   </span>
                 </div>
@@ -506,9 +506,9 @@ export function ClockInCard({
                 <button
                   type="button"
                   disabled={true}
-                  className="w-full py-2 px-4 rounded bg-slate-100 border border-slate-200 text-slate-400 font-bold text-xs flex items-center justify-center gap-2 cursor-not-allowed opacity-75"
+                  className="w-full py-2.5 px-4 rounded-lg bg-zinc-100 border border-zinc-200 text-zinc-400 font-bold text-xs flex items-center justify-center gap-2 cursor-not-allowed"
                 >
-                  <Play className="w-4 h-4 text-slate-400" />
+                  <Play className="w-4 h-4 text-zinc-400" />
                   <span>Clock In (Disabled — No Active Job)</span>
                 </button>
               </div>
