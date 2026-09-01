@@ -604,6 +604,39 @@ class WalletLedgerExportView(APIView):
         return response
 
 
+class RazorpayXPayoutWebhookView(APIView):
+    """
+    POST /workforce/wallet/payout-webhook/: RazorpayX's server-to-server
+    callback for payout.processed / payout.failed / payout.reversed --
+    see services.payouts.handle_payout_webhook for the signature
+    verification and ledger-reversal logic. Public and unauthenticated by
+    design (RazorpayX has no user session to send) -- trust comes from
+    the X-Razorpay-Signature HMAC, verified against the RAW request body,
+    not from any Django auth mechanism. Always returns 200 once the body
+    has been read, even for a signature that fails to verify or an event
+    this codebase doesn't recognise -- RazorpayX interprets a non-2xx as
+    "retry me", and a webhook that will never verify (wrong secret, a
+    stale/duplicate delivery) should not be retried forever. Every
+    outcome is logged either way, so a real problem is still visible.
+    """
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        from workforce_api.services import handle_payout_webhook
+
+        raw_body = request.body.decode("utf-8", errors="replace")
+        signature = request.headers.get("X-Razorpay-Signature", "")
+
+        try:
+            handled = handle_payout_webhook(raw_body, signature)
+        except Exception:
+            logger.exception("[PAYOUT_WEBHOOK] Unhandled error processing RazorpayX payout webhook.")
+            handled = False
+
+        return Response({"handled": handled}, status=status.HTTP_200_OK)
+
+
 class WorkforceAdminReconciliationView(APIView):
     """
     GET /workforce/admin/reconciliation/[?date=YYYY-MM-DD]: on-demand view
@@ -2803,10 +2836,10 @@ def run_automatic_dispatch(job, excluded_employee_ids=None):
     workforce_api.services.automatic_dispatch.dispatch_job
     """
     from workforce_api.services.automatic_dispatch import dispatch_job
-    return dispatch_job(job, excluded_employee_ids=excluded_employee_ids)
+    return dispatch_job(job, exclude_employee_ids=excluded_employee_ids)
 
 
-from workforce_api.services.workload import ACTIVE_WORKLOAD_STATUSES
+from workforce_api.services.workload import ACTIVE_WORKLOAD_STATUSES, supersede_other_offers_for_employee
 
 
 class WorkforceJobAcceptOfferView(APIView):

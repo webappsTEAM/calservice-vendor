@@ -184,14 +184,22 @@ def execute_withdrawal(withdrawal) -> "object":
     return withdrawal
 
 
-def handle_payout_webhook(payload: dict, signature: str) -> bool:
+def handle_payout_webhook(raw_body: str, signature: str) -> bool:
     """
     Processes a RazorpayX payout webhook (payout.processed / payout.failed /
-    payout.reversed). Verifies the signature before touching anything.
-    Returns True if handled, False if the signature was invalid or the
-    referenced withdrawal wasn't found (caller should still 200 the
-    webhook either way, per RazorpayX's own retry-suppression guidance --
-    just log and move on).
+    payout.reversed). `raw_body` MUST be the exact, unmodified request body
+    string RazorpayX sent -- signature verification is a byte-for-byte HMAC
+    over that body, so a caller that parses the JSON and re-serializes it
+    before calling this (different key order, whitespace, escaping) will
+    fail verification even for a genuine webhook. The view that calls this
+    passes `request.body.decode("utf-8")` untouched; JSON parsing happens
+    in here, after verification, not before.
+
+    Verifies the signature before touching anything. Returns True if
+    handled, False if the signature was invalid, the body wasn't valid
+    JSON, or the referenced withdrawal wasn't found (caller should still
+    200 the webhook either way, per RazorpayX's own retry-suppression
+    guidance -- just log and move on).
     """
     from workforce_api.models import WalletLedgerEntry, WithdrawalRequest
 
@@ -202,12 +210,17 @@ def handle_payout_webhook(payload: dict, signature: str) -> bool:
     import razorpay
     try:
         razorpay.Utility.verify_webhook_signature(
-            payload if isinstance(payload, str) else __import__("json").dumps(payload),
-            signature,
-            settings.RAZORPAYX_WEBHOOK_SECRET,
+            raw_body, signature, settings.RAZORPAYX_WEBHOOK_SECRET,
         )
     except Exception as e:
         logger.warning(f"[PAYOUT_WEBHOOK] Signature verification failed: {e}")
+        return False
+
+    import json
+    try:
+        payload = json.loads(raw_body)
+    except (TypeError, ValueError) as e:
+        logger.warning(f"[PAYOUT_WEBHOOK] Body was not valid JSON despite a valid signature: {e}")
         return False
 
     event = payload.get("event", "")
