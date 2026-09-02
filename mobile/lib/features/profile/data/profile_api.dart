@@ -49,6 +49,19 @@ class ProfileApi {
       return null;
     }
   }
+
+  Future<Map<String, dynamic>> togglePresence({bool? isOnline}) async {
+    final response = await _dio.post(
+      '/workforce/presence/toggle-online/',
+      data: isOnline != null ? {'is_online': isOnline} : {},
+    );
+    return response.data as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> fetchPresenceStatus() async {
+    final response = await _dio.get('/workforce/presence/status/');
+    return response.data as Map<String, dynamic>;
+  }
 }
 
 final profileApiProvider = Provider<ProfileApi>((ref) {

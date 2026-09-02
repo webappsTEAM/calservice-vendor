@@ -16,6 +16,22 @@ class NotificationsApi {
   Future<void> markAsRead(int id) async {
     await _dio.post('/workforce/notifications/$id/mark-read/');
   }
+
+  Future<void> markAllAsRead() async {
+    await _dio.post('/workforce/notifications/mark-read/');
+  }
+
+  Future<void> clearNotification(int id) async {
+    await _dio.post('/workforce/notifications/$id/clear/');
+  }
+
+  Future<void> clearSelected(List<int> ids) async {
+    await _dio.post('/workforce/notifications/clear/', data: {'ids': ids});
+  }
+
+  Future<void> clearAll() async {
+    await _dio.post('/workforce/notifications/clear/', data: {'all': true});
+  }
 }
 
 final notificationsApiProvider = Provider<NotificationsApi>((ref) {

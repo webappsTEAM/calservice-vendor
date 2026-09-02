@@ -31,7 +31,7 @@ class MoreScreen extends ConsumerWidget {
     final initial = displayName.isNotEmpty ? displayName[0].toUpperCase() : 'T';
     final email = user?.email ?? '';
     final phone = profileAsync.valueOrNull?.displayPhone ?? '';
-    final isOnline = profileAsync.valueOrNull?.isOnline ?? true;
+    final isOnline = profileAsync.valueOrNull?.isOnline ?? false;
     final hasActiveJob = ref.watch(hasActiveJobProvider);
     final servicesCount = profileAsync.valueOrNull?.approvedServices.length ?? 0;
 

@@ -14,6 +14,14 @@ class NotificationsRepository {
   }
 
   Future<void> markAsRead(int id) => _api.markAsRead(id);
+
+  Future<void> markAllAsRead() => _api.markAllAsRead();
+
+  Future<void> clearNotification(int id) => _api.clearNotification(id);
+
+  Future<void> clearSelected(List<int> ids) => _api.clearSelected(ids);
+
+  Future<void> clearAll() => _api.clearAll();
 }
 
 final notificationsRepositoryProvider = Provider<NotificationsRepository>((ref) {

@@ -29,7 +29,7 @@ class GreetingHeader extends ConsumerWidget {
     final displayName = user?.displayName ?? 'Technician';
     final initial = displayName.isNotEmpty ? displayName[0].toUpperCase() : 'T';
     final greeting = _greetingForHour(DateTime.now().hour);
-    final isOnline = profileAsync.valueOrNull?.isOnline ?? true;
+    final isOnline = profileAsync.valueOrNull?.isOnline ?? false;
 
     return Container(
       decoration: BoxDecoration(

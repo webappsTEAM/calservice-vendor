@@ -8,6 +8,7 @@ import '../../features/auth/presentation/auth_controller.dart';
 import '../../features/jobs/presentation/jobs_providers.dart';
 import '../../features/notifications/presentation/notifications_providers.dart';
 import '../../features/profile/presentation/profile_providers.dart';
+import '../../routing/app_routes.dart';
 
 /// The official Workforce Mobile Header / AppBar.
 /// Features:
@@ -69,7 +70,7 @@ class WorkforceAppBar extends ConsumerWidget implements PreferredSizeWidget {
     // this AppBar (including all admin screens, where the value is unused
     // and the same endpoint is already the slow one being loaded).
     final hasActiveJob = showStatusSubBar ? ref.watch(hasActiveJobProvider) : false;
-    final isOnline = profileAsync.valueOrNull?.isOnline ?? true;
+    final isOnline = profileAsync.valueOrNull?.isOnline ?? false;
 
     final companyName = (user?.companyName != null && user!.companyName!.isNotEmpty)
         ? user.companyName!
@@ -211,7 +212,7 @@ class WorkforceAppBar extends ConsumerWidget implements PreferredSizeWidget {
             visualDensity: VisualDensity.compact,
             padding: const EdgeInsets.symmetric(horizontal: 4),
             constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-            onPressed: () => context.go('/notifications'),
+            onPressed: () => context.push(AppRoutes.notifications),
           ),
         if (showAvatar)
           Padding(

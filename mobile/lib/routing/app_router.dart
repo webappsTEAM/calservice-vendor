@@ -45,6 +45,8 @@ import '../features/settings/presentation/appearance_screen.dart';
 import '../features/settings/presentation/notification_settings_screen.dart';
 import '../features/settings/presentation/privacy_data_screen.dart';
 import '../features/settings/presentation/settings_screen.dart';
+import '../features/splash/presentation/splash_controller.dart';
+import '../features/splash/presentation/splash_screen.dart';
 import '../shared/widgets/app_shell_scaffold.dart';
 import 'app_routes.dart';
 
@@ -90,22 +92,27 @@ final appRouterProvider = Provider<GoRouter>((ref) {
   // Watching `.notifier` (a stable reference) rather than the provider's
   // value means this GoRouter is built once, not recreated on every state
   // change — live updates instead flow through refreshListenable below.
+  final splashController = ref.watch(splashControllerProvider.notifier);
   final authController = ref.watch(authControllerProvider.notifier);
   final onboardingController = ref.watch(onboardingControllerProvider.notifier);
 
   return GoRouter(
     initialLocation: AppRoutes.splash,
     refreshListenable: CompositeGoRouterRefreshStream([
+      splashController.stream,
       authController.stream,
       onboardingController.stream,
     ]),
     redirect: (context, state) {
+      final splashCompleted = ref.read(splashControllerProvider);
       final authState = ref.read(authControllerProvider);
       final onboardingCompleted = ref.read(onboardingControllerProvider);
       final location = state.matchedLocation;
 
-      // 1. Still resolving session or onboarding completion flag from storage
-      if (authState.status == AuthStatus.unknown || onboardingCompleted == null) {
+      // 1. Still playing splash animation OR still resolving session/onboarding state
+      if (!splashCompleted ||
+          authState.status == AuthStatus.unknown ||
+          onboardingCompleted == null) {
         return location == AppRoutes.splash ? null : AppRoutes.splash;
       }
 
@@ -158,7 +165,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
     routes: [
       GoRoute(
         path: AppRoutes.splash,
-        builder: (context, state) => const _SplashScreen(),
+        builder: (context, state) => const SplashScreen(),
       ),
       GoRoute(
         path: AppRoutes.onboarding,
@@ -354,14 +361,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: '/workforce/admin/monitoring/database-egress',
         redirect: (context, state) => AppRoutes.adminMonitoringDatabaseEgress,
       ),
+      // Employee Notifications Route (accessible via header bell and More screen)
+      GoRoute(
+        path: AppRoutes.notifications,
+        builder: (context, state) => const NotificationsScreen(),
+      ),
       // Employee Earnings Routes
       GoRoute(
         path: AppRoutes.earnings,
         redirect: (context, state) => AppRoutes.earningsWallet,
-      ),
-      GoRoute(
-        path: AppRoutes.earningsWallet,
-        builder: (context, state) => const WalletScreen(),
       ),
       GoRoute(
         path: AppRoutes.earningsTransactions,
@@ -424,8 +432,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           StatefulShellBranch(
             routes: [
               GoRoute(
-                path: AppRoutes.notifications,
-                builder: (context, state) => const NotificationsScreen(),
+                path: AppRoutes.earningsWallet,
+                builder: (context, state) => const WalletScreen(),
               ),
             ],
           ),
@@ -486,23 +494,3 @@ final appRouterProvider = Provider<GoRouter>((ref) {
     ],
   );
 });
-
-class _SplashScreen extends StatelessWidget {
-  const _SplashScreen();
-
-  @override
-  Widget build(BuildContext context) {
-    return const Scaffold(
-      body: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('Verifying session...'),
-          ],
-        ),
-      ),
-    );
-  }
-}

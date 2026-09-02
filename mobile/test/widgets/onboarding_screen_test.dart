@@ -1,88 +1,257 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
+import 'package:mobile/features/onboarding/data/onboarding_storage.dart';
 import 'package:mobile/features/onboarding/presentation/onboarding_screen.dart';
+import 'package:mobile/routing/app_routes.dart';
+
+class InMemoryOnboardingStorage extends OnboardingStorage {
+  String? _value;
+
+  @override
+  Future<bool> hasCompletedOnboarding() async => _value == 'true';
+
+  @override
+  Future<void> setOnboardingCompleted() async => _value = 'true';
+
+  @override
+  Future<void> clear() async => _value = null;
+}
 
 void main() {
-  Widget buildTestableOnboarding({Size size = const Size(390, 844)}) {
-    return MaterialApp(
-      home: MediaQuery(
-        data: MediaQueryData(size: size),
-        child: const OnboardingScreen(),
+  Widget buildTestableOnboarding({
+    Size size = const Size(390, 844),
+    OnboardingStorage? storage,
+    GoRouter? customRouter,
+  }) {
+    final effectiveStorage = storage ?? InMemoryOnboardingStorage();
+    final effectiveRouter = customRouter ??
+        GoRouter(
+          initialLocation: AppRoutes.onboarding,
+          routes: [
+            GoRoute(
+              path: AppRoutes.onboarding,
+              builder: (context, state) => MediaQuery(
+                data: MediaQueryData(size: size),
+                child: const OnboardingScreen(),
+              ),
+            ),
+            GoRoute(
+              path: AppRoutes.login,
+              builder: (context, state) => const Scaffold(
+                body: Text('Mock Login Screen'),
+              ),
+            ),
+          ],
+        );
+
+    return ProviderScope(
+      overrides: [
+        onboardingStorageProvider.overrideWithValue(effectiveStorage),
+      ],
+      child: MaterialApp.router(
+        routerConfig: effectiveRouter,
       ),
     );
   }
 
-  group('OnboardingScreen Zero-Duplicate UI & Touch Overlay Tests', () {
-    testWidgets('renders onboarding image artwork without visible duplicate native text controls', (tester) async {
+  group('OnboardingScreen Behavior Tests (SKIP on All Pages & Swipe Disabled)', () {
+    testWidgets('1. Page 1 displays visible SKIP option', (tester) async {
       await tester.pumpWidget(buildTestableOnboarding());
       await tester.pumpAndSettle();
 
-      // Ensure NO duplicate visible native text widgets are rendered over the image artwork
-      expect(find.text('SEVO WORKFORCE'), findsNothing);
-      expect(find.text('Skip'), findsNothing);
-      expect(find.text('Back'), findsNothing);
-      expect(find.text('Next'), findsNothing);
-      expect(find.text('Get Started'), findsNothing);
-      expect(find.text('WORK SMARTER, EVERY DAY'), findsNothing);
-      expect(find.text('EVERYTHING YOU NEED, IN ONE PLACE'), findsNothing);
-      expect(find.text('REAL-TIME JOBS,\nINSTANT ALERTS'), findsNothing);
-
-      // PageView is present displaying the first image
-      expect(find.byType(PageView), findsOneWidget);
-      expect(find.byType(Image), findsOneWidget);
-
-      // Transparent touch targets exist
+      expect(find.text('SKIP'), findsOneWidget);
       expect(find.byKey(const Key('onboarding_skip_button')), findsOneWidget);
       expect(find.byKey(const Key('onboarding_next_button')), findsOneWidget);
       expect(find.byKey(const Key('onboarding_back_button')), findsNothing);
     });
 
-    testWidgets('navigates through pages via invisible touch targets on printed buttons', (tester) async {
+    testWidgets('2. Page 2 displays visible SKIP option', (tester) async {
       await tester.pumpWidget(buildTestableOnboarding());
       await tester.pumpAndSettle();
 
-      // Page 1: Tap the invisible Next target over printed "NEXT ->" button
+      // Navigate to Page 2 via NEXT button
       await tester.tap(find.byKey(const Key('onboarding_next_button')));
       await tester.pumpAndSettle();
 
-      // Page 2: Back and Next targets now exist
+      expect(find.text('SKIP'), findsOneWidget);
+      expect(find.byKey(const Key('onboarding_skip_button')), findsOneWidget);
       expect(find.byKey(const Key('onboarding_back_button')), findsOneWidget);
       expect(find.byKey(const Key('onboarding_next_button')), findsOneWidget);
-      expect(find.byKey(const Key('onboarding_skip_button')), findsOneWidget);
+    });
 
-      // Page 2: Tap the invisible Next target over printed "NEXT ->" button
+    testWidgets('3. Page 3 displays visible SKIP option', (tester) async {
+      await tester.pumpWidget(buildTestableOnboarding());
+      await tester.pumpAndSettle();
+
+      // Navigate to Page 3 via NEXT button twice
+      await tester.tap(find.byKey(const Key('onboarding_next_button')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('onboarding_next_button')));
       await tester.pumpAndSettle();
 
-      // Page 3: Back, Get Started, and View Job targets exist
+      expect(find.text('SKIP'), findsOneWidget);
+      expect(find.byKey(const Key('onboarding_skip_button')), findsOneWidget);
       expect(find.byKey(const Key('onboarding_back_button')), findsOneWidget);
       expect(find.byKey(const Key('onboarding_get_started_button')), findsOneWidget);
       expect(find.byKey(const Key('onboarding_view_job_button')), findsOneWidget);
+    });
 
-      // Still NO duplicate native visible text rendered on page 3
-      expect(find.text('Get Started'), findsNothing);
-      expect(find.text('View Job'), findsNothing);
-
-      // Navigate back to Page 2 using the invisible Back target
-      await tester.tap(find.byKey(const Key('onboarding_back_button')));
+    testWidgets('4. Tapping SKIP from Page 1 completes onboarding and navigates to login', (tester) async {
+      final storage = InMemoryOnboardingStorage();
+      await tester.pumpWidget(buildTestableOnboarding(storage: storage));
       await tester.pumpAndSettle();
 
+      expect(await storage.hasCompletedOnboarding(), isFalse);
+
+      await tester.tap(find.byKey(const Key('onboarding_skip_button')));
+      await tester.pumpAndSettle();
+
+      expect(await storage.hasCompletedOnboarding(), isTrue);
+      expect(find.text('Mock Login Screen'), findsOneWidget);
+    });
+
+    testWidgets('5. Tapping SKIP from Page 2 completes onboarding and navigates to login', (tester) async {
+      final storage = InMemoryOnboardingStorage();
+      await tester.pumpWidget(buildTestableOnboarding(storage: storage));
+      await tester.pumpAndSettle();
+
+      // Go to Page 2
+      await tester.tap(find.byKey(const Key('onboarding_next_button')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('onboarding_skip_button')));
+      await tester.pumpAndSettle();
+
+      expect(await storage.hasCompletedOnboarding(), isTrue);
+      expect(find.text('Mock Login Screen'), findsOneWidget);
+    });
+
+    testWidgets('6. Tapping SKIP from Page 3 completes onboarding and navigates to login', (tester) async {
+      final storage = InMemoryOnboardingStorage();
+      await tester.pumpWidget(buildTestableOnboarding(storage: storage));
+      await tester.pumpAndSettle();
+
+      // Go to Page 3
+      await tester.tap(find.byKey(const Key('onboarding_next_button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('onboarding_next_button')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('onboarding_skip_button')));
+      await tester.pumpAndSettle();
+
+      expect(await storage.hasCompletedOnboarding(), isTrue);
+      expect(find.text('Mock Login Screen'), findsOneWidget);
+    });
+
+    testWidgets('7. Tapping NEXT moves Page 1 -> Page 2 and Page 2 -> Page 3', (tester) async {
+      await tester.pumpWidget(buildTestableOnboarding());
+      await tester.pumpAndSettle();
+
+      // Page 1: only next exists, no back
+      expect(find.byKey(const Key('onboarding_back_button')), findsNothing);
+
+      // Tap NEXT to Page 2
+      await tester.tap(find.byKey(const Key('onboarding_next_button')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('onboarding_back_button')), findsOneWidget);
+      expect(find.byKey(const Key('onboarding_next_button')), findsOneWidget);
+
+      // Tap NEXT to Page 3
+      await tester.tap(find.byKey(const Key('onboarding_next_button')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('onboarding_get_started_button')), findsOneWidget);
+      expect(find.byKey(const Key('onboarding_view_job_button')), findsOneWidget);
+
+      // Tap Back to Page 2
+      await tester.tap(find.byKey(const Key('onboarding_back_button')));
+      await tester.pumpAndSettle();
       expect(find.byKey(const Key('onboarding_next_button')), findsOneWidget);
       expect(find.byKey(const Key('onboarding_get_started_button')), findsNothing);
     });
 
-    testWidgets('supports horizontal swipe gestures between pages', (tester) async {
+    testWidgets('8. Horizontal swipe/drag is COMPLETELY DISABLED and does NOT change page', (tester) async {
       await tester.pumpWidget(buildTestableOnboarding());
       await tester.pumpAndSettle();
 
+      // On Page 1
       expect(find.byKey(const Key('onboarding_back_button')), findsNothing);
 
-      // Swipe left to page 2
+      // Try swiping left (attempting to go forward to Page 2)
       await tester.fling(find.byType(PageView), const Offset(-400, 0), 1000);
       await tester.pumpAndSettle();
 
+      // Page must NOT have changed: still on Page 1 (no back button)
+      expect(find.byKey(const Key('onboarding_back_button')), findsNothing);
+      expect(find.byKey(const Key('onboarding_next_button')), findsOneWidget);
+
+      // Try dragging left slowly
+      await tester.drag(find.byType(PageView), const Offset(-300, 0));
+      await tester.pumpAndSettle();
+
+      // Still on Page 1
+      expect(find.byKey(const Key('onboarding_back_button')), findsNothing);
+
+      // Move to Page 2 using NEXT button
+      await tester.tap(find.byKey(const Key('onboarding_next_button')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('onboarding_back_button')), findsOneWidget);
+
+      // Try swiping right (attempting to go backward to Page 1)
+      await tester.fling(find.byType(PageView), const Offset(400, 0), 1000);
+      await tester.pumpAndSettle();
+
+      // Still on Page 2
       expect(find.byKey(const Key('onboarding_back_button')), findsOneWidget);
       expect(find.byKey(const Key('onboarding_next_button')), findsOneWidget);
+
+      // Try swiping left (attempting to go forward to Page 3)
+      await tester.fling(find.byType(PageView), const Offset(-400, 0), 1000);
+      await tester.pumpAndSettle();
+
+      // Still on Page 2 (get_started should NOT appear)
+      expect(find.byKey(const Key('onboarding_get_started_button')), findsNothing);
+      expect(find.byKey(const Key('onboarding_next_button')), findsOneWidget);
+    });
+
+    testWidgets('9. Page 3 View Job button completes onboarding and routes to login', (tester) async {
+      final storage = InMemoryOnboardingStorage();
+      await tester.pumpWidget(buildTestableOnboarding(storage: storage));
+      await tester.pumpAndSettle();
+
+      // Navigate to Page 3
+      await tester.tap(find.byKey(const Key('onboarding_next_button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('onboarding_next_button')));
+      await tester.pumpAndSettle();
+
+      // Tap View Job button
+      await tester.tap(find.byKey(const Key('onboarding_view_job_button')));
+      await tester.pumpAndSettle();
+
+      expect(await storage.hasCompletedOnboarding(), isTrue);
+      expect(find.text('Mock Login Screen'), findsOneWidget);
+    });
+
+    testWidgets('10. Page 3 Get Started button completes onboarding and routes to login', (tester) async {
+      final storage = InMemoryOnboardingStorage();
+      await tester.pumpWidget(buildTestableOnboarding(storage: storage));
+      await tester.pumpAndSettle();
+
+      // Navigate to Page 3
+      await tester.tap(find.byKey(const Key('onboarding_next_button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('onboarding_next_button')));
+      await tester.pumpAndSettle();
+
+      // Tap Get Started button
+      await tester.tap(find.byKey(const Key('onboarding_get_started_button')));
+      await tester.pumpAndSettle();
+
+      expect(await storage.hasCompletedOnboarding(), isTrue);
+      expect(find.text('Mock Login Screen'), findsOneWidget);
     });
   });
 
@@ -102,17 +271,21 @@ void main() {
 
         // Page 1
         expect(tester.takeException(), isNull);
+        expect(find.text('SKIP'), findsOneWidget);
 
         // Page 2
         await tester.tap(find.byKey(const Key('onboarding_next_button')));
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
+        expect(find.text('SKIP'), findsOneWidget);
 
         // Page 3
         await tester.tap(find.byKey(const Key('onboarding_next_button')));
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
+        expect(find.text('SKIP'), findsOneWidget);
       });
     }
   });
 }
+

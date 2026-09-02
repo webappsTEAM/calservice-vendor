@@ -82,7 +82,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         child: PageView.builder(
           controller: _pageController,
           itemCount: _imageAssets.length,
-          physics: const BouncingScrollPhysics(),
+          physics: const NeverScrollableScrollPhysics(),
           onPageChanged: (index) => setState(() => _currentPage = index),
           itemBuilder: (context, index) {
             return Center(
@@ -143,14 +143,13 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   Widget _buildTouchOverlay(int pageIndex, double width, double height) {
     return Stack(
       children: [
-        // ── Top-Right: Transparent Skip Target ─────────────────────────────────
-        // In onboarding2.jpg, SKIP is at top-right (x: ~90-96%, y: ~4-7%).
-        // We provide the target across all pages for consistent UX.
+        // ── Top-Right: Visible Skip Option on ALL 3 Pages ───────────────────────
+        // Neatly placed at top-right without covering artwork or other controls.
+        // On Page 2, covers and aligns with the printed "SKIP" in onboarding2.jpg.
+        // On Pages 1 and 3, provides a clean, matching visible SKIP button.
         Positioned(
-          top: 0,
-          right: 0,
-          width: width * 0.28,
-          height: height * 0.10,
+          top: height * 0.039,
+          right: width * 0.024,
           child: Semantics(
             button: true,
             label: 'Skip',
@@ -158,10 +157,40 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               color: Colors.transparent,
               child: InkWell(
                 key: const Key('onboarding_skip_button'),
-                borderRadius: BorderRadius.circular(20),
+                borderRadius: BorderRadius.circular(999),
                 splashColor: Colors.white.withValues(alpha: 0.2),
                 highlightColor: Colors.white.withValues(alpha: 0.1),
                 onTap: _completeOnboarding,
+                child: Container(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: width * 0.046,
+                    vertical: height * 0.007,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF01172E).withValues(alpha: 0.95),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.22),
+                      width: 1,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.25),
+                        blurRadius: 6,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Text(
+                    'SKIP',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: width * 0.034,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.8,
+                    ),
+                  ),
+                ),
               ),
             ),
           ),

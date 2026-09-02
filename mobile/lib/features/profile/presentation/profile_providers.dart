@@ -75,3 +75,90 @@ class ProfileController extends StateNotifier<AsyncValue<void>> {
 final profileControllerProvider = StateNotifierProvider<ProfileController, AsyncValue<void>>((ref) {
   return ProfileController(ref);
 });
+
+class AvailabilityState {
+  const AvailabilityState({
+    this.isLoading = false,
+    this.errorMessage,
+  });
+
+  final bool isLoading;
+  final String? errorMessage;
+
+  AvailabilityState copyWith({
+    bool? isLoading,
+    String? errorMessage,
+  }) {
+    return AvailabilityState(
+      isLoading: isLoading ?? this.isLoading,
+      errorMessage: errorMessage,
+    );
+  }
+}
+
+class AvailabilityController extends StateNotifier<AvailabilityState> {
+  AvailabilityController(this._ref) : super(const AvailabilityState());
+
+  final Ref _ref;
+
+  /// Toggles technician availability between ONLINE and OFFLINE.
+  ///
+  /// Strictly enforces:
+  /// 1. An employee who is actively working on a job (`hasActiveJob == true`)
+  ///    CANNOT switch to OFFLINE, matching web & backend validation rules.
+  /// 2. Disables the control and shows loading while API runs.
+  /// 3. Updates state upon confirmed response.
+  /// 4. Reverts and exposes error on failure.
+  Future<bool?> toggleAvailability({
+    required bool currentOnline,
+    required bool hasActiveJob,
+    String? activeJobRef,
+  }) async {
+    if (state.isLoading) return null;
+
+    // Check restriction: cannot go offline while on active job
+    if (currentOnline && hasActiveJob) {
+      final jobLabel = activeJobRef != null && activeJobRef.isNotEmpty
+          ? activeJobRef
+          : 'your active assignment';
+      state = state.copyWith(
+        errorMessage: 'Cannot go offline while actively working on $jobLabel. Please complete or cancel the active job first.',
+      );
+      return null;
+    }
+
+    state = state.copyWith(isLoading: true, errorMessage: null);
+
+    final desiredOnline = !currentOnline;
+
+    try {
+      final res = await _ref.read(profileRepositoryProvider).togglePresence(isOnline: desiredOnline);
+      final newOnline = res['is_online'] is bool ? (res['is_online'] as bool) : desiredOnline;
+
+      // Invalidate profile and active jobs so all widgets reflect fresh DB state
+      _ref.invalidate(employeeProfileProvider);
+
+      state = const AvailabilityState(isLoading: false, errorMessage: null);
+      return newOnline;
+    } catch (e) {
+      String msg = 'Unable to update availability. Please try again.';
+      if (e is Exception) {
+        // Check for specific backend error messages if available
+        msg = e.toString().replaceAll('Exception: ', '');
+      }
+      state = AvailabilityState(isLoading: false, errorMessage: msg);
+      return null;
+    }
+  }
+
+  void clearError() {
+    if (state.errorMessage != null) {
+      state = state.copyWith(errorMessage: null);
+    }
+  }
+}
+
+final availabilityControllerProvider =
+    StateNotifierProvider<AvailabilityController, AvailabilityState>((ref) {
+  return AvailabilityController(ref);
+});

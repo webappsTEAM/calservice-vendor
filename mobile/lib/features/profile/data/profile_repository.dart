@@ -60,6 +60,14 @@ class ProfileRepository {
     if (json == null) return null;
     return ShiftStatus.fromJson(json);
   }
+
+  Future<Map<String, dynamic>> togglePresence({bool? isOnline}) async {
+    return _api.togglePresence(isOnline: isOnline);
+  }
+
+  Future<Map<String, dynamic>> fetchPresenceStatus() async {
+    return _api.fetchPresenceStatus();
+  }
 }
 
 final profileRepositoryProvider = Provider<ProfileRepository>((ref) {
