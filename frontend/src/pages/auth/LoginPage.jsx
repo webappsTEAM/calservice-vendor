@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthProvider.jsx';
-import { Lock, User, Eye, EyeOff, HelpCircle, Power, CheckCircle2 } from 'lucide-react';
+import { Lock, User, Eye, EyeOff, HelpCircle } from 'lucide-react';
 import { ErrorState } from '../../components/enterprise/ErrorState.jsx';
 import { LegalComplianceModal } from '../../components/common/LegalComplianceModal.jsx';
 
@@ -14,19 +14,6 @@ export function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [logoutNotice, setLogoutNotice] = useState(() => {
-    try {
-      if (typeof sessionStorage !== 'undefined') {
-        const raw = sessionStorage.getItem('wf_logout_notification');
-        if (raw) {
-          sessionStorage.removeItem('wf_logout_notification');
-          const parsed = JSON.parse(raw);
-          return parsed.message || 'Signed out successfully. Technician presence set to OFFLINE.';
-        }
-      }
-    } catch (_) {}
-    return '';
-  });
 
   // Legal & Corporate Information Modal Popup
   const [legalModalOpen, setLegalModalOpen] = useState(false);
@@ -205,25 +192,6 @@ export function LoginPage() {
               Sign in to access your Workforce account.
             </p>
           </div>
-
-          {/* Logout Notification Banner */}
-          {logoutNotice && (
-            <div className="p-3 rounded-lg border border-blue-200 bg-blue-50 text-blue-900 text-xs flex items-start gap-2.5 shadow-sm animate-fadeIn">
-              <Power className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <p className="font-bold text-[11px] uppercase tracking-wide text-blue-800">Status: OFFLINE</p>
-                <p className="text-[11px] text-blue-700 mt-0.5">{logoutNotice}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setLogoutNotice('')}
-                className="text-blue-400 hover:text-blue-700 text-base font-bold leading-none ml-1 cursor-pointer"
-                aria-label="Dismiss"
-              >
-                &times;
-              </button>
-            </div>
-          )}
 
           {/* Error Message */}
           {error && <ErrorState message={error} onDismiss={() => setError('')} />}

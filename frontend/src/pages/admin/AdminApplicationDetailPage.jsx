@@ -9,10 +9,7 @@ import {
   apiRequestCorrection,
   apiApproveApplication,
   apiRejectApplication,
-  apiDecideJoinRequest,
 } from '../../api/workforceService.js';
-
-
 import { AppShell } from '../../components/common/AppShell.jsx';
 import { PageHeader } from '../../components/common/PageHeader.jsx';
 import { Tabs } from '../../components/enterprise/Tabs.jsx';
@@ -277,26 +274,6 @@ export function AdminApplicationDetailPage() {
     }
   };
 
-  const handleDecideJoinRequest = async (action) => {
-    let reason = '';
-    if (action === 'reject') {
-      reason = prompt('Enter reason for rejecting this provider join request (technician will remain independent):') || '';
-      if (reason === null) return;
-    }
-
-    try {
-      setActionLoading(true);
-      setError('');
-      const res = await apiDecideJoinRequest(id, action, reason);
-      setSuccessMsg(res.message || `Join request ${action}d successfully.`);
-      await loadDetail();
-    } catch (err) {
-      setError(err.message || `Failed to ${action} join request.`);
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
   if (isLoading) {
     return (
       <AppShell breadcrumbs={[{ label: 'Home', to: '/workforce/admin' }, { label: 'Applications', to: '/workforce/admin/applications' }, { label: 'Dossier' }]}>
@@ -350,29 +327,12 @@ export function AdminApplicationDetailPage() {
                     {application?.first_name} {application?.last_name}
                   </h1>
                   <StatusBadge status={regStatus} />
-                  {application?.company_name ? (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-50 text-blue-800 border border-blue-200 text-xs font-semibold">
-                      <Building className="w-3 h-3 text-blue-600" />
-                      <span>{application.company_name}</span>
-                    </span>
-                  ) : application?.join_request && application.join_request.status === 'PENDING' ? (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 text-xs font-semibold">
-                      <Clock className="w-3 h-3 text-amber-600" />
-                      <span>Join Request: {application.join_request.provider_name} (Pending)</span>
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-semibold">
-                      <ShieldCheck className="w-3 h-3 text-slate-500" />
-                      <span>Independent Technician</span>
-                    </span>
-                  )}
                 </div>
                 <p className="text-[11px] text-slate-500 font-mono mt-0.5">
                   ID: <strong className="text-slate-800">{application?.employee_id || 'PENDING'}</strong> • {application?.email} • {application?.mobile_number || application?.phone}
                 </p>
               </div>
             </div>
-
 
             {/* Action Bar */}
             <div className="flex items-center gap-2 self-end md:self-auto flex-wrap">
@@ -425,81 +385,7 @@ export function AdminApplicationDetailPage() {
             {/* ── TAB 1: OVERVIEW ── */}
             {activeTab === 'overview' && (
               <div className="space-y-4">
-                {/* Join Request Action Card (Phase 2C) */}
-                {application?.join_request && (
-                  <div className={`p-4 rounded border ${
-                    application.join_request.status === 'PENDING'
-                      ? 'bg-amber-50/60 border-amber-200'
-                      : application.join_request.status === 'APPROVED'
-                      ? 'bg-emerald-50/60 border-emerald-200'
-                      : 'bg-slate-50 border-slate-200'
-                  }`}>
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                      <div className="flex items-start gap-3">
-                        <div className={`w-8 h-8 rounded flex items-center justify-center font-bold text-xs shrink-0 ${
-                          application.join_request.status === 'PENDING'
-                            ? 'bg-amber-100 text-amber-800'
-                            : application.join_request.status === 'APPROVED'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : 'bg-slate-200 text-slate-700'
-                        }`}>
-                          <Building className="w-4 h-4" />
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <h4 className="text-xs font-bold text-slate-900">
-                              Service Provider Join Request
-                            </h4>
-                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ${
-                              application.join_request.status === 'PENDING'
-                                ? 'bg-amber-100 text-amber-800'
-                                : application.join_request.status === 'APPROVED'
-                                ? 'bg-emerald-100 text-emerald-800'
-                                : 'bg-rose-100 text-rose-800'
-                            }`}>
-                              {application.join_request.status}
-                            </span>
-                          </div>
-                          <p className="text-xs text-slate-600 mt-0.5">
-                            Target Provider: <strong>{application.join_request.provider_name}</strong> ({application.join_request.provider_display_id || 'ID N/A'})
-                          </p>
-                          {application.join_request.status === 'REJECTED' && application.join_request.rejection_reason && (
-                            <p className="text-[11px] text-rose-600 mt-0.5">
-                              Rejection Reason: {application.join_request.rejection_reason}
-                            </p>
-                          )}
-                          <p className="text-[10px] text-slate-400 font-mono mt-0.5">
-                            Requested on {new Date(application.join_request.requested_at).toLocaleString()}
-                          </p>
-                        </div>
-                      </div>
-
-                      {application.join_request.status === 'PENDING' && (
-                        <div className="flex items-center gap-2 self-end sm:self-auto">
-                          <button
-                            type="button"
-                            onClick={() => handleDecideJoinRequest('reject')}
-                            disabled={actionLoading}
-                            className="px-3 py-1.5 rounded border border-rose-300 bg-white hover:bg-rose-50 text-rose-700 font-semibold text-xs transition-colors cursor-pointer"
-                          >
-                            Reject Request
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDecideJoinRequest('approve')}
-                            disabled={actionLoading}
-                            className="px-3 py-1.5 rounded border border-emerald-600 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition-colors shadow-2xs cursor-pointer"
-                          >
-                            Approve Request & Enrol
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-
                   {/* Candidate Quick Stats */}
                   <div className="p-3.5 bg-slate-50 border border-slate-200 rounded space-y-2 text-xs">
                     <h3 className="font-bold text-slate-800 uppercase tracking-wider text-[11px]">

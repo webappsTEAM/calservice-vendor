@@ -25,8 +25,6 @@ import {
   Square,
   X,
   CheckCheck,
-  Activity,
-  Building2,
 } from 'lucide-react';
 
 import { Modal } from '../enterprise/Modal.jsx';
@@ -34,7 +32,9 @@ import {
   apiGetNotifications,
   apiMarkNotificationRead,
   apiClearNotifications,
+  apiUpdateLocationFull,
 } from '../../api/workforceService.js';
+import { getGPSPosition } from '../../hooks/useGPSPosition.js';
 
 export function TopHeader({ onToggleSidebar = () => {} }) {
   const { user, logout, togglePresence, isAdmin, isEmployee, registrationStatus } = useAuth();
@@ -50,10 +50,6 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
   const [selectedNotifIds, setSelectedNotifIds] = useState(new Set());
   const [isClearing, setIsClearing] = useState(false);
   const [globalSearch, setGlobalSearch] = useState('');
-  const [logoutBlockedModal, setLogoutBlockedModal] = useState(false);
-  const [logoutBlockedError, setLogoutBlockedError] = useState('');
-  const [isSwitchingOffAndLoggingOut, setIsSwitchingOffAndLoggingOut] = useState(false);
-  const [presenceWarningModal, setPresenceWarningModal] = useState({ open: false, title: '', message: '' });
   const notifRef = useRef(null);
 
   const notifications = employeeRuntime ? employeeRuntime.notifications : localNotifications;
@@ -78,14 +74,55 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
     };
   }, [showNotifMenu]);
 
-  // Location telemetry consumed authoritatively from EmployeeRuntimeProvider
-  const locCoords = employeeRuntime?.liveLocation || (user?.last_known_location ? {
-    latitude: Number(user.last_known_location.latitude),
-    longitude: Number(user.last_known_location.longitude),
-    accuracy: user.last_known_location.accuracy || null,
-  } : null);
-  const locState = employeeRuntime?.locationState || 'idle';
-  const handleScanCurrentLocation = employeeRuntime?.scanCurrentLocation || (() => {});
+  // Location Scan State
+  const [localLocState, setLocalLocState] = useState('idle'); // 'idle' | 'locating' | 'success' | 'error'
+  const [localLocCoords, setLocalLocCoords] = useState(() => {
+    const loc = user?.last_known_location;
+    if (loc?.latitude && loc?.longitude) {
+      return { latitude: Number(loc.latitude), longitude: Number(loc.longitude), accuracy: loc.accuracy || null };
+    }
+    return null;
+  });
+
+  const localHandleScanCurrentLocation = async () => {
+    if (localLocState === 'locating') return;
+    setLocalLocState('locating');
+    try {
+      const pos = await getGPSPosition(true);
+      const { latitude, longitude, accuracy, speed, heading } = pos.coords;
+      const captured_at = new Date(pos.timestamp || Date.now()).toISOString();
+      await apiUpdateLocationFull(latitude, longitude, accuracy, speed, heading, captured_at);
+      setLocalLocCoords({
+        latitude,
+        longitude,
+        accuracy,
+        timestamp: pos.timestamp || Date.now(),
+      });
+      setLocalLocState('success');
+      window.dispatchEvent(
+        new CustomEvent('workforce:location-updated', {
+          detail: {
+            latitude,
+            longitude,
+            accuracy,
+            speed,
+            heading,
+            captured_at,
+            timestamp: pos.timestamp || Date.now(),
+            source: 'header_scan',
+          },
+        })
+      );
+      setTimeout(() => setLocalLocState('idle'), 2500);
+    } catch (_) {
+      setLocalLocState('error');
+      setTimeout(() => setLocalLocState('idle'), 3000);
+    }
+  };
+
+  const locCoords = employeeRuntime?.liveLocation || localLocCoords;
+  const locState = employeeRuntime?.locationState || localLocState;
+  const handleScanCurrentLocation = employeeRuntime ? employeeRuntime.scanCurrentLocation : localHandleScanCurrentLocation;
 
   // Background notification polling for Admin users ONLY (Employee notifications are centralized in EmployeeRuntimeProvider)
   useEffect(() => {
@@ -98,7 +135,6 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
     let pollInterval = null;
 
     const fetchNotifs = async () => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       try {
         const res = await apiGetNotifications();
         if (!isCancelled && res) {
@@ -280,67 +316,22 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
   };
 
   const handleLogout = async () => {
-    setShowUserMenu(false);
-    setLogoutBlockedError('');
-    const currentlyOnline = Boolean(employeeRuntime ? employeeRuntime.isOnline : (user?.isOnline || user?.is_online));
-    if (isEmployee && currentlyOnline) {
-      setLogoutBlockedModal(true);
-      return;
-    }
 
-    try {
-      await logout();
-      navigate('/workforce/login');
-    } catch (err) {
-      if (err.code === 'CANNOT_LOGOUT_WHILE_ONLINE' || err.message?.includes('ONLINE')) {
-        setLogoutBlockedModal(true);
-      } else {
-        setPresenceWarningModal({
-          open: true,
-          title: 'Sign Out Failed',
-          message: err.message || 'Unable to sign out at this moment. Please retry.',
-        });
-      }
-    }
-  };
-
-  const handleForceOfflineAndLogout = async () => {
-    try {
-      setIsSwitchingOffAndLoggingOut(true);
-      setLogoutBlockedError('');
-      const toggleFn = employeeRuntime?.togglePresence || togglePresence;
-      await toggleFn(false);
-      await logout({ skipOnlineCheck: true });
-      setLogoutBlockedModal(false);
-      navigate('/workforce/login');
-    } catch (err) {
-      setLogoutBlockedError(err.message || 'Failed to switch offline and sign out.');
-    } finally {
-      setIsSwitchingOffAndLoggingOut(false);
-    }
+    await logout();
+    navigate('/workforce/login');
   };
 
   const handlePresenceToggle = async () => {
     if (registrationStatus !== 'approved') return;
-    if (user?.availability === 'busy' || employeeRuntime?.hasActiveJob) {
-      setPresenceWarningModal({
-        open: true,
-        title: 'Active Job Assignment In Progress',
-        message: 'Cannot change availability or go offline while actively working on an assigned job. Please complete or cancel your active assignment first.',
-      });
+    if (user?.availability === 'busy') {
+      alert('Cannot change availability or go offline while actively working on an assigned job.');
       return;
     }
-    if (isToggling) return;
     try {
       setIsToggling(true);
-      const toggleFn = employeeRuntime?.togglePresence || togglePresence;
-      await toggleFn();
+      await togglePresence();
     } catch (err) {
-      setPresenceWarningModal({
-        open: true,
-        title: 'Availability Update Failed',
-        message: err.message || 'Failed to toggle availability status. Please check your network and retry.',
-      });
+      alert(err.message || 'Failed to toggle availability status');
     } finally {
       setIsToggling(false);
     }
@@ -354,8 +345,8 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
     }
   };
 
-  const isOnline = Boolean(employeeRuntime ? employeeRuntime.isOnline : user?.isOnline);
-  const isBusy = isEmployee ? Boolean(employeeRuntime?.hasActiveJob) : user?.availability === 'busy';
+  const isOnline = Boolean(user?.isOnline);
+  const isBusy = user?.availability === 'busy';
 
   return (
     <>
@@ -410,43 +401,34 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
-                      id="topheader-presence-toggle-btn"
                       onClick={handlePresenceToggle}
                       disabled={isToggling || isBusy}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold border transition-all select-none ${
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold border transition-all ${
                         isBusy
                           ? 'bg-blue-500/20 text-blue-300 border-blue-500/40 cursor-not-allowed'
-                          : isToggling
-                            ? 'bg-slate-800 text-slate-400 border-slate-700 cursor-wait opacity-80'
-                            : isOnline
-                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30 active:bg-emerald-500/40 cursor-pointer shadow-sm'
-                              : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700 hover:text-slate-200 active:bg-slate-900 cursor-pointer shadow-sm'
+                          : isOnline
+                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30'
+                            : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
                       }`}
                       title={
                         isBusy
                           ? 'Locked Online: You are actively working on an assigned job (BUSY).'
-                          : isToggling
-                            ? 'Updating status...'
-                            : isOnline
-                              ? 'You are ONLINE. Click to go OFFLINE'
-                              : 'You are OFFLINE. Click to go ONLINE'
+                          : isOnline
+                            ? 'You are ONLINE. Click to go OFFLINE'
+                            : 'You are OFFLINE. Click to go ONLINE'
                       }
                     >
-                      {isToggling ? (
-                        <Loader2 className="w-3 h-3 animate-spin text-slate-400" />
-                      ) : (
-                        <span
-                          className={`w-2 h-2 rounded-full ${
-                            isBusy
-                              ? 'bg-blue-400 animate-pulse'
-                              : isOnline
-                                ? 'bg-emerald-400 animate-pulse'
-                                : 'bg-slate-500'
-                          }`}
-                        />
-                      )}
-                      <span className="text-[11px] uppercase font-bold tracking-tight">
-                        {isBusy ? 'ON JOB (BUSY)' : isToggling ? 'UPDATING...' : isOnline ? 'ONLINE' : 'OFFLINE'}
+                      <span
+                        className={`w-2 h-2 rounded-full ${
+                          isBusy
+                            ? 'bg-blue-400 animate-pulse'
+                            : isOnline
+                              ? 'bg-emerald-400 animate-pulse'
+                              : 'bg-slate-500'
+                        }`}
+                      />
+                      <span className="text-[11px] uppercase font-bold">
+                        {isBusy ? 'ON JOB (BUSY)' : isOnline ? 'ONLINE' : 'OFFLINE'}
                       </span>
                       <Power className="w-3 h-3 ml-0.5 opacity-70" />
                     </button>
@@ -720,32 +702,6 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                 </div>
 
 
-                {/* Role & Organization Scope Badge */}
-                <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-slate-800/90 border border-slate-700 text-slate-300 select-none">
-                  {user.isSuperadmin ? (
-                    <>
-                      <Shield className="w-3 h-3 text-purple-400 shrink-0" />
-                      <span className="text-purple-200">Superadmin</span>
-                    </>
-                  ) : user.isServiceProviderAdmin ? (
-                    <>
-                      <Building2 className="w-3 h-3 text-blue-400 shrink-0" />
-                      <span className="truncate max-w-[140px] text-blue-200" title={user.providerName || user.companyName}>
-                        {user.providerName || user.companyName || 'Provider Admin'}
-                      </span>
-                    </>
-                  ) : user.isEmployee ? (
-                    <>
-                      <Wrench className="w-3 h-3 text-emerald-400 shrink-0" />
-                      <span className="truncate max-w-[140px] text-slate-300" title={user.providerName || user.companyName ? `Tech • ${user.providerName || user.companyName}` : 'Independent Technician'}>
-                        {user.providerName || user.companyName ? `Tech • ${user.providerName || user.companyName}` : 'Independent Tech'}
-                      </span>
-                    </>
-                  ) : (
-                    <span>{user.role}</span>
-                  )}
-                </div>
-
                 {/* User Dropdown */}
                 <div className="relative">
                   <button
@@ -769,7 +725,7 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                           {user.firstName ? `${user.firstName} ${user.lastName}` : user.username}
                         </p>
                         <p className="text-[10px] text-slate-500 uppercase tracking-wider mt-0.5">
-                          Role: {user.isSuperadmin ? 'Superadmin' : (user.isServiceProviderAdmin ? 'Provider Admin' : (user.isAdmin ? 'Admin' : (user.isEmployee ? 'Technician' : (user.role || 'Employee'))))}
+                          Role: {user.isAdmin ? 'Admin' : (user.isEmployee ? 'Technician' : (user.role || 'Employee'))}
                         </p>
                       </div>
 
@@ -790,16 +746,6 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                           <Settings className="w-3.5 h-3.5 text-slate-400" />
                           <span>Settings</span>
                         </Link>
-                        {isAdmin && (
-                          <Link
-                            to="/workforce/admin/monitoring/database-egress"
-                            onClick={() => setShowUserMenu(false)}
-                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 text-blue-700 flex items-center gap-2 transition-colors font-semibold"
-                          >
-                            <Activity className="w-3.5 h-3.5 text-blue-600" />
-                            <span>Database & Egress</span>
-                          </Link>
-                        )}
                       </div>
 
                       <button
@@ -858,95 +804,6 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
           <p className="text-[11px] text-slate-500">
             For technical support, contact your Workforce Operations administrator.
           </p>
-        </div>
-      </Modal>
-
-      {/* ── SIGN OUT BLOCKED MODAL (WHEN ONLINE) ── */}
-      <Modal
-        isOpen={logoutBlockedModal}
-        onClose={() => setLogoutBlockedModal(false)}
-        title="Sign Out Blocked — Status is ONLINE"
-        maxWidth="max-w-md"
-      >
-        <div className="p-5 space-y-4 text-xs">
-          <div className="p-3.5 rounded-lg border border-amber-200 bg-amber-50 text-amber-900 flex items-start gap-3">
-            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <p className="font-bold text-sm text-amber-950">You Are Currently ONLINE</p>
-              <p className="text-amber-800 text-[11px] leading-relaxed">
-                Workforce protocol requires technicians to be <strong>OFFLINE</strong> before signing out. This ensures dispatch systems do not assign offers to an inactive session.
-              </p>
-            </div>
-          </div>
-
-          <p className="text-slate-600 text-[11px]">
-            Please switch your status to <strong>OFFLINE</strong> first, or click below to automatically switch to OFFLINE and complete sign out.
-          </p>
-
-          {logoutBlockedError && (
-            <div className="p-2.5 rounded border border-rose-200 bg-rose-50 text-rose-700 text-xs font-semibold">
-              {logoutBlockedError}
-            </div>
-          )}
-
-          <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
-            <button
-              type="button"
-              onClick={() => setLogoutBlockedModal(false)}
-              className="px-3 py-1.5 rounded text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-            >
-              Stay Online / Cancel
-            </button>
-            <button
-              type="button"
-              id="modal-switch-offline-signout-btn"
-              disabled={isSwitchingOffAndLoggingOut}
-              onClick={handleForceOfflineAndLogout}
-              className="px-3.5 py-1.5 rounded text-xs font-bold bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
-            >
-              {isSwitchingOffAndLoggingOut ? (
-                <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span>Switching Offline...</span>
-                </>
-              ) : (
-                <>
-                  <Power className="w-3.5 h-3.5" />
-                  <span>Switch to OFFLINE & Sign Out</span>
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-      </Modal>
-
-      {/* ── PRESENCE / AVAILABILITY WARNING MODAL ── */}
-      <Modal
-        isOpen={presenceWarningModal.open}
-        onClose={() => setPresenceWarningModal({ open: false, title: '', message: '' })}
-        title={presenceWarningModal.title || 'Availability Notification'}
-        maxWidth="max-w-md"
-      >
-        <div className="p-5 space-y-4 text-xs">
-          <div className="p-3.5 rounded-lg border border-amber-200 bg-amber-50 text-amber-900 flex items-start gap-3">
-            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <p className="font-bold text-sm text-amber-950">{presenceWarningModal.title}</p>
-              <p className="text-amber-800 text-[11px] leading-relaxed">
-                {presenceWarningModal.message}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-end pt-2 border-t border-slate-100">
-            <button
-              type="button"
-              onClick={() => setPresenceWarningModal({ open: false, title: '', message: '' })}
-              className="px-4 py-1.5 rounded text-xs font-semibold bg-slate-900 text-white hover:bg-slate-800 transition-colors cursor-pointer"
-            >
-              OK, Understood
-            </button>
-          </div>
         </div>
       </Modal>
     </>

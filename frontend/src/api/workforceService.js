@@ -13,13 +13,95 @@ export async function apiWorkforceSignup(payload) {
   });
 }
 
-export async function apiServiceProviderSignup(payload) {
-  return await apiRequest('/workforce/service-providers/signup/', {
+// SEVO business plan Section 2: a service-provider business self-registers
+// separately from an individual worker signup -- gets its own Company +
+// head wallet instead of joining the shared default one.
+export async function apiProviderSignup(payload) {
+  return await apiRequest('/workforce/provider/signup/', {
     method: 'POST',
     json: payload,
   });
 }
 
+export async function apiGetMyWallet() {
+  return await apiRequest('/workforce/wallet/me/');
+}
+
+export async function apiUpdateWalletPayoutDetails(payload) {
+  return await apiRequest('/workforce/wallet/payout-details/', {
+    method: 'PATCH',
+    json: payload,
+  });
+}
+
+export async function apiAdminListScorecards() {
+  return await apiRequest('/workforce/admin/scorecards/');
+}
+
+// SEVO Section 6: auto-generated monthly/annual earnings statement for
+// the caller's own wallet (provider business income, or individual
+// worker professional income) -- no tax withholding is computed, see
+// services/tax_statements.py docstring.
+export async function apiGetWalletStatement(year, month) {
+  const params = new URLSearchParams({ year: String(year) });
+  if (month) params.set('month', String(month));
+  return await apiRequest(`/workforce/wallet/statement/?${params.toString()}`);
+}
+
+// SEVO Section 1: the CSV "wage register" -- returns CSV text (the API
+// client's content-type sniffing hands back plain text for non-JSON
+// responses), for the caller to trigger a client-side download.
+export async function apiExportWalletLedgerCsv(startDate, endDate) {
+  const params = new URLSearchParams();
+  if (startDate) params.set('start', startDate);
+  if (endDate) params.set('end', endDate);
+  const qs = params.toString();
+  return await apiRequest(`/workforce/wallet/ledger/export/${qs ? `?${qs}` : ''}`);
+}
+
+// SEVO Section 5: on-demand read of the daily reconciliation job's
+// findings for the caller's own company.
+export async function apiAdminGetReconciliation(date) {
+  const params = new URLSearchParams();
+  if (date) params.set('date', date);
+  const qs = params.toString();
+  return await apiRequest(`/workforce/admin/reconciliation/${qs ? `?${qs}` : ''}`);
+}
+
+// SEVO Section 8: Social Security Code (2020) registration worklist --
+// individual workers only, see services/social_security.py docstring.
+export async function apiAdminListSocialSecurity(statusFilter) {
+  const params = new URLSearchParams();
+  if (statusFilter) params.set('status', statusFilter);
+  const qs = params.toString();
+  return await apiRequest(`/workforce/admin/social-security/${qs ? `?${qs}` : ''}`);
+}
+
+export async function apiAdminMarkSocialSecurityRegistered(registrationId, portalReferenceId) {
+  return await apiRequest('/workforce/admin/social-security/mark-registered/', {
+    method: 'POST',
+    json: { registration_id: registrationId, portal_reference_id: portalReferenceId },
+  });
+}
+
+// SEVO Section 1: on-demand self-service withdrawal of the caller's own
+// wallet -- shares the same validation + RazorpayX execution path as the
+// scheduled auto-payout cron.
+export async function apiWithdrawFromWallet(amount) {
+  return await apiRequest('/workforce/wallet/withdraw/', {
+    method: 'POST',
+    json: { amount },
+  });
+}
+
+// SEVO Section 1 (head-wallet specific features): standing daily/weekly
+// auto-payout rule + minimum-balance alert floor for the caller's own wallet.
+export async function apiUpdateAutoWithdrawalSettings(payload) {
+  return await apiRequest('/workforce/wallet/auto-withdrawal/', {
+    method: 'PATCH',
+    json: payload,
+  });
+}
 
 export async function apiWorkforceLogin(identifier, password) {
   const trimmed = (identifier || '').trim();
@@ -42,13 +124,6 @@ export async function apiFetchMe() {
 export async function apiWorkforceLogout() {
   return await apiRequest('/auth/logout/', {
     method: 'POST',
-  });
-}
-
-export async function apiSubmitSupportInquiry(payload) {
-  return await apiRequest('/workforce/support/inquiry/', {
-    method: 'POST',
-    json: payload,
   });
 }
 
@@ -161,20 +236,39 @@ export async function apiCancelJob(jobId, reasonCode, reasonDetail = '') {
   });
 }
 
-export async function apiVerifyArrival(jobId, lat, lon, accuracy = null, timestamp = null) {
+export async function apiVerifyArrival(jobId, lat, lon) {
   return await apiRequest(`/workforce/jobs/${jobId}/arrive/`, {
     method: 'POST',
-    json: {
-      lat,
-      lon,
-      latitude: lat,
-      longitude: lon,
-      accuracy,
-      timestamp: timestamp || Date.now(),
-    },
+    json: { lat, lon },
   });
 }
 
+// GT-B-03: logistics-only sub-phase tracking, separate from job.status --
+// see the backend WorkforceJobLogisticsLegView docstring for the full
+// rationale (this never changes job.status/triggers a state transition).
+export async function apiSetLogisticsLeg(jobId, leg) {
+  return await apiRequest(`/workforce/jobs/${jobId}/logistics-leg/`, {
+    method: 'POST',
+    json: { leg },
+  });
+}
+
+export async function apiGetLogisticsLeg(jobId) {
+  return await apiRequest(`/workforce/jobs/${jobId}/logistics-leg/`);
+}
+
+// X-09: in-app chat -- mirrors CustomerBookingMessagesView on the Customer
+// app. Polling-based, see BookingMessage's docstring (both apps) for why.
+export async function apiGetJobMessages(jobId) {
+  return await apiRequest(`/workforce/jobs/${jobId}/messages/`);
+}
+
+export async function apiSendJobMessage(jobId, body) {
+  return await apiRequest(`/workforce/jobs/${jobId}/messages/`, {
+    method: 'POST',
+    json: { body },
+  });
+}
 
 export async function apiVerifyOTP(jobId, otp) {
   return await apiRequest(`/workforce/jobs/${jobId}/verify-otp/`, {
@@ -220,6 +314,13 @@ export async function apiCollectJobCash(jobId, amountReceived) {
   return await apiRequest(`/workforce/jobs/${jobId}/payment/collect/`, {
     method: 'POST',
     json: { amount_received: amountReceived },
+  });
+}
+
+export async function apiVerifyPaymentOTP(jobId, otp) {
+  return await apiRequest(`/workforce/jobs/${jobId}/payment/verify-otp/`, {
+    method: 'POST',
+    json: { otp },
   });
 }
 
@@ -409,11 +510,10 @@ export async function apiRejectApplication(applicationId, reason = '') {
 
 // ── Admin Dynamic Dispatch & Matching (Phase 14) ──────────────────────────────
 
-export async function apiGetEligibleTechnicians(jobId = '', serviceName = '', radiusKm = 20.0) {
+export async function apiGetEligibleTechnicians(jobId = '', serviceName = '') {
   const params = new URLSearchParams();
   if (jobId) params.set('job_id', jobId);
   if (serviceName) params.set('service', serviceName);
-  if (radiusKm) params.set('radius_km', radiusKm);
   return await apiRequest(`/workforce/dispatch/eligible-technicians/?${params.toString()}`);
 }
 
@@ -555,12 +655,6 @@ export async function apiGetMyPayslips() {
 export async function apiGetReport(reportType = 'employee', filters = {}) {
   const params = new URLSearchParams({ type: reportType, ...filters });
   return await apiRequest(`/workforce/reports/?${params.toString()}`);
-}
-
-export async function apiGetDatabaseTelemetry(params = {}) {
-  const query = new URLSearchParams(params).toString();
-  const endpoint = query ? `/workforce/admin/database-telemetry/?${query}` : '/workforce/admin/database-telemetry/';
-  return await apiRequest(endpoint);
 }
 
 // ── Leave Management (Phase 19) ────────────────────────────────────────────────
@@ -850,223 +944,16 @@ export async function apiGetCustomerJobTracking(jobId) {
   return await apiRequest(`/workforce/customer/jobs/${jobId}/tracking/`);
 }
 
-// ── Estimation & Commercial Quotation Engine ─────────────────────────────────
 
-export async function apiGetEstimationGate(jobId) {
-  return await apiRequest(`/workforce/jobs/${jobId}/estimation-gate/`);
-}
 
-export async function apiGetRateCards(category = '', service = '') {
-  const params = new URLSearchParams();
-  if (category) params.append('category', category);
-  if (service) params.append('service', service);
-  const qStr = params.toString() ? `?${params.toString()}` : '';
-  return await apiRequest(`/workforce/rate-cards/${qStr}`);
-}
 
-export async function apiGetQuotes(params = {}) {
-  const query = new URLSearchParams();
-  if (params.tab) query.append('tab', params.tab);
-  if (params.status) query.append('status', params.status);
-  if (params.search) query.append('search', params.search);
-  if (params.job_id) query.append('job_id', params.job_id);
-  const qStr = query.toString() ? `?${query.toString()}` : '';
-  return await apiRequest(`/workforce/quotes/${qStr}`);
-}
 
-export async function apiGetQuoteDetail(quoteId) {
-  return await apiRequest(`/workforce/quotes/${quoteId}/`);
-}
 
-export async function apiCreateQuote(payload) {
-  return await apiRequest('/workforce/quotes/', {
+// ── Public Legal, Support & Compliance Inquiries ──────────────────────────────
+
+export async function apiSubmitSupportInquiry(payload) {
+  return await apiRequest('/workforce/support/inquiries/', {
     method: 'POST',
     json: payload,
   });
 }
-
-export async function apiUpdateQuoteDraft(quoteId, payload) {
-  return await apiRequest(`/workforce/quotes/${quoteId}/`, {
-    method: 'PATCH',
-    json: payload,
-  });
-}
-
-export async function apiDeleteQuoteDraft(quoteId) {
-  return await apiRequest(`/workforce/quotes/${quoteId}/`, {
-    method: 'DELETE',
-  });
-}
-
-export async function apiBulkSaveQuoteItems(quoteId, items) {
-  return await apiRequest(`/workforce/quotes/${quoteId}/items/bulk/`, {
-    method: 'POST',
-    json: { items },
-  });
-}
-
-export async function apiBulkSaveQuoteMeasurements(quoteId, measurements) {
-  return await apiRequest(`/workforce/quotes/${quoteId}/measurements/bulk/`, {
-    method: 'POST',
-    json: { measurements },
-  });
-}
-
-export async function apiSaveQuoteInspection(quoteId, inspectionData) {
-  return await apiRequest(`/workforce/quotes/${quoteId}/inspection/`, {
-    method: 'POST',
-    json: inspectionData,
-  });
-}
-
-export async function apiSendQuoteToCustomer(quoteId) {
-  return await apiRequest(`/workforce/quotes/${quoteId}/send/`, {
-    method: 'POST',
-  });
-}
-
-export async function apiReviseQuote(quoteId, notes = '') {
-  return await apiRequest(`/workforce/quotes/${quoteId}/revise/`, {
-    method: 'POST',
-    json: { notes },
-  });
-}
-
-export async function apiGetCustomerQuote(tokenOrId) {
-  if (typeof tokenOrId === 'string' && tokenOrId.length > 20) {
-    return await apiRequest(`/workforce/customer/quote-token/${tokenOrId}/`);
-  }
-  return await apiRequest(`/workforce/customer/quotes/${tokenOrId}/`);
-}
-
-export async function apiDecideCustomerQuote(tokenOrId, action, notes = '', reason = '') {
-  if (typeof tokenOrId === 'string' && tokenOrId.length > 20) {
-    return await apiRequest(`/workforce/customer/quote-token/${tokenOrId}/decide/`, {
-      method: 'POST',
-      json: { action, notes, reason },
-    });
-  }
-  return await apiRequest(`/workforce/customer/quotes/${tokenOrId}/decide/`, {
-    method: 'POST',
-    json: { action, notes, reason },
-  });
-}
-
-export async function apiAdminClearStructural(quoteId, approved = true, notes = '') {
-  return await apiRequest(`/workforce/admin/quotes/${quoteId}/clear-structural/`, {
-    method: 'POST',
-    json: { approved, notes },
-  });
-}
-
-export async function apiGetAdminQuoteMetrics() {
-  return await apiRequest('/workforce/admin/quotes/metrics/');
-}
-
-export async function apiAdminRetryQuoteConversion(quoteId) {
-  return await apiRequest(`/workforce/admin/quotes/${quoteId}/retry-conversion/`, {
-    method: 'POST',
-  });
-}
-
-// ── Phase 2A: Service Provider & Provider Admin Management ───────────────────
-
-export async function apiGetSuperadminServiceProviders(params = {}) {
-  const query = new URLSearchParams();
-  if (params.q) query.append('q', params.q);
-  if (params.is_active !== undefined) query.append('is_active', params.is_active);
-  const qs = query.toString() ? `?${query.toString()}` : '';
-  return await apiRequest(`/workforce/superadmin/service-providers/${qs}`);
-}
-
-export async function apiCreateSuperadminServiceProvider(payload) {
-  return await apiRequest('/workforce/superadmin/service-providers/', {
-    method: 'POST',
-    json: payload,
-  });
-}
-
-export async function apiGetSuperadminServiceProvider(id) {
-  return await apiRequest(`/workforce/superadmin/service-providers/${id}/`);
-}
-
-export async function apiGetProviderProfile() {
-  return await apiRequest('/workforce/provider/profile/');
-}
-
-// ── Phase 2B: Provider Technician Management ──────────────────────────────────
-
-export async function apiGetAdminTechnicians(params = {}) {
-  const query = new URLSearchParams();
-  if (params.q) query.append('q', params.q);
-  if (params.is_active !== undefined) query.append('is_active', params.is_active);
-  if (params.company_id !== undefined) query.append('company_id', params.company_id);
-  const qs = query.toString() ? `?${query.toString()}` : '';
-  return await apiRequest(`/workforce/admin/technicians/${qs}`);
-}
-
-export async function apiCreateAdminTechnician(payload) {
-  return await apiRequest('/workforce/admin/technicians/', {
-    method: 'POST',
-    json: payload,
-  });
-}
-
-export async function apiGetAdminTechnicianDetail(id) {
-  return await apiRequest(`/workforce/admin/technicians/${id}/`);
-}
-
-export async function apiUpdateAdminTechnician(id, payload) {
-  return await apiRequest(`/workforce/admin/technicians/${id}/`, {
-    method: 'PATCH',
-    json: payload,
-  });
-}
-
-export async function apiToggleAdminTechnicianActive(id) {
-  return await apiRequest(`/workforce/admin/technicians/${id}/toggle-active/`, {
-    method: 'POST',
-  });
-}
-
-// ── Phase 2C: Public Providers & Join Requests ────────────────────────────────
-
-export async function apiGetPublicServiceProviders(params = {}) {
-  const query = new URLSearchParams();
-  if (params.search) query.append('search', params.search);
-  if (params.q) query.append('q', params.q);
-  const qs = query.toString() ? `?${query.toString()}` : '';
-  return await apiRequest(`/workforce/service-providers/public/${qs}`);
-}
-
-export async function apiDecideJoinRequest(requestIdOrEmployeeId, action, reason = '') {
-  return await apiRequest(`/workforce/admin/join-requests/${requestIdOrEmployeeId}/decide/`, {
-    method: 'POST',
-    json: {
-      action,
-      reason,
-    },
-  });
-}
-
-// ── SuperAdmin Global Dispatch Configuration ──────────────────────────────────
-
-export async function apiGetDispatchRadius() {
-  return await apiRequest('/workforce/admin/settings/dispatch-radius/');
-}
-
-export async function apiUpdateDispatchRadius(radiusKm) {
-  return await apiRequest('/workforce/admin/settings/dispatch-radius/', {
-    method: 'POST',
-    json: { dispatch_radius_km: radiusKm },
-  });
-}
-
-
-
-
-
-
-
-
-

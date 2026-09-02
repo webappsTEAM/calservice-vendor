@@ -28,9 +28,9 @@ else:
 
 _allowed_hosts_env = os.getenv("ALLOWED_HOSTS")
 if _allowed_hosts_env:
-    ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()] + ["testserver"]
+    ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
 else:
-    ALLOWED_HOSTS = ["*"] if DEBUG else ["localhost", "127.0.0.1", "testserver"]
+    ALLOWED_HOSTS = ["*"] if DEBUG else ["localhost", "127.0.0.1"]
 
 # Application definition
 INSTALLED_APPS = [
@@ -53,9 +53,6 @@ INSTALLED_APPS = [
     "service_requests",
     "workforce_api",
     "time_tracking",
-
-    # Vendor Wallet financial module
-    "vendor_wallet",
 ]
 
 MIDDLEWARE = [
@@ -107,9 +104,6 @@ if USE_POSTGRES:
         _db_options["sslmode"] = _sslmode
 
     _connection_opts = [f'-c search_path={os.getenv("DB_SCHEMA", "public")}']
-    _idle_tx_timeout = os.getenv("DB_IDLE_IN_TRANSACTION_TIMEOUT", "10000")
-    if _idle_tx_timeout:
-        _connection_opts.append(f"-c idle_in_transaction_session_timeout={_idle_tx_timeout}")
     _stmt_timeout = os.getenv("DB_STATEMENT_TIMEOUT", "")
     if _stmt_timeout:
         _connection_opts.append(f"-c statement_timeout={_stmt_timeout}")
@@ -171,6 +165,26 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 25,
+    # Fixes EC-06: this app previously configured no throttling at all (the
+    # Customer app at least had a blanket anon/user rate). Baseline rates
+    # only for now, matching the Customer app's convention — individual
+    # views (signup, OTP verify, dispatch-sensitive endpoints) should get
+    # their own ScopedRateThrottle scopes as a follow-up.
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": os.getenv("THROTTLE_ANON", "60/minute"),
+        "user": os.getenv("THROTTLE_USER", "300/minute"),
+        # EC-06 (vendor half): the blanket anon/user rates above were the only
+        # protection every endpoint had. Mirrors the scoped-throttle pattern
+        # already applied on the Customer app's settings for the same finding.
+        # Opt-in per view via ScopedRateThrottle + throttle_scope.
+        "workforce_signup": os.getenv("THROTTLE_WF_SIGNUP", "10/hour"),
+        "workforce_otp": os.getenv("THROTTLE_WF_OTP", "15/minute"),
+        "workforce_cash_collect": os.getenv("THROTTLE_WF_CASH", "20/minute"),
+    },
 }
 
 SIMPLE_JWT = {
@@ -238,16 +252,61 @@ else:
         "http://127.0.0.1:8001",
     ]
 
-# ─── Redis Configuration ──────────────────────────────────────────────────────
-# Used for transient live-location state (job_location:<job_id>), SSE Pub/Sub,
-# Redis GEO candidate discovery, and Redis Streams reliable dispatch queue.
-# Supabase PostgreSQL remains the durable source of truth.
-REDIS_URL = os.getenv("REDIS_URL", f"redis://{os.getenv('REDIS_HOST', '127.0.0.1')}:{os.getenv('REDIS_PORT', '6379')}/0")
+# ── Customer-app webhook integration (fixes X-01) ─────────────────────────────
+# This app previously never notified the Customer app of technician
+# assignment/acceptance/en-route/arrival/completion/location/payment events,
+# even though the Customer app has a fully-built idempotent webhook receiver
+# (workforce_integration/views.py) waiting for exactly this. See
+# workforce_api/services/customer_webhook.py for the sender.
+CUSTOMER_APP_BASE_URL = os.getenv("CUSTOMER_APP_BASE_URL", "http://localhost:8000").rstrip("/")
+# Must match the Customer app's WORKFORCE_WEBHOOK_SECRET env var exactly.
+# NOTE: the Customer app's receiver (workforce_integration/views.py,
+# _verify_webhook_signature) currently accepts the literal string
+# "wf_webhook_secret_default" as a valid secret unconditionally, regardless
+# of what WORKFORCE_WEBHOOK_SECRET is actually configured to on that side --
+# that is a bug on the receiving end (flagged separately, not fixed here)
+# and means a real secret should be set on BOTH apps before relying on this
+# for anything sensitive.
+WORKFORCE_WEBHOOK_SECRET = os.getenv("WORKFORCE_WEBHOOK_SECRET", "wf_webhook_secret_default")
 
-# ─── Redis Automatic Dispatch Configuration ──────────────────────────────────
-DISPATCH_LOCATION_MAX_AGE_SECONDS = int(os.getenv("DISPATCH_LOCATION_MAX_AGE_SECONDS", "120"))
-DISPATCH_CANDIDATE_RADIUS_KM = float(os.getenv("DISPATCH_CANDIDATE_RADIUS_KM", "20.0"))
-REDIS_DISPATCH_STREAM = os.getenv("REDIS_DISPATCH_STREAM", "workforce:dispatch:jobs")
-REDIS_DISPATCH_GROUP = os.getenv("REDIS_DISPATCH_GROUP", "workforce:dispatch:workers")
-REDIS_GEO_KEY = os.getenv("REDIS_GEO_KEY", "workforce:technicians:geo")
-REDIS_TECH_LAST_SEEN_KEY = os.getenv("REDIS_TECH_LAST_SEEN_KEY", "workforce:technicians:last_seen")
+# ----------------------------------------------------------------------------
+# SEVO business plan (Section 1): RazorpayX Payouts for wallet withdrawals.
+# This is a SEPARATE product/account from plain Razorpay Payments (used for
+# customer checkout) -- it requires its own RazorpayX current account and
+# its own API keys. Deliberately optional at import time: every wallet
+# feature (ledger, balance, withdrawal *requests*) works with these unset;
+# only the final "money actually leaves for the bank" step is gated on them.
+# See workforce_api/services/payouts.py for how these are used, and
+# SEVO_Business_Operational_Plan.docx Section 1 for why this is architected
+# as a payout adapter rather than a self-issued wallet.
+RAZORPAYX_KEY_ID = os.getenv("RAZORPAYX_KEY_ID", "")
+RAZORPAYX_KEY_SECRET = os.getenv("RAZORPAYX_KEY_SECRET", "")
+RAZORPAYX_ACCOUNT_NUMBER = os.getenv("RAZORPAYX_ACCOUNT_NUMBER", "")
+RAZORPAYX_WEBHOOK_SECRET = os.getenv("RAZORPAYX_WEBHOOK_SECRET", "")
+
+# Local-testing-only bypass: when true (and only when DEBUG is also
+# true -- see is_mock_mode() in services/payouts.py, which hard-ANDs
+# this with settings.DEBUG so it can never activate in production
+# regardless of what this env var is set to), a withdrawal simulates a
+# successful RazorpayX payout locally instead of calling the real API.
+# Lets the whole wallet flow be exercised end-to-end before a real
+# RazorpayX current account is activated. NEVER enable outside local/
+# staging testing -- it fabricates a successful payout.
+RAZORPAYX_MOCK_MODE = (os.getenv("RAZORPAYX_MOCK_MODE", "0") or "0").lower() in ("true", "1", "t")
+
+# ----------------------------------------------------------------------------
+# SEVO business plan (Section 3): differentiated commission rates and the
+# post-completion dispute-hold window (Section 4). See
+# workforce_api/services/commission.py for how these are used.
+# Provider-dispatched jobs get a lower rate (provider already bears team
+# cost, dispatch and QC); individual-worker jobs a standard rate (SEVO
+# bears full acquisition/verification/dispatch/insurance cost directly).
+# *_PROMO_RATE applies for SEVO_PROMO_PERIOD_DAYS from wallet creation to
+# give a new provider/worker a real reason to route jobs through SEVO
+# before being asked to pay the standard rate.
+SEVO_PROVIDER_COMMISSION_RATE = os.getenv("SEVO_PROVIDER_COMMISSION_RATE", "0.10")
+SEVO_PROVIDER_PROMO_RATE = os.getenv("SEVO_PROVIDER_PROMO_RATE", "0.00")
+SEVO_INDIVIDUAL_COMMISSION_RATE = os.getenv("SEVO_INDIVIDUAL_COMMISSION_RATE", "0.18")
+SEVO_INDIVIDUAL_PROMO_RATE = os.getenv("SEVO_INDIVIDUAL_PROMO_RATE", "0.08")
+SEVO_PROMO_PERIOD_DAYS = os.getenv("SEVO_PROMO_PERIOD_DAYS", "90")
+SEVO_DISPUTE_HOLD_HOURS = os.getenv("SEVO_DISPUTE_HOLD_HOURS", "48")

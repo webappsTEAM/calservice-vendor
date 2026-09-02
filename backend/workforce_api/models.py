@@ -2,11 +2,8 @@
 workforce-app/backend/workforce_api/models.py
 Relational database models for Workforce Scheduling, Skills, Compliance, Notifications, Events, Payroll, and Reports.
 """
-import uuid
-import django
 from django.conf import settings
 from django.db import models
-from django.utils import timezone
 
 
 class WorkforceEmployeeSchedule(models.Model):
@@ -122,28 +119,6 @@ class WorkforceEmployeeSkill(models.Model):
         return f"{self.employee} - {self.skill.name} ({self.proficiency_level})"
 
 
-class WorkforceServiceSkillRequirement(models.Model):
-    service = models.ForeignKey(
-        "service_requests.Service",
-        on_delete=models.CASCADE,
-        related_name="skill_requirements",
-    )
-    skill = models.ForeignKey(
-        WorkforceSkill,
-        on_delete=models.CASCADE,
-        related_name="service_requirements",
-    )
-    is_mandatory = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        db_table = "workforce_service_skill_requirement"
-        unique_together = ("service", "skill")
-
-    def __str__(self):
-        return f"{self.service.name} requires {self.skill.name}"
-
-
 class WorkforceRequiredDocument(models.Model):
     company = models.ForeignKey(
         "companies.Company",
@@ -155,6 +130,16 @@ class WorkforceRequiredDocument(models.Model):
     is_mandatory = models.BooleanField(default=True, db_index=True)
     description = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
+
+    # GT-A-02: which job service categories this requirement applies to (e.g.
+    # ["mini_truck", "two_wheeler_delivery", "packers_movers"]). Empty list
+    # (the default) preserves the original behaviour -- applies to every job,
+    # exactly as every existing row already does. Only non-empty lists scope
+    # a requirement (e.g. Driving Licence / RC / Insurance / Permit) to
+    # specific categories, so Gate 3 can require vehicle documents only for
+    # jobs that actually need a vehicle, without touching the blanket
+    # documents (ID proof, etc.) that already apply to everyone.
+    applies_to_categories = models.JSONField(default=list, blank=True)
 
     class Meta:
         db_table = "workforce_required_document"
@@ -442,39 +427,17 @@ class WorkforceJobOffer(models.Model):
         default=Status.OFFERED,
         db_index=True,
     )
-    wave_id = models.UUIDField(default=uuid.uuid4, db_index=True)
-    wave_number = models.IntegerField(default=1, db_index=True)
     rank_score = models.FloatField(default=0.0)
-    offered_at = models.DateTimeField(default=timezone.now, db_index=True)
-    expires_at = models.DateTimeField(db_index=True)
+    offered_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
     rejection_reason = models.TextField(blank=True, default="")
 
     class Meta:
         db_table = "workforce_job_offer"
         ordering = ["-offered_at"]
-        constraints = [
-            models.CheckConstraint(
-                **{
-                    ("condition" if django.VERSION >= (6, 0) else "check"): models.Q(
-                        wave_number__gte=1, wave_number__lte=6
-                    ),
-                    "name": "valid_wave_number_1_to_6",
-                }
-            ),
-            models.UniqueConstraint(
-                fields=["job", "employee"],
-                condition=models.Q(status="OFFERED"),
-                name="unique_active_job_offer_per_employee",
-            ),
-        ]
-        indexes = [
-            models.Index(fields=["job", "status", "expires_at"], name="wf_offer_job_st_exp_idx"),
-            models.Index(fields=["job", "wave_id", "status", "expires_at"], name="wf_offer_job_wave_idx"),
-            models.Index(fields=["employee", "status", "expires_at"], name="wf_offer_emp_st_exp_idx"),
-        ]
 
     def __str__(self):
-        return f"Offer Job #{self.job_id} to {self.employee} (Wave {self.wave_number}, {self.status})"
+        return f"Offer Job #{self.job_id} to {self.employee} ({self.status})"
 
 
 class WorkforceJobLifecycleEvent(models.Model):
@@ -812,7 +775,9 @@ class PostServiceProof(models.Model):
         db_table = "workforce_post_service_proof"
 
     def check_submission(self):
-        ready = bool(self.after_presence_photo)
+        ready = bool(
+            self.after_presence_photo or self.after_appliance_photo or self.after_work_area_photo
+        )
         if ready and not self.is_submitted:
             from django.utils import timezone
             self.is_submitted = True
@@ -1075,24 +1040,20 @@ class JobTrackingSession(models.Model):
     last_captured_at = models.DateTimeField(null=True, blank=True)
     last_received_at = models.DateTimeField(null=True, blank=True)
 
-    # Derived tracking state (computed and stored on each GPS update)
-    # movement_status: MOVING | STATIONARY | UNKNOWN
-    movement_status = models.CharField(max_length=20, default="UNKNOWN", blank=True)
-    # geofence_status: OUTSIDE | APPROACHING | ARRIVING | ARRIVED
-    geofence_status = models.CharField(max_length=20, default="OUTSIDE", blank=True)
-    # Previous valid point for movement detection
-    prev_latitude = models.FloatField(null=True, blank=True)
-    prev_longitude = models.FloatField(null=True, blank=True)
-    prev_captured_at = models.DateTimeField(null=True, blank=True)
-    # Realtime event throttle: tracks when last JOB_LOCATION_UPDATE was emitted
-    last_event_emitted_at = models.DateTimeField(null=True, blank=True)
-    last_event_state_key = models.CharField(max_length=60, blank=True, default="")
-
     # Consecutive arrival confirmation tracking
     consecutive_arrival_fixes = models.IntegerField(default=0)
     last_fix_lat = models.FloatField(null=True, blank=True)
     last_fix_lon = models.FloatField(null=True, blank=True)
     last_fix_time = models.DateTimeField(null=True, blank=True)
+
+    # Spatial & Geofence movement state
+    movement_status = models.CharField(max_length=50, default="UNKNOWN")
+    geofence_status = models.CharField(max_length=50, default="OUTSIDE")
+    prev_latitude = models.FloatField(null=True, blank=True)
+    prev_longitude = models.FloatField(null=True, blank=True)
+    prev_captured_at = models.DateTimeField(null=True, blank=True)
+    last_event_emitted_at = models.DateTimeField(null=True, blank=True)
+    last_event_state_key = models.CharField(max_length=100, default="", blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1101,8 +1062,8 @@ class JobTrackingSession(models.Model):
         db_table = "workforce_job_tracking_session"
         ordering = ["-created_at"]
         indexes = [
-            models.Index(fields=["job", "status"], name="wf_ts_job_status_idx"),
-            models.Index(fields=["employee", "status"], name="wf_ts_emp_status_idx"),
+            models.Index(fields=["job", "status"]),
+            models.Index(fields=["employee", "status"]),
         ]
         constraints = [
             models.UniqueConstraint(
@@ -1150,9 +1111,8 @@ class JobLocationPoint(models.Model):
         db_table = "workforce_job_location_point"
         ordering = ["tracking_session", "sequence_number", "created_at"]
         indexes = [
-            models.Index(fields=["tracking_session", "created_at"], name="wf_lp_session_time_idx"),
-            models.Index(fields=["job", "created_at"], name="wf_lp_job_time_idx"),
-            models.Index(fields=["job", "employee", "captured_at"], name="wf_lp_job_emp_cap_idx"),
+            models.Index(fields=["tracking_session", "created_at"]),
+            models.Index(fields=["job", "created_at"]),
         ]
 
     def __str__(self):
@@ -1278,6 +1238,21 @@ class JobPayment(models.Model):
         null=True,
         blank=True,
     )
+    # GT-C-02: "cash collected by a driver is never reconciled". PAID
+    # CASH_ON_SERVICE rows sit here forever with nothing tracking whether the
+    # technician has actually handed that cash to the office. reconciled
+    # flips True (and reconciled_in points at the CashSettlement) the moment
+    # this payment is included in a settlement -- see
+    # CashSettlement/compute_outstanding_cash in services/__init__.py.
+    reconciled = models.BooleanField(default=False, db_index=True)
+    reconciled_in = models.ForeignKey(
+        "CashSettlement",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reconciled_payments",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1290,18 +1265,47 @@ class JobPayment(models.Model):
             models.Index(fields=["company", "payment_status"]),
         ]
 
-    @property
-    def is_cash_collected(self):
-        """Authoritative check if cash collection is persisted or job is fully paid."""
-        return bool(self.cash_collected_at is not None or self.payment_status == self.PaymentStatus.PAID)
-
-    @property
-    def is_cash_received(self):
-        """Authoritative check if cash collection is persisted or job is fully paid (Phase 2 Requirement)."""
-        return self.is_cash_collected
-
     def __str__(self):
         return f"Payment #{self.id} for Job #{self.job_id} ({self.payment_method} - {self.payment_status} - ₹{self.amount_due})"
+
+
+class CashSettlement(models.Model):
+    """
+    GT-C-02: a single "technician handed in cash" event. expected_amount is
+    computed at creation time from every unreconciled PAID CASH_ON_SERVICE
+    JobPayment for this employee (see
+    services.compute_outstanding_cash) -- discrepancy is what actually
+    surfaces a shortfall/overage instead of it silently going unnoticed.
+    """
+    employee = models.ForeignKey(
+        "employees.Employee",
+        on_delete=models.CASCADE,
+        related_name="cash_settlements",
+    )
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="cash_settlements",
+    )
+    expected_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    deposited_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    discrepancy = models.DecimalField(max_digits=10, decimal_places=2)
+    notes = models.TextField(blank=True, default="")
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="cash_settlements_recorded",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "workforce_cash_settlement"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Settlement #{self.id} for Employee #{self.employee_id}: expected {self.expected_amount}, deposited {self.deposited_amount}"
 
 
 class PaymentCollectionEvent(models.Model):
@@ -1366,411 +1370,701 @@ class PaymentCollectionEvent(models.Model):
         return f"PaymentEvent #{self.id} ({self.event_type}) for Payment #{self.job_payment_id}"
 
 
-# ─── 29. Estimation & Quotation Domain ────────────────────────────────────────
-
-def generate_quote_number():
-    """Generates sequential canonical quotation numbers: QT-0001, QT-0002, etc."""
-    last = WorkforceQuote.objects.order_by("-id").first()
-    num = (last.id + 1) if last and last.id else 1
-    candidate = f"QT-{str(num).zfill(4)}"
-    while WorkforceQuote.objects.filter(quote_number=candidate).exists():
-        num += 1
-        candidate = f"QT-{str(num).zfill(4)}"
-    return candidate
-
-
-class WorkforceRateCard(models.Model):
+class Vehicle(models.Model):
     """
-    Authoritative Rate Card configuration for Quotation Calculation.
-    Defines approved unit rates, standard costs, and discount ceilings per service section.
+    GT-A-01: a driver is currently modeled as "an Employee with a job title" --
+    there is no vehicle at all: no type, no registration number, no capacity.
+    This is the minimal vehicle record needed for goods/transport dispatch and
+    document-expiry gating (insurance, permit, PUC), without inventing a full
+    fleet-management module the product hasn't asked for.
     """
-    class Section(models.TextChoices):
-        MATERIAL = "MATERIAL", "Material"
-        LABOUR = "LABOUR", "Labour"
-        SURFACE_PREP = "SURFACE_PREP", "Surface Preparation"
-        EQUIPMENT = "EQUIPMENT", "Equipment & Scaffolding"
-        TRANSPORT = "TRANSPORT", "Transport & Logistics"
-        OTHER = "OTHER", "Other"
+    class VehicleType(models.TextChoices):
+        TWO_WHEELER   = "two_wheeler",   "Two Wheeler"
+        THREE_WHEELER = "three_wheeler", "Three Wheeler / Auto"
+        MINI_TRUCK    = "mini_truck",    "Mini Truck"
+        PICKUP        = "pickup",        "Pickup Van"
+        TRUCK         = "truck",         "Truck"
+        OTHER         = "other",         "Other"
 
-    service_id = models.IntegerField(null=True, blank=True, db_index=True)
-    service_category = models.CharField(max_length=100, db_index=True)
-    service_name = models.CharField(max_length=150, db_index=True)
-    section = models.CharField(max_length=50, choices=Section.choices, default=Section.MATERIAL)
-    item_name = models.CharField(max_length=200)
-    description = models.TextField(blank=True, default="")
-    unit = models.CharField(max_length=50, default="sqft")
-    default_rate = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    default_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=18.00)
-    max_discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=20.00)
-    is_active = models.BooleanField(default=True, db_index=True)
-    sort_order = models.IntegerField(default=0)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        db_table = "workforce_rate_card"
-        ordering = ["service_category", "section", "sort_order", "id"]
-
-    def __str__(self):
-        return f"[{self.service_category}] {self.section}: {self.item_name} (₹{self.default_rate}/{self.unit})"
-
-
-class WorkforceQuote(models.Model):
-    """
-    Central Commercial Quotation Model for CalTrack Workforce.
-    Maintains a strict state machine, cryptographic decision token, and conversion to actual Work ServiceRequests.
-    """
-    class Status(models.TextChoices):
-        DRAFT               = "DRAFT",               "Draft"
-        PENDING_REVIEW      = "PENDING_REVIEW",      "Pending Admin Review"
-        SENT_TO_CUSTOMER    = "SENT_TO_CUSTOMER",    "Sent to Customer"
-        CUSTOMER_ACCEPTED   = "CUSTOMER_ACCEPTED",   "Customer Accepted"
-        CHANGES_REQUESTED   = "CHANGES_REQUESTED",   "Changes Requested"
-        DECLINED            = "DECLINED",            "Declined"
-        EXPIRED             = "EXPIRED",             "Expired"
-        SUPERSEDED          = "SUPERSEDED",          "Superseded"
-        CONVERSION_PENDING  = "CONVERSION_PENDING",  "Conversion Pending"
-        CONVERTED           = "CONVERTED",           "Converted to Work Booking"
-        CANCELLED           = "CANCELLED",           "Cancelled"
-
-    class StructuralImpact(models.TextChoices):
-        NONE                 = "NONE",                 "No Structural Impact"
-        SUSPECTED_STRUCTURAL = "SUSPECTED_STRUCTURAL", "Suspected Structural (Clearance Required)"
-        STRUCTURAL           = "STRUCTURAL",           "Structural Demolition / Load-Bearing (Clearance Required)"
-
-    quote_number = models.CharField(max_length=50, unique=True, db_index=True)
-    quote_version = models.IntegerField(default=1, db_index=True)
-    job = models.ForeignKey(
-        "service_requests.ServiceRequest",
-        on_delete=models.CASCADE,
-        related_name="quotes",
-        db_index=True,
-    )
-    work_job = models.ForeignKey(
-        "service_requests.ServiceRequest",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="converted_from_quote",
-    )
-    technician = models.ForeignKey(
+    employee = models.ForeignKey(
         "employees.Employee",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="quotes_created",
+        on_delete=models.CASCADE,
+        related_name="vehicles",
     )
     company = models.ForeignKey(
         "companies.Company",
         on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name="quotes",
+        related_name="vehicles",
     )
-    customer = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="customer_quotes",
-    )
-    title = models.CharField(max_length=200, default="Quotation")
-    description = models.TextField(blank=True, default="")
-    service_category = models.CharField(max_length=150, blank=True, default="")
-    service_name = models.CharField(max_length=200, blank=True, default="")
+    vehicle_type = models.CharField(max_length=20, choices=VehicleType.choices, default=VehicleType.OTHER)
+    registration_number = models.CharField(max_length=30, db_index=True)
+    capacity_kg = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+    capacity_label = models.CharField(max_length=50, blank=True, default="")
 
-    estimated_labor_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    estimated_materials_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    subtotal_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    inspection_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    inspection_fee_adjusted = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    net_payable = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    # Document expiry -- checked the same way employee documents already are
+    # (see automatic_dispatch.py Gate 3), but vehicle documents are properties
+    # of the vehicle, not the person, so they live here rather than being
+    # forced into WorkforceEmployeeDocument.
+    insurance_expiry = models.DateField(null=True, blank=True)
+    permit_expiry = models.DateField(null=True, blank=True)
+    puc_expiry = models.DateField(null=True, blank=True)
+    rc_verified = models.BooleanField(default=False)
 
-    status = models.CharField(
-        max_length=30,
-        choices=Status.choices,
-        default=Status.DRAFT,
-        db_index=True,
-    )
-    valid_until = models.DateTimeField(null=True, blank=True, db_index=True)
-
-    # Cryptographic decision token for customer verification
-    decision_token = models.CharField(max_length=64, unique=True, null=True, blank=True, db_index=True)
-    decision_expires_at = models.DateTimeField(null=True, blank=True)
-    customer_decision = models.CharField(max_length=30, blank=True, default="")
-    customer_decided_at = models.DateTimeField(null=True, blank=True)
-    customer_decline_reason = models.TextField(blank=True, default="")
-    customer_notes = models.TextField(blank=True, default="")
-
-    # Mason Structural Clearance Gate
-    structural_impact = models.CharField(
-        max_length=30,
-        choices=StructuralImpact.choices,
-        default=StructuralImpact.NONE,
-    )
-    admin_cleared_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="cleared_quotes",
-    )
-    admin_cleared_at = models.DateTimeField(null=True, blank=True)
-    admin_clearance_notes = models.TextField(blank=True, default="")
-
-    sent_at = models.DateTimeField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = "workforce_quote"
+        db_table = "workforce_vehicle"
+        unique_together = ("company", "registration_number")
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.registration_number} ({self.get_vehicle_type_display()})"
+
+    def is_document_current(self, as_of=None):
+        """True only if every expiry this vehicle has on file is still valid.
+        A vehicle with no expiry dates recorded at all returns True -- absence
+        of data is not treated as expiry, matching how WorkforceEmployeeDocument
+        expiry checks already behave (missing expiry_date never fails Gate 3)."""
+        from django.utils import timezone as _tz
+        today = as_of or _tz.now().date()
+        for d in (self.insurance_expiry, self.permit_expiry, self.puc_expiry):
+            if d and d < today:
+                return False
+        return True
+
+
+# ============================================================================
+# SEVO Business Plan implementation -- Wallet infrastructure (Section 1 of
+# SEVO_Business_Operational_Plan.docx).
+#
+# Deliberately NOT a self-issued stored-value instrument (see the plan for
+# why: building one would make SEVO an RBI-regulated PPI issuer). These
+# models are a ledger view over money that actually sits in a RazorpayX
+# nodal/current account. "Wallet balance" shown in-app is computed from
+# WalletLedgerEntry rows; the real money movement happens through
+# WithdrawalRequest -> RazorpayXPayoutAdapter (workforce_api/services/payouts.py).
+# ============================================================================
+
+class WalletAccount(models.Model):
+    """
+    One ledger account per payee. Two kinds:
+      - PROVIDER_HEAD: one per Company (provider business) -- every job any
+        worker on that provider's team completes credits this single
+        account (the "head wallet" from the operational brief).
+      - INDIVIDUAL_WORKER: one per Employee who onboarded directly, with no
+        provider umbrella -- credited only by jobs that Employee personally
+        completed.
+    """
+
+    class AccountType(models.TextChoices):
+        PROVIDER_HEAD = "PROVIDER_HEAD", "Provider Head Wallet"
+        INDIVIDUAL_WORKER = "INDIVIDUAL_WORKER", "Individual Worker Wallet"
+
+    class KYCTier(models.TextChoices):
+        TIER_0_PROVISIONAL = "TIER_0", "Tier 0 - Provisional"
+        TIER_1_VERIFIED = "TIER_1", "Tier 1 - Verified"
+        TIER_2_TRUSTED = "TIER_2", "Tier 2 - Trusted"
+
+    account_type = models.CharField(max_length=30, choices=AccountType.choices, db_index=True)
+
+    # Exactly one of these is set, matching account_type.
+    company = models.OneToOneField(
+        "companies.Company", on_delete=models.CASCADE, null=True, blank=True,
+        related_name="head_wallet",
+    )
+    employee = models.OneToOneField(
+        "employees.Employee", on_delete=models.CASCADE, null=True, blank=True,
+        related_name="individual_wallet",
+    )
+
+    kyc_tier = models.CharField(
+        max_length=10, choices=KYCTier.choices, default=KYCTier.TIER_0_PROVISIONAL, db_index=True,
+    )
+    kyc_tier_updated_at = models.DateTimeField(null=True, blank=True)
+
+    # Bank/UPI destination for payouts. Name-match to KYC identity is
+    # enforced at onboarding-review time (human review), not re-derived here.
+    payout_bank_account_name = models.CharField(max_length=200, blank=True, default="")
+    payout_bank_account_number_masked = models.CharField(max_length=50, blank=True, default="")
+    payout_ifsc = models.CharField(max_length=20, blank=True, default="")
+    payout_upi_id = models.CharField(max_length=100, blank=True, default="")
+
+    # RazorpayX identifiers, populated once the fund account is registered
+    # with RazorpayX. Blank until RazorpayX credentials exist and the
+    # fund-account-creation step has actually run -- see services/payouts.py.
+    razorpayx_contact_id = models.CharField(max_length=100, blank=True, default="")
+    razorpayx_fund_account_id = models.CharField(max_length=100, blank=True, default="")
+
+    # Scheduled withdrawals + minimum balance alerts (operational brief,
+    # head-wallet specific features).
+    auto_withdrawal_enabled = models.BooleanField(default=False)
+    auto_withdrawal_frequency = models.CharField(
+        max_length=10,
+        choices=[("DAILY", "Daily"), ("WEEKLY", "Weekly")],
+        blank=True, default="",
+    )
+    auto_withdrawal_day_of_week = models.IntegerField(
+        null=True, blank=True,
+        help_text="0=Monday .. 6=Sunday. Only used when frequency=WEEKLY.",
+    )
+    minimum_balance_alert_threshold = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+    )
+    low_balance_alert_sent_at = models.DateTimeField(null=True, blank=True)
+
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_wallet_account"
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(account_type="PROVIDER_HEAD", company__isnull=False, employee__isnull=True)
+                    | models.Q(account_type="INDIVIDUAL_WORKER", employee__isnull=False, company__isnull=True)
+                ),
+                name="wallet_account_type_matches_owner",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["account_type", "kyc_tier"]),
+        ]
+
+    def __str__(self):
+        owner = self.company.company_name if self.company_id else (
+            getattr(self.employee, "full_name", None) or f"Employee #{self.employee_id}"
+        )
+        return f"{self.get_account_type_display()} - {owner}"
+
+    def current_balance(self):
+        """Sum of RELEASED ledger entries only -- HELD entries (pending
+        dispute window, see WalletLedgerEntry.status) are not withdrawable
+        yet and must not appear in the balance the owner can act on."""
+        from django.db.models import Sum
+        result = self.ledger_entries.filter(status=WalletLedgerEntry.Status.RELEASED).aggregate(
+            total=Sum("signed_amount")
+        )
+        return result["total"] or 0
+
+    def withdrawal_limit_for_tier(self):
+        """Daily withdrawal ceiling by KYC tier (Section 1 table). This is
+        SEVO's own risk policy, not an RBI PPI balance cap -- money is never
+        resting in a SEVO-owned instrument, it moves straight to the
+        owner's own bank account via RazorpayX."""
+        return {
+            self.KYCTier.TIER_0_PROVISIONAL: 5000,
+            self.KYCTier.TIER_1_VERIFIED: 50000,
+            self.KYCTier.TIER_2_TRUSTED: None,  # no platform-imposed cap
+        }.get(self.kyc_tier, 5000)
+
+
+class WalletLedgerEntry(models.Model):
+    """
+    Immutable, append-only ledger row. Every completed job produces exactly
+    one JOB_CREDIT entry (net of commission) plus one COMMISSION_DEBIT entry
+    recorded separately for auditability (Section 6: per-job attribution).
+
+    `worker_performed` records who actually did the job even when the
+    payee is a provider's head wallet -- captured purely for rating,
+    dispute evidence and safety audit trail. It never changes who gets
+    paid.
+    """
+
+    class EntryType(models.TextChoices):
+        JOB_CREDIT = "JOB_CREDIT", "Job Earnings Credit"
+        COMMISSION_DEBIT = "COMMISSION_DEBIT", "SEVO Commission"
+        WITHDRAWAL_DEBIT = "WITHDRAWAL_DEBIT", "Withdrawal to Bank/UPI"
+        CLAWBACK_DEBIT = "CLAWBACK_DEBIT", "Dispute Clawback"
+        REFUND_ADJUSTMENT = "REFUND_ADJUSTMENT", "Refund Adjustment"
+        PROMO_CREDIT = "PROMO_CREDIT", "Promotional Credit"
+        COD_COMMISSION_PAYABLE = "COD_COMMISSION_PAYABLE", "Cash Job Commission Payable"
+
+    class Status(models.TextChoices):
+        HELD = "HELD", "Held (dispute window)"
+        RELEASED = "RELEASED", "Released (withdrawable)"
+        CLAWED_BACK = "CLAWED_BACK", "Clawed back"
+
+    wallet = models.ForeignKey(WalletAccount, on_delete=models.CASCADE, related_name="ledger_entries")
+    job = models.ForeignKey(
+        "service_requests.ServiceRequest", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="wallet_ledger_entries",
+    )
+    worker_performed = models.ForeignKey(
+        "employees.Employee", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="jobs_performed_ledger_entries",
+        help_text="Who actually did the job, independent of which wallet was paid.",
+    )
+
+    entry_type = models.CharField(max_length=30, choices=EntryType.choices, db_index=True)
+    # Positive for credits, negative for debits -- signed so SUM() gives the
+    # balance directly without a CASE expression at every read site.
+    signed_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    gross_job_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    commission_rate_applied = models.DecimalField(
+        max_digits=5, decimal_places=4, null=True, blank=True,
+        help_text="e.g. 0.1000 for 10%. Recorded per-entry since the rate can change (promo -> standard).",
+    )
+
+    status = models.CharField(max_length=15, choices=Status.choices, default=Status.RELEASED, db_index=True)
+    hold_release_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="JOB_CREDIT entries are held until this timestamp (dispute window) before counting toward balance.",
+    )
+
+    notes = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = "workforce_wallet_ledger_entry"
         ordering = ["-created_at"]
         indexes = [
-            models.Index(fields=["job", "status"]),
-            models.Index(fields=["technician", "status"]),
-            models.Index(fields=["company", "status"]),
-            models.Index(fields=["decision_token"]),
+            models.Index(fields=["wallet", "status", "created_at"]),
+            models.Index(fields=["job", "entry_type"]),
         ]
 
     def __str__(self):
-        return f"{self.quote_number} (v{self.quote_version}) - {self.title} [₹{self.net_payable or self.total_amount}] - {self.status}"
-
-    @property
-    def requires_structural_clearance(self):
-        return self.structural_impact in [
-            self.StructuralImpact.SUSPECTED_STRUCTURAL,
-            self.StructuralImpact.STRUCTURAL,
-        ]
-
-    @property
-    def is_structurally_cleared(self):
-        if not self.requires_structural_clearance:
-            return True
-        return self.admin_cleared_at is not None
-
-    def save(self, *args, **kwargs):
-        if not self.quote_number:
-            self.quote_number = generate_quote_number()
-        super().save(*args, **kwargs)
+        return f"{self.get_entry_type_display()} {self.signed_amount} -> wallet #{self.wallet_id}"
 
 
-class WorkforceQuoteItem(models.Model):
+class WithdrawalRequest(models.Model):
     """
-    Individual Line Item within a Workforce Quotation.
+    A withdrawal from a WalletAccount's RELEASED balance to the owner's own
+    bank account / UPI, via RazorpayX Payouts. See
+    workforce_api/services/payouts.py for the adapter that actually talks
+    to RazorpayX -- this row tracks the request/response lifecycle so a
+    request is never lost if the payout API call fails or times out.
     """
-    quote = models.ForeignKey(
-        WorkforceQuote,
-        on_delete=models.CASCADE,
-        related_name="items",
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        PROCESSING = "PROCESSING", "Processing"
+        SUCCESS = "SUCCESS", "Success"
+        FAILED = "FAILED", "Failed"
+        AWAITING_RAZORPAYX_ACTIVATION = (
+            "AWAITING_RAZORPAYX_ACTIVATION",
+            "Awaiting RazorpayX activation",
+        )
+
+    wallet = models.ForeignKey(WalletAccount, on_delete=models.CASCADE, related_name="withdrawal_requests")
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(max_length=35, choices=Status.choices, default=Status.PENDING, db_index=True)
+    is_scheduled = models.BooleanField(default=False, help_text="True if triggered by an auto-withdrawal rule rather than an on-demand request.")
+
+    razorpayx_payout_id = models.CharField(max_length=100, blank=True, default="")
+    razorpayx_utr = models.CharField(max_length=100, blank=True, default="", help_text="Bank UTR once settled, from RazorpayX webhook.")
+    failure_reason = models.CharField(max_length=255, blank=True, default="")
+
+    debit_ledger_entry = models.OneToOneField(
+        WalletLedgerEntry, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="withdrawal_request",
     )
-    section = models.CharField(max_length=50, default="OTHER")
-    name = models.CharField(max_length=255)
-    description = models.TextField(blank=True, default="")
-    item_type = models.CharField(max_length=50, default="item")
-    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1.00)
-    unit = models.CharField(max_length=50, default="unit")
-    unit_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=18.00)
-    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    material_source = models.CharField(max_length=50, default="CALTRACK")
-    is_customer_supplied = models.BooleanField(default=False)
-    warranty_applicable = models.BooleanField(default=True)
-    notes = models.TextField(blank=True, default="")
-    sort_order = models.IntegerField(default=0)
+
+    requested_at = models.DateTimeField(auto_now_add=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "workforce_withdrawal_request"
+        ordering = ["-requested_at"]
+        indexes = [models.Index(fields=["wallet", "status"])]
+
+    def __str__(self):
+        return f"Withdrawal #{self.id} - {self.wallet_id} - {self.amount} ({self.status})"
+
+
+class SocialSecurityRegistration(models.Model):
+    """
+    Section 8 compliance scaffolding: tracks each individual worker's
+    progress toward the Code on Social Security 2020 / 2026 Central Rules
+    90-day (single aggregator) / 120-day (multiple aggregators) eligibility
+    threshold, and whether SEVO has registered them on the government
+    portal. Actual portal submission (Shram Suvidha / e-Shram) is a manual
+    external step -- this model gives an accurate, exportable worklist for
+    whoever does that submission, not an automated integration with a
+    government system SEVO doesn't have API access to.
+    """
+
+    class RegistrationStatus(models.TextChoices):
+        NOT_YET_ELIGIBLE = "NOT_YET_ELIGIBLE", "Not yet eligible (<90 days)"
+        ELIGIBLE_PENDING_REGISTRATION = "ELIGIBLE_PENDING", "Eligible, registration pending"
+        REGISTERED = "REGISTERED", "Registered on government portal"
+
+    employee = models.OneToOneField(
+        "employees.Employee", on_delete=models.CASCADE, related_name="social_security_registration",
+    )
+    days_worked_current_fy = models.PositiveIntegerField(default=0)
+    financial_year_start = models.DateField()
+    status = models.CharField(
+        max_length=25, choices=RegistrationStatus.choices,
+        default=RegistrationStatus.NOT_YET_ELIGIBLE, db_index=True,
+    )
+    registered_at = models.DateTimeField(null=True, blank=True)
+    registered_by = models.CharField(max_length=150, blank=True, default="", help_text="Admin who submitted the portal registration.")
+    portal_reference_id = models.CharField(max_length=100, blank=True, default="")
+
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_social_security_registration"
+
+    def __str__(self):
+        return f"{self.employee_id}: {self.days_worked_current_fy}d ({self.status})"
+
+
+class WorkforceScorecard(models.Model):
+    """
+    SEVO business plan Section 4 (Job Lifecycle / SLAs): "A missed SLA
+    triggers ... a scorecard mark against the provider/worker -- visible
+    in their own dashboard, not just used silently against them" and the
+    Days 31-60 roadmap item "Rating and SLA scorecards go live and start
+    feeding the dispatch-ranking algorithm."
+
+    WorkforceJobFeedback (one row per customer-rated job) is the raw
+    signal; this is the persisted, cheap-to-query rollup per employee,
+    recalculated via services/scorecards.py whenever new feedback comes
+    in. Kept separate (rather than computed live like
+    WorkforcePerformanceMeView does for a single employee's own
+    dashboard) because automatic_dispatch.py needs to bulk-fetch this for
+    every dispatch candidate on every job -- an aggregate query per
+    candidate would not scale.
+
+    `resolution_ontime` on WorkforceJobFeedback (customer-reported at
+    rating time) is the on-time/SLA-met signal used here -- there is no
+    stored arrival/completion duration target per service category in
+    this codebase to derive a stricter, non-self-reported breach from.
+    """
+
+    class Tier(models.TextChoices):
+        UNRATED = "UNRATED", "Unrated"
+        BRONZE = "BRONZE", "Bronze"
+        SILVER = "SILVER", "Silver"
+        GOLD = "GOLD", "Gold"
+
+    employee = models.OneToOneField(
+        "employees.Employee",
+        on_delete=models.CASCADE,
+        related_name="scorecard",
+    )
+    rating_count = models.PositiveIntegerField(default=0)
+    average_rating = models.DecimalField(max_digits=3, decimal_places=2, default=0)
+    csat_average = models.DecimalField(max_digits=3, decimal_places=2, default=0)
+    sla_met_count = models.PositiveIntegerField(default=0)
+    sla_breach_count = models.PositiveIntegerField(default=0)
+    sla_score = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    tier = models.CharField(max_length=10, choices=Tier.choices, default=Tier.UNRATED, db_index=True)
+    last_recalculated_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_scorecard"
+
+    def __str__(self):
+        return f"Scorecard(employee={self.employee_id}) rating={self.average_rating} sla={self.sla_score} tier={self.tier}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TECHNICIAN-VENDOR NETWORK MODELS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class VendorCriteria(models.Model):
+    """
+    Saved, reusable search/requirement set created by a vendor (Company).
+    """
+    vendor = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="technician_criteria",
+    )
+    name = models.CharField(max_length=150)
+    is_active = models.BooleanField(default=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = "workforce_quote_item"
-        ordering = ["sort_order", "id"]
+        db_table = "workforce_vendor_criteria"
+        ordering = ["-created_at"]
 
     def __str__(self):
-        return f"{self.name} ({self.quantity} {self.unit} @ ₹{self.unit_price} = ₹{self.total_amount})"
+        return f"{self.vendor.company_name} - {self.name}"
 
 
-class WorkforceQuoteMeasurement(models.Model):
+class CriteriaTerm(models.Model):
     """
-    Dimensional & area measurement collected during physical site inspection.
+    Individual attribute condition within a VendorCriteria set.
+    Terms with the same group_id are OR'd together. Distinct groups are AND'd together.
     """
-    quote = models.ForeignKey(
-        WorkforceQuote,
+    class AttributeType(models.TextChoices):
+        SKILL = "SKILL", "Skill"
+        SERVICE_CATEGORY = "SERVICE_CATEGORY", "Service Category"
+        LOCATION = "LOCATION", "Location / City"
+        EXPERIENCE_YEARS = "EXPERIENCE_YEARS", "Experience (Years)"
+        AVAILABILITY = "AVAILABILITY", "Availability"
+        EMPLOYMENT_TYPE = "EMPLOYMENT_TYPE", "Employment Type"
+        MIN_RATING = "MIN_RATING", "Minimum Rating"
+
+    class Operator(models.TextChoices):
+        EQUALS = "EQUALS", "Equals"
+        IN = "IN", "In"
+        GTE = "GTE", "Greater Than or Equal"
+        LTE = "LTE", "Less Than or Equal"
+        CONTAINS = "CONTAINS", "Contains"
+
+    criteria = models.ForeignKey(
+        VendorCriteria,
         on_delete=models.CASCADE,
-        related_name="measurements",
+        related_name="terms",
     )
-    name = models.CharField(max_length=200)
-    measurement_type = models.CharField(max_length=50, default="area")
-    length = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    width = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    height = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    area = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1.00)
-    unit = models.CharField(max_length=50, default="sqft")
-    notes = models.TextField(blank=True, default="")
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    attribute_type = models.CharField(
+        max_length=40,
+        choices=AttributeType.choices,
+        default=AttributeType.SKILL,
+    )
+    operator = models.CharField(
+        max_length=20,
+        choices=Operator.choices,
+        default=Operator.EQUALS,
+    )
+    value = models.JSONField(default=dict)
+    group_id = models.IntegerField(default=1, db_index=True)
 
     class Meta:
-        db_table = "workforce_quote_measurement"
-        ordering = ["id"]
+        db_table = "workforce_criteria_term"
 
     def __str__(self):
-        return f"{self.name}: {self.area or self.length or self.quantity} {self.unit}"
+        return f"CriteriaTerm({self.attribute_type} {self.operator} {self.value}, group={self.group_id})"
 
 
-class WorkforceQuotePhoto(models.Model):
+class VendorInvitation(models.Model):
     """
-    Inspection evidence photos captured on-site during quotation inspection.
-    """
-    quote = models.ForeignKey(
-        WorkforceQuote,
-        on_delete=models.CASCADE,
-        related_name="photos",
-    )
-    photo_url = models.CharField(max_length=500)
-    photo_type = models.CharField(max_length=50, null=True, blank=True)
-    caption = models.CharField(max_length=255, blank=True, default="")
-    sort_order = models.IntegerField(default=0)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        db_table = "workforce_quote_photo"
-        ordering = ["sort_order", "id"]
-
-    def __str__(self):
-        return f"Quote Photo #{self.id} for {self.quote.quote_number} ({self.photo_type})"
-
-
-class WorkforcePaintingQuote(models.Model):
-    """
-    Painting-specific structured inspection & scope parameters.
-    """
-    quote = models.OneToOneField(
-        WorkforceQuote,
-        on_delete=models.CASCADE,
-        related_name="painting_details",
-    )
-    property_type = models.CharField(max_length=100, default="Apartment")
-    rooms_detail = models.JSONField(default=list, blank=True)
-    area_sqft = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    surface_condition = models.CharField(max_length=100, default="Good")
-    existing_paint_condition = models.CharField(max_length=100, default="Old Emulsion")
-    paint_type = models.CharField(max_length=100, null=True, blank=True)
-    brand_grade = models.CharField(max_length=100, blank=True, default="Asian Paints / Berger")
-    number_of_coats = models.IntegerField(default=2)
-    requires_putty = models.BooleanField(default=False)
-    requires_priming = models.BooleanField(default=False)
-    crack_treatment = models.BooleanField(default=False)
-    waterproofing_needed = models.BooleanField(default=False)
-    scaffolding_required = models.BooleanField(default=False)
-    color_code = models.CharField(max_length=100, null=True, blank=True)
-    notes = models.TextField(blank=True, default="")
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = "workforce_painting_quote"
-
-    def __str__(self):
-        return f"Painting Details for {self.quote.quote_number} ({self.area_sqft} sqft, {self.paint_type})"
-
-
-class WorkforceMasonQuote(models.Model):
-    """
-    Masonry & Civil structured inspection & scope parameters.
-    """
-    quote = models.OneToOneField(
-        WorkforceQuote,
-        on_delete=models.CASCADE,
-        related_name="mason_details",
-    )
-    work_type = models.CharField(max_length=100, null=True, blank=True)
-    length = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    width = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    height = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    area_sqft = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    estimated_duration_days = models.IntegerField(default=1)
-    requires_demolition = models.BooleanField(default=False)
-    debris_disposal_included = models.BooleanField(default=False)
-    structural_impact = models.CharField(max_length=50, default="NONE")
-    access_difficulty = models.CharField(max_length=50, default="Standard")
-    labour_count = models.IntegerField(default=2)
-    materials_needed = models.JSONField(default=list, blank=True)
-    notes = models.TextField(blank=True, default="")
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = "workforce_mason_quote"
-
-    def __str__(self):
-        return f"Mason Details for {self.quote.quote_number} ({self.work_type}, Demolition: {self.requires_demolition})"
-
-
-class WorkforceProviderJoinRequest(models.Model):
-    """
-    Tracks a technician's request to join an existing Service Provider organization during signup.
-    Selecting a Service Provider during signup does NOT grant immediate company membership.
-    The join request remains in status=PENDING until approved by the Service Provider Admin or Superadmin.
+    Disposable, request-scoped invitation sent from a vendor (Company)
+    to a technician (by email and/or Employee foreign key).
     """
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"
-        APPROVED = "APPROVED", "Approved"
+        ACCEPTED = "ACCEPTED", "Accepted"
         REJECTED = "REJECTED", "Rejected"
+        EXPIRED = "EXPIRED", "Expired"
+        CANCELLED = "CANCELLED", "Cancelled"
 
-    technician = models.ForeignKey(
-        "employees.Employee",
-        on_delete=models.CASCADE,
-        related_name="provider_join_requests",
-    )
-    provider = models.ForeignKey(
+    class Channel(models.TextChoices):
+        DIRECT_EMAIL = "DIRECT_EMAIL", "Direct Email"
+        MATCHING_RESULT = "MATCHING_RESULT", "Matching Result"
+
+    vendor = models.ForeignKey(
         "companies.Company",
         on_delete=models.CASCADE,
-        related_name="technician_join_requests",
+        related_name="sent_technician_invitations",
     )
+    technician = models.ForeignKey(
+        "employees.Employee",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="received_vendor_invitations",
+    )
+    invited_email = models.EmailField(db_index=True)
     status = models.CharField(
         max_length=20,
         choices=Status.choices,
         default=Status.PENDING,
         db_index=True,
     )
-    requested_at = models.DateTimeField(auto_now_add=True)
-    decided_at = models.DateTimeField(null=True, blank=True)
-    decided_by = models.ForeignKey(
+    channel = models.CharField(
+        max_length=30,
+        choices=Channel.choices,
+        default=Channel.DIRECT_EMAIL,
+    )
+    matched_criteria = models.ForeignKey(
+        VendorCriteria,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="invitations",
+    )
+    message = models.TextField(blank=True, default="")
+    token = models.CharField(max_length=128, unique=True, db_index=True)
+    expires_at = models.DateTimeField(db_index=True)
+    responded_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_vendor_invitation"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Invitation #{self.id} from {self.vendor.company_name} to {self.invited_email} [{self.status}]"
+
+
+class VendorTechnicianRelationship(models.Model):
+    """
+    Durable, many-to-many operational connection between a vendor (Company)
+    and an independent technician (Employee).
+    """
+    class Status(models.TextChoices):
+        ACTIVE = "ACTIVE", "Active"
+        RESIGNATION_REQUESTED = "RESIGNATION_REQUESTED", "Resignation Requested"
+        RESIGNED = "RESIGNED", "Resigned"
+        SUSPENDED = "SUSPENDED", "Suspended"
+        TERMINATED = "TERMINATED", "Terminated"
+
+    class EngagementType(models.TextChoices):
+        PER_JOB = "PER_JOB", "Per Job"
+        PART_TIME = "PART_TIME", "Part Time"
+        FULL_TIME = "FULL_TIME", "Full Time"
+        ON_CALL = "ON_CALL", "On Call"
+
+    class PaymentModel(models.TextChoices):
+        DIRECT_TO_TECHNICIAN = "DIRECT_TO_TECHNICIAN", "Direct to Technician"
+        THROUGH_VENDOR = "THROUGH_VENDOR", "Through Vendor"
+
+    vendor = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="technician_relationships",
+    )
+    technician = models.ForeignKey(
+        "employees.Employee",
+        on_delete=models.CASCADE,
+        related_name="vendor_relationships",
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+        db_index=True,
+    )
+    source_invitation = models.ForeignKey(
+        VendorInvitation,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="resulting_relationships",
+    )
+    scope_skills = models.JSONField(default=list, blank=True)
+    engagement_type = models.CharField(
+        max_length=30,
+        choices=EngagementType.choices,
+        default=EngagementType.PER_JOB,
+    )
+    payment_model = models.CharField(
+        max_length=30,
+        choices=PaymentModel.choices,
+        default=PaymentModel.DIRECT_TO_TECHNICIAN,
+    )
+    started_at = models.DateTimeField(auto_now_add=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
+        related_name="created_vendor_relationships",
     )
-    rejection_reason = models.TextField(blank=True, default="")
-    notes = models.TextField(blank=True, default="")
-
-    class Meta:
-        db_table = "workforce_provider_join_request"
-        ordering = ["-requested_at"]
-
-    def __str__(self):
-        return f"JoinRequest #{self.id}: Tech #{self.technician_id} -> Provider #{self.provider_id} ({self.status})"
-
-
-class WorkforceSystemSetting(models.Model):
-    """
-    Persistent global key-value configuration for CalTrack Workforce.
-    SuperAdmin managed settings (e.g. DISPATCH_RADIUS_KM).
-    """
-    key = models.CharField(max_length=100, unique=True, db_index=True)
-    value = models.CharField(max_length=255)
-    description = models.TextField(blank=True, default="")
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = "workforce_system_setting"
+        db_table = "workforce_vendor_technician_relationship"
+        unique_together = ("vendor", "technician")
+        ordering = ["-started_at"]
 
     def __str__(self):
-        return f"{self.key} = {self.value}"
+        return f"Relationship: {self.vendor.company_name} <-> {self.technician} [{self.status}]"
 
+
+class VendorRelievingRequest(models.Model):
+    """
+    Formal Multi-Party Resignation & Relieving Lifecycle:
+    1. Technician requests resignation with reason & details.
+    2. Vendor verifies internal job dues & approves settlement clearance.
+    3. SEVO Platform Superadmin verifies platform job settlements & approves clearance.
+    4. Mutual legal release signoff completed between Vendor & Technician.
+    5. Technician is unlinked to become an independent Solo Worker + Individual Wallet is provisioned.
+    """
+    class Status(models.TextChoices):
+        REQUESTED = "REQUESTED", "Resignation Requested"
+        VENDOR_APPROVED = "VENDOR_APPROVED", "Vendor Approved Dues Clearance"
+        SEVO_APPROVED = "SEVO_APPROVED", "SEVO Admin Cleared"
+        COMPLETED = "COMPLETED", "Completed & Relieved"
+        REJECTED = "REJECTED", "Rejected"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    class ReasonCategory(models.TextChoices):
+        TRANSITION_TO_SOLO = "TRANSITION_TO_SOLO", "Transitioning to Independent Solo Worker"
+        RELOCATION = "RELOCATION", "Relocation / Moving"
+        PERSONAL = "PERSONAL", "Personal / Family Reasons"
+        RATE_DISPUTE = "RATE_DISPUTE", "Compensation / Rate Dispute"
+        CAREER_GROWTH = "CAREER_GROWTH", "Career Growth / Alternative Opportunities"
+        OTHER = "OTHER", "Other"
+
+    relationship = models.ForeignKey(
+        VendorTechnicianRelationship,
+        on_delete=models.CASCADE,
+        related_name="relieving_requests",
+    )
+    technician = models.ForeignKey(
+        "employees.Employee",
+        on_delete=models.CASCADE,
+        related_name="relieving_requests",
+    )
+    vendor = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="relieving_requests",
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=Status.choices,
+        default=Status.REQUESTED,
+        db_index=True,
+    )
+    reason_category = models.CharField(
+        max_length=40,
+        choices=ReasonCategory.choices,
+        default=ReasonCategory.TRANSITION_TO_SOLO,
+    )
+    resignation_notes = models.TextField(blank=True, default="")
+    desired_relieving_date = models.DateField(null=True, blank=True)
+
+    # Vendor approval & settlement
+    vendor_settlement_notes = models.TextField(blank=True, default="")
+    vendor_approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="approved_vendor_relievings",
+    )
+    vendor_approved_at = models.DateTimeField(null=True, blank=True)
+
+    # SEVO Admin audit & approval
+    sevo_audit_notes = models.TextField(blank=True, default="")
+    sevo_approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="cleared_sevo_relievings",
+    )
+    sevo_approved_at = models.DateTimeField(null=True, blank=True)
+
+    # Mutual Legal Signoff
+    worker_signoff_ack = models.BooleanField(default=False)
+    worker_signed_at = models.DateTimeField(null=True, blank=True)
+    vendor_signoff_ack = models.BooleanField(default=False)
+    vendor_signed_at = models.DateTimeField(null=True, blank=True)
+
+    rejection_reason = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_vendor_relieving_request"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Relieving Request #{self.id}: {self.technician} from {self.vendor.company_name} [{self.status}]"
 
 

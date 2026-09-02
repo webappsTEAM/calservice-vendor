@@ -20,27 +20,28 @@ import {
   Star,
   MapPin,
   Wallet,
-  ArrowDownCircle,
-  CreditCard,
-  ReceiptText,
-  Activity,
-  Calculator,
+  Landmark,
   Building2,
+  Mail,
+  UserPlus,
+  Clock,
+  Radio,
+  Layers,
+  Crown,
+  UserCheck,
 } from 'lucide-react';
 
 export function Sidebar({ onCloseMobile = () => {} }) {
-  const { user, isAdmin, isEmployee, registrationStatus } = useAuth();
+  const { user, isAdmin, isPlatformAdmin, isVendorAdmin, isEmployee, isTiedWorker, isSoloWorker, registrationStatus } = useAuth();
   const location = useLocation();
 
   // Collapsible sections state
   const [collapsed, setCollapsed] = useState({
+    governance: false,
     workforce: false,
     operations: false,
-    finance: false,
-    monitoring: false,
     myWork: false,
     profile: false,
-    earnings: false,
   });
 
   const toggleSection = (section) => {
@@ -54,10 +55,20 @@ export function Sidebar({ onCloseMobile = () => {} }) {
         : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/80'
     }`;
 
-  if (isAdmin) {
+  // ─── 1. SEVO Platform Superadmin Sidebar ─────────────────────────────────────
+  if (isPlatformAdmin) {
     return (
       <aside className="w-56 bg-white border-r border-slate-200 h-full flex flex-col overflow-y-auto text-xs select-none">
         <div className="p-3 space-y-4">
+          {/* Platform Admin Badge */}
+          <div className="p-2.5 bg-indigo-50 border border-indigo-200 rounded-lg text-indigo-900 flex items-center gap-2">
+            <Crown className="w-4 h-4 text-indigo-600 shrink-0" />
+            <div>
+              <span className="font-bold text-[11px] block leading-tight">SEVO Platform Admin</span>
+              <span className="text-[10px] text-indigo-600">Cross-Tenant Authority</span>
+            </div>
+          </div>
+
           {/* Home */}
           <div>
             <NavLink
@@ -67,95 +78,59 @@ export function Sidebar({ onCloseMobile = () => {} }) {
               className={navItemClass}
             >
               <Home className="w-4 h-4 text-slate-500" />
-              <span>Home</span>
+              <span>Platform Dashboard</span>
             </NavLink>
           </div>
 
-          {/* Group 1: WORKFORCE */}
+          {/* Group 1: PLATFORM GOVERNANCE */}
           <div>
             <button
               type="button"
-              onClick={() => toggleSection('workforce')}
+              onClick={() => toggleSection('governance')}
               className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider hover:text-slate-600 transition-colors"
             >
-              <span>Workforce</span>
-              {collapsed.workforce ? (
-                <ChevronRight className="w-3 h-3" />
-              ) : (
-                <ChevronDown className="w-3 h-3" />
-              )}
+              <span>Platform Governance</span>
+              {collapsed.governance ? <ChevronRight className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
             </button>
-            {!collapsed.workforce && (
+            {!collapsed.governance && (
               <div className="mt-1 space-y-0.5 pl-1">
-                {user?.isSuperadmin && (
-                  <NavLink
-                    to="/workforce/admin/service-providers"
-                    onClick={onCloseMobile}
-                    className={navItemClass}
-                  >
-                    <Building2 className="w-3.5 h-3.5 text-blue-600" />
-                    <span>Service Providers</span>
-                  </NavLink>
-                )}
-                {user?.isServiceProviderAdmin && (
-                  <NavLink
-                    to="/workforce/admin/provider-profile"
-                    onClick={onCloseMobile}
-                    className={navItemClass}
-                  >
-                    <Building2 className="w-3.5 h-3.5 text-blue-600" />
-                    <span>Provider Profile</span>
-                  </NavLink>
-                )}
                 <NavLink
-                  to="/workforce/admin/employees"
+                  to="/workforce/platform/vendors"
                   onClick={onCloseMobile}
                   className={navItemClass}
                 >
-                  <Users className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Employees</span>
+                  <Building2 className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Vendor Companies</span>
+                </NavLink>
+                <NavLink
+                  to="/workforce/platform/workforce"
+                  onClick={onCloseMobile}
+                  className={navItemClass}
+                >
+                  <Users className="w-3.5 h-3.5 text-blue-600" />
+                  <span>All Workforce (Solo/Tied)</span>
                 </NavLink>
                 <NavLink
                   to="/workforce/admin/applications"
                   onClick={onCloseMobile}
                   className={navItemClass}
                 >
-                  <ClipboardList className="w-3.5 h-3.5 text-blue-500" />
-                  <span>Applications</span>
-                </NavLink>
-                <NavLink
-                  to="/workforce/admin/services"
-                  onClick={onCloseMobile}
-                  className={navItemClass}
-                >
-                  <Wrench className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Services</span>
-                </NavLink>
-                <NavLink
-                  to="/workforce/admin/skills"
-                  onClick={onCloseMobile}
-                  className={navItemClass}
-                >
-                  <Award className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Skills</span>
+                  <ClipboardList className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Application Approvals</span>
                 </NavLink>
               </div>
             )}
           </div>
 
-          {/* Group 2: OPERATIONS */}
+          {/* Group 2: GLOBAL OPERATIONS */}
           <div>
             <button
               type="button"
               onClick={() => toggleSection('operations')}
               className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider hover:text-slate-600 transition-colors"
             >
-              <span>Operations</span>
-              {collapsed.operations ? (
-                <ChevronRight className="w-3 h-3" />
-              ) : (
-                <ChevronDown className="w-3 h-3" />
-              )}
+              <span>Global Operations</span>
+              {collapsed.operations ? <ChevronRight className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
             </button>
             {!collapsed.operations && (
               <div className="mt-1 space-y-0.5 pl-1">
@@ -165,7 +140,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
                   className={navItemClass}
                 >
                   <Briefcase className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Jobs</span>
+                  <span>All Jobs</span>
                 </NavLink>
                 <NavLink
                   to="/workforce/admin/dispatch"
@@ -173,7 +148,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
                   className={navItemClass}
                 >
                   <Send className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>Dispatch</span>
+                  <span>Global Dispatch</span>
                 </NavLink>
                 <NavLink
                   to="/workforce/admin/operations"
@@ -181,88 +156,47 @@ export function Sidebar({ onCloseMobile = () => {} }) {
                   className={navItemClass}
                 >
                   <Navigation className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Live Workforce</span>
+                  <span>Live Fleet Tracking</span>
                 </NavLink>
-              </div>
-            )}
-          </div>
-
-          {/* Group 3: FINANCE */}
-          <div>
-            <button
-              type="button"
-              onClick={() => toggleSection('finance')}
-              className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider hover:text-slate-600 transition-colors"
-            >
-              <span>Finance</span>
-              {collapsed.finance ? (
-                <ChevronRight className="w-3 h-3" />
-              ) : (
-                <ChevronDown className="w-3 h-3" />
-              )}
-            </button>
-            {!collapsed.finance && (
-              <div className="mt-1 space-y-0.5 pl-1">
+                <NavLink
+                  to="/workforce/admin/services"
+                  onClick={onCloseMobile}
+                  className={navItemClass}
+                >
+                  <Wrench className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Service Catalog</span>
+                </NavLink>
+                <NavLink
+                  to="/workforce/admin/skills"
+                  onClick={onCloseMobile}
+                  className={navItemClass}
+                >
+                  <Award className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Skills Master</span>
+                </NavLink>
                 <NavLink
                   to="/workforce/admin/wallet"
-                  end
                   onClick={onCloseMobile}
                   className={navItemClass}
                 >
                   <Wallet className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>Wallet</span>
+                  <span>Platform Treasury</span>
                 </NavLink>
                 <NavLink
-                  to="/workforce/admin/wallet/transactions"
+                  to="/workforce/admin/scorecards"
                   onClick={onCloseMobile}
                   className={navItemClass}
                 >
-                  <ReceiptText className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Transactions</span>
+                  <Award className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Scorecards</span>
                 </NavLink>
                 <NavLink
-                  to="/workforce/admin/wallet/withdrawals"
+                  to="/workforce/admin/social-security"
                   onClick={onCloseMobile}
                   className={navItemClass}
                 >
-                  <ArrowDownCircle className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Withdrawals</span>
-                </NavLink>
-                <NavLink
-                  to="/workforce/admin/wallet/payout-accounts"
-                  onClick={onCloseMobile}
-                  className={navItemClass}
-                >
-                  <CreditCard className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Bank Accounts</span>
-                </NavLink>
-              </div>
-            )}
-          </div>
-
-          {/* Group 4: MONITORING */}
-          <div>
-            <button
-              type="button"
-              onClick={() => toggleSection('monitoring')}
-              className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider hover:text-slate-600 transition-colors"
-            >
-              <span>Monitoring</span>
-              {collapsed.monitoring ? (
-                <ChevronRight className="w-3 h-3" />
-              ) : (
-                <ChevronDown className="w-3 h-3" />
-              )}
-            </button>
-            {!collapsed.monitoring && (
-              <div className="mt-1 space-y-0.5 pl-1">
-                <NavLink
-                  to="/workforce/admin/monitoring/database-egress"
-                  onClick={onCloseMobile}
-                  className={navItemClass}
-                >
-                  <Activity className="w-3.5 h-3.5 text-blue-500" />
-                  <span>Database & Egress</span>
+                  <Landmark className="w-3.5 h-3.5 text-blue-500" />
+                  <span>Social Security</span>
                 </NavLink>
               </div>
             )}
@@ -276,7 +210,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
               className={navItemClass}
             >
               <BarChart3 className="w-3.5 h-3.5 text-slate-400" />
-              <span>Reports</span>
+              <span>Platform Reports</span>
             </NavLink>
             <NavLink
               to="/workforce/admin/settings"
@@ -292,7 +226,154 @@ export function Sidebar({ onCloseMobile = () => {} }) {
     );
   }
 
-  // Employee Sidebar
+  // ─── 2. Vendor Workspace Sidebar (Service Provider Business) ─────────────────
+  if (isAdmin || isVendorAdmin) {
+    return (
+      <aside className="w-56 bg-white border-r border-slate-200 h-full flex flex-col overflow-y-auto text-xs select-none">
+        <div className="p-3 space-y-4">
+          {/* Vendor Company Header */}
+          <div className="p-2.5 bg-blue-50 border border-blue-200 rounded-lg text-blue-900 flex items-center gap-2">
+            <Building2 className="w-4 h-4 text-blue-600 shrink-0" />
+            <div className="overflow-hidden">
+              <span className="font-bold text-[11px] block truncate">{user?.companyName || 'Vendor Business'}</span>
+              <span className="text-[10px] text-blue-600">Company Portal</span>
+            </div>
+          </div>
+
+          {/* Home */}
+          <div>
+            <NavLink
+              to="/workforce/admin"
+              end
+              onClick={onCloseMobile}
+              className={navItemClass}
+            >
+              <Home className="w-4 h-4 text-slate-500" />
+              <span>Company Home</span>
+            </NavLink>
+          </div>
+
+          {/* Group 1: MY WORKFORCE */}
+          <div>
+            <button
+              type="button"
+              onClick={() => toggleSection('workforce')}
+              className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider hover:text-slate-600 transition-colors"
+            >
+              <span>My Workforce</span>
+              {collapsed.workforce ? <ChevronRight className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            </button>
+            {!collapsed.workforce && (
+              <div className="mt-1 space-y-0.5 pl-1">
+                <NavLink
+                  to="/workforce/admin/technician-network"
+                  onClick={onCloseMobile}
+                  className={navItemClass}
+                >
+                  <Users className="w-3.5 h-3.5 text-blue-600" />
+                  <span>My Tied Technicians</span>
+                </NavLink>
+                <NavLink
+                  to="/workforce/admin/vendor-invitations"
+                  onClick={onCloseMobile}
+                  className={navItemClass}
+                >
+                  <Mail className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Send Invitations</span>
+                </NavLink>
+                <NavLink
+                  to="/workforce/admin/employees"
+                  onClick={onCloseMobile}
+                  className={navItemClass}
+                >
+                  <UserCheck className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Employee Roster</span>
+                </NavLink>
+              </div>
+            )}
+          </div>
+
+          {/* Group 2: COMPANY OPERATIONS */}
+          <div>
+            <button
+              type="button"
+              onClick={() => toggleSection('operations')}
+              className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider hover:text-slate-600 transition-colors"
+            >
+              <span>Operations</span>
+              {collapsed.operations ? <ChevronRight className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            </button>
+            {!collapsed.operations && (
+              <div className="mt-1 space-y-0.5 pl-1">
+                <NavLink
+                  to="/workforce/admin/jobs"
+                  onClick={onCloseMobile}
+                  className={navItemClass}
+                >
+                  <Briefcase className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Company Jobs</span>
+                </NavLink>
+                <NavLink
+                  to="/workforce/admin/dispatch"
+                  onClick={onCloseMobile}
+                  className={navItemClass}
+                >
+                  <Send className="w-3.5 h-3.5 text-emerald-500" />
+                  <span>Dispatch Technicians</span>
+                </NavLink>
+                <NavLink
+                  to="/workforce/admin/operations"
+                  onClick={onCloseMobile}
+                  className={navItemClass}
+                >
+                  <Navigation className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Live Workforce</span>
+                </NavLink>
+                <NavLink
+                  to="/workforce/admin/wallet"
+                  onClick={onCloseMobile}
+                  className={navItemClass}
+                >
+                  <Wallet className="w-3.5 h-3.5 text-emerald-500" />
+                  <span>Company Wallet</span>
+                </NavLink>
+                <NavLink
+                  to="/workforce/admin/scorecards"
+                  onClick={onCloseMobile}
+                  className={navItemClass}
+                >
+                  <Award className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Performance Scorecards</span>
+                </NavLink>
+              </div>
+            )}
+          </div>
+
+          {/* Reports & Settings */}
+          <div className="space-y-0.5 pt-2 border-t border-slate-100">
+            <NavLink
+              to="/workforce/admin/reports"
+              onClick={onCloseMobile}
+              className={navItemClass}
+            >
+              <BarChart3 className="w-3.5 h-3.5 text-slate-400" />
+              <span>Company Reports</span>
+            </NavLink>
+            <NavLink
+              to="/workforce/admin/settings"
+              onClick={onCloseMobile}
+              className={navItemClass}
+            >
+              <Settings className="w-3.5 h-3.5 text-slate-400" />
+              <span>Company Settings</span>
+            </NavLink>
+          </div>
+        </div>
+      </aside>
+    );
+  }
+
+  // ─── 3. Technician Sidebar (Field Worker / Employee) ─────────────────────────
   const isApproved = registrationStatus === 'approved';
 
   if (!isApproved) {
@@ -324,7 +405,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
               <span>{statusText}</span>
             </p>
             <p className="text-[10px] opacity-90 leading-tight">
-              Operational modules unlock once Admin approves your application.
+              Operational modules unlock once approved.
             </p>
           </div>
 
@@ -340,7 +421,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
                 className={navItemClass}
               >
                 <FileText className="w-3.5 h-3.5 text-blue-600" />
-                <span>{statusText}</span>
+                <span>Registration Wizard</span>
               </NavLink>
               <NavLink
                 to="/workforce/employee/profile"
@@ -369,7 +450,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
     );
   }
 
-  // Approved Employee Sidebar
+  // Approved Technician
   return (
     <aside className="w-56 bg-white border-r border-slate-200 h-full flex flex-col overflow-y-auto text-xs select-none">
       <div className="p-3 space-y-4">
@@ -382,11 +463,11 @@ export function Sidebar({ onCloseMobile = () => {} }) {
             className={navItemClass}
           >
             <Home className="w-4 h-4 text-slate-500" />
-            <span>Home</span>
+            <span>Dashboard</span>
           </NavLink>
         </div>
 
-        {/* Group: MY WORK */}
+        {/* Group 1: MY WORK */}
         <div>
           <button
             type="button"
@@ -394,11 +475,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
             className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider hover:text-slate-600 transition-colors"
           >
             <span>My Work</span>
-            {collapsed.myWork ? (
-              <ChevronRight className="w-3 h-3" />
-            ) : (
-              <ChevronDown className="w-3 h-3" />
-            )}
+            {collapsed.myWork ? <ChevronRight className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
           </button>
           {!collapsed.myWork && (
             <div className="mt-1 space-y-0.5 pl-1">
@@ -407,42 +484,56 @@ export function Sidebar({ onCloseMobile = () => {} }) {
                 onClick={onCloseMobile}
                 className={navItemClass}
               >
-                <Briefcase className="w-3.5 h-3.5 text-blue-500" />
-                <span>Jobs</span>
+                <Briefcase className="w-3.5 h-3.5 text-slate-400" />
+                <span>My Jobs</span>
               </NavLink>
               <NavLink
-                to="/workforce/employee/estimates"
+                to="/workforce/employee/vendor-network"
                 onClick={onCloseMobile}
                 className={navItemClass}
               >
-                <Calculator className="w-3.5 h-3.5 text-indigo-500" />
-                <span>Estimates</span>
+                <Building2 className="w-3.5 h-3.5 text-blue-600" />
+                <span>My Vendor Assignment</span>
               </NavLink>
               <NavLink
-                to="/workforce/employee/performance"
+                to="/workforce/employee/invitations"
                 onClick={onCloseMobile}
                 className={navItemClass}
               >
-                <Star className="w-3.5 h-3.5 text-amber-500" />
-                <span>Performance</span>
+                <Mail className="w-3.5 h-3.5 text-indigo-500" />
+                <span>Vendor Invitations</span>
+              </NavLink>
+              {isSoloWorker && (
+                <NavLink
+                  to="/workforce/employee/wallet"
+                  onClick={onCloseMobile}
+                  className={navItemClass}
+                >
+                  <Wallet className="w-3.5 h-3.5 text-emerald-500" />
+                  <span>My Wallet (Solo)</span>
+                </NavLink>
+              )}
+              <NavLink
+                to="/workforce/employee/attendance"
+                onClick={onCloseMobile}
+                className={navItemClass}
+              >
+                <Clock className="w-3.5 h-3.5 text-slate-400" />
+                <span>Attendance & Time</span>
               </NavLink>
             </div>
           )}
         </div>
 
-        {/* Group: PROFILE */}
+        {/* Group 2: PROFILE & SKILLS */}
         <div>
           <button
             type="button"
             onClick={() => toggleSection('profile')}
             className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider hover:text-slate-600 transition-colors"
           >
-            <span>Profile</span>
-            {collapsed.profile ? (
-              <ChevronRight className="w-3 h-3" />
-            ) : (
-              <ChevronDown className="w-3 h-3" />
-            )}
+            <span>Profile & Skills</span>
+            {collapsed.profile ? <ChevronRight className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
           </button>
           {!collapsed.profile && (
             <div className="mt-1 space-y-0.5 pl-1">
@@ -455,81 +546,28 @@ export function Sidebar({ onCloseMobile = () => {} }) {
                 <span>My Profile</span>
               </NavLink>
               <NavLink
-                to="/workforce/employee/documents"
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <ShieldCheck className="w-3.5 h-3.5 text-slate-400" />
-                <span>Documents</span>
-              </NavLink>
-              <NavLink
                 to="/workforce/employee/services"
                 onClick={onCloseMobile}
                 className={navItemClass}
               >
                 <Wrench className="w-3.5 h-3.5 text-slate-400" />
-                <span>Services</span>
+                <span>My Services</span>
               </NavLink>
               <NavLink
-                to="/workforce/employee/location"
+                to="/workforce/employee/performance"
+                onClick={onCloseMobile}
+                className={navItemClass}
+              >
+                <Star className="w-3.5 h-3.5 text-amber-500" />
+                <span>My Performance</span>
+              </NavLink>
+              <NavLink
+                to="/workforce/employee/saved-locations"
                 onClick={onCloseMobile}
                 className={navItemClass}
               >
                 <MapPin className="w-3.5 h-3.5 text-slate-400" />
-                <span>My Locations</span>
-              </NavLink>
-            </div>
-          )}
-        </div>
-
-        {/* Group: EARNINGS */}
-        <div>
-          <button
-            type="button"
-            onClick={() => toggleSection('earnings')}
-            className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider hover:text-slate-600 transition-colors"
-          >
-            <span>Earnings</span>
-            {collapsed.earnings ? (
-              <ChevronRight className="w-3 h-3" />
-            ) : (
-              <ChevronDown className="w-3 h-3" />
-            )}
-          </button>
-          {!collapsed.earnings && (
-            <div className="mt-1 space-y-0.5 pl-1">
-              <NavLink
-                to="/workforce/employee/wallet"
-                end
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <Wallet className="w-3.5 h-3.5 text-emerald-500" />
-                <span>My Wallet</span>
-              </NavLink>
-              <NavLink
-                to="/workforce/employee/wallet/transactions"
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <ReceiptText className="w-3.5 h-3.5 text-slate-400" />
-                <span>Transactions</span>
-              </NavLink>
-              <NavLink
-                to="/workforce/employee/wallet/withdrawals"
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <ArrowDownCircle className="w-3.5 h-3.5 text-slate-400" />
-                <span>Withdrawals</span>
-              </NavLink>
-              <NavLink
-                to="/workforce/employee/wallet/payout-accounts"
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <CreditCard className="w-3.5 h-3.5 text-slate-400" />
-                <span>Bank Accounts</span>
+                <span>Saved Locations</span>
               </NavLink>
             </div>
           )}
@@ -550,6 +588,3 @@ export function Sidebar({ onCloseMobile = () => {} }) {
     </aside>
   );
 }
-
-export default Sidebar;
-

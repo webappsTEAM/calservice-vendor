@@ -44,16 +44,16 @@ class Command(BaseCommand):
             self.stdout.write(f"Using existing company: {company.company_name}")
 
         # 2. Seed Admin User: admin@caldim.in / Caldim@2026
-        admin_email = "superadmin@caldim.in"
+        admin_email = "admin@caldim.in"
         admin_user = User.objects.filter(email__iexact=admin_email).first()
         if not admin_user:
-            admin_user = User.objects.filter(username="superadmin").first()
+            admin_user = User.objects.filter(username="admin").first()
 
         if not admin_user:
             admin_user = User.objects.create(
-                username="superadmin",
+                username="admin",
                 email=admin_email,
-                first_name="Super",
+                first_name="Operations",
                 last_name="Admin",
                 role="admin",
                 company=company,
