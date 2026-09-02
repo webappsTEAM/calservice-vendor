@@ -32,16 +32,6 @@ import { EmployeeLocationPage } from './pages/employee/EmployeeLocationPage.jsx'
 import { MyVendorNetworkPage } from './pages/employee/MyVendorNetworkPage.jsx';
 import { TechnicianInvitationsPage } from './pages/employee/TechnicianInvitationsPage.jsx';
 
-function EmployeeWorkspaceLayout() {
-  return (
-    <EmployeeRoute>
-      <EmployeeRuntimeProvider>
-        <Outlet />
-      </EmployeeRuntimeProvider>
-    </EmployeeRoute>
-  );
-}
-
 import { AdminDashboardPage } from './pages/admin/AdminDashboardPage.jsx';
 import { AdminApplicationsPage } from './pages/admin/AdminApplicationsPage.jsx';
 import { AdminApplicationDetailPage } from './pages/admin/AdminApplicationDetailPage.jsx';
@@ -53,11 +43,28 @@ import { AdminScorecardsPage } from './pages/admin/AdminScorecardsPage.jsx';
 import { AdminSocialSecurityPage } from './pages/admin/AdminSocialSecurityPage.jsx';
 import { AdminReportsPage } from './pages/admin/AdminReportsPage.jsx';
 import { AdminSkillsPage } from './pages/admin/AdminSkillsPage.jsx';
+import { AdminServiceProvidersPage } from './pages/admin/AdminServiceProvidersPage.jsx';
+import { ProviderProfilePage } from './pages/admin/ProviderProfilePage.jsx';
 import { VendorTechnicianNetworkPage } from './pages/admin/VendorTechnicianNetworkPage.jsx';
 import { VendorInvitationsPage } from './pages/admin/VendorInvitationsPage.jsx';
 import { PlatformVendorsPage } from './pages/platform/PlatformVendorsPage.jsx';
 import { PlatformWorkforcePage } from './pages/platform/PlatformWorkforcePage.jsx';
 import { CustomerTrackingPage } from './pages/customer/CustomerTrackingPage.jsx';
+import { SuperadminRoute } from './components/common/SuperadminRoute.jsx';
+import { WalletDashboardPage } from './pages/admin/wallet/WalletDashboardPage.jsx';
+import { WalletPayoutAccountsPage } from './pages/admin/wallet/WalletPayoutAccountsPage.jsx';
+import { WalletTransactionsPage } from './pages/admin/wallet/WalletTransactionsPage.jsx';
+import { WalletWithdrawalsPage } from './pages/admin/wallet/WalletWithdrawalsPage.jsx';
+
+function EmployeeWorkspaceLayout() {
+  return (
+    <EmployeeRoute>
+      <EmployeeRuntimeProvider>
+        <Outlet />
+      </EmployeeRuntimeProvider>
+    </EmployeeRoute>
+  );
+}
 
 function RootRedirect() {
   const { isReady, isAuthenticated, isAdmin, registrationStatus } = useAuth();
