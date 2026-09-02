@@ -8,6 +8,7 @@ import {
   getRefreshToken,
   setAuthTokens,
   clearAuthTokens,
+  isTokenExpired,
 } from '../utils/authTokens.js';
 import { classifyApiError } from '../utils/apiErrors.js';
 
@@ -68,7 +69,7 @@ export async function apiRefreshToken() {
           window.dispatchEvent(new CustomEvent('workforce:auth-unauthorized'));
         }
       }
-      // For 503 (DB connection pool exhaustion) or 5xx, do NOT clear tokens
+      // For 503 (DB connection pool exhaustion), 5xx, or network errors, NEVER clear credentials
       return null;
     } catch (_) {
       return null;
@@ -93,8 +94,18 @@ export async function apiRequest(path, options = {}) {
   }
 
   // Attach tab-scoped or stored Bearer token (never attach to unauthenticated login/signup endpoints)
-  const isAuthEndpoint = path.includes('/auth/login') || path.includes('/auth/signup');
-  const token = getAccessToken();
+  const isAuthEndpoint = path.includes('/auth/login') || path.includes('/auth/signup') || path.includes('/auth/refresh');
+  let token = getAccessToken();
+  const refreshToken = getRefreshToken();
+
+  // Only refresh when: access token is expired, or within safety window. Never on every request.
+  if (token && refreshToken && !isAuthEndpoint && isTokenExpired(token)) {
+    const refreshed = await apiRefreshToken();
+    if (refreshed) {
+      token = refreshed;
+    }
+  }
+
   if (token && !headers.has('Authorization') && !isAuthEndpoint) {
     headers.set('Authorization', `Bearer ${token}`);
   }
@@ -126,9 +137,20 @@ export async function apiRequest(path, options = {}) {
   // Auto-refresh token on 401 for authenticated endpoints (excluding login/refresh)
   if (response.status === 401 && !path.includes('/auth/login') && !path.includes('/auth/refresh')) {
     if (!options._isRetry) {
-      const newToken = await apiRefreshToken();
-      if (newToken) {
-        headers.set('Authorization', `Bearer ${newToken}`);
+      const currentStoredToken = getAccessToken();
+      let tokenToUse = null;
+
+      // 1. Compare token used by failed request with current storage
+      if (currentStoredToken && currentStoredToken !== token) {
+        // Storage already contains a newer token from a concurrent refresh
+        tokenToUse = currentStoredToken;
+      } else {
+        // Await the single authoritative in-flight refresh promise
+        tokenToUse = await apiRefreshToken();
+      }
+
+      if (tokenToUse) {
+        headers.set('Authorization', `Bearer ${tokenToUse}`);
         const retryConfig = { ...config, headers, _isRetry: true };
         try {
           response = await fetch(url, retryConfig);
@@ -139,17 +161,6 @@ export async function apiRequest(path, options = {}) {
           error.originalError = retryNetErr;
           throw error;
         }
-      }
-    }
-
-    if (response.status === 401) {
-      sessionStorage.removeItem('wf_token');
-      sessionStorage.removeItem('wf_refresh_token');
-      sessionStorage.removeItem('wf_tab_id');
-      localStorage.removeItem('wf_token');
-      localStorage.removeItem('wf_refresh_token');
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('workforce:auth-unauthorized'));
       }
     }
   }
@@ -163,10 +174,20 @@ export async function apiRequest(path, options = {}) {
   const data = isJson ? await response.json() : await response.text();
 
   if (!response.ok) {
-    const errorMsg =
-      (data && data.error) ||
-      (data && data.detail) ||
-      (data && typeof data === 'object' ? JSON.stringify(data) : 'Request failed');
+    let errorMsg = (data && data.error) || (data && data.detail);
+    if ((!errorMsg || errorMsg === 'Validation failed.') && data?.details && typeof data.details === 'object') {
+      const entries = Object.entries(data.details);
+      if (entries.length > 0) {
+        const [field, fieldErrs] = entries[0];
+        const cleanField = field.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        const firstDetail = Array.isArray(fieldErrs) ? fieldErrs[0] : fieldErrs;
+        errorMsg = `${cleanField}: ${firstDetail}`;
+      }
+    }
+    if (!errorMsg) {
+      errorMsg = data && typeof data === 'object' ? JSON.stringify(data) : 'Request failed';
+    }
+
 
     const error = new Error(errorMsg);
     error.status = response.status;

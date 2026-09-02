@@ -28,12 +28,47 @@ export const GPS_STATE = {
   ERROR: 'GPS_ERROR',
 };
 
+// GPS Accuracy Tiers
+export const ACCURACY_TIER = {
+  EXCELLENT: 'EXCELLENT', // <= 10m
+  GOOD: 'GOOD',           // <= 25m
+  USABLE: 'USABLE',       // <= 50m
+  POOR: 'POOR',           // <= 100m
+  VERY_POOR: 'VERY_POOR', // > 100m
+};
+
+export function classifyAccuracy(accuracy) {
+  if (accuracy == null || isNaN(accuracy)) return ACCURACY_TIER.POOR;
+  const acc = Number(accuracy);
+  if (acc <= 10) return ACCURACY_TIER.EXCELLENT;
+  if (acc <= 25) return ACCURACY_TIER.GOOD;
+  if (acc <= 50) return ACCURACY_TIER.USABLE;
+  if (acc <= 100) return ACCURACY_TIER.POOR;
+  return ACCURACY_TIER.VERY_POOR;
+}
+
 // Movement & Freshness thresholds
 export const MOVEMENT_THRESHOLD_METRES = 10;
 export const MAX_POSITION_AGE_MS = 30_000; // 30 seconds for live freshness
 export const MAX_BACKEND_AGE_MS = 300_000; // 300 seconds maximum backend age limit
 export const POLL_INTERVAL_MS = 25_000; // 25 seconds heartbeat
 export const MAX_GEOFENCE_ACCURACY_METERS = 100; // Accuracy must be <= 100m for geofence readiness
+
+// Adaptive Telemetry Transmission Policies (watcher remains continuous)
+export const TELEMETRY_POLICIES = {
+  ACTIVE_NAV: {
+    movementThresholdM: 8,
+    heartbeatIntervalMs: 10_000,
+  },
+  ONLINE_IDLE: {
+    movementThresholdM: 25,
+    heartbeatIntervalMs: 30_000,
+  },
+  STATIONARY: {
+    movementThresholdM: 15,
+    heartbeatIntervalMs: 40_000,
+  },
+};
 
 // Backoff schedule for retry on timeout / transient errors (ms)
 export const RETRY_BACKOFF_SCHEDULE = [2000, 5000, 15000, 30000];
@@ -58,20 +93,64 @@ export function validateTelemetryCoordinates(lat, lon, accuracy = null, timestam
   }
 
   const now = Date.now();
+  let normalizedTimestamp = now;
   if (timestamp) {
     const tsNum = typeof timestamp === 'number' ? timestamp : Date.parse(timestamp);
     if (!isNaN(tsNum)) {
       const ageMs = now - tsNum;
-      if (ageMs > MAX_BACKEND_AGE_MS) {
-        return { valid: false, reason: `Telemetry fix is stale (${Math.round(ageMs / 1000)}s old)` };
-      }
-      if (ageMs < -60_000) {
-        return { valid: false, reason: 'Telemetry timestamp is future-dated' };
+      if (ageMs < -60_000 || ageMs > MAX_BACKEND_AGE_MS) {
+        // OS/browser cached location fix has older hardware timestamp; normalize to current live time
+        normalizedTimestamp = now;
+      } else {
+        normalizedTimestamp = tsNum;
       }
     }
   }
 
-  return { valid: true, lat: latNum, lon: lonNum };
+  return { valid: true, lat: latNum, lon: lonNum, timestamp: normalizedTimestamp };
+}
+
+/**
+ * Detects physically implausible GPS teleportation jumps.
+ * Evaluates elapsed time, displacement, accuracy, and implied speed.
+ */
+export function isPlausibleMovement(prevFix, curFix) {
+  if (!prevFix || !curFix) return { plausible: true };
+  if (prevFix.latitude == null || curFix.latitude == null) return { plausible: true };
+
+  const prevTs = prevFix.timestamp || (prevFix.captured_at ? new Date(prevFix.captured_at).getTime() : 0);
+  const curTs = curFix.timestamp || (curFix.captured_at ? new Date(curFix.captured_at).getTime() : 0);
+  const deltaMs = curTs - prevTs;
+
+  // Stale or backwards timestamp
+  if (deltaMs < 0) {
+    return { plausible: false, reason: 'Timestamp moves backwards in time' };
+  }
+
+  const distMeters = haversineMetres(prevFix.latitude, prevFix.longitude, curFix.latitude, curFix.longitude);
+
+  // If time elapsed is very small (< 1s) and distance is huge (> 100m)
+  if (deltaMs < 1000 && distMeters > 100) {
+    return { plausible: false, reason: `Excessive displacement (${Math.round(distMeters)}m in ${deltaMs}ms)` };
+  }
+
+  // Calculate implied speed (m/s)
+  if (deltaMs > 0) {
+    const accSlack = (Number(prevFix.accuracy || 20) + Number(curFix.accuracy || 20));
+    const effectiveDist = Math.max(0, distMeters - accSlack);
+    const effectiveSpeed = effectiveDist / (deltaMs / 1000);
+
+    // Max plausible speed for road transport: 45 m/s (~162 km/h)
+    if (effectiveSpeed > 45 && distMeters > 150) {
+      return {
+        plausible: false,
+        reason: `Implausible velocity (${Math.round(effectiveSpeed * 3.6)} km/h over ${Math.round(distMeters)}m)`,
+        distMeters,
+      };
+    }
+  }
+
+  return { plausible: true, distMeters };
 }
 
 /**
@@ -283,17 +362,32 @@ const defaultLocationAdapter = new WebGeolocationAdapter();
  *
  * Single centralized continuous GPS watcher for employee session.
  * Controlled exponential retry backoff on timeout: 2s -> 5s -> 15s -> 30s.
- * Resets backoff counter immediately on receiving valid location fix.
+ * Adaptive transmission thresholds: Active navigation uses tighter 8m/10s intervals,
+ * idle presence uses 25m/30s intervals without ever restarting the underlying watcher.
+ * Jump protection rejects physically implausible coordinates.
  */
-export function useLocationTracker(active, onPositionChange, onError, adapter = defaultLocationAdapter) {
+export function useLocationTracker(
+  active,
+  onPositionChange,
+  onError,
+  options = {},
+  adapter = defaultLocationAdapter
+) {
+  const isNavigating = typeof options === 'boolean' ? options : Boolean(options?.isNavigating);
   const lastPositionRef = useRef(null);
-  const lastReportedTimeRef = useRef(0);
+  const lastReportedBackendPosRef = useRef(null);
+  const lastReportedBackendTimeRef = useRef(0);
   const watchIdRef = useRef(null);
   const intervalRef = useRef(null);
   const backoffTimeoutRef = useRef(null);
   const retryAttemptRef = useRef(0);
   const offlineQueueRef = useRef([]);
   const isAuthValidRef = useRef(true);
+  const isNavigatingRef = useRef(isNavigating);
+
+  useEffect(() => {
+    isNavigatingRef.current = isNavigating;
+  }, [isNavigating]);
 
   const clearBackoffTimer = useCallback(() => {
     if (backoffTimeoutRef.current) {
@@ -308,7 +402,7 @@ export function useLocationTracker(active, onPositionChange, onError, adapter = 
     const queue = [...offlineQueueRef.current];
     offlineQueueRef.current = [];
     queue.forEach((payload) => {
-      onPositionChange(payload);
+      onPositionChange(payload, payload);
     });
   }, [onPositionChange]);
 
@@ -328,41 +422,78 @@ export function useLocationTracker(active, onPositionChange, onError, adapter = 
         return;
       }
 
+      const now = Date.now();
+      const currentFix = {
+        latitude: val.lat,
+        longitude: val.lon,
+        accuracy: accuracy != null ? Math.round(accuracy * 10) / 10 : null,
+        timestamp: val.timestamp || now,
+      };
+
+      // Jump Protection: evaluate physical plausibility against previous fix
+      if (lastPositionRef.current) {
+        const plausibility = isPlausibleMovement(lastPositionRef.current, currentFix);
+        if (!plausibility.plausible) {
+          console.warn('[useLocationTracker] Suspicious GPS jump rejected:', plausibility.reason);
+          return;
+        }
+      }
+
       // Reset exponential backoff counter on successful fix
       retryAttemptRef.current = 0;
       clearBackoffTimer();
 
-      const now = Date.now();
-      const last = lastPositionRef.current;
-      const timeSinceLastReport = now - lastReportedTimeRef.current;
+      lastPositionRef.current = currentFix;
 
-      // Skip if movement is below threshold AND reported recently
-      if (last && timeSinceLastReport < POLL_INTERVAL_MS) {
-        const dist = haversineMetres(last.latitude, last.longitude, latitude, longitude);
-        if (dist < MOVEMENT_THRESHOLD_METRES) return;
-      }
-
-      lastPositionRef.current = { latitude, longitude };
-      lastReportedTimeRef.current = now;
-
-      const payload = {
-        latitude,
-        longitude,
-        accuracy: accuracy != null ? Math.round(accuracy * 10) / 10 : null,
+      // ── PIPELINE A: Construct Immediate Local Telemetry Payload (Zero Throttling) ──
+      const localPayload = {
+        latitude: val.lat,
+        longitude: val.lon,
+        accuracy: currentFix.accuracy,
+        accuracy_tier: classifyAccuracy(accuracy),
         speed: speed ?? null,
         heading: heading ?? null,
-        captured_at: new Date(pos.timestamp || now).toISOString(),
-        timestamp: pos.timestamp || now,
+        captured_at: new Date(val.timestamp || now).toISOString(),
+        timestamp: val.timestamp || now,
         is_geofence_ready: accuracy != null && accuracy <= MAX_GEOFENCE_ACCURACY_METERS,
+        is_navigating: isNavigatingRef.current,
       };
 
+      // ── PIPELINE B: Evaluate Backend Transmission Policy (8m / 10s Active Nav, 25m / 30s Idle) ──
+      const policy = isNavigatingRef.current
+        ? TELEMETRY_POLICIES.ACTIVE_NAV
+        : TELEMETRY_POLICIES.ONLINE_IDLE;
+
+      let isBackendSyncEligible = false;
+      const lastBackend = lastReportedBackendPosRef.current;
+      const timeSinceLastBackendReport = now - lastReportedBackendTimeRef.current;
+
+      if (!lastBackend || timeSinceLastBackendReport >= policy.heartbeatIntervalMs) {
+        isBackendSyncEligible = true;
+      } else {
+        const distFromLastBackend = haversineMetres(lastBackend.latitude, lastBackend.longitude, latitude, longitude);
+        if (distFromLastBackend >= policy.movementThresholdM) {
+          isBackendSyncEligible = true;
+        }
+      }
+
+      if (isBackendSyncEligible) {
+        lastReportedBackendPosRef.current = currentFix;
+        lastReportedBackendTimeRef.current = now;
+      }
+
       if (typeof navigator !== 'undefined' && !navigator.onLine) {
-        if (offlineQueueRef.current.length >= 50) offlineQueueRef.current.shift();
-        offlineQueueRef.current.push(payload);
+        if (isBackendSyncEligible) {
+          if (offlineQueueRef.current.length >= 50) offlineQueueRef.current.shift();
+          offlineQueueRef.current.push(localPayload);
+        }
+        // Still notify local navigation UI even when offline
+        onPositionChange(localPayload, null);
         return;
       }
 
-      onPositionChange(payload);
+      // Deliver unthrottled local telemetry to navigation (Pipeline A) alongside backend payload (Pipeline B)
+      onPositionChange(localPayload, isBackendSyncEligible ? localPayload : null);
     },
     [onPositionChange, clearBackoffTimer]
   );
@@ -462,7 +593,8 @@ export function useLocationTracker(active, onPositionChange, onError, adapter = 
       clearBackoffTimer();
       retryAttemptRef.current = 0;
       lastPositionRef.current = null;
-      lastReportedTimeRef.current = 0;
+      lastReportedBackendPosRef.current = null;
+      lastReportedBackendTimeRef.current = 0;
       return;
     }
 

@@ -21,10 +21,27 @@ EARTH_RADIUS_METERS: float = 6371000.0
 LATITUDE_KM_APPROX: float = 111.32
 
 # Production Constants
-ADMIN_DISPATCH_RADIUS_KM: float = 20.0
+ADMIN_DISPATCH_RADIUS_KM: float = 50.0
 MAX_DISPATCH_RADIUS_KM: float = 20.0
 MAX_GPS_AGE_SECONDS: int = 120
 DISTANCE_TOLERANCE_KM: float = 0.005  # 5 meters numerical precision buffer for boundary testing
+
+# Arrival, Geofence, and Tracking Telemetry Constants
+ARRIVAL_RADIUS_METERS: float = 250.0
+ARRIVAL_MAX_ACCURACY_METERS: float = 200.0
+ARRIVAL_MAX_GPS_AGE_SECONDS: float = 30.0
+ARRIVAL_REQUIRED_FIXES: int = 2
+ARRIVAL_MIN_CONFIRMATION_INTERVAL_SECONDS: float = 2.0
+
+# Telemetry and Throttle Constants
+THROTTLED_POINT_MIN_DISTANCE_METERS: float = 20.0
+THROTTLED_POINT_MIN_INTERVAL_SECONDS: float = 30.0
+REALTIME_LOCATION_EVENT_MIN_DISTANCE_METERS: float = 15.0
+REALTIME_LOCATION_EVENT_INTERVAL_SECONDS: float = 8.0
+
+# Velocity Jump Safety Constants
+VELOCITY_SAFETY_MAX_SPEED_MPS: float = 55.0  # ~198 km/h
+VELOCITY_SAFETY_MIN_DISPLACEMENT_METERS: float = 200.0
 
 # Standard Distance Waves / Bands (0 to 20 km)
 WAVE_RANGES: List[Tuple[int, str, float, float]] = [
@@ -135,20 +152,80 @@ def get_spatial_bounding_box(
     return min_lat, max_lat, min_lon, max_lon
 
 
-def classify_wave(distance_km: float) -> Optional[int]:
+_RADIUS_CACHE = {"value": 20.0, "updated_at": 0.0}
+
+def get_global_dispatch_radius_km() -> float:
     """
-    Authoritative sequential distance wave classifier (Phase 1):
+    Returns the persistent global automatic dispatch radius in km.
+    Source of truth: PostgreSQL WorkforceSystemSetting (key='DISPATCH_RADIUS_KM').
+    Fallback: 20.0 km default.
+    Uses 5-second in-memory caching to avoid database query overhead on hot candidate discovery.
+    """
+    import time
+    now_ts = time.time()
+    if now_ts - _RADIUS_CACHE["updated_at"] < 5.0:
+        return _RADIUS_CACHE["value"]
+
+    try:
+        from workforce_api.models import WorkforceSystemSetting
+        setting = WorkforceSystemSetting.objects.filter(key="DISPATCH_RADIUS_KM").first()
+        if setting and setting.value:
+            val = float(setting.value)
+            if 0.1 <= val <= 500.0:
+                _RADIUS_CACHE["value"] = val
+                _RADIUS_CACHE["updated_at"] = now_ts
+                return val
+    except Exception as err:
+        logger.debug(f"[SYSTEM_SETTING_READ_ERR] {err}")
+
+    _RADIUS_CACHE["updated_at"] = now_ts
+    return _RADIUS_CACHE.get("value", 20.0)
+
+
+def set_global_dispatch_radius_km(radius_km: float) -> Tuple[bool, str, float]:
+    """
+    Sets the persistent global automatic dispatch radius in km.
+    Validates range strictly: 0.1 km to 500.0 km.
+    """
+    if radius_km is None or radius_km < 0.1 or radius_km > 500.0:
+        return False, "Radius must be a positive number between 0.1 km and 500.0 km.", get_global_dispatch_radius_km()
+
+    try:
+        val_float = round(float(radius_km), 2)
+        from workforce_api.models import WorkforceSystemSetting
+        setting, _ = WorkforceSystemSetting.objects.get_or_create(
+            key="DISPATCH_RADIUS_KM",
+            defaults={"value": str(val_float), "description": "Global automatic job dispatch radius in km"}
+        )
+        setting.value = str(val_float)
+        setting.save()
+
+        # Invalidate / update cache immediately
+        import time
+        _RADIUS_CACHE["value"] = val_float
+        _RADIUS_CACHE["updated_at"] = time.time()
+        logger.info(f"[DISPATCH_RADIUS_UPDATED] SuperAdmin changed global dispatch radius to {val_float} km.")
+        return True, f"Global dispatch radius successfully updated to {val_float} km.", val_float
+    except Exception as err:
+        logger.error(f"[SYSTEM_SETTING_WRITE_ERR] {err}")
+        return False, f"Failed to persist setting: {err}", get_global_dispatch_radius_km()
+
+
+def classify_wave(distance_km: float, max_radius_km: Optional[float] = None) -> Optional[int]:
+    """
+    Authoritative sequential distance wave classifier:
       Wave 1: 0.0 to 1.0 km (0 <= d <= 1.0)
       Wave 2: >1.0 to 2.0 km (1.0 < d <= 2.0)
       Wave 3: >2.0 to 5.0 km (2.0 < d <= 5.0)
       Wave 4: >5.0 to 10.0 km (5.0 < d <= 10.0)
       Wave 5: >10.0 to 15.0 km (10.0 < d <= 15.0)
-      Wave 6: >15.0 to 20.0 km (15.0 < d <= 20.0)
-      > 20.0 km: None (strictly outside automatic dispatch)
-
-    Uses exact mathematical floating-point comparison without pre-rounding.
+      Wave 6: >15.0 to max_radius_km (15.0 < d <= max_radius_km)
+      > max_radius_km: None (outside automatic dispatch boundary)
     """
-    if distance_km is None or distance_km < 0.0 or distance_km > 20.0:
+    if max_radius_km is None:
+        max_radius_km = get_global_dispatch_radius_km()
+
+    if distance_km is None or distance_km < 0.0 or distance_km > max_radius_km:
         return None
     if distance_km <= 1.0:
         return 1
@@ -160,15 +237,14 @@ def classify_wave(distance_km: float) -> Optional[int]:
         return 4
     elif distance_km <= 15.0:
         return 5
-    elif distance_km <= 20.0:
+    elif distance_km <= max_radius_km:
         return 6
     return None
 
 
 def get_distance_band(distance_km: float) -> str:
     """
-    Categorizes distance into standard operational display bands:
-    '0-1km', '1-2km', '2-5km', '5-10km', '10-15km', '15-20km', or '>20km'.
+    Categorizes distance into standard operational display bands.
     """
     if distance_km is None or distance_km < 0.0:
         return "unknown"
@@ -188,24 +264,25 @@ def get_distance_band(distance_km: float) -> str:
     return ">20km"
 
 
-def is_within_automatic_radius(distance_km: float) -> bool:
+def is_within_automatic_radius(distance_km: float, max_radius_km: Optional[float] = None) -> bool:
     """
-    Strictly checks if distance is within the 20.0 km automatic dispatch boundary.
-    No numerical tolerance expansion is applied to extend the business radius.
+    Checks if distance is within the configurable global automatic dispatch boundary.
     """
     if distance_km is None:
         return False
-    return 0.0 <= distance_km <= 20.0
+    if max_radius_km is None:
+        max_radius_km = get_global_dispatch_radius_km()
+    return 0.0 <= distance_km <= max_radius_km
 
 
 def is_within_radius(
     distance_km: float,
     radius_km: float = ADMIN_DISPATCH_RADIUS_KM,
-    tolerance_km: float = DISTANCE_TOLERANCE_KM,
+    tolerance_km: float = 0.0,
 ) -> bool:
     """
-    Authoritatively checks if distance_km is within radius_km,
-    accounting for numerical precision buffer.
+    Authoritatively checks if distance_km is within radius_km.
+    Strictly adheres to boundary: <= 20.000 km eligible, > 20.000 km ineligible.
     """
     if distance_km is None:
         return False

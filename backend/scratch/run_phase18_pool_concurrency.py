@@ -4,6 +4,16 @@ import threading
 import time
 from pathlib import Path
 
+# PRODUCTION SAFETY GUARD
+# This script calls live API endpoints against the running Django/Supabase stack.
+# It MUST NOT run without explicit opt-in to prevent accidental production load.
+_allow = os.environ.get("ALLOW_REMOTE_STRESS_TEST", "").strip().lower()
+if _allow != "true":
+    print("\n[BLOCKED] run_phase18_pool_concurrency.py targets live API endpoints.")
+    print("To authorise execution: set ALLOW_REMOTE_STRESS_TEST=true")
+    print("Never run concurrency tests against production without explicit approval.\n")
+    raise SystemExit(1)
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 

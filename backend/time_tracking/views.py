@@ -243,6 +243,14 @@ class ClockInView(APIView):
         notes = request.data.get("notes", "")
         photo = request.FILES.get("photo")
 
+        # Fallback to verified last_known_location from arrival verification if omitted in request
+        if lat in (None, "") or lon in (None, ""):
+            last_loc = getattr(request.user, "last_known_location", None) or {}
+            lat = last_loc.get("latitude") if last_loc.get("latitude") is not None else last_loc.get("lat")
+            lon = last_loc.get("longitude") if last_loc.get("longitude") is not None else (last_loc.get("lng") or last_loc.get("lon"))
+            if accuracy is None:
+                accuracy = last_loc.get("accuracy")
+
         # Real Browser GPS enforcement (No fake / fallback coordinates allowed)
         if lat in (None, "") or lon in (None, ""):
             return Response({
@@ -356,7 +364,7 @@ class ClockInView(APIView):
 
             # Re-lock active job
             locked_job = ServiceRequest.objects.select_for_update().filter(pk=active_job.pk).first()
-            if not locked_job or locked_job.status not in ["accepted", "on_the_way", "arrived"]:
+            if not locked_job or locked_job.status not in ["accepted", "on_the_way", "arrived", "in_progress"]:
                 return Response({
                     "error": f"Job #{active_job.id} is in status '{locked_job.status if locked_job else 'unknown'}' and cannot be clocked in.",
                     "code": "INVALID_JOB_STATE"
@@ -398,7 +406,8 @@ class ClockInView(APIView):
             from service_requests.state_machine import apply_transition
             if locked_job.status in ["accepted", "on_the_way"]:
                 apply_transition(locked_job, "arrived", actor=request.user)
-            apply_transition(locked_job, "in_progress", actor=request.user)
+            if locked_job.status != "in_progress":
+                apply_transition(locked_job, "in_progress", actor=request.user)
 
             # Update User.last_known_location
             user_loc = {

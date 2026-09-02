@@ -7,7 +7,7 @@
  */
 
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, useSearchParams, Link } from 'react-router-dom';
 import {
   MapPin,
   Car,
@@ -23,16 +23,24 @@ import {
 } from 'lucide-react';
 import { apiGetCustomerJobTracking } from '../../api/workforceService.js';
 import { CustomerTrackingMap } from '../../components/customer/CustomerTrackingMap.jsx';
+import { getAccessToken } from '../../utils/authTokens.js';
 
 export function CustomerTrackingPage() {
   const { jobId } = useParams();
+  const [searchParams] = useSearchParams();
   const [trackingData, setTrackingData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState(null);
+  const [isSseActive, setIsSseActive] = useState(false);
 
+  const sseRef = useRef(null);
   const pollTimerRef = useRef(null);
+  const reconnectTimerRef = useRef(null);
+  const reconnectAttemptsRef = useRef(0);
+  const isMountedRef = useRef(true);
 
+  // Fetch authoritative snapshot via REST API
   const fetchTracking = useCallback(async (silent = false) => {
     if (!jobId) return;
     if (!silent) setIsRefreshing(true);
@@ -53,21 +61,166 @@ export function CustomerTrackingPage() {
   const currentStatus = (trackingData?.status || '').toUpperCase();
   const isTerminal = ['COMPLETED', 'CANCELLED', 'UNABLE_TO_COMPLETE'].includes(currentStatus);
 
-  useEffect(() => {
-    fetchTracking(false);
-    if (!isTerminal) {
-      pollTimerRef.current = setInterval(() => {
+  // Fallback Polling Control: Only active when SSE is disconnected
+  const startFallbackPolling = useCallback(() => {
+    if (pollTimerRef.current || isTerminal) return;
+    console.info('[CustomerTracking] SSE disconnected. Activating 5-second REST fallback polling.');
+    pollTimerRef.current = setInterval(() => {
+      if (!isMountedRef.current) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      fetchTracking(true);
+    }, 5000);
+  }, [fetchTracking, isTerminal]);
+
+  const stopFallbackPolling = useCallback(() => {
+    if (pollTimerRef.current) {
+      console.info('[CustomerTracking] SSE healthy. Stopping 5-second fallback REST polling.');
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  // Update technician coordinates in-place without page reload
+  const handleLocationEvent = useCallback((loc) => {
+    if (!loc) return;
+    const lat = loc.latitude ?? loc.lat ?? loc.employee_location?.latitude;
+    const lon = loc.longitude ?? loc.lng ?? loc.lon ?? loc.employee_location?.longitude;
+    if (lat == null || lon == null) return;
+
+    setTrackingData((prev) => {
+      if (!prev) return prev;
+      const accuracy = loc.accuracy ?? loc.employee_location?.accuracy ?? prev.assigned_technician?.location?.accuracy;
+      const speed = loc.speed ?? loc.employee_location?.speed ?? prev.assigned_technician?.location?.speed;
+      const heading = loc.heading ?? loc.employee_location?.heading ?? prev.assigned_technician?.location?.heading;
+      const capturedAt = loc.captured_at ?? loc.timestamp ?? new Date().toISOString();
+
+      return {
+        ...prev,
+        status: (loc.status || prev.status).toUpperCase(),
+        distance_m: loc.distance_m ?? prev.distance_m,
+        distance_km: loc.distance_km ?? prev.distance_km,
+        geofence_status: loc.geofence_status ?? prev.geofence_status,
+        movement_status: loc.movement_status ?? prev.movement_status,
+        freshness_state: loc.freshness_state ?? 'LIVE',
+        assigned_technician: prev.assigned_technician
+          ? {
+              ...prev.assigned_technician,
+              location: {
+                latitude: Number(lat),
+                longitude: Number(lon),
+                accuracy: accuracy != null ? Number(accuracy) : null,
+                speed: speed != null ? Number(speed) : null,
+                heading: heading != null ? Number(heading) : null,
+                captured_at: capturedAt,
+                received_at: new Date().toISOString(),
+              },
+            }
+          : prev.assigned_technician,
+      };
+    });
+  }, []);
+
+  // Establish SSE stream
+  const connectSSE = useCallback(() => {
+    if (!jobId || isTerminal) return;
+    if (sseRef.current) {
+      try { sseRef.current.close(); } catch (_) {}
+      sseRef.current = null;
+    }
+
+    const token = getAccessToken() || '';
+    const trackingToken = searchParams.get('token') || searchParams.get('tracking_token') || '';
+    const params = new URLSearchParams();
+    params.set('job_id', jobId);
+    if (token) params.set('token', token);
+    if (trackingToken) params.set('tracking_token', trackingToken);
+
+    const sseUrl = `/api/workforce/realtime/stream/?${params.toString()}`;
+    console.info(`[CustomerTracking] Connecting to live SSE stream: ${sseUrl}`);
+    const es = new EventSource(sseUrl);
+    sseRef.current = es;
+
+    es.addEventListener('ping', () => {
+      if (!isMountedRef.current) return;
+      setIsSseActive(true);
+      stopFallbackPolling();
+      if (reconnectAttemptsRef.current > 0) {
+        console.info('[CustomerTracking] SSE reconnected. Fetching fresh state once.');
         fetchTracking(true);
-      }, 5000);
+      }
+      reconnectAttemptsRef.current = 0;
+    });
+
+    es.addEventListener('job_location', (e) => {
+      if (!isMountedRef.current) return;
+      setIsSseActive(true);
+      stopFallbackPolling();
+      try {
+        const payload = JSON.parse(e.data);
+        handleLocationEvent(payload);
+      } catch (err) {
+        console.warn('[CustomerTracking] Error parsing job_location event:', err);
+      }
+    });
+
+    es.addEventListener('workforce_event', (e) => {
+      if (!isMountedRef.current) return;
+      try {
+        const ev = JSON.parse(e.data);
+        if (ev.event_type === 'JOB_LOCATION_UPDATE' && ev.payload) {
+          handleLocationEvent(ev.payload);
+        }
+      } catch (_) {}
+    });
+
+    es.onerror = () => {
+      if (!isMountedRef.current) return;
+      console.warn('[CustomerTracking] SSE stream dropped. Starting fallback polling & reconnecting.');
+      setIsSseActive(false);
+      startFallbackPolling();
+
+      try { es.close(); } catch (_) {}
+      sseRef.current = null;
+
+      // Exponential backoff reconnect: 2s, 4s, 8s, max 15s
+      reconnectAttemptsRef.current += 1;
+      const delay = Math.min(15000, Math.pow(2, reconnectAttemptsRef.current) * 1000);
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = setTimeout(() => {
+        if (isMountedRef.current && !isTerminal) {
+          connectSSE();
+        }
+      }, delay);
+    };
+  }, [jobId, isTerminal, searchParams, fetchTracking, handleLocationEvent, startFallbackPolling, stopFallbackPolling]);
+
+  // Master Lifecycle: Load REST state once, establish SSE, clean up on unmount
+  useEffect(() => {
+    isMountedRef.current = true;
+    // 1. Initial REST fetch
+    fetchTracking(false);
+
+    // 2. Establish SSE connection
+    if (!isTerminal) {
+      connectSSE();
     }
 
     return () => {
+      isMountedRef.current = false;
+      if (sseRef.current) {
+        try { sseRef.current.close(); } catch (_) {}
+        sseRef.current = null;
+      }
       if (pollTimerRef.current) {
         clearInterval(pollTimerRef.current);
         pollTimerRef.current = null;
       }
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
     };
-  }, [fetchTracking, isTerminal]);
+  }, [jobId, isTerminal]);
 
   if (isLoading) {
     return (

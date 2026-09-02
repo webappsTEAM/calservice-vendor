@@ -2,9 +2,27 @@
 workforce-app/backend/service_requests/models.py
 ServiceRequest model pointing to shared Supabase table service_requests_servicerequest (managed=False).
 """
+import threading
+import uuid
 from django.conf import settings
 from django.db import models
 from common.models import CompanyScopedManager
+
+_dispatch_suppression = threading.local()
+
+
+class suppress_dispatch_hook:
+    """
+    Context manager to prevent nested/recursive post-commit dispatch triggers
+    when internal dispatch engine components update ServiceRequest records.
+    """
+    def __enter__(self):
+        self._prev = getattr(_dispatch_suppression, "active", False)
+        _dispatch_suppression.active = True
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        _dispatch_suppression.active = self._prev
 
 SERVICE_CATEGORIES = [
     ("hvac", "HVAC & Air Conditioning"),
@@ -28,6 +46,50 @@ def _generate_request_id():
         num += 1
         candidate = f"SR-{str(num).zfill(4)}"
     return candidate
+
+
+# Canonical Quotation-based Service IDs and Slugs
+QUOTATION_SERVICE_IDS = {
+    91: "Interior Painting",
+    92: "Exterior Painting",
+    93: "Waterproofing",
+    94: "Wood & Metal",
+    95: "Texture Decor",
+    35: "Brick & Block Work",
+    36: "Plastering & Wall Repair",
+    37: "Wall & Partition Construction",
+    38: "Wall Breaking & Demolition",
+}
+
+QUOTATION_SERVICE_SLUGS = {
+    "interior-painting",
+    "exterior-painting",
+    "waterproofing",
+    "wood-metal",
+    "texture-decor",
+    "brick-block-work",
+    "plastering-wall-repair",
+    "wall-partition-construction",
+    "wall-breaking-demolition",
+}
+
+
+def is_quotation_service(service_id=None, slug=None, name=None, category=None):
+    """
+    Authoritative backend check whether a service operates in QUOTATION mode.
+    """
+    if service_id and int(service_id) in QUOTATION_SERVICE_IDS:
+        return True
+    if slug and str(slug).lower().strip() in QUOTATION_SERVICE_SLUGS:
+        return True
+    if name:
+        clean_name = str(name).lower().strip()
+        for q_name in QUOTATION_SERVICE_IDS.values():
+            if clean_name == q_name.lower():
+                return True
+    if category and str(category).lower().strip() in ["painting", "mason", "masonry", "painting & waterproofing", "masonry & civil"]:
+        return True
+    return False
 
 
 class CatalogCategory(models.Model):
@@ -65,6 +127,8 @@ class Service(models.Model):
     image = models.CharField(max_length=500, blank=True, default="")
     is_active = models.BooleanField(default=True)
     sort_order = models.IntegerField(default=0)
+    customization = models.JSONField(default=dict, blank=True)
+    flow_type = models.CharField(max_length=50, default="STANDARD", blank=True)
     created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
 
@@ -75,6 +139,26 @@ class Service(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.category.name if self.category else 'No Category'})"
+
+    @property
+    def pricing_mode(self):
+        return "QUOTATION" if is_quotation_service(self.id, self.slug, self.name) else "FIXED"
+
+    @property
+    def requires_inspection(self):
+        return self.pricing_mode == "QUOTATION"
+
+    @property
+    def requires_measurement(self):
+        return self.pricing_mode == "QUOTATION"
+
+    @property
+    def min_inspection_photos(self):
+        if not self.requires_inspection:
+            return 1
+        if self.id in [91, 92, 93, 94, 95] or "painting" in (self.slug or "").lower():
+            return 3
+        return 2
 
 
 class ServiceRequest(models.Model):
@@ -114,7 +198,21 @@ class ServiceRequest(models.Model):
         FAILED    = "failed",    "Failed"
         CANCELLED = "cancelled", "Cancelled"
 
+    class RequestKind(models.TextChoices):
+        DIRECT     = "DIRECT",     "Direct Standard Job"
+        ESTIMATION = "ESTIMATION", "Estimation / Inspection Job"
+        WORK       = "WORK",       "Actual Work Execution Job"
+
     request_id = models.CharField(max_length=20, unique=True, blank=True)
+    request_kind = models.CharField(
+        max_length=50,
+        choices=RequestKind.choices,
+        default=RequestKind.DIRECT,
+        db_index=True,
+    )
+    parent_request_id = models.BigIntegerField(null=True, blank=True)
+    quote_number = models.CharField(max_length=50, null=True, blank=True)
+
     company = models.ForeignKey(
         "companies.Company",
         on_delete=models.CASCADE,
@@ -144,6 +242,13 @@ class ServiceRequest(models.Model):
     cart_data = models.JSONField(default=list, blank=True)
 
     drop_address = models.TextField(blank=True, default="")
+    drop_contact_name = models.CharField(max_length=200, blank=True, default="")
+    drop_contact_phone = models.CharField(max_length=50, blank=True, default="")
+    drop_contact_email = models.CharField(max_length=100, blank=True, default="")
+    consignee_relationship = models.CharField(max_length=100, blank=True, default="")
+    insurance_opted_in = models.BooleanField(default=False)
+    logistics_leg = models.CharField(max_length=100, blank=True, default="DIRECT")
+    logistics_leg_history = models.JSONField(default=list, blank=True)
     payment_method = models.CharField(
         max_length=20,
         choices=PaymentMethod.choices,
@@ -183,13 +288,20 @@ class ServiceRequest(models.Model):
 
     workforce_job_id = models.CharField(max_length=100, blank=True, default="")
     external_assignment_id = models.CharField(max_length=100, blank=True, default="")
-    technician_name = models.CharField(max_length=200, blank=True, default="")
-    technician_phone = models.CharField(max_length=50, blank=True, default="")
-    technician_photo = models.TextField(blank=True, default="")
+    technician_id = models.IntegerField(null=True, blank=True)
     technician_rating = models.FloatField(null=True, blank=True)
-    payment_collected_by_name = models.CharField(max_length=200, blank=True, default="")
-    collection_method = models.CharField(max_length=50, blank=True, default="")
-    collection_reference = models.CharField(max_length=100, blank=True, default="")
+    technician_heading = models.FloatField(null=True, blank=True, default=0.0)
+    technician_speed = models.FloatField(null=True, blank=True, default=0.0)
+    technician_latitude = models.FloatField(null=True, blank=True)
+    technician_longitude = models.FloatField(null=True, blank=True)
+    technician_accuracy = models.FloatField(null=True, blank=True)
+    technician_location_updated_at = models.DateTimeField(null=True, blank=True)
+    technician_last_seen_at = models.DateTimeField(null=True, blank=True)
+    technician_arrived_at = models.DateTimeField(null=True, blank=True)
+    tracking_token = models.UUIDField(null=True, blank=True, default=uuid.uuid4)
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
     service_zone_name_snapshot = models.CharField(max_length=200, blank=True, default="")
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -205,21 +317,76 @@ class ServiceRequest(models.Model):
     def __str__(self):
         return f"{self.request_id or f'SR #{self.pk}'} - {self.issue_title} ({self.status})"
 
+    @property
+    def is_estimation(self):
+        """Authoritative check if this ServiceRequest is an Estimation Job."""
+        if str(self.request_kind).upper() == "ESTIMATION":
+            return True
+        if str(self.request_kind).upper() == "WORK":
+            return False
+        return is_quotation_service(name=self.issue_title, category=self.service_category)
+
+    @property
+    def pricing_mode(self):
+        if self.is_estimation:
+            return "QUOTATION"
+        return "FIXED"
+
     def save(self, *args, **kwargs):
+        skip_dispatch = kwargs.pop("skip_dispatch", False)
         is_new = self.pk is None
+        old_status = None
+        if not is_new:
+            old_inst = ServiceRequest.objects.filter(pk=self.pk).values("status").first()
+            if old_inst:
+                old_status = old_inst.get("status")
+
         if not self.request_id:
             self.request_id = _generate_request_id()
         super().save(*args, **kwargs)
 
-        if is_new and self.status in ["new_request", "confirmed", "draft"]:
-            try:
-                from workforce_api.services.automatic_dispatch import dispatch_job
-                dispatch_job(self)
-            except Exception as e:
+        # Post-commit dispatch trigger: fires AFTER the transaction successfully commits.
+        # This decouples dispatch from booking persistence — a dispatch failure will
+        # never roll back or raise an exception during customer booking creation.
+        # Only enqueues upon explicit lifecycle transitions:
+        # 1. Newly created booking in a dispatchable status (unassigned)
+        # 2. Status transition from non-dispatchable into dispatchable status
+        # 3. Explicit redispatch status transition ('redispatching')
+        # Unrelated saves (e.g. address text, notes, tokens) will NOT re-enqueue!
+        from workforce_api.services.automatic_dispatch import DISPATCHABLE_STATUSES
+        is_suppressed = getattr(_dispatch_suppression, "active", False) or getattr(self, "_skip_dispatch", False) or skip_dispatch
+        is_dispatch_transition = (
+            (is_new and self.status in DISPATCHABLE_STATUSES)
+            or (old_status is not None and old_status not in DISPATCHABLE_STATUSES and self.status in DISPATCHABLE_STATUSES)
+            or (self.status == "redispatching")
+        )
+
+        if not is_suppressed and is_dispatch_transition and self.assigned_employee_id is None:
+            _job_id = self.pk
+            _comp_id = self.company_id
+
+            def _post_commit_dispatch():
                 import logging
-                logging.getLogger("workforce.dispatch").exception(
-                    f"[AUTO_DISPATCH_TRIGGER_FAILED] Failed to trigger automatic dispatch for Job #{self.id}: {e}"
-                )
+                _log = logging.getLogger("workforce.dispatch")
+                try:
+                    # Enqueue to reliable Redis Stream (workforce:dispatch:jobs)
+                    from workforce_api.services.redis_dispatch import enqueue_dispatch_job
+                    msg_id = enqueue_dispatch_job(_job_id, event_type="NEW_JOB", company_id=_comp_id)
+                    if not msg_id:
+                        # Redis unavailable: execute bounded single-job targeted fallback
+                        _log.info(f"[DISPATCH_FALLBACK_DB] Redis unavailable for Job #{_job_id}. Executing bounded DB reconciliation.")
+                        from workforce_api.services.automatic_dispatch import reconcile_booking_for_dispatch
+                        from service_requests.models import ServiceRequest as _SR
+                        _job = _SR.objects.filter(pk=_job_id).first()
+                        if _job:
+                            reconcile_booking_for_dispatch(_job, use_redis_geo=False)
+                except Exception as _exc:
+                    _log.exception(
+                        f"[AUTO_DISPATCH_TRIGGER_FAILED] Post-commit dispatch failed for Job #{_job_id}: {_exc}"
+                    )
+
+            from django.db import transaction
+            transaction.on_commit(_post_commit_dispatch)
 
 
 
@@ -283,15 +450,18 @@ class ServiceRequest(models.Model):
             from workforce_api.models import JobPayment
             pmt = getattr(self, "payment_record", None) or JobPayment.objects.filter(job=self).first()
             if pmt:
-                if pmt.payment_status == JobPayment.PaymentStatus.CASH_PENDING:
-                    pending_dependencies.append("Cash payment collection has been reported but is awaiting customer confirmation.")
-                elif pmt.payment_status == JobPayment.PaymentStatus.PENDING and pmt.payment_method == JobPayment.PaymentMethod.CASH_ON_SERVICE:
-                    pending_dependencies.append("Cash on service payment collection and confirmation is required before closing job.")
+                if pmt.payment_method == JobPayment.PaymentMethod.CASH_ON_SERVICE:
+                    if not pmt.is_cash_collected or pmt.payment_status not in [JobPayment.PaymentStatus.PAID, "PAID", "paid"]:
+                        pending_dependencies.append("Cash on service payment collection is required before closing job.")
                 elif pmt.payment_status not in [JobPayment.PaymentStatus.PAID, "PAID", "paid"]:
                     pending_dependencies.append(f"Payment is in '{pmt.payment_status}' state (must be PAID before closing job).")
             else:
+                is_cash = (self.payment_method or "").lower() in ["cash", "cod", "cash_on_service", "cash_on_delivery"]
                 if str(self.payment_status).lower() not in ["paid", "collected"]:
-                    pending_dependencies.append(f"Payment status is '{self.payment_status}' (must be PAID before closing job).")
+                    if is_cash:
+                        pending_dependencies.append("Cash on service payment collection is required before closing job.")
+                    else:
+                        pending_dependencies.append(f"Payment status is '{self.payment_status}' (must be PAID before closing job).")
         except Exception as e:
             pending_dependencies.append(f"Payment verification failed: {str(e)}")
 
@@ -338,5 +508,9 @@ class EmployeeJob(models.Model):
 
     def __str__(self):
         return f"EmployeeJob SR-{self.service_request_id} -> Emp {self.employee_id} ({self.status})"
+
+
+RequestKind = ServiceRequest.RequestKind
+
 
 

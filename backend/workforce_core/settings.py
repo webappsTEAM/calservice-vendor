@@ -53,6 +53,9 @@ INSTALLED_APPS = [
     "service_requests",
     "workforce_api",
     "time_tracking",
+
+    # Vendor Wallet financial module
+    "vendor_wallet",
 ]
 
 MIDDLEWARE = [
@@ -104,6 +107,9 @@ if USE_POSTGRES:
         _db_options["sslmode"] = _sslmode
 
     _connection_opts = [f'-c search_path={os.getenv("DB_SCHEMA", "public")}']
+    _idle_tx_timeout = os.getenv("DB_IDLE_IN_TRANSACTION_TIMEOUT", "10000")
+    if _idle_tx_timeout:
+        _connection_opts.append(f"-c idle_in_transaction_session_timeout={_idle_tx_timeout}")
     _stmt_timeout = os.getenv("DB_STATEMENT_TIMEOUT", "")
     if _stmt_timeout:
         _connection_opts.append(f"-c statement_timeout={_stmt_timeout}")
@@ -165,19 +171,6 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 25,
-    # Fixes EC-06: this app previously configured no throttling at all (the
-    # Customer app at least had a blanket anon/user rate). Baseline rates
-    # only for now, matching the Customer app's convention — individual
-    # views (signup, OTP verify, dispatch-sensitive endpoints) should get
-    # their own ScopedRateThrottle scopes as a follow-up.
-    "DEFAULT_THROTTLE_CLASSES": [
-        "rest_framework.throttling.AnonRateThrottle",
-        "rest_framework.throttling.UserRateThrottle",
-    ],
-    "DEFAULT_THROTTLE_RATES": {
-        "anon": os.getenv("THROTTLE_ANON", "60/minute"),
-        "user": os.getenv("THROTTLE_USER", "300/minute"),
-    },
 }
 
 SIMPLE_JWT = {
@@ -244,3 +237,17 @@ else:
         "http://localhost:8001",
         "http://127.0.0.1:8001",
     ]
+
+# ─── Redis Configuration ──────────────────────────────────────────────────────
+# Used for transient live-location state (job_location:<job_id>), SSE Pub/Sub,
+# Redis GEO candidate discovery, and Redis Streams reliable dispatch queue.
+# Supabase PostgreSQL remains the durable source of truth.
+REDIS_URL = os.getenv("REDIS_URL", f"redis://{os.getenv('REDIS_HOST', '127.0.0.1')}:{os.getenv('REDIS_PORT', '6379')}/0")
+
+# ─── Redis Automatic Dispatch Configuration ──────────────────────────────────
+DISPATCH_LOCATION_MAX_AGE_SECONDS = int(os.getenv("DISPATCH_LOCATION_MAX_AGE_SECONDS", "120"))
+DISPATCH_CANDIDATE_RADIUS_KM = float(os.getenv("DISPATCH_CANDIDATE_RADIUS_KM", "20.0"))
+REDIS_DISPATCH_STREAM = os.getenv("REDIS_DISPATCH_STREAM", "workforce:dispatch:jobs")
+REDIS_DISPATCH_GROUP = os.getenv("REDIS_DISPATCH_GROUP", "workforce:dispatch:workers")
+REDIS_GEO_KEY = os.getenv("REDIS_GEO_KEY", "workforce:technicians:geo")
+REDIS_TECH_LAST_SEEN_KEY = os.getenv("REDIS_TECH_LAST_SEEN_KEY", "workforce:technicians:last_seen")

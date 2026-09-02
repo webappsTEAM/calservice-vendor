@@ -13,6 +13,14 @@ export async function apiWorkforceSignup(payload) {
   });
 }
 
+export async function apiServiceProviderSignup(payload) {
+  return await apiRequest('/workforce/service-providers/signup/', {
+    method: 'POST',
+    json: payload,
+  });
+}
+
+
 export async function apiWorkforceLogin(identifier, password) {
   const trimmed = (identifier || '').trim();
   return await apiRequest('/auth/login/', {
@@ -212,13 +220,6 @@ export async function apiCollectJobCash(jobId, amountReceived) {
   return await apiRequest(`/workforce/jobs/${jobId}/payment/collect/`, {
     method: 'POST',
     json: { amount_received: amountReceived },
-  });
-}
-
-export async function apiVerifyPaymentOTP(jobId, otp) {
-  return await apiRequest(`/workforce/jobs/${jobId}/payment/verify-otp/`, {
-    method: 'POST',
-    json: { otp },
   });
 }
 
@@ -556,6 +557,12 @@ export async function apiGetReport(reportType = 'employee', filters = {}) {
   return await apiRequest(`/workforce/reports/?${params.toString()}`);
 }
 
+export async function apiGetDatabaseTelemetry(params = {}) {
+  const query = new URLSearchParams(params).toString();
+  const endpoint = query ? `/workforce/admin/database-telemetry/?${query}` : '/workforce/admin/database-telemetry/';
+  return await apiRequest(endpoint);
+}
+
 // ── Leave Management (Phase 19) ────────────────────────────────────────────────
 
 export async function apiGetLeaves() {
@@ -842,6 +849,223 @@ export async function apiGetJobLiveTracking(jobId) {
 export async function apiGetCustomerJobTracking(jobId) {
   return await apiRequest(`/workforce/customer/jobs/${jobId}/tracking/`);
 }
+
+// ── Estimation & Commercial Quotation Engine ─────────────────────────────────
+
+export async function apiGetEstimationGate(jobId) {
+  return await apiRequest(`/workforce/jobs/${jobId}/estimation-gate/`);
+}
+
+export async function apiGetRateCards(category = '', service = '') {
+  const params = new URLSearchParams();
+  if (category) params.append('category', category);
+  if (service) params.append('service', service);
+  const qStr = params.toString() ? `?${params.toString()}` : '';
+  return await apiRequest(`/workforce/rate-cards/${qStr}`);
+}
+
+export async function apiGetQuotes(params = {}) {
+  const query = new URLSearchParams();
+  if (params.tab) query.append('tab', params.tab);
+  if (params.status) query.append('status', params.status);
+  if (params.search) query.append('search', params.search);
+  if (params.job_id) query.append('job_id', params.job_id);
+  const qStr = query.toString() ? `?${query.toString()}` : '';
+  return await apiRequest(`/workforce/quotes/${qStr}`);
+}
+
+export async function apiGetQuoteDetail(quoteId) {
+  return await apiRequest(`/workforce/quotes/${quoteId}/`);
+}
+
+export async function apiCreateQuote(payload) {
+  return await apiRequest('/workforce/quotes/', {
+    method: 'POST',
+    json: payload,
+  });
+}
+
+export async function apiUpdateQuoteDraft(quoteId, payload) {
+  return await apiRequest(`/workforce/quotes/${quoteId}/`, {
+    method: 'PATCH',
+    json: payload,
+  });
+}
+
+export async function apiDeleteQuoteDraft(quoteId) {
+  return await apiRequest(`/workforce/quotes/${quoteId}/`, {
+    method: 'DELETE',
+  });
+}
+
+export async function apiBulkSaveQuoteItems(quoteId, items) {
+  return await apiRequest(`/workforce/quotes/${quoteId}/items/bulk/`, {
+    method: 'POST',
+    json: { items },
+  });
+}
+
+export async function apiBulkSaveQuoteMeasurements(quoteId, measurements) {
+  return await apiRequest(`/workforce/quotes/${quoteId}/measurements/bulk/`, {
+    method: 'POST',
+    json: { measurements },
+  });
+}
+
+export async function apiSaveQuoteInspection(quoteId, inspectionData) {
+  return await apiRequest(`/workforce/quotes/${quoteId}/inspection/`, {
+    method: 'POST',
+    json: inspectionData,
+  });
+}
+
+export async function apiSendQuoteToCustomer(quoteId) {
+  return await apiRequest(`/workforce/quotes/${quoteId}/send/`, {
+    method: 'POST',
+  });
+}
+
+export async function apiReviseQuote(quoteId, notes = '') {
+  return await apiRequest(`/workforce/quotes/${quoteId}/revise/`, {
+    method: 'POST',
+    json: { notes },
+  });
+}
+
+export async function apiGetCustomerQuote(tokenOrId) {
+  if (typeof tokenOrId === 'string' && tokenOrId.length > 20) {
+    return await apiRequest(`/workforce/customer/quote-token/${tokenOrId}/`);
+  }
+  return await apiRequest(`/workforce/customer/quotes/${tokenOrId}/`);
+}
+
+export async function apiDecideCustomerQuote(tokenOrId, action, notes = '', reason = '') {
+  if (typeof tokenOrId === 'string' && tokenOrId.length > 20) {
+    return await apiRequest(`/workforce/customer/quote-token/${tokenOrId}/decide/`, {
+      method: 'POST',
+      json: { action, notes, reason },
+    });
+  }
+  return await apiRequest(`/workforce/customer/quotes/${tokenOrId}/decide/`, {
+    method: 'POST',
+    json: { action, notes, reason },
+  });
+}
+
+export async function apiAdminClearStructural(quoteId, approved = true, notes = '') {
+  return await apiRequest(`/workforce/admin/quotes/${quoteId}/clear-structural/`, {
+    method: 'POST',
+    json: { approved, notes },
+  });
+}
+
+export async function apiGetAdminQuoteMetrics() {
+  return await apiRequest('/workforce/admin/quotes/metrics/');
+}
+
+export async function apiAdminRetryQuoteConversion(quoteId) {
+  return await apiRequest(`/workforce/admin/quotes/${quoteId}/retry-conversion/`, {
+    method: 'POST',
+  });
+}
+
+// ── Phase 2A: Service Provider & Provider Admin Management ───────────────────
+
+export async function apiGetSuperadminServiceProviders(params = {}) {
+  const query = new URLSearchParams();
+  if (params.q) query.append('q', params.q);
+  if (params.is_active !== undefined) query.append('is_active', params.is_active);
+  const qs = query.toString() ? `?${query.toString()}` : '';
+  return await apiRequest(`/workforce/superadmin/service-providers/${qs}`);
+}
+
+export async function apiCreateSuperadminServiceProvider(payload) {
+  return await apiRequest('/workforce/superadmin/service-providers/', {
+    method: 'POST',
+    json: payload,
+  });
+}
+
+export async function apiGetSuperadminServiceProvider(id) {
+  return await apiRequest(`/workforce/superadmin/service-providers/${id}/`);
+}
+
+export async function apiGetProviderProfile() {
+  return await apiRequest('/workforce/provider/profile/');
+}
+
+// ── Phase 2B: Provider Technician Management ──────────────────────────────────
+
+export async function apiGetAdminTechnicians(params = {}) {
+  const query = new URLSearchParams();
+  if (params.q) query.append('q', params.q);
+  if (params.is_active !== undefined) query.append('is_active', params.is_active);
+  if (params.company_id !== undefined) query.append('company_id', params.company_id);
+  const qs = query.toString() ? `?${query.toString()}` : '';
+  return await apiRequest(`/workforce/admin/technicians/${qs}`);
+}
+
+export async function apiCreateAdminTechnician(payload) {
+  return await apiRequest('/workforce/admin/technicians/', {
+    method: 'POST',
+    json: payload,
+  });
+}
+
+export async function apiGetAdminTechnicianDetail(id) {
+  return await apiRequest(`/workforce/admin/technicians/${id}/`);
+}
+
+export async function apiUpdateAdminTechnician(id, payload) {
+  return await apiRequest(`/workforce/admin/technicians/${id}/`, {
+    method: 'PATCH',
+    json: payload,
+  });
+}
+
+export async function apiToggleAdminTechnicianActive(id) {
+  return await apiRequest(`/workforce/admin/technicians/${id}/toggle-active/`, {
+    method: 'POST',
+  });
+}
+
+// ── Phase 2C: Public Providers & Join Requests ────────────────────────────────
+
+export async function apiGetPublicServiceProviders(params = {}) {
+  const query = new URLSearchParams();
+  if (params.search) query.append('search', params.search);
+  if (params.q) query.append('q', params.q);
+  const qs = query.toString() ? `?${query.toString()}` : '';
+  return await apiRequest(`/workforce/service-providers/public/${qs}`);
+}
+
+export async function apiDecideJoinRequest(requestIdOrEmployeeId, action, reason = '') {
+  return await apiRequest(`/workforce/admin/join-requests/${requestIdOrEmployeeId}/decide/`, {
+    method: 'POST',
+    json: {
+      action,
+      reason,
+    },
+  });
+}
+
+// ── SuperAdmin Global Dispatch Configuration ──────────────────────────────────
+
+export async function apiGetDispatchRadius() {
+  return await apiRequest('/workforce/admin/settings/dispatch-radius/');
+}
+
+export async function apiUpdateDispatchRadius(radiusKm) {
+  return await apiRequest('/workforce/admin/settings/dispatch-radius/', {
+    method: 'POST',
+    json: { dispatch_radius_km: radiusKm },
+  });
+}
+
+
+
+
+
 
 
 

@@ -3,6 +3,7 @@ workforce-app/backend/workforce_api/models.py
 Relational database models for Workforce Scheduling, Skills, Compliance, Notifications, Events, Payroll, and Reports.
 """
 import uuid
+import django
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
@@ -119,6 +120,28 @@ class WorkforceEmployeeSkill(models.Model):
 
     def __str__(self):
         return f"{self.employee} - {self.skill.name} ({self.proficiency_level})"
+
+
+class WorkforceServiceSkillRequirement(models.Model):
+    service = models.ForeignKey(
+        "service_requests.Service",
+        on_delete=models.CASCADE,
+        related_name="skill_requirements",
+    )
+    skill = models.ForeignKey(
+        WorkforceSkill,
+        on_delete=models.CASCADE,
+        related_name="service_requirements",
+    )
+    is_mandatory = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "workforce_service_skill_requirement"
+        unique_together = ("service", "skill")
+
+    def __str__(self):
+        return f"{self.service.name} requires {self.skill.name}"
 
 
 class WorkforceRequiredDocument(models.Model):
@@ -431,8 +454,12 @@ class WorkforceJobOffer(models.Model):
         ordering = ["-offered_at"]
         constraints = [
             models.CheckConstraint(
-                check=models.Q(wave_number__gte=1, wave_number__lte=6),
-                name="valid_wave_number_1_to_6",
+                **{
+                    ("condition" if django.VERSION >= (6, 0) else "check"): models.Q(
+                        wave_number__gte=1, wave_number__lte=6
+                    ),
+                    "name": "valid_wave_number_1_to_6",
+                }
             ),
             models.UniqueConstraint(
                 fields=["job", "employee"],
@@ -1048,6 +1075,19 @@ class JobTrackingSession(models.Model):
     last_captured_at = models.DateTimeField(null=True, blank=True)
     last_received_at = models.DateTimeField(null=True, blank=True)
 
+    # Derived tracking state (computed and stored on each GPS update)
+    # movement_status: MOVING | STATIONARY | UNKNOWN
+    movement_status = models.CharField(max_length=20, default="UNKNOWN", blank=True)
+    # geofence_status: OUTSIDE | APPROACHING | ARRIVING | ARRIVED
+    geofence_status = models.CharField(max_length=20, default="OUTSIDE", blank=True)
+    # Previous valid point for movement detection
+    prev_latitude = models.FloatField(null=True, blank=True)
+    prev_longitude = models.FloatField(null=True, blank=True)
+    prev_captured_at = models.DateTimeField(null=True, blank=True)
+    # Realtime event throttle: tracks when last JOB_LOCATION_UPDATE was emitted
+    last_event_emitted_at = models.DateTimeField(null=True, blank=True)
+    last_event_state_key = models.CharField(max_length=60, blank=True, default="")
+
     # Consecutive arrival confirmation tracking
     consecutive_arrival_fixes = models.IntegerField(default=0)
     last_fix_lat = models.FloatField(null=True, blank=True)
@@ -1061,8 +1101,8 @@ class JobTrackingSession(models.Model):
         db_table = "workforce_job_tracking_session"
         ordering = ["-created_at"]
         indexes = [
-            models.Index(fields=["job", "status"]),
-            models.Index(fields=["employee", "status"]),
+            models.Index(fields=["job", "status"], name="wf_ts_job_status_idx"),
+            models.Index(fields=["employee", "status"], name="wf_ts_emp_status_idx"),
         ]
         constraints = [
             models.UniqueConstraint(
@@ -1110,8 +1150,9 @@ class JobLocationPoint(models.Model):
         db_table = "workforce_job_location_point"
         ordering = ["tracking_session", "sequence_number", "created_at"]
         indexes = [
-            models.Index(fields=["tracking_session", "created_at"]),
-            models.Index(fields=["job", "created_at"]),
+            models.Index(fields=["tracking_session", "created_at"], name="wf_lp_session_time_idx"),
+            models.Index(fields=["job", "created_at"], name="wf_lp_job_time_idx"),
+            models.Index(fields=["job", "employee", "captured_at"], name="wf_lp_job_emp_cap_idx"),
         ]
 
     def __str__(self):
@@ -1254,6 +1295,11 @@ class JobPayment(models.Model):
         """Authoritative check if cash collection is persisted or job is fully paid."""
         return bool(self.cash_collected_at is not None or self.payment_status == self.PaymentStatus.PAID)
 
+    @property
+    def is_cash_received(self):
+        """Authoritative check if cash collection is persisted or job is fully paid (Phase 2 Requirement)."""
+        return self.is_cash_collected
+
     def __str__(self):
         return f"Payment #{self.id} for Job #{self.job_id} ({self.payment_method} - {self.payment_status} - ₹{self.amount_due})"
 
@@ -1320,7 +1366,411 @@ class PaymentCollectionEvent(models.Model):
         return f"PaymentEvent #{self.id} ({self.event_type}) for Payment #{self.job_payment_id}"
 
 
+# ─── 29. Estimation & Quotation Domain ────────────────────────────────────────
 
+def generate_quote_number():
+    """Generates sequential canonical quotation numbers: QT-0001, QT-0002, etc."""
+    last = WorkforceQuote.objects.order_by("-id").first()
+    num = (last.id + 1) if last and last.id else 1
+    candidate = f"QT-{str(num).zfill(4)}"
+    while WorkforceQuote.objects.filter(quote_number=candidate).exists():
+        num += 1
+        candidate = f"QT-{str(num).zfill(4)}"
+    return candidate
+
+
+class WorkforceRateCard(models.Model):
+    """
+    Authoritative Rate Card configuration for Quotation Calculation.
+    Defines approved unit rates, standard costs, and discount ceilings per service section.
+    """
+    class Section(models.TextChoices):
+        MATERIAL = "MATERIAL", "Material"
+        LABOUR = "LABOUR", "Labour"
+        SURFACE_PREP = "SURFACE_PREP", "Surface Preparation"
+        EQUIPMENT = "EQUIPMENT", "Equipment & Scaffolding"
+        TRANSPORT = "TRANSPORT", "Transport & Logistics"
+        OTHER = "OTHER", "Other"
+
+    service_id = models.IntegerField(null=True, blank=True, db_index=True)
+    service_category = models.CharField(max_length=100, db_index=True)
+    service_name = models.CharField(max_length=150, db_index=True)
+    section = models.CharField(max_length=50, choices=Section.choices, default=Section.MATERIAL)
+    item_name = models.CharField(max_length=200)
+    description = models.TextField(blank=True, default="")
+    unit = models.CharField(max_length=50, default="sqft")
+    default_rate = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    default_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=18.00)
+    max_discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=20.00)
+    is_active = models.BooleanField(default=True, db_index=True)
+    sort_order = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "workforce_rate_card"
+        ordering = ["service_category", "section", "sort_order", "id"]
+
+    def __str__(self):
+        return f"[{self.service_category}] {self.section}: {self.item_name} (₹{self.default_rate}/{self.unit})"
+
+
+class WorkforceQuote(models.Model):
+    """
+    Central Commercial Quotation Model for CalTrack Workforce.
+    Maintains a strict state machine, cryptographic decision token, and conversion to actual Work ServiceRequests.
+    """
+    class Status(models.TextChoices):
+        DRAFT               = "DRAFT",               "Draft"
+        PENDING_REVIEW      = "PENDING_REVIEW",      "Pending Admin Review"
+        SENT_TO_CUSTOMER    = "SENT_TO_CUSTOMER",    "Sent to Customer"
+        CUSTOMER_ACCEPTED   = "CUSTOMER_ACCEPTED",   "Customer Accepted"
+        CHANGES_REQUESTED   = "CHANGES_REQUESTED",   "Changes Requested"
+        DECLINED            = "DECLINED",            "Declined"
+        EXPIRED             = "EXPIRED",             "Expired"
+        SUPERSEDED          = "SUPERSEDED",          "Superseded"
+        CONVERSION_PENDING  = "CONVERSION_PENDING",  "Conversion Pending"
+        CONVERTED           = "CONVERTED",           "Converted to Work Booking"
+        CANCELLED           = "CANCELLED",           "Cancelled"
+
+    class StructuralImpact(models.TextChoices):
+        NONE                 = "NONE",                 "No Structural Impact"
+        SUSPECTED_STRUCTURAL = "SUSPECTED_STRUCTURAL", "Suspected Structural (Clearance Required)"
+        STRUCTURAL           = "STRUCTURAL",           "Structural Demolition / Load-Bearing (Clearance Required)"
+
+    quote_number = models.CharField(max_length=50, unique=True, db_index=True)
+    quote_version = models.IntegerField(default=1, db_index=True)
+    job = models.ForeignKey(
+        "service_requests.ServiceRequest",
+        on_delete=models.CASCADE,
+        related_name="quotes",
+        db_index=True,
+    )
+    work_job = models.ForeignKey(
+        "service_requests.ServiceRequest",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="converted_from_quote",
+    )
+    technician = models.ForeignKey(
+        "employees.Employee",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="quotes_created",
+    )
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="quotes",
+    )
+    customer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="customer_quotes",
+    )
+    title = models.CharField(max_length=200, default="Quotation")
+    description = models.TextField(blank=True, default="")
+    service_category = models.CharField(max_length=150, blank=True, default="")
+    service_name = models.CharField(max_length=200, blank=True, default="")
+
+    estimated_labor_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    estimated_materials_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    subtotal_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    inspection_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    inspection_fee_adjusted = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    net_payable = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+
+    status = models.CharField(
+        max_length=30,
+        choices=Status.choices,
+        default=Status.DRAFT,
+        db_index=True,
+    )
+    valid_until = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    # Cryptographic decision token for customer verification
+    decision_token = models.CharField(max_length=64, unique=True, null=True, blank=True, db_index=True)
+    decision_expires_at = models.DateTimeField(null=True, blank=True)
+    customer_decision = models.CharField(max_length=30, blank=True, default="")
+    customer_decided_at = models.DateTimeField(null=True, blank=True)
+    customer_decline_reason = models.TextField(blank=True, default="")
+    customer_notes = models.TextField(blank=True, default="")
+
+    # Mason Structural Clearance Gate
+    structural_impact = models.CharField(
+        max_length=30,
+        choices=StructuralImpact.choices,
+        default=StructuralImpact.NONE,
+    )
+    admin_cleared_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="cleared_quotes",
+    )
+    admin_cleared_at = models.DateTimeField(null=True, blank=True)
+    admin_clearance_notes = models.TextField(blank=True, default="")
+
+    sent_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_quote"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["job", "status"]),
+            models.Index(fields=["technician", "status"]),
+            models.Index(fields=["company", "status"]),
+            models.Index(fields=["decision_token"]),
+        ]
+
+    def __str__(self):
+        return f"{self.quote_number} (v{self.quote_version}) - {self.title} [₹{self.net_payable or self.total_amount}] - {self.status}"
+
+    @property
+    def requires_structural_clearance(self):
+        return self.structural_impact in [
+            self.StructuralImpact.SUSPECTED_STRUCTURAL,
+            self.StructuralImpact.STRUCTURAL,
+        ]
+
+    @property
+    def is_structurally_cleared(self):
+        if not self.requires_structural_clearance:
+            return True
+        return self.admin_cleared_at is not None
+
+    def save(self, *args, **kwargs):
+        if not self.quote_number:
+            self.quote_number = generate_quote_number()
+        super().save(*args, **kwargs)
+
+
+class WorkforceQuoteItem(models.Model):
+    """
+    Individual Line Item within a Workforce Quotation.
+    """
+    quote = models.ForeignKey(
+        WorkforceQuote,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+    section = models.CharField(max_length=50, default="OTHER")
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True, default="")
+    item_type = models.CharField(max_length=50, default="item")
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1.00)
+    unit = models.CharField(max_length=50, default="unit")
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=18.00)
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    material_source = models.CharField(max_length=50, default="CALTRACK")
+    is_customer_supplied = models.BooleanField(default=False)
+    warranty_applicable = models.BooleanField(default=True)
+    notes = models.TextField(blank=True, default="")
+    sort_order = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_quote_item"
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return f"{self.name} ({self.quantity} {self.unit} @ ₹{self.unit_price} = ₹{self.total_amount})"
+
+
+class WorkforceQuoteMeasurement(models.Model):
+    """
+    Dimensional & area measurement collected during physical site inspection.
+    """
+    quote = models.ForeignKey(
+        WorkforceQuote,
+        on_delete=models.CASCADE,
+        related_name="measurements",
+    )
+    name = models.CharField(max_length=200)
+    measurement_type = models.CharField(max_length=50, default="area")
+    length = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    width = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    height = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    area = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1.00)
+    unit = models.CharField(max_length=50, default="sqft")
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_quote_measurement"
+        ordering = ["id"]
+
+    def __str__(self):
+        return f"{self.name}: {self.area or self.length or self.quantity} {self.unit}"
+
+
+class WorkforceQuotePhoto(models.Model):
+    """
+    Inspection evidence photos captured on-site during quotation inspection.
+    """
+    quote = models.ForeignKey(
+        WorkforceQuote,
+        on_delete=models.CASCADE,
+        related_name="photos",
+    )
+    photo_url = models.CharField(max_length=500)
+    photo_type = models.CharField(max_length=50, null=True, blank=True)
+    caption = models.CharField(max_length=255, blank=True, default="")
+    sort_order = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "workforce_quote_photo"
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return f"Quote Photo #{self.id} for {self.quote.quote_number} ({self.photo_type})"
+
+
+class WorkforcePaintingQuote(models.Model):
+    """
+    Painting-specific structured inspection & scope parameters.
+    """
+    quote = models.OneToOneField(
+        WorkforceQuote,
+        on_delete=models.CASCADE,
+        related_name="painting_details",
+    )
+    property_type = models.CharField(max_length=100, default="Apartment")
+    rooms_detail = models.JSONField(default=list, blank=True)
+    area_sqft = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    surface_condition = models.CharField(max_length=100, default="Good")
+    existing_paint_condition = models.CharField(max_length=100, default="Old Emulsion")
+    paint_type = models.CharField(max_length=100, null=True, blank=True)
+    brand_grade = models.CharField(max_length=100, blank=True, default="Asian Paints / Berger")
+    number_of_coats = models.IntegerField(default=2)
+    requires_putty = models.BooleanField(default=False)
+    requires_priming = models.BooleanField(default=False)
+    crack_treatment = models.BooleanField(default=False)
+    waterproofing_needed = models.BooleanField(default=False)
+    scaffolding_required = models.BooleanField(default=False)
+    color_code = models.CharField(max_length=100, null=True, blank=True)
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_painting_quote"
+
+    def __str__(self):
+        return f"Painting Details for {self.quote.quote_number} ({self.area_sqft} sqft, {self.paint_type})"
+
+
+class WorkforceMasonQuote(models.Model):
+    """
+    Masonry & Civil structured inspection & scope parameters.
+    """
+    quote = models.OneToOneField(
+        WorkforceQuote,
+        on_delete=models.CASCADE,
+        related_name="mason_details",
+    )
+    work_type = models.CharField(max_length=100, null=True, blank=True)
+    length = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    width = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    height = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    area_sqft = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    estimated_duration_days = models.IntegerField(default=1)
+    requires_demolition = models.BooleanField(default=False)
+    debris_disposal_included = models.BooleanField(default=False)
+    structural_impact = models.CharField(max_length=50, default="NONE")
+    access_difficulty = models.CharField(max_length=50, default="Standard")
+    labour_count = models.IntegerField(default=2)
+    materials_needed = models.JSONField(default=list, blank=True)
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_mason_quote"
+
+    def __str__(self):
+        return f"Mason Details for {self.quote.quote_number} ({self.work_type}, Demolition: {self.requires_demolition})"
+
+
+class WorkforceProviderJoinRequest(models.Model):
+    """
+    Tracks a technician's request to join an existing Service Provider organization during signup.
+    Selecting a Service Provider during signup does NOT grant immediate company membership.
+    The join request remains in status=PENDING until approved by the Service Provider Admin or Superadmin.
+    """
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+
+    technician = models.ForeignKey(
+        "employees.Employee",
+        on_delete=models.CASCADE,
+        related_name="provider_join_requests",
+    )
+    provider = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="technician_join_requests",
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    requested_at = models.DateTimeField(auto_now_add=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    rejection_reason = models.TextField(blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        db_table = "workforce_provider_join_request"
+        ordering = ["-requested_at"]
+
+    def __str__(self):
+        return f"JoinRequest #{self.id}: Tech #{self.technician_id} -> Provider #{self.provider_id} ({self.status})"
+
+
+class WorkforceSystemSetting(models.Model):
+    """
+    Persistent global key-value configuration for CalTrack Workforce.
+    SuperAdmin managed settings (e.g. DISPATCH_RADIUS_KM).
+    """
+    key = models.CharField(max_length=100, unique=True, db_index=True)
+    value = models.CharField(max_length=255)
+    description = models.TextField(blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_system_setting"
+
+    def __str__(self):
+        return f"{self.key} = {self.value}"
 
 
 

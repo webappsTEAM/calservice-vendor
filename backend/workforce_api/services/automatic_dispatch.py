@@ -5,11 +5,17 @@ Single source of truth for all automatic job dispatch, candidate ranking,
 6-wave sequential proximity evaluation (0-1km, 1-2km, 2-5km, 5-10km, 10-15km, 15-20km),
 synchronized 2-minute offer creation with UUID wave IDs, lazy and scheduled wave progression,
 and cross-application job reconciliation across Workforce and Marketplace.
+
+Public API (preferred entry points for all callers):
+  reconcile_booking_for_dispatch(job)  — single authoritative gate for any booking needing dispatch
+  dispatch_pending_jobs(company_id, limit)  — periodic reconciliation sweep
+  reconsider_jobs_for_employee(employee)    — GPS / presence re-evaluation trigger
 """
 import uuid
 import logging
+import re
 from datetime import timedelta
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple, Optional, Set
 
 from django.db import transaction
 from django.db.models import Exists, OuterRef, Prefetch, Q
@@ -55,98 +61,215 @@ DEFAULT_OFFER_DURATION_MINUTES = 2
 # Dispatchable database statuses
 DISPATCHABLE_STATUSES = ["draft", "new_request", "received", "confirmed", "unassigned", "assigned", "redispatching"]
 
-# Explicit canonical alias dictionary covering normal and specialized categories
-EXPLICIT_SERVICE_ALIASES = {
-    "hvac": {"hvac", "ac", "air conditioning", "ac service", "ac repair", "ac installation", "ac gas", "ac repair and diagnostics", "ac service and cleaning", "ac gas and refrigerant", "ac installation and uninstallation"},
-    "ac": {"hvac", "ac", "air conditioning", "ac service", "ac repair", "ac installation", "ac gas", "ac repair and diagnostics", "ac service and cleaning", "ac gas and refrigerant", "ac installation and uninstallation"},
-    "air conditioning": {"hvac", "ac", "air conditioning", "ac service", "ac repair", "ac installation", "ac gas", "ac repair and diagnostics", "ac service and cleaning", "ac gas and refrigerant", "ac installation and uninstallation"},
-    "ac repair and diagnostics": {"hvac", "ac", "air conditioning", "ac service", "ac repair", "ac installation", "ac gas", "ac repair and diagnostics", "ac service and cleaning", "ac gas and refrigerant", "ac installation and uninstallation"},
-    "ac service and cleaning": {"hvac", "ac", "air conditioning", "ac service", "ac repair", "ac installation", "ac gas", "ac repair and diagnostics", "ac service and cleaning", "ac gas and refrigerant", "ac installation and uninstallation"},
-    "ac gas and refrigerant": {"hvac", "ac", "air conditioning", "ac service", "ac repair", "ac installation", "ac gas", "ac repair and diagnostics", "ac service and cleaning", "ac gas and refrigerant", "ac installation and uninstallation"},
-    "ac installation and uninstallation": {"hvac", "ac", "air conditioning", "ac service", "ac repair", "ac installation", "ac gas", "ac repair and diagnostics", "ac service and cleaning", "ac gas and refrigerant", "ac installation and uninstallation"},
-    "plumbing": {"plumbing", "plumber", "pipe repair", "water leakage", "drainage", "tap repair", "sanitary"},
-    "electrical": {"electrical", "electrician", "wiring", "switchboard", "fan repair", "fuse repair", "light fitting"},
-    "electrician": {"electrical", "electrician", "wiring", "switchboard", "fan repair", "fuse repair", "light fitting"},
-    "refrigerator": {"refrigerator", "fridge", "freezer", "single door fridge", "double door fridge", "appliance repair"},
-    "washing machine": {"washing machine", "washer", "dryer", "top load", "front load", "appliance repair"},
-    "tv and display": {"tv and display", "tv", "television", "led tv", "smart tv", "display", "appliance repair"},
-    "microwave oven repair": {"microwave", "microwave oven", "microwave oven repair", "oven", "appliance repair"},
-    "appliance repair": {"appliance repair", "refrigerator", "fridge", "washing machine", "microwave", "tv", "appliance"},
-    "carpentry services": {"carpentry", "carpenter", "wood work", "furniture repair", "door repair", "carpentry services"},
-    "carpentry": {"carpentry", "carpenter", "wood work", "furniture repair", "door repair", "carpentry services"},
-    "pest control": {"pest control", "cockroach control", "ants and bed bugs control", "termite control", "bed bugs", "cockroach", "termite"},
-    "cockroach control": {"cockroach control", "cockroach", "pest control"},
-    "ants and bed bugs control": {"ants and bed bugs control", "ants", "bed bugs", "pest control"},
-    "termite control": {"termite control", "termite", "pest control"},
-    "cleaning": {"cleaning", "kitchen cleaning", "bathroom cleaning", "full house cleaning", "sofa cleaning", "deep cleaning", "house cleaning"},
-    "kitchen cleaning": {"kitchen cleaning", "cleaning", "deep cleaning"},
-    "bathroom cleaning": {"bathroom cleaning", "cleaning", "deep cleaning"},
-    "full house cleaning": {"full house cleaning", "cleaning", "deep cleaning", "house cleaning"},
-    "sofa cleaning": {"sofa cleaning", "cleaning", "couch cleaning"},
-    "two wheeler": {"two wheeler", "bike", "scooter", "motorcycle", "bike repair", "two wheeler repair"},
-    "goods and transport": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting", "commercial transport"},
-    "goods transport": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting", "commercial transport"},
-    "transport": {"goods and transport", "goods transport", "transport", "logistics", "truck", "cargo", "delivery", "shifting"},
-    "packers and movers": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "goods and transport"},
-    "packers movers": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "goods and transport"},
-    "packer and mover": {"packers and movers", "packers movers", "packer and mover", "packer mover", "truck", "shifting", "relocation", "house shifting", "goods and transport"},
-    "truck": {"truck", "packer and mover", "packers and movers", "logistics", "shifting", "goods and transport", "goods transport", "transport", "relocation"},
-}
 
+def get_booking_discovery_scope(company_id: Optional[int] = None) -> Q:
+    """
+    Authoritative booking discovery scope helper for Marketplace & Vendor bookings:
+    - If company_id is provided (vendor context): discovers company-owned bookings + unassigned Marketplace bookings (company_id=NULL).
+    - If company_id is None (marketplace / global sweep context): discovers all dispatchable bookings across all companies + Marketplace bookings.
+    """
+    if company_id is not None:
+        return Q(company_id=company_id) | Q(company_id__isnull=True)
+    return Q()
 
 def normalize_service_name(name: str) -> str:
     """
     Normalizes service names by lowercasing, replacing dashes, underscores,
-    unicode hyphens, and ampersands with standard words.
+    slashes, unicode hyphens, pluses, and ampersands with standard words.
     """
     if not name:
         return ""
     s = str(name).lower()
     s = s.replace("—", " ").replace("–", " ").replace("-", " ").replace("_", " ")
+    s = s.replace("/", " ").replace("\\", " ").replace("+", " and ")
     s = s.replace("&", " and ")
     return " ".join(s.split())
 
 
+
+def resolve_service_identifiers(category_raw: Any, issue_title_raw: Any, cart_data: Any) -> List[str]:
+    """
+    Resolves all potential canonical service names and category identifiers for a booking.
+    If category_raw or issue_title_raw is a numeric ID (e.g. '15', '18', '11'), looks up
+    CatalogCategory and Service database records to resolve canonical titles/slugs.
+    """
+    terms = []
+
+    def _add_term(val):
+        if val is None:
+            return
+        val_str = str(val).strip()
+        if not val_str:
+            return
+        if val_str not in terms:
+            terms.append(val_str)
+
+        # If numeric string or integer, resolve from database tables
+        if val_str.isdigit():
+            cat_id = int(val_str)
+            try:
+                from service_requests.models import CatalogCategory, Service
+                cat_obj = CatalogCategory.objects.filter(pk=cat_id).first()
+                if cat_obj:
+                    if cat_obj.name and cat_obj.name not in terms:
+                        terms.append(cat_obj.name)
+                    if hasattr(cat_obj, "slug") and cat_obj.slug and cat_obj.slug not in terms:
+                        terms.append(cat_obj.slug)
+                svc_obj = Service.objects.filter(pk=cat_id).first()
+                if svc_obj:
+                    if svc_obj.name and svc_obj.name not in terms:
+                        terms.append(svc_obj.name)
+                    if hasattr(svc_obj, "slug") and svc_obj.slug and svc_obj.slug not in terms:
+                        terms.append(svc_obj.slug)
+                    if getattr(svc_obj, "category", None) and svc_obj.category.name not in terms:
+                        terms.append(svc_obj.category.name)
+            except Exception as e:
+                logger.debug(f"[SERVICE_ID_RESOLVE_ERR] {e}")
+
+    _add_term(category_raw)
+    _add_term(issue_title_raw)
+
+    if isinstance(cart_data, list):
+        for item in cart_data:
+            if isinstance(item, dict):
+                _add_term(item.get("service_name"))
+                _add_term(item.get("category"))
+                _add_term(item.get("categoryName"))
+                _add_term(item.get("title"))
+                _add_term(item.get("name"))
+                _add_term(item.get("service_id"))
+                _add_term(item.get("category_id"))
+                item_id = item.get("id")
+                if item_id:
+                    _add_term(item_id)
+                    try:
+                        from service_requests.models import Service
+                        svc = Service.objects.filter(slug=str(item_id)).first()
+                        if svc:
+                            _add_term(svc.name)
+                            if svc.category:
+                                _add_term(svc.category.name)
+                    except Exception:
+                        pass
+    elif isinstance(cart_data, dict):
+        _add_term(cart_data.get("service_name"))
+        _add_term(cart_data.get("category"))
+        _add_term(cart_data.get("categoryName"))
+        _add_term(cart_data.get("title"))
+        _add_term(cart_data.get("name"))
+
+    return terms
+
+
 def canonical_service_match(requested_service: str, approved_services: List[str], verified_skills: List[str]) -> Tuple[bool, str, str]:
     """
-    Evaluates whether a requested service matches an employee's authorized services or verified skills.
-    Returns (is_match, match_method, matched_term).
+    Evaluates whether a requested service matches an employee's authorized services or verified skills
+    using 100% database-driven relationships:
+    ServiceRequest → Service → required Skill/Capability → verified Employee Skill.
     """
     if not requested_service:
         return True, "EMPTY_SERVICE_BYPASS", ""
 
     req_clean = normalize_service_name(requested_service)
-    req_words = set(w for w in req_clean.split() if len(w) >= 2)
+    if not req_clean:
+        return False, "EMPTY_SERVICE", ""
 
-    # 1. Check exact or direct match against approved employee services
-    for it in approved_services:
-        if not it:
-            continue
-        it_clean = normalize_service_name(it)
-        if req_clean == it_clean or req_clean in it_clean or it_clean in req_clean:
-            return True, "EXACT_OR_SUBSTRING_SERVICE", it
+    # Direct match against approved services or verified skills (normalized)
+    for app_s in approved_services:
+        if app_s and normalize_service_name(app_s) == req_clean:
+            return True, "EXACT_APPROVED_SERVICE_MATCH", app_s
 
-    # 2. Check verified skills
-    for sk in verified_skills:
-        if not sk:
-            continue
-        sk_clean = normalize_service_name(sk)
-        if req_clean == sk_clean or req_clean in sk_clean or sk_clean in req_clean:
-            return True, "VERIFIED_SKILL_MATCH", sk
+    for vs in verified_skills:
+        if vs and normalize_service_name(vs) == req_clean:
+            return True, "EXACT_VERIFIED_SKILL_MATCH", vs
 
-    # 3. Check explicit canonical alias table
-    for alias_key, alias_group in EXPLICIT_SERVICE_ALIASES.items():
-        if req_clean == alias_key or req_clean in alias_group or any(req_word in alias_group for req_word in req_words):
-            for it in approved_services:
-                it_clean = normalize_service_name(it)
-                if it_clean in alias_group or any(w in alias_group for w in it_clean.split() if len(w) >= 2):
-                    return True, "EXPLICIT_ALIAS_SERVICE", it
-            for sk in verified_skills:
-                sk_clean = normalize_service_name(sk)
-                if sk_clean in alias_group or any(w in alias_group for w in sk_clean.split() if len(w) >= 2):
-                    return True, "EXPLICIT_ALIAS_SKILL", sk
+    # Database Service Resolution
+    try:
+        from service_requests.models import Service, CatalogCategory
+        from workforce_api.models import WorkforceSkill, WorkforceServiceSkillRequirement
 
-    return False, "NO_MATCH", ""
+        svc = None
+        if req_clean.isdigit():
+            svc = Service.objects.filter(pk=int(req_clean)).select_related("category").first()
+        if not svc:
+            svc = Service.objects.filter(Q(slug=req_clean) | Q(name__iexact=req_clean)).select_related("category").first()
+
+        if svc:
+            # 1. Relational requirements: WorkforceServiceSkillRequirement
+            req_skills = list(WorkforceServiceSkillRequirement.objects.filter(service=svc).select_related("skill"))
+            if req_skills:
+                req_names = {normalize_service_name(r.skill.name) for r in req_skills}
+                req_codes = {normalize_service_name(r.skill.code) for r in req_skills if r.skill.code}
+                for vs in verified_skills:
+                    vs_clean = normalize_service_name(vs)
+                    if vs_clean in req_names or vs_clean in req_codes:
+                        return True, "DB_SERVICE_SKILL_REQUIREMENT_MATCH", vs
+
+            # 2. Match service name / slug against employee verified skills
+            svc_name_norm = normalize_service_name(svc.name)
+            svc_slug_norm = normalize_service_name(svc.slug or "")
+            for vs in verified_skills:
+                vs_clean = normalize_service_name(vs)
+                if vs_clean and (vs_clean == svc_name_norm or vs_clean == svc_slug_norm):
+                    return True, "DB_SERVICE_SKILL_MATCH", vs
+
+            # 3. Match service name / slug / ID against employee approved services
+            for app_s in approved_services:
+                app_clean = normalize_service_name(app_s)
+                if app_clean and (app_clean == svc_name_norm or app_clean == svc_slug_norm or str(app_s) == str(svc.id)):
+                    return True, "DB_SERVICE_APPROVED_MATCH", app_s
+
+            # 4. Service's CatalogCategory
+            if svc.category:
+                cat_name_norm = normalize_service_name(svc.category.name)
+                cat_slug_norm = normalize_service_name(svc.category.slug or "")
+                for app_s in approved_services:
+                    app_clean = normalize_service_name(app_s)
+                    if app_clean and (app_clean == cat_name_norm or app_clean == cat_slug_norm or str(app_s) == str(svc.category_id)):
+                        return True, "DB_CATEGORY_APPROVED_MATCH", app_s
+                for vs in verified_skills:
+                    vs_clean = normalize_service_name(vs)
+                    if vs_clean and (vs_clean == cat_name_norm or vs_clean == cat_slug_norm):
+                        return True, "DB_CATEGORY_SKILL_MATCH", vs
+
+        # Database Category Resolution
+        cat = None
+        if req_clean.isdigit():
+            cat = CatalogCategory.objects.filter(pk=int(req_clean)).first()
+        if not cat:
+            cat = CatalogCategory.objects.filter(Q(slug=req_clean) | Q(name__iexact=req_clean)).first()
+
+        if cat:
+            cat_name_norm = normalize_service_name(cat.name)
+            cat_slug_norm = normalize_service_name(cat.slug or "")
+            for app_s in approved_services:
+                app_clean = normalize_service_name(app_s)
+                if app_clean and (app_clean == cat_name_norm or app_clean == cat_slug_norm or str(app_s) == str(cat.id)):
+                    return True, "DB_CATEGORY_MATCH", app_s
+            for vs in verified_skills:
+                vs_clean = normalize_service_name(vs)
+                if vs_clean and (vs_clean == cat_name_norm or vs_clean == cat_slug_norm):
+                    return True, "DB_CATEGORY_SKILL_MATCH", vs
+
+        # Database Skill Resolution
+        db_skill = WorkforceSkill.objects.filter(Q(name__iexact=req_clean) | Q(code__iexact=req_clean)).first()
+        if db_skill:
+            sk_name_norm = normalize_service_name(db_skill.name)
+            sk_code_norm = normalize_service_name(db_skill.code or "")
+            for vs in verified_skills:
+                vs_clean = normalize_service_name(vs)
+                if vs_clean and (vs_clean == sk_name_norm or vs_clean == sk_code_norm):
+                    return True, "DB_SKILL_MATCH", vs
+
+    except Exception as e:
+        logger.debug(f"[CANONICAL_DB_MATCH_ERR] {e}")
+
+    return False, "NO_DB_RELATIONSHIP_MATCH", ""
+
+
+
+_MANDATORY_DOC_REQS_CACHE: Dict[int, List[Any]] = {}
+_MANDATORY_COMP_REQS_CACHE: Dict[int, List[Any]] = {}
 
 
 def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = None, check_workload: bool = True) -> Tuple[bool, str, Dict[str, bool]]:
@@ -186,8 +309,11 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
         if hasattr(emp, "prefetched_mandatory_doc_reqs"):
             mandatory_doc_reqs = emp.prefetched_mandatory_doc_reqs
         else:
-            from workforce_api.models import WorkforceRequiredDocument
-            mandatory_doc_reqs = list(WorkforceRequiredDocument.objects.filter(company_id=emp.company_id, is_mandatory=True))
+            cid = emp.company_id
+            if cid not in _MANDATORY_DOC_REQS_CACHE:
+                from workforce_api.models import WorkforceRequiredDocument
+                _MANDATORY_DOC_REQS_CACHE[cid] = list(WorkforceRequiredDocument.objects.filter(company_id=cid, is_mandatory=True))
+            mandatory_doc_reqs = _MANDATORY_DOC_REQS_CACHE[cid]
 
         if mandatory_doc_reqs:
             if hasattr(emp, "prefetched_employee_documents"):
@@ -213,10 +339,10 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
                     return False, f"Gate 3: Technician mandatory document '{req_doc.title}' expired on {emp_doc.expiry_date}.", gate_results
         else:
             documents = onboarding.get("documents", {})
-            if any(doc.get("status") in ["rejected", "pending_review", "missing"] for doc in documents.values()):
+            if any(doc.get("status") == "rejected" for doc in documents.values()):
                 gate_results["G3"] = False
-                logger.debug(f"[9GATE_REJECT_GATE3_DOCUMENTS_UNAPPROVED] Employee #{emp.id} has unapproved documents.")
-                return False, "Gate 3: Technician has unapproved dossier documents.", gate_results
+                logger.debug(f"[9GATE_REJECT_GATE3_DOCUMENTS_REJECTED] Employee #{emp.id} has rejected documents.")
+                return False, "Gate 3: Technician has rejected dossier documents.", gate_results
     else:
         documents = onboarding.get("documents", {})
         if any(doc.get("status") in ["rejected", "pending_review", "missing"] for doc in documents.values()):
@@ -228,8 +354,11 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
         if hasattr(emp, "prefetched_mandatory_comp_reqs"):
             mandatory_comp_reqs = emp.prefetched_mandatory_comp_reqs
         else:
-            from workforce_api.models import WorkforceComplianceRequirement
-            mandatory_comp_reqs = list(WorkforceComplianceRequirement.objects.filter(company_id=emp.company_id, is_mandatory=True))
+            cid = emp.company_id
+            if cid not in _MANDATORY_COMP_REQS_CACHE:
+                from workforce_api.models import WorkforceComplianceRequirement
+                _MANDATORY_COMP_REQS_CACHE[cid] = list(WorkforceComplianceRequirement.objects.filter(company_id=cid, is_mandatory=True))
+            mandatory_comp_reqs = _MANDATORY_COMP_REQS_CACHE[cid]
 
         if mandatory_comp_reqs:
             today = timezone.now().date()
@@ -311,6 +440,11 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
             if s.get("category"):
                 approved_svcs.append(s["category"])
 
+    if hasattr(emp, "service_roles") and isinstance(emp.service_roles, list):
+        for sr in emp.service_roles:
+            if sr and str(sr) not in approved_svcs:
+                approved_svcs.append(str(sr))
+
     if hasattr(emp, "prefetched_verified_skills"):
         verified_skills = [es.skill.name for es in emp.prefetched_verified_skills]
     else:
@@ -366,16 +500,22 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
 def get_eligible_candidates(
     job_id_or_obj,
     max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS,
-    radius_km: float = MAX_DISPATCH_RADIUS_KM,
+    radius_km: Optional[float] = None,
     exclude_employee_ids: Optional[List[int]] = None,
+    candidate_employee_ids: Optional[List[int]] = None,
     check_workload: bool = False,
 ) -> List[Dict[str, Any]]:
     """
-    Finds and ranks all eligible candidate employees for a given ServiceRequest within 20 km.
+    Finds and ranks all eligible candidate employees for a given ServiceRequest within the configured global radius.
     Uses mathematical bounding-box prefiltering and exact Haversine distance calculation.
     
+    If candidate_employee_ids is provided (e.g. from Redis GEO candidate discovery),
+    evaluates only those candidate IDs, drastically reducing Supabase/PostgreSQL roundtrips.
     By default check_workload=False so busy employees are eligible to receive and view offers.
     """
+    from workforce_api.services.geo_spatial import get_global_dispatch_radius_km
+    if radius_km is None:
+        radius_km = get_global_dispatch_radius_km()
     if hasattr(job_id_or_obj, "latitude"):
         job_obj = job_id_or_obj
     else:
@@ -383,6 +523,10 @@ def get_eligible_candidates(
         if not job_obj:
             logger.warning(f"[DISPATCH_JOB_NOT_FOUND] Job #{job_id_or_obj} not found.")
             return []
+
+    if candidate_employee_ids is not None and not candidate_employee_ids:
+        logger.debug(f"[DISPATCH_EMPTY_CANDIDATE_LIST] Empty candidate_employee_ids supplied for Job #{job_obj.id}.")
+        return []
 
     is_valid_coords, cust_lat, cust_lon, coord_err = validate_coordinates(job_obj.latitude, job_obj.longitude)
     if not is_valid_coords:
@@ -409,6 +553,9 @@ def get_eligible_candidates(
     if exclude_employee_ids:
         candidates_qs = candidates_qs.exclude(pk__in=exclude_employee_ids)
 
+    if candidate_employee_ids is not None:
+        candidates_qs = candidates_qs.filter(pk__in=candidate_employee_ids)
+
     candidates_qs = (
         candidates_qs
         .prefetch_related(
@@ -433,27 +580,44 @@ def get_eligible_candidates(
         )
     )
 
-    if not job_obj.company_id:
-        logger.warning(f"[DISPATCH_COMPANY_MISSING] Job #{job_obj.id} lacks an associated company/vendor tenant.")
-        return []
+    if job_obj.company_id:
+        candidates_qs = candidates_qs.filter(company_id=job_obj.company_id)
+    else:
+        candidates_qs = candidates_qs.filter(Q(company__is_active=True) | Q(company__isnull=True))
 
-    candidates_qs = candidates_qs.filter(company_id=job_obj.company_id)
-
-    # Exclude candidates who have already received or rejected/cancelled an offer for this job
-    previous_offers = set(
-        WorkforceJobOffer.objects.filter(
-            job=job_obj,
-        ).values_list("employee_id", flat=True)
-    )
-    if exclude_employee_ids:
-        previous_offers.update(exclude_employee_ids)
-
-    ranked_candidates = []
     now = timezone.now()
 
+    declined_emp_ids = set(
+        WorkforceJobOffer.objects.filter(
+            job=job_obj,
+            status__in=["DECLINED", "REJECTED"],
+        ).values_list("employee_id", flat=True)
+    )
+    # Exclude candidates who currently have an active unexpired offer
+    active_offer_emp_ids = set(
+        WorkforceJobOffer.objects.filter(
+            job=job_obj,
+            status=WorkforceJobOffer.Status.OFFERED,
+            expires_at__gt=now,
+        ).values_list("employee_id", flat=True)
+    )
+    excluded_emp_ids = declined_emp_ids | active_offer_emp_ids
+    if exclude_employee_ids:
+        excluded_emp_ids.update(exclude_employee_ids)
+
+    # Resolve all potential service identifiers (category names, numeric IDs, cart items)
+    requested_service_terms = resolve_service_identifiers(
+        job_obj.service_category,
+        job_obj.issue_title,
+        job_obj.cart_data,
+    )
+
+    ranked_candidates = []
+    rejected_reasons = {}
+
     for emp in candidates_qs:
-        if emp.id in previous_offers:
-            logger.debug(f"[DISPATCH_CANDIDATE_REJECTED] Employee #{emp.id} already has offer history for Job #{job_obj.id}.")
+        if emp.id in excluded_emp_ids:
+            logger.debug(f"[DISPATCH_CANDIDATE_SKIPPED] Employee #{emp.id} excluded (declined or active unexpired offer).")
             continue
 
         # Extract live GPS from User.last_known_location
@@ -463,15 +627,17 @@ def get_eligible_candidates(
 
         is_emp_loc_valid, emp_lat_f, emp_lon_f, _ = validate_coordinates(emp_lat, emp_lon)
         if not is_emp_loc_valid:
+            rejected_reasons[emp.id] = "GPS missing or invalid"
             logger.info(f"[DISPATCH_REJECT] job={job_obj.id} employee={emp.id} reason=GPS_MISSING")
             continue
 
         # Bounding box prefilter
         if not (min_lat <= emp_lat_f <= max_lat and min_lon <= emp_lon_f <= max_lon):
+            rejected_reasons[emp.id] = "Outside spatial bounding box"
             logger.debug(f"[DISPATCH_BOUNDING_BOX_EXCLUDED] employee={emp.id} outside bbox ({emp_lat_f}, {emp_lon_f})")
             continue
 
-        gps_age_s = None
+        gps_age_s = 0.0
         updated_at_str = last_loc.get("updated_at") or last_loc.get("captured_at")
         if updated_at_str:
             try:
@@ -479,34 +645,56 @@ def get_eligible_candidates(
                 if loc_dt:
                     if timezone.is_naive(loc_dt):
                         loc_dt = timezone.make_aware(loc_dt)
-                    gps_age_s = (now - loc_dt).total_seconds()
+                    raw_diff = (now - loc_dt).total_seconds()
+                    if raw_diff < 0 and raw_diff >= -300:
+                        gps_age_s = 0.0
+                    else:
+                        gps_age_s = raw_diff
             except Exception:
-                pass
+                gps_age_s = 0.0
 
         # Exact geodesic distance
         dist_km = calculate_distance_km(cust_lat, cust_lon, emp_lat_f, emp_lon_f)
 
-        # Strict boundary enforcement: strictly <= 20.0 km
-        if not is_within_automatic_radius(dist_km):
+        # Strict boundary enforcement using configured global radius
+        if not is_within_automatic_radius(dist_km, max_radius_km=radius_km):
+            rejected_reasons[emp.id] = f"Outside dispatch radius ({dist_km:.2f}km > {radius_km:.1f}km)"
             logger.info(f"[DISPATCH_REJECT] job={job_obj.id} employee={emp.id} reason=RADIUS_EXCEEDED distance_km={dist_km}")
             continue
 
-        # Classify sequential distance wave (1 to 6)
-        wave_number = classify_wave(dist_km)
+        # Classify sequential distance wave (1 to 6) using configured global radius
+        wave_number = classify_wave(dist_km, max_radius_km=radius_km)
         if wave_number is None:
+            rejected_reasons[emp.id] = f"Outside automatic waves ({dist_km:.2f}km)"
             logger.info(f"[DISPATCH_REJECT] job={job_obj.id} employee={emp.id} reason=OUTSIDE_AUTOMATIC_WAVES distance_km={dist_km}")
             continue
 
-        # Check eligibility against service_category, then issue_title
-        is_eligible, reason, gate_results = check_candidate_eligibility(emp, job_obj.service_category, check_workload=check_workload)
-        if not is_eligible and job_obj.issue_title:
-            is_eligible, reason, gate_results = check_candidate_eligibility(emp, job_obj.issue_title, check_workload=check_workload)
+        # Check candidate eligibility across all resolved service terms
+        is_eligible = False
+        elig_reason = "No service terms matched"
+        gate_results = {}
+
+        if not requested_service_terms:
+            is_eligible, elig_reason, gate_results = check_candidate_eligibility(emp, None, check_workload=check_workload)
+        else:
+            for term in requested_service_terms:
+                term_elig, term_reason, term_gates = check_candidate_eligibility(emp, term, check_workload=check_workload)
+                if term_elig:
+                    is_eligible = True
+                    elig_reason = "All Eligibility Gates Passed"
+                    gate_results = term_gates
+                    break
+                else:
+                    elig_reason = term_reason
+                    gate_results = term_gates
 
         if not is_eligible:
-            logger.info(f"[DISPATCH_REJECT] job={job_obj.id} employee={emp.id} reason={reason}")
+            rejected_reasons[emp.id] = elig_reason
+            logger.info(f"[DISPATCH_REJECT] job={job_obj.id} employee={emp.id} reason={elig_reason}")
             continue
 
-        if gps_age_s is None or gps_age_s > max_gps_age_seconds or gps_age_s < -60:
+        if gps_age_s > max_gps_age_seconds:
+            rejected_reasons[emp.id] = f"Stale GPS ({gps_age_s:.0f}s > {max_gps_age_seconds}s)"
             logger.info(f"[DISPATCH_REJECT] job={job_obj.id} employee={emp.id} reason=GPS_STALE gps_age={gps_age_s}s")
             continue
 
@@ -519,7 +707,7 @@ def get_eligible_candidates(
         for sk in skills:
             sk_name = sk.skill.name.lower()
             matches = False
-            for term in [job_obj.service_category, job_obj.issue_title]:
+            for term in requested_service_terms:
                 if term and (normalize_service_name(term) in sk_name or sk_name in normalize_service_name(term)):
                     matches = True
                     break
@@ -558,6 +746,11 @@ def get_eligible_candidates(
             "score": round(total_score, 1),
         })
 
+    # Structured candidate summary logging
+    if rejected_reasons:
+        rej_str = "; ".join([f"EMP-{e_id}: {r}" for e_id, r in list(rejected_reasons.items())[:5]])
+        logger.info(f"[DISPATCH_CANDIDATE_SUMMARY] Job #{job_obj.id} — Eligible: {len(ranked_candidates)}, Rejected ({len(rejected_reasons)}): {rej_str}")
+
     # Deterministic sort: distance (ascending), score (descending), employee ID (ascending)
     ranked_candidates.sort(key=lambda x: (x["distance_km"], -x["score"], x["employee"].id))
     return ranked_candidates
@@ -576,7 +769,12 @@ def sweep_job_expired_offers(job_obj) -> int:
     ).update(status=WorkforceJobOffer.Status.EXPIRED)
 
 
-def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, exclude_employee_ids: Optional[List[int]] = None) -> Tuple[bool, str]:
+def dispatch_job(
+    job_id_or_obj,
+    max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS,
+    exclude_employee_ids: Optional[List[int]] = None,
+    candidate_employee_ids: Optional[List[int]] = None,
+) -> Tuple[bool, str]:
     """
     Authoritative sequential distance-wave dispatch engine (Phase 1):
     1. Locks ServiceRequest row with select_for_update inside transaction.atomic()
@@ -590,132 +788,231 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
     """
     job_id = job_id_or_obj.pk if hasattr(job_id_or_obj, "pk") else job_id_or_obj
 
-    with transaction.atomic():
-        job_obj = ServiceRequest.objects.select_for_update().filter(pk=job_id).first()
-        if not job_obj:
-            return False, "Job not found."
+    job_obj = ServiceRequest.objects.filter(pk=job_id).first()
+    if not job_obj:
+        return False, "Job not found."
 
-        if job_obj.status in ["completed", "cancelled"]:
-            return False, f"Job #{job_id} is {job_obj.status} and cannot be dispatched."
+    if job_obj.status in ["completed", "cancelled"]:
+        return False, f"Job #{job_id} is {job_obj.status} and cannot be dispatched."
 
-        if job_obj.status in ["accepted", "on_the_way", "en_route", "arrived", "in_progress", "proof_submitted", "service_completed", "payment_pending", "cash_pending"] and job_obj.assigned_employee:
-            return False, f"Job #{job_id} is already accepted and in progress with Employee #{job_obj.assigned_employee_id}."
+    if job_obj.status in ["accepted", "on_the_way", "en_route", "arrived", "in_progress", "proof_submitted", "service_completed", "payment_pending", "cash_pending"] and job_obj.assigned_employee:
+        return False, f"Job #{job_id} is already accepted and in progress with Employee #{job_obj.assigned_employee_id}."
 
-        now = timezone.now()
+    now = timezone.now()
 
-        # Step 1: Lazy reconciliation of expired offers for this job
-        sweep_job_expired_offers(job_obj)
+    # Step 1: Lazy reconciliation of expired offers for this job
+    sweep_job_expired_offers(job_obj)
 
-        # Step 2: Idempotency check: Is there an active unexpired wave running for this job?
-        active_offers = list(
-            WorkforceJobOffer.objects.select_for_update().filter(
+    # Step 2: Idempotency check: Is there an active unexpired wave running for this job?
+    active_offers = list(
+        WorkforceJobOffer.objects.filter(
+            job=job_obj,
+            status=WorkforceJobOffer.Status.OFFERED,
+            expires_at__gt=now,
+        )
+    )
+
+    if active_offers:
+        first_offer = active_offers[0]
+        current_wave_num = first_offer.wave_number
+        current_wave_id = first_offer.wave_id
+        current_expires_at = first_offer.expires_at
+
+        # Check if any newly eligible technicians within this active wave boundary need to be added
+        already_offered_ids = set(o.employee_id for o in active_offers)
+        declined_or_past_ids = set(
+            WorkforceJobOffer.objects.filter(
                 job=job_obj,
-                status=WorkforceJobOffer.Status.OFFERED,
-                expires_at__gt=now,
-            )
+                status__in=["DECLINED", "REJECTED", "ACCEPTED", "SUPERSEDED_BY_ACCEPTANCE"]
+            ).values_list("employee_id", flat=True)
         )
+        exclude_joining_ids = list(already_offered_ids | declined_or_past_ids | set(exclude_employee_ids or []))
 
-        if active_offers:
-            current_wave_num = active_offers[0].wave_number
-            logger.info(
-                f"[DISPATCH_WAVE_ACTIVE] Job #{job_id} already has active Wave {current_wave_num} "
-                f"with {len(active_offers)} pending offer(s)."
-            )
-            return True, f"Active Wave {current_wave_num} already pending ({len(active_offers)} offers)."
-
-        # Step 3: Validate customer booking coordinates
-        if job_obj.latitude is None or job_obj.longitude is None:
-            if job_obj.status != "unassigned":
-                apply_transition(job_obj, "unassigned")
-            logger.warning(f"[DISPATCH_GPS_MISSING] Job #{job_id} is missing coordinates.")
-            return False, "Customer booking is missing valid GPS coordinates."
-
-        WorkforceEventLog.objects.create(
-            event_type="DISPATCH_STARTED",
-            payload={"job_id": job_obj.id, "service": job_obj.service_category}
-        )
-
-        # Step 4: Find eligible candidate technicians across 0 to 20 km
         candidates = get_eligible_candidates(
             job_obj,
             max_gps_age_seconds=max_gps_age_seconds,
             radius_km=MAX_DISPATCH_RADIUS_KM,
-            exclude_employee_ids=exclude_employee_ids,
+            exclude_employee_ids=exclude_joining_ids,
             check_workload=False,
         )
+        new_wave_candidates = [c for c in candidates if c.get("wave_number") == current_wave_num]
+
+        if new_wave_candidates:
+            with transaction.atomic():
+                locked_job = ServiceRequest.objects.select_for_update().filter(pk=job_id).first()
+                if not locked_job or locked_job.status in ["completed", "cancelled"]:
+                    return False, f"Job #{job_id} is {locked_job.status if locked_job else 'missing'}."
+                if locked_job.assigned_employee and locked_job.status not in ["unassigned", "redispatching"]:
+                    return False, f"Job #{job_id} already assigned."
+
+                for cand in new_wave_candidates:
+                    emp_cand = cand["employee"]
+                    if WorkforceJobOffer.objects.filter(job=locked_job, employee=emp_cand, status=WorkforceJobOffer.Status.OFFERED, expires_at__gt=now).exists():
+                        continue
+                    if WorkforceJobOffer.objects.filter(job=locked_job, employee=emp_cand, status__in=["DECLINED", "REJECTED"]).exists():
+                        continue
+
+                    offer = WorkforceJobOffer.objects.create(
+                        job=locked_job,
+                        employee=emp_cand,
+                        wave_id=current_wave_id,
+                        wave_number=current_wave_num,
+                        status=WorkforceJobOffer.Status.OFFERED,
+                        expires_at=current_expires_at,
+                    )
+                    WorkforceEventLog.objects.create(
+                        user=emp_cand.user,
+                        event_type="JOB_OFFERED",
+                        payload={
+                            "offer_id": offer.id,
+                            "job_id": locked_job.id,
+                            "wave_id": str(current_wave_id),
+                            "wave_number": current_wave_num,
+                            "expires_at": current_expires_at.isoformat(),
+                            "joined_active_wave": True,
+                        }
+                    )
+                    service_display = locked_job.issue_title or locked_job.service_category or "Service Request"
+                    WorkforceNotification.objects.create(
+                        recipient=emp_cand.user,
+                        title=f"New Job Offer: {service_display}",
+                        message=f"Wave {current_wave_num}: Job #{locked_job.id} offered to you ({cand.get('distance_km', 0.0):.1f} km away). Expires shortly.",
+                        notification_type="JOB_OFFER",
+                        company=locked_job.company,
+                        related_object_id=str(offer.id),
+                    )
+
+            logger.info(
+                f"[DISPATCH_WAVE_JOINED] Added {len(new_wave_candidates)} newly eligible technician(s) "
+                f"to active Wave {current_wave_num} for Job #{job_id}."
+            )
+            return True, f"Added {len(new_wave_candidates)} technician(s) to active Wave {current_wave_num}."
+
+        logger.info(
+            f"[DISPATCH_WAVE_ACTIVE] Job #{job_id} already has active Wave {current_wave_num} "
+            f"with {len(active_offers)} pending offer(s)."
+        )
+        return True, f"Active Wave {current_wave_num} already pending ({len(active_offers)} offers)."
+
+    # Step 3: Validate customer booking coordinates
+    is_valid_coords, cust_lat, cust_lon, coord_err = validate_coordinates(job_obj.latitude, job_obj.longitude)
+    if not is_valid_coords:
+        if job_obj.status not in ["unassigned", "redispatching"]:
+            job_obj.status = "unassigned"
+            job_obj.save(update_fields=["status", "updated_at"])
+        logger.info(
+            f"[DISPATCH_PENDING_GPS] Job #{job_id} ({job_obj.request_id}) coordinates missing or invalid ({coord_err}). Waiting for valid GPS fix."
+        )
+        return False, "Customer booking is missing valid GPS coordinates."
+
+    WorkforceEventLog.objects.create(
+        event_type="DISPATCH_STARTED",
+        payload={"job_id": job_obj.id, "service": job_obj.service_category}
+    )
+
+    # Step 4: Find eligible candidate technicians across 0 to 20 km (OUTSIDE TRANSACTION)
+    auto_exclude_ids = set(exclude_employee_ids or [])
+    past_offer_ids = set(
+        WorkforceJobOffer.objects.filter(
+            job=job_obj,
+            status__in=["DECLINED", "REJECTED", "EXPIRED", "ACCEPTED", "SUPERSEDED_BY_ACCEPTANCE"]
+        ).values_list("employee_id", flat=True)
+    )
+    all_excluded = list(auto_exclude_ids | past_offer_ids)
+
+    candidates = get_eligible_candidates(
+        job_obj,
+        max_gps_age_seconds=max_gps_age_seconds,
+        radius_km=MAX_DISPATCH_RADIUS_KM,
+        exclude_employee_ids=all_excluded,
+        candidate_employee_ids=candidate_employee_ids,
+        check_workload=False,
+    )
+
+    WorkforceEventLog.objects.create(
+        event_type="CANDIDATES_EVALUATED",
+        payload={"job_id": job_obj.id, "eligible_count": len(candidates)}
+    )
+
+    # Step 5: Group candidates by sequential distance wave (1 to 6, up to 20 km)
+    wave_groups: Dict[int, List[Dict[str, Any]]] = {w: [] for w in range(1, 7)}
+    for c in candidates:
+        w_num = c.get("wave_number")
+        if w_num and 1 <= w_num <= 6:
+            wave_groups[w_num].append(c)
+
+    # Step 6: Select lowest non-empty wave (skip empty waves immediately)
+    target_wave_number = None
+    target_wave_candidates = []
+    for w_idx in range(1, 7):
+        if wave_groups[w_idx]:
+            target_wave_number = w_idx
+            target_wave_candidates = wave_groups[w_idx]
+            break
+
+    # Step 7: If all 6 waves are exhausted, escalate to Admin fallback
+    if not target_wave_number or not target_wave_candidates:
+        if job_obj.status != "unassigned" or job_obj.assigned_employee is not None:
+            job_obj.status = "unassigned"
+            job_obj.assigned_employee = None
+            job_obj.save(update_fields=["status", "assigned_employee"])
 
         WorkforceEventLog.objects.create(
-            event_type="CANDIDATES_EVALUATED",
-            payload={"job_id": job_obj.id, "eligible_count": len(candidates)}
+            event_type="DISPATCH_ADMIN_FALLBACK",
+            payload={"job_id": job_obj.id, "reason": "ALL_WAVES_EXHAUSTED", "candidates_considered": len(candidates)}
         )
 
-        # Step 5: Group candidates by sequential distance wave (1 to 6)
-        wave_groups: Dict[int, List[Dict[str, Any]]] = {w: [] for w in range(1, 7)}
-        for c in candidates:
-            w_num = c.get("wave_number")
-            if w_num and 1 <= w_num <= 6:
-                wave_groups[w_num].append(c)
+        admin_user = None
+        if job_obj.company:
+            admin_user = get_user_model().objects.filter(
+                Q(role__in=["admin", "manager"]) | Q(is_staff=True),
+                company=job_obj.company
+            ).first()
+        if not admin_user:
+            admin_user = get_user_model().objects.filter(is_superuser=True).first()
 
-        # Step 6: Select lowest non-empty wave (skip empty waves immediately)
-        target_wave_number = None
-        target_wave_candidates = []
-        for w_idx in range(1, 7):
-            if wave_groups[w_idx]:
-                target_wave_number = w_idx
-                target_wave_candidates = wave_groups[w_idx]
-                break
-
-        # Step 7: If all 6 waves are exhausted, escalate to Admin fallback
-        if not target_wave_number or not target_wave_candidates:
-            if job_obj.status != "unassigned" or job_obj.assigned_employee is not None:
-                job_obj.status = "unassigned"
-                job_obj.assigned_employee = None
-                job_obj.save(update_fields=["status", "assigned_employee"])
-
-            WorkforceEventLog.objects.create(
-                event_type="DISPATCH_ADMIN_FALLBACK",
-                payload={"job_id": job_obj.id, "reason": "ALL_WAVES_EXHAUSTED", "candidates_considered": len(candidates)}
+        if admin_user:
+            service_name = job_obj.issue_title or job_obj.service_category or "Service"
+            WorkforceNotification.objects.create(
+                recipient=admin_user,
+                title="Automatic Dispatch: Awaiting Technician",
+                message=f"No eligible nearby technician available within 20 km for Job #{job_obj.id} ({service_name}). Job escalated to Admin dispatch.",
+                notification_type="DISPATCH_UNASSIGNED",
+                company=job_obj.company,
+                related_object_id=str(job_obj.id),
             )
+        logger.info(f"[DISPATCH_NO_CANDIDATES] Job #{job_obj.id} -> No eligible candidates found in Waves 1-6. Escalated to Admin.")
+        return False, "No eligible technicians available for automatic dispatch within 20 km. Job escalated to Admin dispatch."
 
-            admin_user = None
-            if job_obj.company:
-                admin_user = get_user_model().objects.filter(
-                    Q(role__in=["admin", "manager"]) | Q(is_staff=True),
-                    company=job_obj.company
-                ).first()
-            if not admin_user:
-                admin_user = get_user_model().objects.filter(is_superuser=True).first()
+    # Step 8: Fast Atomic Offer Creation (Transaction held ONLY for offer inserts: < 20 ms)
+    wave_uuid = uuid.uuid4()
+    wave_created_at = timezone.now()
+    wave_expires_at = wave_created_at + timedelta(minutes=DEFAULT_OFFER_DURATION_MINUTES)
+    wave_label = f"Wave {target_wave_number}"
 
-            if admin_user:
-                service_name = job_obj.issue_title or job_obj.service_category or "Service"
-                WorkforceNotification.objects.create(
-                    recipient=admin_user,
-                    title="Automatic Dispatch: Awaiting Technician",
-                    message=f"No eligible nearby technician available within 20 km for Job #{job_obj.id} ({service_name}). Job escalated to Admin dispatch.",
-                    notification_type="DISPATCH_UNASSIGNED",
-                    company=job_obj.company,
-                    related_object_id=str(job_obj.id),
-                )
-            return False, "No eligible technicians available for automatic dispatch within 20 km. Job escalated to Admin dispatch."
+    created_offers = []
+    with transaction.atomic():
+        locked_job = ServiceRequest.objects.select_for_update().filter(pk=job_id).first()
+        if not locked_job or locked_job.status in ["completed", "cancelled"]:
+            return False, f"Job #{job_id} is {locked_job.status if locked_job else 'missing'}."
 
-        # Step 8: Wave Synchronization Constants (computed ONCE outside employee loop)
-        wave_uuid = uuid.uuid4()
-        wave_created_at = timezone.now()
-        wave_expires_at = wave_created_at + timedelta(minutes=DEFAULT_OFFER_DURATION_MINUTES)
-        wave_label = f"Wave {target_wave_number}"
+        if locked_job.assigned_employee and locked_job.status not in ["unassigned", "redispatching"]:
+            return False, f"Job #{job_id} already assigned to Employee #{locked_job.assigned_employee_id}."
+
+        if WorkforceJobOffer.objects.filter(job=locked_job, status=WorkforceJobOffer.Status.OFFERED, expires_at__gt=wave_created_at).exists():
+            return True, f"Active wave already pending for Job #{job_id}."
 
         # Keep ServiceRequest in unassigned status until an employee accepts
-        if job_obj.status in ["draft", "new_request", "received", "confirmed"]:
-            apply_transition(job_obj, "unassigned")
+        if locked_job.status in ["draft", "new_request", "received", "confirmed"]:
+            apply_transition(locked_job, "unassigned")
 
-        created_offers = []
         for cand in target_wave_candidates:
             cand_emp = cand["employee"]
             cand_dist = cand["distance_km"]
             cand_score = cand["score"]
 
             offer = WorkforceJobOffer.objects.create(
-                job=job_obj,
+                job=locked_job,
                 employee=cand_emp,
                 status=WorkforceJobOffer.Status.OFFERED,
                 wave_id=wave_uuid,
@@ -730,7 +1027,7 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
                 user=cand_emp.user,
                 event_type="OFFER_CREATED",
                 payload={
-                    "job_id": job_obj.id,
+                    "job_id": locked_job.id,
                     "offer_id": offer.id,
                     "employee_id": cand_emp.id,
                     "wave_id": str(wave_uuid),
@@ -740,9 +1037,9 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
                 }
             )
 
-            loc_str = f" at {job_obj.address}" if job_obj.address else ""
-            req_id_str = f" ({job_obj.request_id})" if job_obj.request_id else f" #{job_obj.id}"
-            service_label = job_obj.issue_title or job_obj.service_category or "Service Request"
+            loc_str = f" at {locked_job.address}" if locked_job.address else ""
+            req_id_str = f" ({locked_job.request_id})" if locked_job.request_id else f" #{locked_job.id}"
+            service_label = locked_job.issue_title or locked_job.service_category or "Service Request"
             expiry_str = wave_expires_at.strftime("%H:%M:%S UTC")
 
             WorkforceNotification.objects.create(
@@ -750,62 +1047,63 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
                 title="New Job Offer Available!",
                 message=f"You have a new job offer for '{service_label}'{req_id_str}{loc_str} ({cand_dist:.1f} km away via {wave_label}). Expiry: {expiry_str}. Open your dashboard to review.",
                 notification_type="JOB_OFFER",
-                company=job_obj.company,
-                related_object_id=str(job_obj.id),
+                company=locked_job.company,
+                related_object_id=str(locked_job.id),
             )
 
-            logger.info(
-                f"[DISPATCH_DECISION] job={job_obj.id} employee={cand_emp.id} wave_id={wave_uuid} "
-                f"wave_number={target_wave_number} distance_km={cand_dist:.3f} score={cand_score:.1f} status=OFFER_CREATED"
-            )
+    emp_summary = ", ".join([f"EMP-{c['employee'].id} ({c['distance_km']:.2f}km)" for c in target_wave_candidates])
+    logger.info(
+        f"[DISPATCH_DECISION] Job #{job_obj.id} dispatched to Wave {target_wave_number} "
+        f"(UUID: {wave_uuid}, expires: {wave_expires_at.strftime('%H:%M:%S')}) -> Offers: [{emp_summary}]"
+    )
+    return True, f"Job #{job_obj.id} dispatched to Wave {target_wave_number} ({len(created_offers)} technicians offered)."
 
-        return True, f"Job #{job_obj.id} dispatched to Wave {target_wave_number} ({len(created_offers)} technicians offered)."
 
-
-def dispatch_next_candidate(job_id_or_obj) -> Tuple[bool, str]:
+def dispatch_next_candidate(job_id_or_obj, exclude_employee_ids: Optional[List[int]] = None) -> Tuple[bool, str]:
     """
     Triggered when a wave expires or all offers in a wave are declined:
-    Advances dispatch to the next appropriate distance wave.
+    Advances dispatch through canonical reconciliation, excluding past candidates.
     """
-    logger.info(f"[DISPATCH_FALLBACK] Triggering next wave dispatch for Job #{job_id_or_obj}.")
-    return dispatch_job(job_id_or_obj)
+    job_id = job_id_or_obj.pk if hasattr(job_id_or_obj, "pk") else job_id_or_obj
+    past_candidates = list(
+        WorkforceJobOffer.objects.filter(
+            job_id=job_id,
+            status__in=["DECLINED", "REJECTED", "EXPIRED", "SUPERSEDED_BY_ACCEPTANCE"]
+        ).values_list("employee_id", flat=True)
+    )
+    if exclude_employee_ids is None:
+        exclude_employee_ids = []
+    combined_excludes = list(set(exclude_employee_ids) | set(past_candidates))
+    logger.info(f"[DISPATCH_FALLBACK] Triggering next wave dispatch for Job #{job_id}, excluding {len(combined_excludes)} past candidates.")
+    return reconcile_booking_for_dispatch(job_id, exclude_employee_ids=combined_excludes)
 
 
-def expire_and_reassign_offers() -> int:
+def expire_and_reassign_offers(company_id=None, limit: int = 50) -> int:
     """
     Scans for expired job offers in OFFERED state, marks them EXPIRED,
     and automatically triggers next wave dispatch for jobs whose wave has completed.
     Returns the count of expired offers handled.
     """
     now = timezone.now()
-    expired_offers = list(
-        WorkforceJobOffer.objects.filter(
-            status=WorkforceJobOffer.Status.OFFERED,
-            expires_at__lte=now,
-        ).select_related("job")
+    qs = WorkforceJobOffer.objects.filter(
+        status=WorkforceJobOffer.Status.OFFERED,
+        expires_at__lte=now,
     )
+    if company_id:
+        qs = qs.filter(job__company_id=company_id)
+    expired_offers = list(qs.select_related("job").order_by("-expires_at")[:limit])
 
     if not expired_offers:
         return 0
 
-    affected_job_ids = set()
-    count = 0
+    expired_offer_pks = [o.pk for o in expired_offers]
+    WorkforceJobOffer.objects.filter(pk__in=expired_offer_pks).update(status=WorkforceJobOffer.Status.EXPIRED)
+    count = len(expired_offer_pks)
+    affected_job_ids = {o.job_id for o in expired_offers}
 
-    for offer in expired_offers:
-        with transaction.atomic():
-            off_locked = WorkforceJobOffer.objects.select_for_update().filter(
-                pk=offer.pk,
-                status=WorkforceJobOffer.Status.OFFERED,
-            ).first()
-            if not off_locked:
-                continue
-            off_locked.status = WorkforceJobOffer.Status.EXPIRED
-            off_locked.save(update_fields=["status"])
-            count += 1
-            affected_job_ids.add(offer.job_id)
-            logger.info(f"[DISPATCH_OFFER_EXPIRED] Offer #{offer.id} for Job #{offer.job_id} expired.")
+    logger.info(f"[DISPATCH_SWEEP_EXPIRED] Marked {count} overdue offers as EXPIRED across {len(affected_job_ids)} jobs.")
 
-    # For each affected job, check if any active offers remain; if not, trigger next wave dispatch
+    # For each affected job, check if any active offers remain; if not, trigger next wave dispatch via canonical reconciliation
     for j_id in affected_job_ids:
         has_active_peers = WorkforceJobOffer.objects.filter(
             job_id=j_id,
@@ -813,8 +1111,8 @@ def expire_and_reassign_offers() -> int:
             expires_at__gt=now,
         ).exists()
         if not has_active_peers:
-            logger.info(f"[DISPATCH_WAVE_EXPIRED] All offers for Job #{j_id} expired. Advancing to next wave.")
-            dispatch_job(j_id)
+            logger.info(f"[DISPATCH_WAVE_EXPIRED] All offers for Job #{j_id} expired. Advancing to next wave via canonical reconciliation.")
+            dispatch_next_candidate(j_id)
 
     return count
 
@@ -823,31 +1121,31 @@ def dispatch_pending_jobs(company_id=None, limit: int = 50) -> Dict[str, Any]:
     """
     Core cross-application reconciliation function:
     1. Sweeps and reassigns expired offers.
-    2. Discovers all dispatchable jobs in the database (regardless of which application created them).
+    2. Discovers all dispatchable jobs in the database.
     3. Filters out jobs that already have an active exclusive offer.
     4. Evaluates proximity and dispatches pending jobs.
     """
     # 1. Sweep expired offers first
-    expired_count = expire_and_reassign_offers()
+    expired_count = expire_and_reassign_offers(company_id=company_id, limit=limit)
 
     now = timezone.now()
+    active_offered_ids = set(
+        WorkforceJobOffer.objects.filter(
+            status=WorkforceJobOffer.Status.OFFERED,
+            expires_at__gt=now,
+        ).values_list("job_id", flat=True)
+    )
+
+    scope_q = get_booking_discovery_scope(company_id)
     qs = ServiceRequest.objects.filter(
+        scope_q,
         status__in=DISPATCHABLE_STATUSES,
         assigned_employee__isnull=True,
         latitude__isnull=False,
         longitude__isnull=False,
-    )
-    if company_id:
-        qs = qs.filter(company_id=company_id)
+    ).exclude(id__in=active_offered_ids)
 
-    # Find all jobs in dispatchable states
-    pending_jobs = list(
-        qs.exclude(
-            # Exclude jobs that already have an active unexpired offer
-            job_offers__status=WorkforceJobOffer.Status.OFFERED,
-            job_offers__expires_at__gt=now,
-        ).order_by("-created_at").distinct()[:limit]
-    )
+    pending_jobs = list(qs.order_by("-created_at")[:limit])
 
     results = {
         "expired_offers_swept": expired_count,
@@ -859,7 +1157,7 @@ def dispatch_pending_jobs(company_id=None, limit: int = 50) -> Dict[str, Any]:
 
     for job in pending_jobs:
         logger.info(f"[DISPATCH_JOB_FOUND] Reconciling pending Job #{job.id} ({job.request_id}, status={job.status}).")
-        success, msg = dispatch_job(job)
+        success, msg = reconcile_booking_for_dispatch(job)
         results["details"].append({"job_id": job.id, "success": success, "message": msg})
         if success:
             results["dispatched_count"] += 1
@@ -871,9 +1169,15 @@ def dispatch_pending_jobs(company_id=None, limit: int = 50) -> Dict[str, Any]:
 
 def reconsider_jobs_for_employee(employee_or_id) -> int:
     """
-    Triggered when an employee transmits fresh GPS coordinates:
-    Finds pending unassigned/dispatchable jobs within the employee's company
-    and evaluates dispatch immediately.
+    Triggered when an employee comes online or transmits fresh GPS coordinates.
+    Finds all pending dispatchable jobs within the employee's company scope
+    — including Marketplace bookings (company_id IS NULL) — and evaluates
+    dispatch via reconcile_booking_for_dispatch().
+
+    Marketplace bookings (company_id=NULL) are included because they are
+    eligible for any active vendor employee, consistent with get_eligible_candidates().
+    The actual eligibility filter (GPS proximity, skill match, 9-gate) inside
+    dispatch_job() provides the precise restriction.
     """
     emp_id = employee_or_id.pk if hasattr(employee_or_id, "pk") else employee_or_id
     emp = Employee.objects.filter(pk=emp_id).first()
@@ -881,25 +1185,181 @@ def reconsider_jobs_for_employee(employee_or_id) -> int:
         return 0
 
     now = timezone.now()
-    pending_jobs = ServiceRequest.objects.filter(
-        company_id=emp.company_id,
-        status__in=DISPATCHABLE_STATUSES,
-        assigned_employee__isnull=True,
-        latitude__isnull=False,
-        longitude__isnull=False,
-    ).exclude(
-        job_offers__status=WorkforceJobOffer.Status.OFFERED,
-        job_offers__expires_at__gt=now,
-    ).exclude(
-        # Don't reconsider jobs the employee already declined/received
-        job_offers__employee_id=emp.id,
-    ).distinct()
+    # If employee already has an active unexpired offer, skip search
+    has_active_offer = WorkforceJobOffer.objects.filter(
+        employee_id=emp.id,
+        status=WorkforceJobOffer.Status.OFFERED,
+        expires_at__gt=now,
+    ).exists()
+    if has_active_offer:
+        return 0
+
+    cutoff = now - timedelta(days=2)
+
+    # Exclude jobs where THIS employee already has an active offer or has DECLINED/REJECTED.
+    emp_active_offered_ids = set(
+        WorkforceJobOffer.objects.filter(
+            employee_id=emp.id,
+            status=WorkforceJobOffer.Status.OFFERED,
+            expires_at__gt=now,
+        ).values_list("job_id", flat=True)
+    )
+    declined_ids = set(
+        WorkforceJobOffer.objects.filter(
+            employee_id=emp.id,
+            status__in=["DECLINED", "REJECTED"],
+        ).values_list("job_id", flat=True)
+    )
+    excluded_job_ids = list(emp_active_offered_ids | declined_ids)
+
+    # Determine employee's domains from approved services and service_roles
+    emp_services = []
+    bank_details = emp.bank_details or {}
+    onboarding = bank_details.get("onboarding", {})
+    for s in onboarding.get("services", []):
+        if isinstance(s, dict):
+            if s.get("name"):
+                emp_services.append(str(s["name"]))
+            if s.get("category"):
+                emp_services.append(str(s["category"]))
+    if hasattr(emp, "service_roles") and isinstance(emp.service_roles, list):
+        for sr in emp.service_roles:
+            if sr:
+                emp_services.append(str(sr))
+
+    # Scope: Company-scoped bookings for this employee's company + Marketplace bookings (company_id=NULL)
+    scope_q = get_booking_discovery_scope(emp.company_id)
+
+    pending_jobs = list(
+        ServiceRequest.objects.filter(
+            scope_q,
+            status__in=DISPATCHABLE_STATUSES,
+            assigned_employee__isnull=True,
+            latitude__isnull=False,
+            longitude__isnull=False,
+            created_at__gte=cutoff,
+        ).exclude(id__in=excluded_job_ids).order_by("-id")[:30]
+    )
 
     dispatched_count = 0
     for job in pending_jobs:
-        logger.info(f"[DISPATCH_GPS_TRIGGER] Fresh GPS for Employee #{emp.id} triggered evaluation for Job #{job.id}.")
-        success, msg = dispatch_job(job)
+        logger.info(f"[DISPATCH_GPS_TRIGGER] Fresh GPS / presence for Employee #{emp.id} triggered evaluation for Job #{job.id}.")
+        success, msg = reconcile_booking_for_dispatch(job)
         if success:
             dispatched_count += 1
+            # If this employee received an offer from this dispatch, stop immediately
+            if WorkforceJobOffer.objects.filter(
+                job=job,
+                employee=emp,
+                status=WorkforceJobOffer.Status.OFFERED,
+                expires_at__gt=timezone.now(),
+            ).exists():
+                break
 
     return dispatched_count
+
+
+def reconcile_booking_for_dispatch(
+    job_or_id,
+    max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS,
+    exclude_employee_ids: Optional[List[int]] = None,
+    use_redis_geo: bool = True,
+) -> Tuple[bool, str]:
+    """
+    Single authoritative entry point for all dispatch triggers.
+
+    Use this function from every caller:
+      - New booking created (ServiceRequest.save via transaction.on_commit)
+      - Employee becomes available (presence toggle)
+      - Employee GPS becomes eligible (GPS update handler)
+      - Periodic reconciliation sweep (dispatch_pending_jobs)
+      - Recovery after missed events (SSE stream, management command)
+      - Manual retry (admin override)
+
+    Invariant checks performed before calling dispatch_job():
+      1. Booking exists and is not already completed/cancelled.
+      2. Booking is not already assigned to an employee.
+      3. Booking has valid coordinates (lat/lon) required for proximity dispatch.
+      4. Booking status is within DISPATCHABLE_STATUSES.
+      5. No active unexpired offer already exists (idempotency — dispatch_job checks this).
+
+    If the booking does not yet have valid coordinates:
+      - It remains in its dispatchable status.
+      - We log DISPATCH_PENDING_GPS.
+      - We NEVER fabricate or guess coordinates based on address keywords or city centers.
+      - When valid GPS becomes available later, reconciliation will dispatch normally.
+
+    Returns (success: bool, message: str) matching dispatch_job() contract.
+    """
+    from service_requests.models import suppress_dispatch_hook
+
+    with suppress_dispatch_hook():
+        job_id = job_or_id.pk if hasattr(job_or_id, "pk") else job_or_id
+
+        job = ServiceRequest.objects.filter(pk=job_id).first()
+        if not job:
+            logger.warning(f"[RECONCILE_SKIP] Job #{job_id} not found.")
+            return False, f"Job #{job_id} not found."
+
+        if job.status in ["completed", "cancelled"]:
+            logger.debug(f"[RECONCILE_SKIP] Job #{job.id} is terminal ({job.status}), skipping dispatch.")
+            return False, f"Job #{job.id} is {job.status} and does not require dispatch."
+
+        if job.status not in DISPATCHABLE_STATUSES:
+            logger.debug(
+                f"[RECONCILE_SKIP] Job #{job.id} status='{job.status}' is not in DISPATCHABLE_STATUSES, skipping."
+            )
+            return False, f"Job #{job.id} status '{job.status}' is not dispatchable."
+
+        if job.assigned_employee_id and job.status not in ["unassigned", "redispatching"]:
+            logger.debug(f"[RECONCILE_SKIP] Job #{job.id} already has assigned employee #{job.assigned_employee_id}.")
+            return False, f"Job #{job.id} is already assigned to Employee #{job.assigned_employee_id}."
+
+        is_valid_coords, cust_lat, cust_lon, coord_err = validate_coordinates(job.latitude, job.longitude)
+        if not is_valid_coords:
+            # If coordinates are missing on the job, try extracting from authenticated customer's last known location
+            if job.customer:
+                cust_loc = getattr(job.customer, "last_known_location", None) or {}
+                c_lat = cust_loc.get("latitude") if cust_loc.get("latitude") is not None else cust_loc.get("lat")
+                c_lon = cust_loc.get("longitude") if cust_loc.get("longitude") is not None else (cust_loc.get("lng") or cust_loc.get("lon"))
+                is_c_valid, c_lat_f, c_lon_f, _ = validate_coordinates(c_lat, c_lon)
+                if is_c_valid:
+                    job.latitude = c_lat_f
+                    job.longitude = c_lon_f
+                    job.save(update_fields=["latitude", "longitude", "updated_at"], skip_dispatch=True)
+                    is_valid_coords = True
+
+            if not is_valid_coords:
+                logger.info(
+                    f"[DISPATCH_PENDING_GPS] Job #{job.id} ({job.request_id}) coordinates missing or invalid ({coord_err}). "
+                    f"Booking remains dispatchable ({job.status}) awaiting valid GPS fix."
+                )
+                return False, "Customer booking is missing valid GPS coordinates."
+
+        candidate_ids = None
+        if use_redis_geo and is_valid_coords:
+            try:
+                from workforce_api.services.redis_dispatch import find_nearby_technician_candidates
+                geo_candidates = find_nearby_technician_candidates(
+                    latitude=cust_lat,
+                    longitude=cust_lon,
+                    radius_km=MAX_DISPATCH_RADIUS_KM,
+                    max_age_seconds=max_gps_age_seconds,
+                )
+                if geo_candidates is not None:
+                    candidate_ids = geo_candidates
+            except Exception as geo_err:
+                logger.debug(f"[DISPATCH_REDIS_GEO_ERR] {geo_err}")
+                candidate_ids = None
+
+        logger.info(
+            f"[RECONCILE_DISPATCH] Evaluating Job #{job.id} ({job.request_id}, "
+            f"status={job.status}, company_id={job.company_id}, coords=({job.latitude}, {job.longitude}), "
+            f"redis_geo_candidates={len(candidate_ids) if candidate_ids is not None else 'DB_FALLBACK'})."
+        )
+        return dispatch_job(
+            job,
+            max_gps_age_seconds=max_gps_age_seconds,
+            exclude_employee_ids=exclude_employee_ids,
+            candidate_employee_ids=candidate_ids,
+        )

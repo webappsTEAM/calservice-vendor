@@ -13,7 +13,6 @@
 
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
-  apiGetAdminApplications,
   apiGetEligibleTechnicians,
   apiTriggerAutoDispatch,
   apiDispatchAssign,
@@ -25,6 +24,8 @@ import {
   apiAdminDecideExtension,
   apiToggleLocationActive,
   apiGetJobTimeline,
+  apiGetDispatchRadius,
+  apiUpdateDispatchRadius,
 } from '../../api/workforceService.js';
 import { apiGetLocations, apiCreateLocation } from '../../api/clockInApi.js';
 import { apiRequest } from '../../api/client.js';
@@ -433,11 +434,33 @@ export function AdminOperationsPage() {
   const [timelineLoading, setTimelineLoading] = useState(false);
   const [timelineData, setTimelineData] = useState(null);
 
+  const [dispatchRadiusKm, setDispatchRadiusKm] = useState(20.0);
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  const [editingRadius, setEditingRadius] = useState('20.0');
+  const [updatingRadius, setUpdatingRadius] = useState(false);
+
+  const handleSaveDispatchRadius = async () => {
+    try {
+      setUpdatingRadius(true);
+      const val = parseFloat(editingRadius);
+      const res = await apiUpdateDispatchRadius(val);
+      if (res?.dispatch_radius_km !== undefined) {
+        setDispatchRadiusKm(res.dispatch_radius_km);
+        setEditingRadius(res.dispatch_radius_km.toString());
+        setStatusMsg({ type: 'success', text: `Global automatic dispatch radius updated to ${res.dispatch_radius_km} km.` });
+      }
+    } catch (err) {
+      setStatusMsg({ type: 'error', text: err?.data?.error || err.message || 'Failed to update dispatch radius.' });
+    } finally {
+      setUpdatingRadius(false);
+    }
+  };
+
   const fetchCandidatesForJob = async (job) => {
     if (!job) return;
     try {
       setCandidatesLoading(true);
-      const res = await apiGetEligibleTechnicians(job.id, job.service_category || job.issue_title, 20.0);
+      const res = await apiGetEligibleTechnicians(job.id, job.service_category || job.issue_title, dispatchRadiusKm);
       const list = Array.isArray(res) ? res : res?.candidates || res?.results || [];
       setEligibleFleet(list);
     } catch (_) {
@@ -450,9 +473,18 @@ export function AdminOperationsPage() {
   const loadData = async () => {
     try {
       setIsLoading(true);
-      const [techs, jobsList, locsData, fleetData, pendingSvcData, pendingExtData] =
+      apiGetDispatchRadius().then((res) => {
+        if (res?.dispatch_radius_km !== undefined) {
+          setDispatchRadiusKm(res.dispatch_radius_km);
+          setEditingRadius(res.dispatch_radius_km.toString());
+        }
+        if (res?.is_superadmin !== undefined) {
+          setIsSuperAdmin(res.is_superadmin);
+        }
+      }).catch(() => {});
+
+      const [jobsList, locsData, fleetData, pendingSvcData, pendingExtData] =
         await Promise.all([
-          apiGetAdminApplications('approved').catch(() => []),
           apiGetWorkforceJobs().catch(() => []),
           apiGetLocations().catch(() => []),
           apiGetFleetMap().catch(() => []),
@@ -462,10 +494,12 @@ export function AdminOperationsPage() {
 
       const safe = (d) => (Array.isArray(d) ? d : d?.results || []);
       const jobsArr = safe(jobsList);
-      setTechnicians(safe(techs));
+      const fleetArr = safe(fleetData);
       setJobs(jobsArr);
       setLocations(safe(locsData));
-      setFleetMap(safe(fleetData));
+      setFleetMap(fleetArr);
+      // Derive technician list from fleet map — same data, no extra API call
+      setTechnicians(fleetArr);
       setPendingServices(safe(pendingSvcData));
       setPendingExtensions(safe(pendingExtData));
 
@@ -505,7 +539,10 @@ export function AdminOperationsPage() {
     const interval = setInterval(async () => {
       try {
         const data = await apiGetFleetMap();
-        setFleetMap(Array.isArray(data) ? data : data?.results || []);
+        const fleetArr = Array.isArray(data) ? data : data?.results || [];
+        setFleetMap(fleetArr);
+        // Keep technician count metrics in sync with latest fleet data
+        setTechnicians(fleetArr);
       } catch (_) {}
     }, 60_000);
     return () => clearInterval(interval);
@@ -818,12 +855,36 @@ export function AdminOperationsPage() {
                     )}
                   </div>
 
-                  {/* Operational Protocol Banner */}
-                  <div className="p-3 bg-emerald-50/70 border-b border-emerald-200/60 text-[11px] text-emerald-900 flex items-start gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                    <div>
-                      <span className="font-bold">20 KM Geographic Dispatch Active:</span> Fallback search evaluates candidates across a <strong>true 20 km circular radius</strong> in all 360° directions using authoritative geodesic Haversine calculation and 9-Gate qualification.
+                  {/* Operational Protocol & SuperAdmin Radius Banner */}
+                  <div className="p-3 bg-emerald-50/70 border-b border-emerald-200/60 text-[11px] text-emerald-900 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                    <div className="flex items-start gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-bold">{dispatchRadiusKm} KM Global Geographic Dispatch Active:</span> Candidate discovery evaluates technicians across a <strong>true {dispatchRadiusKm} km circular radius</strong> in all 360° directions using authoritative Redis GEOSEARCH and PostgreSQL 9-Gate qualification.
+                      </div>
                     </div>
+                    {isSuperAdmin && (
+                      <div className="flex items-center gap-2 shrink-0 bg-white/90 p-1.5 rounded border border-emerald-300 shadow-xs">
+                        <span className="text-[10px] font-bold text-emerald-900 uppercase">SuperAdmin Radius (KM):</span>
+                        <input
+                          type="number"
+                          step="0.5"
+                          min="0.1"
+                          max="500"
+                          value={editingRadius}
+                          onChange={(e) => setEditingRadius(e.target.value)}
+                          className="w-16 px-1.5 py-0.5 text-xs font-bold border border-slate-300 rounded bg-white text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleSaveDispatchRadius}
+                          disabled={updatingRadius}
+                          className="px-2 py-0.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] rounded transition-colors"
+                        >
+                          {updatingRadius ? 'Saving...' : 'Save Radius'}
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   {/* 20 KM Distance Bands Classification Tabs */}

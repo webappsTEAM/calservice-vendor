@@ -32,6 +32,7 @@ import {
   computeGpsState,
   haversineMetres,
   MAX_GEOFENCE_ACCURACY_METERS,
+  classifyAccuracy,
 } from '../hooks/useGPSPosition.js';
 import { useRealtimeStream } from '../hooks/useRealtimeStream.js';
 
@@ -95,24 +96,50 @@ export function EmployeeRuntimeProvider({ children }) {
     selectedJobRef.current = selectedJob;
   }, [selectedJob]);
 
-  const hasActiveJob = useMemo(() => {
-    return activeJobs.some((j) => {
+  const activeAssignedJob = useMemo(() => {
+    const empId = user?.employee_id || user?.employeeId || user?.id;
+    return activeJobs.find((j) => {
       const st = (j.status || j.job_status || '').toLowerCase();
-      const isAssigned = Boolean(j.is_assigned_to_current_employee || j.assigned_employee_id === user?.id);
-      return isAssigned && ACTIVE_QUEUE_STATUSES.includes(st);
+      if (!ACTIVE_QUEUE_STATUSES.includes(st)) return false;
+      const isAssigned = Boolean(
+        j.is_assigned_to_current_employee === true ||
+        (empId && (j.assigned_employee_id === empId || j.assigned_employee === empId || j.assigned_employee?.id === empId)) ||
+        (user?.id && (j.technician_id === user.id || j.assigned_employee_id === user.id))
+      );
+      return isAssigned;
+    }) || null;
+  }, [activeJobs, user?.id, user?.employee_id, user?.employeeId]);
+
+  const hasActiveJob = Boolean(activeAssignedJob);
+
+
+  const incomingOffers = useMemo(() => {
+    const currentNow = Date.now() + (serverTimeOffset || 0);
+    return activeJobs.filter((j) => {
+      const isOffer = j.is_offer === true || j.active_offer?.status === 'OFFERED';
+      if (!isOffer) return false;
+      if (j.is_assigned_to_current_employee) return false;
+      const st = (j.status || j.job_status || '').toLowerCase();
+      if (['accepted', 'on_the_way', 'en_route', 'arrived', 'in_progress', 'proof_submitted', 'completed', 'cancelled'].includes(st)) {
+        return false;
+      }
+      if (j.assigned_employee_id || j.assigned_employee) return false;
+      if (j.active_offer?.status && j.active_offer.status !== 'OFFERED') return false;
+
+      const expStr = j.offer_expires_at || j.active_offer?.expires_at;
+      if (expStr) {
+        const expMs = Date.parse(expStr);
+        if (!isNaN(expMs) && expMs <= currentNow) {
+          return false;
+        }
+      }
+      return !j.active_offer?.is_expired;
     });
-  }, [activeJobs, user?.id]);
+  }, [activeJobs, serverTimeOffset]);
 
   const incomingOffer = useMemo(() => {
-    return (
-      activeJobs.find(
-        (j) =>
-          (j.is_offer === true || j.active_offer?.status === 'OFFERED') &&
-          !j.active_offer?.is_expired &&
-          !j.is_assigned_to_current_employee
-      ) || null
-    );
-  }, [activeJobs]);
+    return incomingOffers[0] || null;
+  }, [incomingOffers]);
 
   // ── 3. Notification Deduplication ──────────────────────────────────────────
   const knownOfferIdsRef = useRef(new Set());
@@ -181,7 +208,8 @@ export function EmployeeRuntimeProvider({ children }) {
           if (Array.isArray(jobsData)) {
             setActiveJobs(jobsData);
 
-            const serverTimeStr = jobsData[0]?.server_time || jobsData[0]?.active_offer?.server_time;
+            const jobWithServerTime = jobsData.find((j) => j.server_time || j.active_offer?.server_time);
+            const serverTimeStr = jobWithServerTime?.server_time || jobWithServerTime?.active_offer?.server_time;
             if (serverTimeStr) {
               const sTime = Date.parse(serverTimeStr);
               if (!isNaN(sTime)) {
@@ -189,35 +217,73 @@ export function EmployeeRuntimeProvider({ children }) {
               }
             }
 
-            const currentOffer = jobsData.find(
+            // Filter all currently valid incoming offers
+            const validOffers = jobsData.filter(
               (j) =>
                 (j.is_offer === true || j.active_offer?.status === 'OFFERED') &&
                 !j.active_offer?.is_expired &&
                 !j.is_assigned_to_current_employee
             );
 
-            if (currentOffer) {
-              const offerId = currentOffer.active_offer?.id || currentOffer.offer_id || `job_${currentOffer.id}`;
-              if (!isInitialOffersLoadedRef.current) {
+            if (!isInitialOffersLoadedRef.current) {
+              // Seed ALL initial offers to prevent duplicate notification triggers on initial mount
+              validOffers.forEach((offer) => {
+                const offerId = offer.active_offer?.id || offer.offer_id || `job_${offer.id}`;
                 knownOfferIdsRef.current.add(offerId);
-                isInitialOffersLoadedRef.current = true;
-              } else {
-                triggerOfferBrowserNotification(currentOffer);
-              }
-            } else {
+              });
               isInitialOffersLoadedRef.current = true;
+            } else {
+              // Trigger notification ONLY for genuinely new offer IDs
+              validOffers.forEach((offer) => {
+                const offerId = offer.active_offer?.id || offer.offer_id || `job_${offer.id}`;
+                if (!knownOfferIdsRef.current.has(offerId)) {
+                  knownOfferIdsRef.current.add(offerId);
+                  triggerOfferBrowserNotification(offer);
+                }
+              });
             }
 
+            const currentOffer = validOffers[0] || null;
+
             setSelectedJob((prev) => {
+              const empId = user?.employee_id || user?.employeeId || user?.id;
+              const findActiveJob = () =>
+                jobsData.find((j) => {
+                  const st = (j.status || j.job_status || '').toLowerCase();
+                  if (!ACTIVE_QUEUE_STATUSES.includes(st)) return false;
+                  const isAssigned = Boolean(
+                    j.is_assigned_to_current_employee === true ||
+                    (empId && (j.assigned_employee_id === empId || j.assigned_employee === empId || j.assigned_employee?.id === empId)) ||
+                    (user?.id && (j.technician_id === user.id || j.assigned_employee_id === user.id))
+                  );
+                  return isAssigned;
+                });
+
               if (!prev) {
                 if (currentOffer) return currentOffer;
-                const active = jobsData.find((j) =>
-                  ACTIVE_QUEUE_STATUSES.includes((j.status || j.job_status || '').toLowerCase())
-                );
-                return active || jobsData[0] || null;
+                return findActiveJob() || null;
               }
               const updated = jobsData.find((j) => j.id === prev.id);
-              return updated || prev;
+              if (updated) {
+                const isOffer = (updated.is_offer === true || updated.active_offer?.status === 'OFFERED') &&
+                  !updated.active_offer?.is_expired &&
+                  !updated.is_assigned_to_current_employee;
+                if (isOffer) {
+                  return updated;
+                }
+                const st = (updated.status || updated.job_status || '').toLowerCase();
+                const isAssigned = Boolean(
+                  updated.is_assigned_to_current_employee === true ||
+                  (empId && (updated.assigned_employee_id === empId || updated.assigned_employee === empId || updated.assigned_employee?.id === empId)) ||
+                  (user?.id && (updated.technician_id === user.id || updated.assigned_employee_id === user.id))
+                );
+                if (isAssigned && ACTIVE_QUEUE_STATUSES.includes(st)) {
+                  return updated;
+                }
+              }
+              // If prev was completed, cancelled, expired or removed from active queue, pick next authoritative offer or active job, or null
+              if (currentOffer) return currentOffer;
+              return findActiveJob() || null;
             });
             return jobsData;
           }
@@ -405,38 +471,45 @@ export function EmployeeRuntimeProvider({ children }) {
 
   const isUpdatingLocationRef = useRef(false);
 
-  const handlePositionChange = useCallback(async (payload) => {
+  const handlePositionChange = useCallback(async (localPayload, backendPayload) => {
+    if (!localPayload) return;
+
+    // ── PIPELINE A: Immediate Local Navigation & UI (Zero Delay, No Network) ──
     const newLoc = {
-      latitude: payload.latitude,
-      longitude: payload.longitude,
-      accuracy: payload.accuracy,
-      speed: payload.speed,
-      heading: payload.heading,
-      timestamp: payload.timestamp || Date.now(),
-      captured_at: payload.captured_at || new Date().toISOString(),
+      latitude: localPayload.latitude,
+      longitude: localPayload.longitude,
+      accuracy: localPayload.accuracy,
+      speed: localPayload.speed,
+      heading: localPayload.heading,
+      timestamp: localPayload.timestamp || Date.now(),
+      captured_at: localPayload.captured_at || new Date().toISOString(),
     };
     setLiveLocation(newLoc);
     setPresenceState('ONLINE_GPS_LIVE');
-    setGpsState(payload.is_geofence_ready ? GPS_STATE.GEOFENCE_READY : GPS_STATE.LIVE);
+    setGpsState(localPayload.is_geofence_ready ? GPS_STATE.GEOFENCE_READY : GPS_STATE.LIVE);
 
+    // Dispatch local UI event immediately so navigation map responds with zero latency
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('workforce:location-updated', {
+          detail: { ...newLoc, source: 'session_watcher' },
+        })
+      );
+    }
+
+    // ── PIPELINE B: Backend Telemetry Persistence (Throttled, Asynchronous, Non-Blocking) ──
+    if (!backendPayload) return;
     if (isUpdatingLocationRef.current) return;
     isUpdatingLocationRef.current = true;
     try {
       await apiUpdateLocationFull(
-        payload.latitude,
-        payload.longitude,
-        payload.accuracy,
-        payload.speed,
-        payload.heading,
-        payload.captured_at
+        backendPayload.latitude,
+        backendPayload.longitude,
+        backendPayload.accuracy,
+        backendPayload.speed,
+        backendPayload.heading,
+        backendPayload.captured_at
       );
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(
-          new CustomEvent('workforce:location-updated', {
-            detail: { ...newLoc, source: 'session_watcher' },
-          })
-        );
-      }
     } catch (_) {
     } finally {
       isUpdatingLocationRef.current = false;
@@ -444,17 +517,60 @@ export function EmployeeRuntimeProvider({ children }) {
   }, []);
 
   const handleLocationError = useCallback((err) => {
-    console.warn('[EmployeeRuntime] Location tracker warning:', err);
-    setPresenceState((prev) => (prev === 'OFFLINE' ? 'OFFLINE' : 'ONLINE_LOCATION_PENDING'));
-    const state = computeGpsState(null, 0, true, err);
-    setGpsState(state);
+    if (err?.code === 1) {
+      setGpsState(GPS_STATE.DENIED);
+      setPresenceState('ONLINE_GPS_ERROR');
+    } else {
+      setGpsState(GPS_STATE.TIMEOUT);
+      setPresenceState('ONLINE_GPS_ERROR');
+    }
   }, []);
 
-  // Mount single continuous GPS watcher for online authenticated employee
+  const isNavigating = useMemo(() => {
+    if (!selectedJob) return false;
+    const st = (selectedJob.status || selectedJob.job_status || '').toLowerCase();
+    return ['accepted', 'on_the_way', 'en_route'].includes(st);
+  }, [selectedJob]);
+
+  // Dynamic movement status
+  const movementStatus = useMemo(() => {
+    if (!liveLocation) return 'UNKNOWN';
+    if (liveLocation.speed != null && liveLocation.speed >= 1.2) return 'MOVING';
+    if (liveLocation.speed != null && liveLocation.speed < 0.4) return 'STATIONARY';
+    return 'UNKNOWN';
+  }, [liveLocation]);
+
+  // Dynamic freshness state
+  const freshnessState = useMemo(() => {
+    if (!liveLocation?.captured_at) return 'LOCATION_LOST';
+    const ageSeconds = (Date.now() - new Date(liveLocation.captured_at).getTime()) / 1000;
+    if (ageSeconds <= 5) return 'LIVE';
+    if (ageSeconds <= 15) return 'UPDATING';
+    if (ageSeconds <= 30) return 'DELAYED';
+    if (ageSeconds <= 60) return 'STALE';
+    return 'LOCATION_LOST';
+  }, [liveLocation]);
+
+  // Dynamic geofence status relative to selected job
+  const geofenceStatus = useMemo(() => {
+    if (!selectedJob || !liveLocation?.latitude || !liveLocation?.longitude) return 'OUTSIDE';
+    const custLat = Number(selectedJob.latitude);
+    const custLng = Number(selectedJob.longitude);
+    if (isNaN(custLat) || isNaN(custLng)) return 'OUTSIDE';
+    const distM = haversineMetres(liveLocation.latitude, liveLocation.longitude, custLat, custLng);
+    const st = (selectedJob.status || selectedJob.job_status || '').toLowerCase();
+    if (st === 'arrived' || distM <= 250) return 'ARRIVED';
+    if (distM <= 500) return 'ARRIVING';
+    if (distM <= 1000) return 'APPROACHING';
+    return 'OUTSIDE';
+  }, [selectedJob, liveLocation]);
+
+  // Mount single continuous GPS watcher for online authenticated employee (with adaptive transmission mode)
   useLocationTracker(
     Boolean(isAuthenticated && isApprovedEmployee && isOnline),
     handlePositionChange,
-    handleLocationError
+    handleLocationError,
+    { isNavigating }
   );
 
   const scanCurrentLocation = useCallback(async () => {
@@ -537,15 +653,36 @@ export function EmployeeRuntimeProvider({ children }) {
 
       const promise = (async () => {
         try {
-          const loc = liveLocation || (await scanCurrentLocation());
-          const res = await apiClockIn({
-            lat: loc.latitude,
-            lon: loc.longitude,
-            accuracy: loc.accuracy,
-            timestamp: loc.timestamp || Date.now(),
+          let loc = liveLocation;
+          if (!loc?.latitude || !loc?.longitude) {
+            try {
+              loc = await scanCurrentLocation();
+            } catch (_e) {
+              console.warn('[EmployeeRuntime] scanCurrentLocation error during autoClockIn:', _e);
+            }
+          }
+          if (!loc?.latitude || !loc?.longitude) {
+            if (user?.last_known_location?.latitude && user?.last_known_location?.longitude) {
+              loc = {
+                latitude: Number(user.last_known_location.latitude),
+                longitude: Number(user.last_known_location.longitude),
+                accuracy: user.last_known_location.accuracy || 10,
+              };
+            }
+          }
+
+          const payload = {
             address: options.address || 'GPS Verified Site Arrival',
             job_id: jobId,
-          });
+          };
+          if (loc?.latitude && loc?.longitude) {
+            payload.lat = loc.latitude;
+            payload.lon = loc.longitude;
+            payload.accuracy = loc.accuracy || 10;
+            payload.timestamp = loc.timestamp || Date.now();
+          }
+
+          const res = await apiClockIn(payload);
           await refreshActiveJobs({ force: true });
           return res;
         } finally {
@@ -556,7 +693,7 @@ export function EmployeeRuntimeProvider({ children }) {
       inFlightClockInRef.current = promise;
       return promise;
     },
-    [liveLocation, scanCurrentLocation, refreshActiveJobs]
+    [liveLocation, user?.last_known_location, scanCurrentLocation, refreshActiveJobs]
   );
 
   // ── 10. Explicit Clock-In Readiness State Engine ───────────────────────────
@@ -610,35 +747,161 @@ export function EmployeeRuntimeProvider({ children }) {
     [isOnline, gpsState, liveLocation]
   );
 
+  // ── Synchronous Authoritative State Reconciliation Handlers ───────────────
+  const reconcileJobAccepted = useCallback((jobId, responseData = {}) => {
+    setActiveJobs((prev) =>
+      prev.map((j) => {
+        if (j.id === jobId) {
+          return {
+            ...j,
+            status: responseData.status || 'accepted',
+            job_status: responseData.status || 'accepted',
+            is_offer: false,
+            is_accepted_by_current_employee: true,
+            is_assigned_to_current_employee: true,
+            accepted_at: responseData.accepted_at || new Date().toISOString(),
+            active_offer: null,
+          };
+        }
+        return j;
+      })
+    );
+
+    setSelectedJob((prev) => {
+      const base = prev?.id === jobId ? prev : activeJobsRef.current.find((j) => j.id === jobId) || { id: jobId };
+      return {
+        ...base,
+        status: responseData.status || 'accepted',
+        job_status: responseData.status || 'accepted',
+        is_offer: false,
+        is_accepted_by_current_employee: true,
+        is_assigned_to_current_employee: true,
+        accepted_at: responseData.accepted_at || new Date().toISOString(),
+        active_offer: null,
+      };
+    });
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('workforce:job-accepted', { detail: { jobId, ...responseData } }));
+    }
+
+    refreshActiveJobs({ force: true }).catch(() => {});
+  }, [refreshActiveJobs]);
+
+  const reconcileJobCompleted = useCallback((jobId, completedJobData = {}) => {
+    // 1. Immediately purge from activeJobs
+    setActiveJobs((prev) => prev.filter((j) => j.id !== jobId));
+
+    // 2. Clear selectedJob if it was the completed job
+    setSelectedJob((prev) => (prev?.id === jobId ? null : prev));
+
+    // 3. Immediately prepend to completedJobs for live dashboard metrics
+    setCompletedJobs((prev) => {
+      const existing = prev.find((j) => j.id === jobId);
+      if (existing) {
+        return prev.map((j) => (j.id === jobId ? { ...j, ...completedJobData, status: 'completed' } : j));
+      }
+      const jobFromActive = activeJobsRef.current.find((j) => j.id === jobId);
+      const newCompleted = {
+        ...(jobFromActive || {}),
+        ...completedJobData,
+        id: jobId,
+        status: 'completed',
+        completed_at: completedJobData?.completed_at || new Date().toISOString(),
+      };
+      return [newCompleted, ...prev];
+    });
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('workforce:job-completed', { detail: { jobId, ...completedJobData } }));
+    }
+
+    refreshActiveJobs({ force: true }).catch(() => {});
+    refreshCompletedJobs({ force: true }).catch(() => {});
+  }, [refreshActiveJobs, refreshCompletedJobs]);
+
+  const reconcileOfferRemoved = useCallback((jobId) => {
+    setActiveJobs((prev) => prev.filter((j) => j.id !== jobId));
+    setSelectedJob((prev) => (prev?.id === jobId ? null : prev));
+    refreshActiveJobs({ force: true }).catch(() => {});
+  }, [refreshActiveJobs]);
+
+  // Gentle 15-second background synchronization to ensure UI matches DB state
+  useEffect(() => {
+    if (!isAuthenticated || !isApprovedEmployee || !isOnline) return;
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      refreshActiveJobs({ silent: true }).catch(() => {});
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [isAuthenticated, isApprovedEmployee, isOnline, refreshActiveJobs]);
+
   // ── 11. Realtime Stream (SSE) ──────────────────────────────────────────────
   const handleRealtimeEvent = useCallback(
     (eventData) => {
       const type = eventData.event_type;
       console.info(`[EmployeeRuntime SSE Event] ${type}`, eventData);
 
-      if (type === 'OFFER_CREATED' || type === 'JOB_OFFER') {
+      if (type === 'OFFER_CREATED' || type === 'JOB_OFFER' || type === 'EMPLOYEE_JOB_OFFERED') {
         const payload = eventData.payload || {};
         if (payload.offer_id || payload.id) {
           triggerOfferBrowserNotification(payload);
+        }
+        scheduleCoalescedRefresh(150);
+      } else if (type === 'JOB_OFFER_SUPERSEDED' || type === 'OFFER_SUPERSEDED' || type === 'OFFER_EXPIRED') {
+        const payload = eventData.payload || {};
+        const jobTargetId = payload.job_id || payload.id;
+        if (jobTargetId) {
+          reconcileOfferRemoved(jobTargetId);
+        }
+        scheduleCoalescedRefresh(100);
+      } else if (type === 'JOB_ACCEPTED' || type === 'EMPLOYEE_JOB_ACCEPTED') {
+        const payload = eventData.payload || {};
+        const empId = user?.employee_id || user?.employeeId || user?.id;
+        const acceptedByAnother = payload.employee_id && empId && String(payload.employee_id) !== String(empId);
+        if (acceptedByAnother) {
+          // Another technician won the job: immediately purge offer from this technician's view
+          const jobTargetId = payload.job_id || payload.id;
+          if (jobTargetId) {
+            reconcileOfferRemoved(jobTargetId);
+          }
+        }
+        scheduleCoalescedRefresh(150);
+      } else if (type === 'JOB_COMPLETED' || type === 'EMPLOYEE_JOB_COMPLETED') {
+        const payload = eventData.payload || {};
+        const jobTargetId = payload.job_id || payload.id;
+        if (jobTargetId) {
+          reconcileJobCompleted(jobTargetId, payload);
         }
         scheduleCoalescedRefresh(150);
       } else if (
         [
           'JOB_ASSIGNED',
           'ARRIVAL_DETECTED',
-          'JOB_COMPLETED',
+          'EMPLOYEE_JOB_CANCELLED',
+          'EMPLOYEE_CANCELLED',
+          'EMPLOYEE_AVAILABILITY_CHANGED',
+          'PRE_SERVICE_COMPLETED',
           'JOB_LOCATION_UPDATE',
           'STATUS_CHANGE',
           'EXTENSION_DECIDED',
           'PAYMENT_COLLECTED',
+          'PAYMENT_OTP_VERIFIED',
         ].includes(type)
       ) {
-        scheduleCoalescedRefresh(300);
+        scheduleCoalescedRefresh(200);
       } else if (type === 'NOTIFICATION_CREATED') {
         syncNotifications();
       }
     },
-    [triggerOfferBrowserNotification, scheduleCoalescedRefresh, syncNotifications]
+    [
+      triggerOfferBrowserNotification,
+      scheduleCoalescedRefresh,
+      syncNotifications,
+      reconcileOfferRemoved,
+      reconcileJobCompleted,
+      user,
+    ]
   );
 
   const handleRealtimeReconcile = useCallback(() => {
@@ -647,8 +910,8 @@ export function EmployeeRuntimeProvider({ children }) {
   }, [scheduleCoalescedRefresh, syncNotifications]);
 
   const handleRealtimeAuthFailure = useCallback(() => {
-    logout();
-  }, [logout]);
+    console.warn('[Realtime SSE] Realtime connection interrupted; continuing REST polling.');
+  }, []);
 
   const { connectionState: realtimeConnectionState } = useRealtimeStream({
     enabled: Boolean(isAuthenticated && isApprovedEmployee && isOnline),
@@ -704,16 +967,21 @@ export function EmployeeRuntimeProvider({ children }) {
       selectedJob,
       setSelectedJob,
       incomingOffer,
+      incomingOffers,
       hasActiveJob,
+      activeAssignedJob,
       isJobsLoading,
       isCompletedLoading,
       jobsError,
       refreshActiveJobs,
       refreshCompletedJobs,
+      reconcileJobAccepted,
+      reconcileJobCompleted,
+      reconcileOfferRemoved,
       serverTimeOffset,
       getServerTimeNow: () => Date.now() + (serverTimeOffset || 0),
 
-      // Location & Presence State Machine
+      // Location & Presence Canonical Runtime Telemetry Object
       presenceState,
       gpsState,
       isOnline,
@@ -722,6 +990,18 @@ export function EmployeeRuntimeProvider({ children }) {
       isLocationPending,
       dispatchReady: isOnline && isGpsLive,
       liveLocation,
+      latitude: liveLocation?.latitude ?? null,
+      longitude: liveLocation?.longitude ?? null,
+      accuracy: liveLocation?.accuracy ?? null,
+      accuracyTier: liveLocation?.accuracy_tier || classifyAccuracy(liveLocation?.accuracy),
+      speed: liveLocation?.speed ?? null,
+      heading: liveLocation?.heading ?? null,
+      capturedAt: liveLocation?.captured_at ?? null,
+      receivedAt: liveLocation?.timestamp ? new Date(liveLocation.timestamp).toISOString() : null,
+      serverTime: Date.now() + (serverTimeOffset || 0),
+      movementStatus,
+      freshnessState,
+      geofenceStatus,
       locationState: isGpsGeofenceReady ? 'ready' : isGpsLive ? 'live' : isLocationPending ? 'locating' : 'idle',
       scanCurrentLocation,
       togglePresence: togglePresenceFast,
@@ -745,12 +1025,18 @@ export function EmployeeRuntimeProvider({ children }) {
       completedJobs,
       selectedJob,
       incomingOffer,
+      incomingOffers,
       hasActiveJob,
+      activeAssignedJob,
       isJobsLoading,
       isCompletedLoading,
       jobsError,
       refreshActiveJobs,
       refreshCompletedJobs,
+      reconcileJobAccepted,
+      reconcileJobCompleted,
+      reconcileOfferRemoved,
+      serverTimeOffset,
       presenceState,
       gpsState,
       isOnline,
@@ -758,6 +1044,9 @@ export function EmployeeRuntimeProvider({ children }) {
       isGpsGeofenceReady,
       isLocationPending,
       liveLocation,
+      movementStatus,
+      freshnessState,
+      geofenceStatus,
       scanCurrentLocation,
       togglePresenceFast,
       autoClockIn,
