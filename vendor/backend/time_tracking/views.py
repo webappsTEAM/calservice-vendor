@@ -144,48 +144,69 @@ class ClockInView(APIView):
                 "code": "EMPLOYEE_INACTIVE"
             }, status=status.HTTP_403_FORBIDDEN)
 
-        company = emp.company
-        if not company:
-            return Response({
-                "error": "Company context missing.",
-                "code": "NO_COMPANY"
-            }, status=status.HTTP_403_FORBIDDEN)
-
         # Check if technician already has an open TimeLog / active shift
         open_log = TimeLog.objects.filter(employee=emp, clock_out__isnull=True).first()
         if open_log:
-            return Response({
-                "error": "Technician is already clocked in.",
-                "code": "ALREADY_CLOCKED_IN",
-                "details": {"time_log": TimeLogSerializer(open_log).data}
-            }, status=status.HTTP_409_CONFLICT)
+            from service_requests.models import ServiceRequest
+            has_in_progress_job = ServiceRequest.objects.filter(
+                assigned_employee=emp,
+                status="in_progress"
+            ).exists()
+            if has_in_progress_job:
+                return Response({
+                    "error": "Technician is already clocked in on an active job in progress.",
+                    "code": "ALREADY_CLOCKED_IN",
+                    "details": {"time_log": TimeLogSerializer(open_log).data}
+                }, status=status.HTTP_409_CONFLICT)
+            else:
+                # Prior job was completed/closed without manual clock out; auto-close stale time log
+                now = timezone.now()
+                open_log.clock_out = now
+                open_log.status = "submitted"
+                open_log.submitted_at = now
+                open_log.save(update_fields=["clock_out", "status", "submitted_at"])
 
         from service_requests.models import ServiceRequest, EmployeeJob
         from workforce_api.models import PreServiceVerification
+        from companies.models import Company
         from django.db.models import Q
         from .geo import haversine_distance, GeofenceDecision, evaluate
 
         # 2 & 3 & 4. Verify active accepted primary job assignment owned by this employee
         job_id = request.data.get("job_id") or request.data.get("service_request_id")
-        if job_id:
+        emp_job_sr_ids = list(EmployeeJob.objects.filter(employee=emp).values_list("service_request_id", flat=True))
+        job_filter = Q(id=job_id) if job_id else (Q(assigned_employee=emp) | Q(id__in=emp_job_sr_ids))
+
+        if emp.company_id and emp.company_id > 1:
             active_job = ServiceRequest.objects.filter(
-                id=job_id,
-                company=company,
+                job_filter,
+                company_id=emp.company_id,
                 status__in=["accepted", "on_the_way", "arrived"]
             ).first()
         else:
-            emp_job_sr_ids = list(EmployeeJob.objects.filter(employee=emp).values_list("service_request_id", flat=True))
+            # Solo or Platform technician: can clock in on platform jobs or jobs assigned to them
             active_job = ServiceRequest.objects.filter(
-                Q(assigned_employee=emp) | Q(id__in=emp_job_sr_ids),
-                company=company,
+                job_filter,
                 status__in=["accepted", "on_the_way", "arrived"]
-            ).first()
+            ).filter(Q(company_id=1) | Q(company__isnull=True) | Q(assigned_employee=emp)).first()
 
         if not active_job:
             return Response({
                 "error": "Clock-In rejected: You do not have an active accepted job assignment.",
                 "code": "NO_ACCEPTED_JOB"
             }, status=status.HTTP_400_BAD_REQUEST)
+
+        company = (
+            emp.company
+            or getattr(request.user, "company", None)
+            or active_job.company
+            or Company.objects.filter(id=1).first()
+        )
+        if not company:
+            return Response({
+                "error": "Company context missing.",
+                "code": "NO_COMPANY"
+            }, status=status.HTTP_403_FORBIDDEN)
 
         # 5. Customer destination coordinates must exist
         if active_job.latitude is None or active_job.longitude is None:
@@ -318,11 +339,21 @@ class ClockInView(APIView):
                 .first()
             )
             if open_log:
-                return Response({
-                    "error": "Technician is already clocked in.",
-                    "code": "ALREADY_CLOCKED_IN",
-                    "details": {"time_log": TimeLogSerializer(open_log).data}
-                }, status=status.HTTP_409_CONFLICT)
+                has_in_progress_job = ServiceRequest.objects.filter(
+                    assigned_employee=emp,
+                    status="in_progress"
+                ).exists()
+                if has_in_progress_job:
+                    return Response({
+                        "error": "Technician is already clocked in.",
+                        "code": "ALREADY_CLOCKED_IN",
+                        "details": {"time_log": TimeLogSerializer(open_log).data}
+                    }, status=status.HTTP_409_CONFLICT)
+                else:
+                    open_log.clock_out = now
+                    open_log.status = "submitted"
+                    open_log.submitted_at = now
+                    open_log.save(update_fields=["clock_out", "status", "submitted_at"])
 
             # Re-lock active job
             locked_job = ServiceRequest.objects.select_for_update().filter(pk=active_job.pk).first()
@@ -535,11 +566,15 @@ class GeofenceCheckView(APIView):
         permitted_loc_rels = EmployeeLocation.objects.filter(employee=emp).select_related("location")
         permitted_locs = [rel.location for rel in permitted_loc_rels]
         if not permitted_locs:
-            permitted_locs = list(Location.objects.filter(company=emp.company, is_active=True))
+            if emp.company:
+                permitted_locs = list(Location.objects.filter(company=emp.company, is_active=True))
+            else:
+                permitted_locs = list(Location.objects.filter(company_id=1, is_active=True))
 
-        company = emp.company
+        from companies.models import Company
+        company = emp.company or Company.objects.filter(id=1).first()
         geofence_enabled = getattr(company, "geofence_enabled", True) if company else True
-        allow_all_locs = getattr(emp, "allow_all_locations", False) or not geofence_enabled
+        allow_all_locs = getattr(emp, "allow_all_locations", False) or not geofence_enabled or (emp.company_id is None)
 
         if not permitted_locs and not allow_all_locs:
             return Response({

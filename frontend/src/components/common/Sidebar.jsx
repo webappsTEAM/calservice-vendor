@@ -487,14 +487,16 @@ export function Sidebar({ onCloseMobile = () => {} }) {
                 <Briefcase className="w-3.5 h-3.5 text-slate-400" />
                 <span>My Jobs</span>
               </NavLink>
-              <NavLink
-                to="/workforce/employee/vendor-network"
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <Building2 className="w-3.5 h-3.5 text-blue-600" />
-                <span>My Vendor Assignment</span>
-              </NavLink>
+              {isTiedWorker && (
+                <NavLink
+                  to="/workforce/employee/vendor-network"
+                  onClick={onCloseMobile}
+                  className={navItemClass}
+                >
+                  <Building2 className="w-3.5 h-3.5 text-blue-600" />
+                  <span>My Vendor Assignment</span>
+                </NavLink>
+              )}
               <NavLink
                 to="/workforce/employee/invitations"
                 onClick={onCloseMobile}
@@ -503,14 +505,14 @@ export function Sidebar({ onCloseMobile = () => {} }) {
                 <Mail className="w-3.5 h-3.5 text-indigo-500" />
                 <span>Vendor Invitations</span>
               </NavLink>
-              {isSoloWorker && (
+              {(isSoloWorker || !isTiedWorker || !user?.companyId) && (
                 <NavLink
                   to="/workforce/employee/wallet"
                   onClick={onCloseMobile}
                   className={navItemClass}
                 >
-                  <Wallet className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>My Wallet (Solo)</span>
+                  <Wallet className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>My Wallet</span>
                 </NavLink>
               )}
               <NavLink

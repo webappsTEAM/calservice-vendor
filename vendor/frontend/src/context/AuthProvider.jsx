@@ -55,8 +55,8 @@ export function AuthProvider({ children }) {
           }
 
           const isEmployee = Boolean(empData) || (!isAdmin && (me.role || '').toLowerCase() === 'employee');
-          const isTiedWorker = isEmployee && Boolean(me.is_tied_worker || empData?.is_tied);
-          const isSoloWorker = isEmployee && !isTiedWorker;
+          const isTiedWorker = isEmployee && Boolean(me.is_tied_worker || empData?.is_tied || empData?.workforce_type === 'TIED');
+          const isSoloWorker = isEmployee && (!isTiedWorker || Boolean(me.is_solo_worker) || empData?.workforce_type === 'SOLO' || !me.company);
           const computedRole = isPlatformAdmin ? 'platform_admin' : (isVendorAdmin ? 'vendor_admin' : 'employee');
 
           const u = {
@@ -74,7 +74,7 @@ export function AuthProvider({ children }) {
             isEmployee: isEmployee,
             isTiedWorker: isTiedWorker,
             isSoloWorker: isSoloWorker,
-            registrationStatus: empData ? (empData.registration_status || 'not_started') : (isAdmin ? 'approved' : 'not_started'),
+            registrationStatus: empData?.registration_status || me.registration_status || (isAdmin ? 'approved' : 'not_started'),
             isOnline: empData ? Boolean(empData.is_online) : false,
             availability: empData ? (empData.live_availability || 'offline') : 'offline',
           };
@@ -118,6 +118,9 @@ export function AuthProvider({ children }) {
 
     if (res.user) {
       const isAdmin = ['admin', 'manager'].includes((res.user.role || '').toLowerCase()) || Boolean(res.user.is_superuser);
+      const isTied = Boolean(res.user.is_tied_worker);
+      const isSolo = Boolean(res.user.is_solo_worker) || (!isTied && !isAdmin);
+      const regStatus = res.user.registration_status || (isAdmin ? 'approved' : 'not_started');
       const initialUser = {
         id: res.user.id,
         username: res.user.username,
@@ -129,7 +132,9 @@ export function AuthProvider({ children }) {
         companyName: res.user.company_name || '',
         isAdmin: isAdmin,
         isEmployee: !isAdmin,
-        registrationStatus: isAdmin ? 'approved' : 'not_started',
+        isTiedWorker: isTied,
+        isSoloWorker: isSolo,
+        registrationStatus: regStatus,
         isOnline: false,
         availability: 'offline',
       };

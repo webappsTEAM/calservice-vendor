@@ -166,6 +166,21 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
         # in this function's own try/except, so a settlement failure logs
         # loudly but never blocks the job from actually completing.
         if target == "completed":
+            # Auto-close open TimeLogs for the assigned employee
+            if service_request.assigned_employee:
+                try:
+                    from time_tracking.models import TimeLog
+                    TimeLog.objects.filter(
+                        employee=service_request.assigned_employee,
+                        clock_out__isnull=True
+                    ).update(
+                        clock_out=now,
+                        status="submitted",
+                        submitted_at=now
+                    )
+                except Exception as _tl_err:
+                    logger.warning("Could not auto-close TimeLog on job completion: %s", _tl_err)
+
             try:
                 from workforce_api.services.commission import settle_completed_job
                 settle_completed_job(service_request)
@@ -175,6 +190,40 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
                     "earnings were NOT credited. Needs manual settlement: %s",
                     service_request.pk, _settlement_err,
                 )
+                # Bug found: this used to only log -- the job stayed COMPLETED,
+                # the technician saw no earnings, and nothing pointed anyone
+                # at why. Surface it as an admin notification (mirroring the
+                # completion-blocked notification in workforce_api/views.py)
+                # so ops can act instead of it going unnoticed indefinitely,
+                # and point at the self-service retry command.
+                try:
+                    from django.contrib.auth import get_user_model
+                    from django.db.models import Q
+                    from workforce_api.models import WorkforceNotification
+                    admin_user = None
+                    if service_request.company:
+                        admin_user = get_user_model().objects.filter(
+                            Q(role__in=["admin", "manager"]) | Q(is_staff=True),
+                            company=service_request.company,
+                        ).first()
+                    if admin_user:
+                        WorkforceNotification.objects.create(
+                            recipient=admin_user,
+                            title="Job Completed but Wallet Was Not Credited",
+                            message=(
+                                f"Job #{service_request.pk} ({service_request.request_id}) is COMPLETED but "
+                                f"wallet settlement failed: {_settlement_err} Run "
+                                f"`retry_failed_settlements --job {service_request.request_id}` once resolved."
+                            ),
+                            notification_type="JOB_SETTLEMENT_FAILED",
+                            company=service_request.company,
+                            related_object_id=str(service_request.pk),
+                        )
+                except Exception as _notify_err:
+                    logger.warning(
+                        "Could not notify admin of failed settlement for Job #%s: %s",
+                        service_request.pk, _notify_err,
+                    )
 
         if target in ["completed", "cancelled", "redispatching", "unable_to_complete"]:
             from workforce_api.models import JobTrackingSession

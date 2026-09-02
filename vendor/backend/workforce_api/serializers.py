@@ -187,9 +187,12 @@ class WorkforceEmployeeProfileSerializer(serializers.ModelSerializer):
         from workforce_api.models import VendorTechnicianRelationship
         has_active_rel = VendorTechnicianRelationship.objects.filter(
             technician=obj,
-            status=VendorTechnicianRelationship.Status.ACTIVE,
+            status__in=[
+                VendorTechnicianRelationship.Status.ACTIVE,
+                VendorTechnicianRelationship.Status.RESIGNATION_REQUESTED,
+            ],
         ).exists()
-        return bool(has_active_rel or obj.company_id)
+        return bool(has_active_rel)
 
     def get_is_solo(self, obj):
         return not self.get_is_tied(obj)
@@ -207,7 +210,7 @@ class WorkforceEmployeeProfileSerializer(serializers.ModelSerializer):
                 "engagement_type": active_rel.engagement_type,
                 "started_at": active_rel.started_at,
             }
-        elif obj.company:
+        elif getattr(obj, "company_id", None) and getattr(obj, "company", None):
             return {
                 "id": obj.company.id,
                 "company_name": getattr(obj.company, "company_name", getattr(obj.company, "name", "Vendor")),

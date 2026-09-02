@@ -2,6 +2,7 @@
 workforce-app/backend/workforce_api/models.py
 Relational database models for Workforce Scheduling, Skills, Compliance, Notifications, Events, Payroll, and Reports.
 """
+import uuid
 from django.conf import settings
 from django.db import models
 
@@ -428,6 +429,8 @@ class WorkforceJobOffer(models.Model):
         db_index=True,
     )
     rank_score = models.FloatField(default=0.0)
+    wave_id = models.UUIDField(default=uuid.uuid4, db_index=True)
+    wave_number = models.IntegerField(default=1, db_index=True)
     offered_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
     rejection_reason = models.TextField(blank=True, default="")

@@ -79,11 +79,18 @@ def resolve_wallet_for_user(user):
         # Check if worker is tied to a vendor
         has_active_rel = VendorTechnicianRelationship.objects.filter(
             technician=emp,
-            status=VendorTechnicianRelationship.Status.ACTIVE,
+            status__in=[
+                VendorTechnicianRelationship.Status.ACTIVE,
+                VendorTechnicianRelationship.Status.RESIGNATION_REQUESTED,
+            ],
         ).exists()
-        if has_active_rel or emp.company_id:
+        if has_active_rel:
             # Tied workers do not have a separate wallet; job revenue flows to their vendor
             return None, None
+
+        if emp.company_id:
+            emp.company = None
+            emp.save(update_fields=["company"])
 
         # Solo worker
         try:

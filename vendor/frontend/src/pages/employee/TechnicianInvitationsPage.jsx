@@ -116,13 +116,15 @@ export function TechnicianInvitationsPage() {
             </p>
           </div>
 
-          <NavLink
-            to="/workforce/employee/vendor-network"
-            className="inline-flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold rounded-lg transition-colors"
-          >
-            <Building2 className="w-4 h-4 text-slate-500" />
-            <span>My Vendor Assignment</span>
-          </NavLink>
+          {activeVendor && (
+            <NavLink
+              to="/workforce/employee/vendor-network"
+              className="inline-flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold rounded-lg transition-colors"
+            >
+              <Building2 className="w-4 h-4 text-slate-500" />
+              <span>My Vendor Assignment</span>
+            </NavLink>
+          )}
         </div>
 
         {/* Current Active Vendor Notice Banner */}

@@ -196,7 +196,12 @@ class LoginView(APIView):
                 identifier, lookup_type, matched_user_id, matched_user_active, password_check, db_status, response_code, response_code_name
             )
 
-            is_platform_admin = bool(getattr(user, "is_superuser", False))
+            is_platform_admin = bool(
+                getattr(user, "is_superuser", False)
+                or (getattr(user, "is_staff", False) and getattr(user, "company_id", None) == 1)
+                or str(getattr(user, "role", "")).lower() in ("superadmin", "platform_admin")
+                or (str(getattr(user, "role", "")).lower() in ("admin", "manager") and getattr(user, "company_id", None) == 1)
+            )
             is_vendor_admin = bool(
                 not is_platform_admin
                 and (user_role in ["admin", "manager"] or getattr(user, "is_staff", False))
@@ -207,16 +212,58 @@ class LoginView(APIView):
                 from workforce_api.models import VendorTechnicianRelationship
                 has_active_rel = VendorTechnicianRelationship.objects.filter(
                     technician=emp,
-                    status=VendorTechnicianRelationship.Status.ACTIVE,
+                    status__in=[
+                        VendorTechnicianRelationship.Status.ACTIVE,
+                        VendorTechnicianRelationship.Status.RESIGNATION_REQUESTED,
+                    ],
                 ).exists()
-                is_tied_worker = bool(has_active_rel or emp.company_id)
+                if not has_active_rel and emp.company_id:
+                    emp.company = None
+                    emp.save(update_fields=["company"])
+                    company_id = None
+                    company_name = None
+                is_tied_worker = bool(has_active_rel)
 
             is_solo_worker = is_technician and not is_tied_worker
+            if is_solo_worker:
+                company_id = None
+                company_name = None
+                if getattr(user, "company_id", None):
+                    user.company = None
+                    user.save(update_fields=["company"])
+            if is_solo_worker and emp:
+                try:
+                    from workforce_api.models import WalletAccount
+                    WalletAccount.objects.get_or_create(
+                        employee=emp,
+                        account_type=WalletAccount.AccountType.INDIVIDUAL_WORKER,
+                        defaults={"company": None, "is_active": True},
+                    )
+                    from vendor_wallet.models import EmployeeWallet
+                    from vendor_wallet.constants import WALLET_ACTIVE
+                    target_company = emp.company or getattr(user, "company", None)
+                    if not target_company and getattr(emp, "company_id", None):
+                        from companies.models import Company
+                        target_company = Company.objects.filter(id=emp.company_id).first()
+                    if not target_company:
+                        from companies.models import Company
+                        target_company = Company.objects.order_by("id").first()
+                    if target_company:
+                        EmployeeWallet.objects.get_or_create(
+                            employee=emp,
+                            defaults={"company": target_company, "currency": "INR", "status": WALLET_ACTIVE},
+                        )
+                except Exception as _w_err:
+                    logger.warning("Could not ensure individual wallet: %s", str(_w_err))
+
             user_type = (
                 "platform_admin"
                 if is_platform_admin
                 else ("vendor_admin" if is_vendor_admin else "technician")
             )
+
+            from workforce_api.services.registration import get_employee_registration_status
+            reg_status = get_employee_registration_status(user)
 
             response = Response({
                 "message": "Login successful.",
@@ -240,6 +287,7 @@ class LoginView(APIView):
                     "is_solo_worker": is_solo_worker,
                     "user_type": user_type,
                     "employee_id": getattr(emp, "employee_id", None) if emp else None,
+                    "registration_status": reg_status,
                 }
             }, status=response_code)
 
@@ -368,7 +416,12 @@ class MeView(APIView):
             if emp and user_role not in ["admin", "manager"]:
                 user_role = "employee"
 
-            is_platform_admin = bool(getattr(user, "is_superuser", False))
+            is_platform_admin = bool(
+                getattr(user, "is_superuser", False)
+                or (getattr(user, "is_staff", False) and getattr(user, "company_id", None) == 1)
+                or str(getattr(user, "role", "")).lower() in ("superadmin", "platform_admin")
+                or (str(getattr(user, "role", "")).lower() in ("admin", "manager") and getattr(user, "company_id", None) == 1)
+            )
             is_vendor_admin = bool(
                 not is_platform_admin
                 and (user_role in ["admin", "manager"] or getattr(user, "is_staff", False))
@@ -379,16 +432,58 @@ class MeView(APIView):
                 from workforce_api.models import VendorTechnicianRelationship
                 has_active_rel = VendorTechnicianRelationship.objects.filter(
                     technician=emp,
-                    status=VendorTechnicianRelationship.Status.ACTIVE,
+                    status__in=[
+                        VendorTechnicianRelationship.Status.ACTIVE,
+                        VendorTechnicianRelationship.Status.RESIGNATION_REQUESTED,
+                    ],
                 ).exists()
-                is_tied_worker = bool(has_active_rel or emp.company_id)
+                if not has_active_rel and emp.company_id:
+                    emp.company = None
+                    emp.save(update_fields=["company"])
+                    company_id = None
+                    company_name = None
+                is_tied_worker = bool(has_active_rel)
 
             is_solo_worker = is_technician and not is_tied_worker
+            if is_solo_worker:
+                company_id = None
+                company_name = None
+                if getattr(user, "company_id", None):
+                    user.company = None
+                    user.save(update_fields=["company"])
+            if is_solo_worker and emp:
+                try:
+                    from workforce_api.models import WalletAccount
+                    WalletAccount.objects.get_or_create(
+                        employee=emp,
+                        account_type=WalletAccount.AccountType.INDIVIDUAL_WORKER,
+                        defaults={"company": None, "is_active": True},
+                    )
+                    from vendor_wallet.models import EmployeeWallet
+                    from vendor_wallet.constants import WALLET_ACTIVE
+                    target_company = emp.company or getattr(user, "company", None)
+                    if not target_company and getattr(emp, "company_id", None):
+                        from companies.models import Company
+                        target_company = Company.objects.filter(id=emp.company_id).first()
+                    if not target_company:
+                        from companies.models import Company
+                        target_company = Company.objects.order_by("id").first()
+                    if target_company:
+                        EmployeeWallet.objects.get_or_create(
+                            employee=emp,
+                            defaults={"company": target_company, "currency": "INR", "status": WALLET_ACTIVE},
+                        )
+                except Exception as _w_err:
+                    logger.warning("Could not ensure individual wallet: %s", str(_w_err))
+
             user_type = (
                 "platform_admin"
                 if is_platform_admin
                 else ("vendor_admin" if is_vendor_admin else "technician")
             )
+
+            from workforce_api.services.registration import get_employee_registration_status
+            reg_status = get_employee_registration_status(user)
 
             return Response({
                 "id": user.id,
@@ -407,6 +502,7 @@ class MeView(APIView):
                 "is_solo_worker": is_solo_worker,
                 "user_type": user_type,
                 "employee_id": getattr(emp, "employee_id", None) if emp else None,
+                "registration_status": reg_status,
             }, status=status.HTTP_200_OK)
         except (OperationalError, DatabaseError) as db_err:
             logger.error("Database error in MeView: %s", str(db_err), exc_info=True)

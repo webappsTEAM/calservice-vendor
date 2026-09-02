@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useNavigate } from 'react-router-dom';
 import { AppShell } from '../../components/common/AppShell.jsx';
 import { apiRequest } from '../../api/client.js';
+import { useAuth } from '../../context/AuthProvider.jsx';
 import {
   Building2,
   ShieldCheck,
@@ -25,6 +26,8 @@ import {
 } from 'lucide-react';
 
 export function MyVendorNetworkPage() {
+  const navigate = useNavigate();
+  const { isTiedWorker, isSoloWorker } = useAuth();
   const [relationships, setRelationships] = useState([]);
   const [activeVendor, setActiveVendor] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -102,6 +105,24 @@ export function MyVendorNetworkPage() {
 
   const activeRequest = relievingStatus?.request;
   const isResignationInProgress = relievingStatus?.has_active_request && activeRequest;
+
+  // Solo workers who are not assigned to any vendor tree must not access this page
+  useEffect(() => {
+    if (!loading && !activeRel && !isResignationInProgress) {
+      navigate('/workforce/employee/dashboard', { replace: true });
+    }
+  }, [loading, activeRel, isResignationInProgress, navigate]);
+
+  if (!loading && !activeRel && !isResignationInProgress) {
+    return (
+      <AppShell>
+        <div className="py-16 flex flex-col items-center justify-center text-slate-500">
+          <div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mb-2" />
+          <p className="text-sm">Redirecting to operations dashboard...</p>
+        </div>
+      </AppShell>
+    );
+  }
 
   return (
     <AppShell>
