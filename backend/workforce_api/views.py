@@ -3084,12 +3084,49 @@ class WorkforceJobAcceptOfferView(APIView):
 class WorkforceJobCancelAssignmentView(APIView):
     """
     5-Minute Backend-Authoritative Employee Job Assignment Cancellation.
-    Only the assigned technician can cancel within 5 minutes of acceptance,
-    and only while in 'accepted' or 'on_the_way' states.
+    Only the assigned technician can cancel prior to customer OTP verification,
+    and only while in 'accepted', 'on_the_way', 'en_route', or 'arrived' states.
     Automatically releases technician to AVAILABLE, terminates tracking session,
-    records immutable lifecycle audit event, and triggers 9-gate automatic redispatch.
+    cleans up unverified pre-service verification, records immutable lifecycle audit event,
+    and triggers automatic redispatch.
     """
     permission_classes = [IsApprovedTechnician]
+
+    ALLOWED_REASONS = [
+        "VEHICLE_ISSUE",
+        "TRAFFIC_ROUTE_ISSUE",
+        "TOO_FAR",
+        "SERVICE_MISMATCH",
+        "CUSTOMER_LOCATION_ISSUE",
+        "SAFETY_CONCERN",
+        "PERSONAL_EMERGENCY",
+        "OTHER",
+    ]
+
+    REASON_MAP = {
+        "VEHICLE BREAKDOWN / TRANSIT ISSUE": "VEHICLE_ISSUE",
+        "VEHICLE ISSUE": "VEHICLE_ISSUE",
+        "EXTREME TRAFFIC / ROAD CLOSED": "TRAFFIC_ROUTE_ISSUE",
+        "TRAFFIC / ROUTE ISSUE": "TRAFFIC_ROUTE_ISSUE",
+        "HEAVY TRAFFIC / ROAD BLOCKAGE": "TRAFFIC_ROUTE_ISSUE",
+        "BUSY / HEAVY TRAFFIC": "TRAFFIC_ROUTE_ISSUE",
+        "LOCATION TOO FAR / OUT OF REACH": "TOO_FAR",
+        "DISTANCE TOO FAR / UNREACHABLE IN TIME": "TOO_FAR",
+        "TOO FAR": "TOO_FAR",
+        "SKILL / TOOLING MISMATCH": "SERVICE_MISMATCH",
+        "SERVICE REQUIRES DIFFERENT TOOLS / EQUIPMENT": "SERVICE_MISMATCH",
+        "SERVICE MISMATCH": "SERVICE_MISMATCH",
+        "CUSTOMER LOCATION UNREACHABLE": "CUSTOMER_LOCATION_ISSUE",
+        "CUSTOMER SITE UNREACHABLE / UNSAFE ACCESS": "CUSTOMER_LOCATION_ISSUE",
+        "CUSTOMER LOCATION ISSUE": "CUSTOMER_LOCATION_ISSUE",
+        "SAFETY CONCERN AT SITE": "SAFETY_CONCERN",
+        "SAFETY CONCERN / HAZARDOUS CONDITIONS": "SAFETY_CONCERN",
+        "SAFETY CONCERN": "SAFETY_CONCERN",
+        "PERSONAL EMERGENCY": "PERSONAL_EMERGENCY",
+        "PERSONAL REASON": "PERSONAL_EMERGENCY",
+        "OTHER REASON": "OTHER",
+        "OTHER": "OTHER",
+    }
 
     def post(self, request, pk):
         job = ServiceRequest.objects.filter(pk=pk).first()
@@ -3104,28 +3141,26 @@ class WorkforceJobCancelAssignmentView(APIView):
         if not emp.company_id or not job.company_id or emp.company_id != job.company_id:
             return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
-        # Authorization: must be the currently assigned technician
-        if job.assigned_employee != emp:
+        # Authorization: must be the currently assigned technician or active EmployeeJob
+        from service_requests.models import EmployeeJob
+        has_emp_job = EmployeeJob.objects.filter(
+            service_request=job,
+            employee=emp,
+            status__in=["ASSIGNED", "ACCEPTED", "IN_PROGRESS", "ON_THE_WAY", "ARRIVED"]
+        ).exists()
+        if job.assigned_employee != emp and not has_emp_job:
             return Response({"error": "Unauthorized: You are not assigned to this job.", "code": "UNAUTHORIZED_CANCELLATION"}, status=status.HTTP_403_FORBIDDEN)
 
-        # Structured reason validation
-        ALLOWED_REASONS = [
-            "VEHICLE_ISSUE",
-            "TRAFFIC_ROUTE_ISSUE",
-            "TOO_FAR",
-            "SERVICE_MISMATCH",
-            "CUSTOMER_LOCATION_ISSUE",
-            "SAFETY_CONCERN",
-            "PERSONAL_EMERGENCY",
-            "OTHER",
-        ]
-        reason_code = str(request.data.get("reason_code") or "").strip().upper()
-        reason_text = str(request.data.get("reason_text") or "").strip()
+        # Structured reason validation & normalization
+        raw_reason = str(request.data.get("reason_code") or request.data.get("reason") or "").strip().upper()
+        reason_code = self.REASON_MAP.get(raw_reason, raw_reason)
+        reason_text = str(request.data.get("reason_text") or request.data.get("reason_detail") or request.data.get("notes") or "").strip()
 
-        if not reason_code or reason_code not in ALLOWED_REASONS:
+        if not reason_code or reason_code not in self.ALLOWED_REASONS:
             return Response({
-                "error": f"Invalid or missing reason_code. Must be one of: {', '.join(ALLOWED_REASONS)}",
+                "error": f"Invalid or missing reason_code. Must be one of: {', '.join(self.ALLOWED_REASONS)}",
                 "code": "INVALID_REASON_CODE",
+                "valid_reasons": self.ALLOWED_REASONS,
             }, status=status.HTTP_400_BAD_REQUEST)
 
         if reason_code == "OTHER" and len(reason_text) < 5:
@@ -3134,19 +3169,26 @@ class WorkforceJobCancelAssignmentView(APIView):
                 "code": "REASON_TEXT_REQUIRED",
             }, status=status.HTTP_400_BAD_REQUEST)
 
+        if not reason_text:
+            reason_text = reason_code
+
         with transaction.atomic():
             job_obj = ServiceRequest.objects.select_for_update().filter(pk=pk).first()
             emp_obj = Employee.objects.select_for_update().filter(pk=emp.pk).first()
 
+            emp_job = EmployeeJob.objects.filter(service_request=job_obj, employee=emp_obj).first()
+            is_assigned_direct = (job_obj.assigned_employee == emp_obj)
+            is_assigned_via_empjob = bool(emp_job and emp_job.status not in ["CANCELLED", "EMPLOYEE_CANCELLED", "REJECTED"])
+
             # Idempotency check: If already cancelled / redispatching and unassigned from this employee
-            if job_obj.status in ["redispatching", "unassigned", "cancelled"] and job_obj.assigned_employee != emp_obj:
+            if job_obj.status in ["redispatching", "unassigned", "cancelled"] and not is_assigned_direct and not is_assigned_via_empjob:
                 return Response({
                     "message": "Job assignment is already cancelled.",
                     "job_id": job_obj.id,
                     "status": job_obj.status,
                 }, status=status.HTTP_200_OK)
 
-            if job_obj.assigned_employee != emp_obj:
+            if not is_assigned_direct and not is_assigned_via_empjob:
                 return Response({
                     "error": "Unauthorized: You are no longer assigned to this job.",
                     "code": "UNAUTHORIZED_CANCELLATION",
@@ -3169,7 +3211,6 @@ class WorkforceJobCancelAssignmentView(APIView):
                 event_type=WorkforceJobLifecycleEvent.EventType.EMPLOYEE_JOB_ACCEPTED,
             ).order_by("-created_at").first()
 
-            emp_job = EmployeeJob.objects.filter(service_request=job_obj, employee=emp_obj).first()
             accepted_at = (
                 accept_event.accepted_at if accept_event
                 else (emp_job.accepted_date if emp_job and emp_job.accepted_date else job_obj.updated_at)
@@ -3312,15 +3353,24 @@ class WorkforceJobTechnicianCancelView(APIView):
 
         # Normalize friendly reason string
         reason_map = {
+            "Vehicle Breakdown / Transit Issue": "VEHICLE_ISSUE",
             "Vehicle issue": "VEHICLE_ISSUE",
+            "Extreme Traffic / Road Closed": "TRAFFIC_ROUTE_ISSUE",
             "Traffic / Route issue": "TRAFFIC_ROUTE_ISSUE",
             "Busy / Heavy traffic": "TRAFFIC_ROUTE_ISSUE",
+            "Location Too Far / Out of Reach": "TOO_FAR",
+            "Distance Too Far / Unreachable in Time": "TOO_FAR",
             "Too far": "TOO_FAR",
+            "Skill / Tooling Mismatch": "SERVICE_MISMATCH",
             "Service mismatch": "SERVICE_MISMATCH",
+            "Customer Location Unreachable": "CUSTOMER_LOCATION_ISSUE",
             "Customer location issue": "CUSTOMER_LOCATION_ISSUE",
+            "Safety Concern at Site": "SAFETY_CONCERN",
             "Safety concern": "SAFETY_CONCERN",
+            "Personal Emergency": "PERSONAL_EMERGENCY",
             "Personal emergency": "PERSONAL_EMERGENCY",
             "Personal reason": "PERSONAL_EMERGENCY",
+            "Other Reason": "OTHER",
             "Other": "OTHER",
         }
         reason_code = reason_map.get(reason_code, reason_code)
@@ -3346,8 +3396,13 @@ class WorkforceJobTechnicianCancelView(APIView):
             if emp.company_id and job.company_id and emp.company_id != job.company_id:
                 return Response({"error": "Cross-company cancellation forbidden.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
-            # Verify assigned technician
-            if job.assigned_employee != emp:
+            # Verify assigned technician (direct or via EmployeeJob)
+            from service_requests.models import EmployeeJob
+            emp_job = EmployeeJob.objects.filter(service_request=job, employee=emp).first()
+            is_assigned_direct = (job.assigned_employee == emp)
+            is_assigned_via_empjob = bool(emp_job and emp_job.status not in ["CANCELLED", "EMPLOYEE_CANCELLED", "REJECTED"])
+
+            if not is_assigned_direct and not is_assigned_via_empjob:
                 return Response({"error": "You are not the assigned technician for this job.", "code": "NOT_ASSIGNED_TECHNICIAN"}, status=status.HTTP_403_FORBIDDEN)
 
             # State check: ONLY allow cancellation during ACCEPTED or ON_THE_WAY

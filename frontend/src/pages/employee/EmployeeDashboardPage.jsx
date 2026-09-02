@@ -900,6 +900,7 @@ export function EmployeeDashboardPage() {
     };
 
     const handleOpenCancelModal = (job) => {
+      setError('');
       setCancelModalJob(job || selectedJob);
       setSelectedCancelReason('VEHICLE_ISSUE');
       setCustomCancelReason('');
@@ -923,8 +924,8 @@ export function EmployeeDashboardPage() {
         await apiCancelJobAssignment(cancellingId, selectedCancelReason, reasonText);
         setCancelModalJob(null);
         setSuccessMsg('Job assignment cancelled. You are now AVAILABLE for new requests.');
-        if (typeof reconcileJobCompleted === 'function') {
-          reconcileJobCompleted(cancellingId, { id: cancellingId, status: 'unassigned' });
+        if (typeof reconcileOfferRemoved === 'function') {
+          reconcileOfferRemoved(cancellingId);
         }
         setSelectedJob(null);
         if (typeof refreshActiveJobs === 'function') {
@@ -948,6 +949,7 @@ export function EmployeeDashboardPage() {
         setActionLoading(null);
       }
     };
+    const handleConfirmCancelJob = handleConfirmCancelAssignment;
 
     const handleExtensionSubmit = async (e) => {
       e.preventDefault();
@@ -3698,17 +3700,23 @@ export function EmployeeDashboardPage() {
           </form>
         </Modal>
 
-        {/* Modal: Structured 5-Minute Technician Cancellation Modal */}
+        {/* Modal: Structured Technician Cancellation Modal */}
         <Modal
           isOpen={Boolean(cancelModalJob)}
           onClose={() => setCancelModalJob(null)}
           title={`Cancel Assignment — Job #${cancelModalJob?.request_id || cancelModalJob?.id}`}
         >
-          <form onSubmit={handleConfirmCancelJob} className="space-y-4 text-xs">
+          <form onSubmit={handleConfirmCancelAssignment} className="space-y-4 text-xs">
+            {error && (
+              <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 font-semibold text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
             <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 space-y-1">
               <p className="font-bold flex items-center gap-1.5 text-xs text-amber-950">
                 <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
-                <span>Cancellation Notice (5-Minute Window)</span>
+                <span>Cancellation Notice (Before Customer OTP)</span>
               </p>
               <p className="text-[11px] text-amber-800">
                 Cancelling will immediately release this job, preserve the customer booking, and start automated redispatch for the next eligible technician.
@@ -3721,13 +3729,13 @@ export function EmployeeDashboardPage() {
               </label>
               <div className="space-y-2 bg-slate-50 p-3 rounded-lg border border-slate-200 max-h-56 overflow-y-auto">
                 {[
-                  { code: 'VEHICLE_ISSUE', label: 'Vehicle issue / Breakdown' },
-                  { code: 'TRAFFIC_ROUTE_ISSUE', label: 'Heavy traffic / Road blockage' },
-                  { code: 'TOO_FAR', label: 'Distance too far / Unreachable in time' },
-                  { code: 'SERVICE_MISMATCH', label: 'Service requires different tools / equipment' },
-                  { code: 'CUSTOMER_LOCATION_ISSUE', label: 'Customer site unreachable / unsafe access' },
-                  { code: 'SAFETY_CONCERN', label: 'Safety concern / Hazardous conditions' },
-                  { code: 'PERSONAL_EMERGENCY', label: 'Personal emergency' },
+                  { code: 'VEHICLE_ISSUE', label: 'Vehicle Breakdown / Transit Issue' },
+                  { code: 'PERSONAL_EMERGENCY', label: 'Personal Emergency' },
+                  { code: 'TRAFFIC_ROUTE_ISSUE', label: 'Extreme Traffic / Road Closed' },
+                  { code: 'CUSTOMER_LOCATION_ISSUE', label: 'Customer Location Unreachable' },
+                  { code: 'TOO_FAR', label: 'Location Too Far / Out of Reach' },
+                  { code: 'SERVICE_MISMATCH', label: 'Skill / Tooling Mismatch' },
+                  { code: 'SAFETY_CONCERN', label: 'Safety Concern at Site' },
                   { code: 'OTHER', label: 'Other reason (explanation required)' },
                 ].map((r) => (
                   <label key={r.code} className="flex items-center gap-2.5 cursor-pointer text-slate-800 font-medium hover:bg-slate-100/70 p-1 rounded">

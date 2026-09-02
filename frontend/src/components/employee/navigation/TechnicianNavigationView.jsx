@@ -16,6 +16,7 @@
 import React from 'react';
 import { TechnicianFirstPersonNavView } from './TechnicianFirstPersonNavView.jsx';
 import { TechnicianArrivalView } from './TechnicianArrivalView.jsx';
+import { TechnicianStandbyMapView } from './TechnicianStandbyMapView.jsx';
 
 export function TechnicianNavigationView({
   job,
@@ -24,6 +25,7 @@ export function TechnicianNavigationView({
   geofenceRadius = 250,
   onLocationReport,
   onExitNavigation,
+  isOnline = true,
 }) {
   const status = job?.status;
 
