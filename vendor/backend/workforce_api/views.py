@@ -2545,6 +2545,19 @@ class WorkforceJobPaymentVerifyOTPView(APIView):
                     completion_blocked_reason = str(e)
                     logger.exception("Unexpected error completing job #%s after payment OTP verification: %s", job.id, e)
                     job.save(update_fields=["payment_status"])
+                else:
+                    # Bug found: apply_transition() only persists the "status"
+                    # field (service_request.save(update_fields=["status"])) --
+                    # it never writes back payment_status, so the "paid"
+                    # assignment above was staying in memory only. The job
+                    # correctly flipped to COMPLETED, but the shared
+                    # payment_status column (read directly by the Customer
+                    # app -- same database, same row) stayed at whatever it
+                    # was before (e.g. "cash_pending"), which is exactly why
+                    # a technician could see the job as COMPLETED while the
+                    # customer's booking list still showed "Cash Collection
+                    # Pending". Persist it explicitly on the success path too.
+                    job.save(update_fields=["payment_status"])
             else:
                 job.save(update_fields=["payment_status"])
 
@@ -2733,6 +2746,12 @@ class WorkforceCustomerPaymentConfirmView(APIView):
                     except Exception as e:
                         completion_blocked_reason = str(e)
                         logger.exception("Unexpected error completing job #%s after customer payment confirm: %s", job.id, e)
+                        job.save(update_fields=["payment_status"])
+                    else:
+                        # See the matching comment in WorkforceJobPaymentVerifyOTPView --
+                        # apply_transition() only persists "status", so without this the
+                        # payment_status column stays stale (e.g. "cash_pending") even
+                        # though the job just completed successfully.
                         job.save(update_fields=["payment_status"])
                 else:
                     job.save(update_fields=["payment_status"])
