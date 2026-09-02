@@ -1029,6 +1029,7 @@ export function EmployeeDashboardPage() {
     };
 
     const handleOpenCancelModal = (job) => {
+      setError('');
       setCancelModalJob(job || selectedJob);
       setSelectedCancelReason('VEHICLE_ISSUE');
       setCustomCancelReason('');
@@ -1052,8 +1053,8 @@ export function EmployeeDashboardPage() {
         await apiCancelJobAssignment(cancellingId, selectedCancelReason, reasonText);
         setCancelModalJob(null);
         setSuccessMsg('Job assignment cancelled. You are now AVAILABLE for new requests.');
-        if (typeof reconcileJobCompleted === 'function') {
-          reconcileJobCompleted(cancellingId, { id: cancellingId, status: 'unassigned' });
+        if (typeof reconcileOfferRemoved === 'function') {
+          reconcileOfferRemoved(cancellingId);
         }
         setSelectedJob(null);
         if (typeof refreshActiveJobs === 'function') {
@@ -1077,6 +1078,7 @@ export function EmployeeDashboardPage() {
         setActionLoading(null);
       }
     };
+    const handleConfirmCancelJob = handleConfirmCancelAssignment;
 
     const handleExtensionSubmit = async (e) => {
       e.preventDefault();
@@ -1197,6 +1199,7 @@ export function EmployeeDashboardPage() {
             handleManualVerifyArrival={handleManualVerifyArrival}
             handleDirectJobClockIn={handleDirectJobClockIn}
             onOpenCancelModal={handleOpenCancelModal}
+            onOpenProofModal={(j) => setProofModalJob(j || activeAssignedJob || selectedJob)}
             preServiceState={preServiceState}
             otpInput={otpInput}
             setOtpInput={setOtpInput}
@@ -1282,46 +1285,63 @@ export function EmployeeDashboardPage() {
           )}
 
           {/* Cancel Assignment Modal */}
-          {/* Cancel Assignment Modal */}
           {cancelModalJob && (
             <Modal
               isOpen={Boolean(cancelModalJob)}
               onClose={() => setCancelModalJob(null)}
-              title="Cancel Job Assignment"
+              title={`Cancel Assignment — Job #${cancelModalJob.request_id || cancelModalJob.id}`}
             >
-              <div className="space-y-4 text-xs font-sans">
-                <p className="text-slate-600">
-                  Select a reason for cancelling assignment <strong>#{cancelModalJob.request_id || cancelModalJob.id}</strong> (Available before Customer OTP):
-                </p>
-                <select
-                  value={selectedCancelReason}
-                  onChange={(e) => setSelectedCancelReason(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-medium outline-none focus:bg-white focus:border-rose-500"
-                >
-                  <option value="VEHICLE_ISSUE">Vehicle Breakdown / Transit Issue</option>
-                  <option value="PERSONAL_EMERGENCY">Personal Emergency</option>
-                  <option value="TRAFFIC_ROUTE_ISSUE">Extreme Traffic / Road Closed</option>
-                  <option value="CUSTOMER_LOCATION_ISSUE">Customer Location Unreachable</option>
-                  <option value="TOO_FAR">Location Too Far / Out of Reach</option>
-                  <option value="SERVICE_MISMATCH">Skill / Tooling Mismatch</option>
-                  <option value="SAFETY_CONCERN">Safety Concern at Site</option>
-                  <option value="OTHER">Other Reason</option>
-                </select>
+              <form onSubmit={handleConfirmCancelAssignment} className="space-y-4 text-xs font-sans">
+                {error && (
+                  <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 font-semibold text-xs flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                    <span>{error}</span>
+                  </div>
+                )}
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 space-y-1">
+                  <p className="font-bold flex items-center gap-1.5 text-xs text-amber-950">
+                    <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
+                    <span>Cancellation Notice (Before Customer OTP)</span>
+                  </p>
+                  <p className="text-[11px] text-amber-800">
+                    Cancelling will immediately release this assignment, preserve the customer booking, and start automated redispatch for the next eligible technician.
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-slate-700 font-bold mb-1.5">
+                    Select Reason for Cancellation <span className="text-rose-500">*</span>
+                  </label>
+                  <select
+                    value={selectedCancelReason}
+                    onChange={(e) => setSelectedCancelReason(e.target.value)}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-medium outline-none focus:bg-white focus:border-rose-500"
+                  >
+                    <option value="VEHICLE_ISSUE">Vehicle Breakdown / Transit Issue</option>
+                    <option value="PERSONAL_EMERGENCY">Personal Emergency</option>
+                    <option value="TRAFFIC_ROUTE_ISSUE">Extreme Traffic / Road Closed</option>
+                    <option value="CUSTOMER_LOCATION_ISSUE">Customer Location Unreachable</option>
+                    <option value="TOO_FAR">Location Too Far / Out of Reach</option>
+                    <option value="SERVICE_MISMATCH">Skill / Tooling Mismatch</option>
+                    <option value="SAFETY_CONCERN">Safety Concern at Site</option>
+                    <option value="OTHER">Other Reason</option>
+                  </select>
+                </div>
 
                 <div>
                   <label className="text-[11px] font-bold text-slate-700 block mb-1">
-                    Additional Notes / Explanation {selectedCancelReason === 'OTHER' ? '*' : '(Optional)'}
+                    Additional Notes / Explanation {selectedCancelReason === 'OTHER' ? <span className="text-rose-500">*</span> : '(Optional)'}
                   </label>
                   <textarea
                     rows={2}
                     value={customCancelReason}
                     onChange={(e) => setCustomCancelReason(e.target.value)}
                     placeholder="Provide details about the cancellation reason..."
+                    required={selectedCancelReason === 'OTHER'}
                     className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-sans outline-none focus:bg-white focus:border-rose-500"
                   />
                 </div>
 
-                <div className="flex justify-end gap-2 pt-2">
+                <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
                   <button
                     type="button"
                     onClick={() => setCancelModalJob(null)}
@@ -1330,15 +1350,14 @@ export function EmployeeDashboardPage() {
                     Keep Assignment
                   </button>
                   <button
-                    type="button"
-                    onClick={handleConfirmCancelAssignment}
-                    disabled={isCancellingJob}
-                    className="px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg cursor-pointer transition-all shadow-sm"
+                    type="submit"
+                    disabled={isCancellingJob || (selectedCancelReason === 'OTHER' && !customCancelReason.trim())}
+                    className="px-5 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold rounded-lg cursor-pointer transition-all shadow-sm"
                   >
-                    {isCancellingJob ? 'Cancelling...' : 'Confirm Cancellation'}
+                    {isCancellingJob ? 'Cancelling...' : 'Confirm Cancellation & Redispatch'}
                   </button>
                 </div>
-              </div>
+              </form>
             </Modal>
           )}
         </AppShell>
@@ -3570,17 +3589,23 @@ export function EmployeeDashboardPage() {
           </form>
         </Modal>
 
-        {/* Modal: Structured 5-Minute Technician Cancellation Modal */}
+        {/* Modal: Structured Technician Cancellation Modal */}
         <Modal
           isOpen={Boolean(cancelModalJob)}
           onClose={() => setCancelModalJob(null)}
           title={`Cancel Assignment — Job #${cancelModalJob?.request_id || cancelModalJob?.id}`}
         >
-          <form onSubmit={handleConfirmCancelJob} className="space-y-4 text-xs">
+          <form onSubmit={handleConfirmCancelAssignment} className="space-y-4 text-xs">
+            {error && (
+              <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 font-semibold text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
             <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 space-y-1">
               <p className="font-bold flex items-center gap-1.5 text-xs text-amber-950">
                 <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
-                <span>Cancellation Notice (5-Minute Window)</span>
+                <span>Cancellation Notice (Before Customer OTP)</span>
               </p>
               <p className="text-[11px] text-amber-800">
                 Cancelling will immediately release this job, preserve the customer booking, and start automated redispatch for the next eligible technician.
@@ -3593,13 +3618,13 @@ export function EmployeeDashboardPage() {
               </label>
               <div className="space-y-2 bg-slate-50 p-3 rounded-lg border border-slate-200 max-h-56 overflow-y-auto">
                 {[
-                  { code: 'VEHICLE_ISSUE', label: 'Vehicle issue / Breakdown' },
-                  { code: 'TRAFFIC_ROUTE_ISSUE', label: 'Heavy traffic / Road blockage' },
-                  { code: 'TOO_FAR', label: 'Distance too far / Unreachable in time' },
-                  { code: 'SERVICE_MISMATCH', label: 'Service requires different tools / equipment' },
-                  { code: 'CUSTOMER_LOCATION_ISSUE', label: 'Customer site unreachable / unsafe access' },
-                  { code: 'SAFETY_CONCERN', label: 'Safety concern / Hazardous conditions' },
-                  { code: 'PERSONAL_EMERGENCY', label: 'Personal emergency' },
+                  { code: 'VEHICLE_ISSUE', label: 'Vehicle Breakdown / Transit Issue' },
+                  { code: 'PERSONAL_EMERGENCY', label: 'Personal Emergency' },
+                  { code: 'TRAFFIC_ROUTE_ISSUE', label: 'Extreme Traffic / Road Closed' },
+                  { code: 'CUSTOMER_LOCATION_ISSUE', label: 'Customer Location Unreachable' },
+                  { code: 'TOO_FAR', label: 'Location Too Far / Out of Reach' },
+                  { code: 'SERVICE_MISMATCH', label: 'Skill / Tooling Mismatch' },
+                  { code: 'SAFETY_CONCERN', label: 'Safety Concern at Site' },
                   { code: 'OTHER', label: 'Other reason (explanation required)' },
                 ].map((r) => (
                   <label key={r.code} className="flex items-center gap-2.5 cursor-pointer text-slate-800 font-medium hover:bg-slate-100/70 p-1 rounded">

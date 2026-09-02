@@ -16,6 +16,7 @@
 import React from 'react';
 import { TechnicianFirstPersonNavView } from './TechnicianFirstPersonNavView.jsx';
 import { TechnicianArrivalView } from './TechnicianArrivalView.jsx';
+import { TechnicianStandbyMapView } from './TechnicianStandbyMapView.jsx';
 
 export function TechnicianNavigationView({
   job,
@@ -24,7 +25,17 @@ export function TechnicianNavigationView({
   geofenceRadius = 250,
   onLocationReport,
   onExitNavigation,
+  isOnline = true,
 }) {
+  if (!job) {
+    return (
+      <TechnicianStandbyMapView
+        technicianLocation={technicianLocation}
+        isOnline={isOnline}
+      />
+    );
+  }
+
   const status = (job?.status || job?.job_status || '').toLowerCase();
 
   const isOtpDone = Boolean(preServiceState?.otp_verified || status === 'in_progress' || status === 'completed');
