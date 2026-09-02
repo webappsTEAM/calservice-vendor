@@ -12,6 +12,7 @@ from typing import List, Dict, Any, Tuple, Optional
 from django.db import transaction
 from django.db.models import Count, Exists, OuterRef, Prefetch, Q
 from django.utils import timezone
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.utils.dateparse import parse_datetime
 
@@ -33,11 +34,69 @@ logger = logging.getLogger("workforce.dispatch")
 # Strict GPS telemetry freshness requirement (2 minutes maximum age for live dispatch)
 MAX_GPS_AGE_SECONDS = 120
 
-# Maximum geographic dispatch radius (50 km)
+# Maximum geographic dispatch radius (50 km) before any widening kicks in.
 MAX_DISPATCH_RADIUS_KM = 50.0
 
-# Default job offer duration before auto-expiry and fallback
+# Default job offer duration before auto-expiry and fallback -- kept as the
+# fallback value used by compute_offer_window_minutes() below for any
+# priority it doesn't recognize, and by any caller that still imports this
+# constant directly.
 DEFAULT_OFFER_DURATION_MINUTES = 5
+
+# ── Variable offer window (Booking Dispatch Framework, section 4) ───────────
+# The offer window is no longer one fixed number everywhere. It's a base
+# value by booking priority, adjusted by how many eligible candidates were
+# actually found for this job (a thin pool gets more time since burning the
+# one good option on a timeout is expensive; a deep pool gets less since a
+# strong next candidate is always a moment away), with a small extra bump
+# for service categories known to have few qualified technicians. All of
+# this is read through django.conf.settings with these as the defaults, so
+# it can be retuned in an environment's settings without a code change --
+# see the SEVO Booking Dispatch Framework doc, section 4, for the full
+# rationale. Promote this to a DB-backed config table if/when it needs to
+# vary per company or per zone rather than globally.
+DEFAULT_OFFER_WINDOW_MINUTES_BY_PRIORITY = {
+    "urgent": 2,
+    "high": 3,
+    "normal": 5,
+    "low": 8,
+}
+THIN_POOL_CANDIDATE_THRESHOLD = 2   # this many eligible candidates or fewer counts as "thin"
+DEEP_POOL_CANDIDATE_THRESHOLD = 8   # this many or more counts as "deep"
+THIN_POOL_WINDOW_BONUS_MINUTES = 3
+DEEP_POOL_WINDOW_PENALTY_MINUTES = 2
+SPARSE_SERVICE_CATEGORY_WINDOW_BONUS_MINUTES = 3
+MIN_OFFER_WINDOW_MINUTES = 2
+MAX_OFFER_WINDOW_MINUTES = 15
+
+# Service categories known to have a historically thin technician pool --
+# these get the sparse-category bonus above regardless of how today's live
+# pool looks, so a category that's thin on average doesn't need to burn a
+# few timed-out offers before the system starts giving it more time. Purely
+# additive to the live pool-depth signal, not a replacement for it.
+SPARSE_SERVICE_CATEGORIES = {
+    "specialist electrical",
+    "elevator maintenance",
+    "industrial hvac",
+}
+
+# ── Progressive radius widening (Booking Dispatch Framework, section 4) ───
+# A booking that's burned through this many failed offer cycles (decline,
+# reject, or timeout -- see _count_failed_offer_cycles below) without an
+# acceptance gets a wider search radius on its next dispatch attempt,
+# rather than staying capped at MAX_DISPATCH_RADIUS_KM forever. This trades
+# a longer commute for a real technician over continuing to fail against an
+# empty-or-exhausted pool. Capped at MAX_WIDENED_DISPATCH_RADIUS_KM: past
+# that point a customer is genuinely outside any reasonable service area,
+# and the right outcome is admin escalation (see dispatch_job below), not
+# an ever-larger radius.
+RADIUS_WIDENING_AFTER_CYCLES = 2
+RADIUS_WIDENING_STEP_KM = 25.0
+MAX_WIDENED_DISPATCH_RADIUS_KM = 100.0
+
+# After this many failed offer cycles, the customer app is told the match
+# is taking longer than usual (see _maybe_signal_customer_delay below).
+CUSTOMER_DELAY_SIGNAL_AFTER_CYCLES = 2
 
 # Dispatchable database statuses
 DISPATCHABLE_STATUSES = ["draft", "new_request", "confirmed", "unassigned", "assigned", "redispatching"]
@@ -348,7 +407,7 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
     return True, "All 9 Eligibility Gates Passed", gate_results
 
 
-def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, exclude_employee_ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, exclude_employee_ids: Optional[List[int]] = None, radius_km: float = MAX_DISPATCH_RADIUS_KM) -> List[Dict[str, Any]]:
     """
     Finds and ranks all eligible candidate employees for a given ServiceRequest.
     Uses database-level filtering and prefetching for optimal WAN performance.
@@ -516,7 +575,7 @@ def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AG
             logger.info(f"[DISPATCH_REJECT] job={job_obj.id} employee={emp.id} reason=GPS_STALE gps_age={gps_age_s}s")
             continue
 
-        if dist_km is None or dist_km > MAX_DISPATCH_RADIUS_KM:
+        if dist_km is None or dist_km > radius_km:
             logger.info(f"[DISPATCH_REJECT] job={job_obj.id} employee={emp.id} reason=RADIUS_EXCEEDED distance_km={dist_km}")
             continue
 
@@ -589,6 +648,136 @@ def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AG
     return ranked_candidates
 
 
+def compute_offer_window_minutes(job_obj, pool_size: int) -> int:
+    """
+    How long a single exclusive offer stays open before it expires and the
+    job falls through to the next-ranked candidate. Booking Dispatch
+    Framework section 4: this used to be one fixed number
+    (DEFAULT_OFFER_DURATION_MINUTES) everywhere; it now flexes by booking
+    priority, how many eligible candidates were actually found (a thin
+    pool gets more time, a deep one gets less), and whether the service
+    category is a historically thin one. All the tuning knobs are settings-
+    overridable module constants above, not hardcoded here, so an
+    environment can retune them without a deploy.
+    """
+    priority = (getattr(job_obj, "priority", "") or "normal").lower()
+    by_priority = getattr(
+        settings, "DISPATCH_OFFER_WINDOW_MINUTES_BY_PRIORITY", DEFAULT_OFFER_WINDOW_MINUTES_BY_PRIORITY
+    )
+    minutes = by_priority.get(priority, DEFAULT_OFFER_DURATION_MINUTES)
+
+    thin_threshold = getattr(settings, "DISPATCH_THIN_POOL_CANDIDATE_THRESHOLD", THIN_POOL_CANDIDATE_THRESHOLD)
+    deep_threshold = getattr(settings, "DISPATCH_DEEP_POOL_CANDIDATE_THRESHOLD", DEEP_POOL_CANDIDATE_THRESHOLD)
+    if pool_size <= thin_threshold:
+        minutes += getattr(settings, "DISPATCH_THIN_POOL_WINDOW_BONUS_MINUTES", THIN_POOL_WINDOW_BONUS_MINUTES)
+    elif pool_size >= deep_threshold:
+        minutes -= getattr(settings, "DISPATCH_DEEP_POOL_WINDOW_PENALTY_MINUTES", DEEP_POOL_WINDOW_PENALTY_MINUTES)
+
+    sparse_categories = getattr(settings, "DISPATCH_SPARSE_SERVICE_CATEGORIES", SPARSE_SERVICE_CATEGORIES)
+    category = (getattr(job_obj, "service_category", "") or "").strip().lower()
+    if category in sparse_categories:
+        minutes += getattr(
+            settings, "DISPATCH_SPARSE_SERVICE_CATEGORY_WINDOW_BONUS_MINUTES", SPARSE_SERVICE_CATEGORY_WINDOW_BONUS_MINUTES
+        )
+
+    min_minutes = getattr(settings, "DISPATCH_MIN_OFFER_WINDOW_MINUTES", MIN_OFFER_WINDOW_MINUTES)
+    max_minutes = getattr(settings, "DISPATCH_MAX_OFFER_WINDOW_MINUTES", MAX_OFFER_WINDOW_MINUTES)
+    return max(min_minutes, min(max_minutes, minutes))
+
+
+def _count_failed_offer_cycles(job_obj) -> int:
+    """How many offers this job has already burned through without an
+    acceptance -- rejected, declined, or expired. Drives both progressive
+    radius widening and the customer delay signal below."""
+    return WorkforceJobOffer.objects.filter(
+        job=job_obj,
+        status__in=[
+            WorkforceJobOffer.Status.REJECTED,
+            WorkforceJobOffer.Status.DECLINED,
+            WorkforceJobOffer.Status.EXPIRED,
+        ],
+    ).count()
+
+
+def get_effective_radius_km(failed_cycle_count: int) -> float:
+    """
+    Progressive radius widening (Booking Dispatch Framework section 4):
+    stays at the normal MAX_DISPATCH_RADIUS_KM until a job has failed
+    RADIUS_WIDENING_AFTER_CYCLES offer cycles, then widens by
+    RADIUS_WIDENING_STEP_KM per additional failed cycle, capped at
+    MAX_WIDENED_DISPATCH_RADIUS_KM -- past that a customer is genuinely
+    outside any reasonable service area and the right outcome is admin
+    escalation, not an ever-larger radius.
+    """
+    base_radius = getattr(settings, "DISPATCH_MAX_RADIUS_KM", MAX_DISPATCH_RADIUS_KM)
+    after_cycles = getattr(settings, "DISPATCH_RADIUS_WIDENING_AFTER_CYCLES", RADIUS_WIDENING_AFTER_CYCLES)
+    if failed_cycle_count < after_cycles:
+        return base_radius
+
+    step_km = getattr(settings, "DISPATCH_RADIUS_WIDENING_STEP_KM", RADIUS_WIDENING_STEP_KM)
+    max_radius = getattr(settings, "DISPATCH_MAX_WIDENED_RADIUS_KM", MAX_WIDENED_DISPATCH_RADIUS_KM)
+    extra_cycles = (failed_cycle_count - after_cycles) + 1
+    widened = base_radius + (extra_cycles * step_km)
+    return min(widened, max_radius)
+
+
+def describe_unassigned_reason(failed_cycle_count: int, effective_radius_km: float) -> Tuple[str, str]:
+    """
+    Returns (reason_code, human_message) so an admin sees WHY a job has no
+    candidate -- nobody has been tried yet vs. everyone tried has already
+    declined/timed out vs. the search radius is maxed out -- instead of one
+    generic "no technician available" notice for every case.
+    """
+    max_radius = getattr(settings, "DISPATCH_MAX_WIDENED_RADIUS_KM", MAX_WIDENED_DISPATCH_RADIUS_KM)
+    if failed_cycle_count == 0:
+        return (
+            "NO_ELIGIBLE_NEARBY",
+            f"No technician is currently online, available, and eligible within {effective_radius_km:.0f} km.",
+        )
+    if effective_radius_km >= max_radius:
+        return (
+            "POOL_EXHAUSTED_AFTER_WIDENING",
+            f"Every technician within the maximum {max_radius:.0f} km search radius has already "
+            f"declined, timed out, or is otherwise unavailable ({failed_cycle_count} offer cycle(s) tried).",
+        )
+    return (
+        "POOL_THIN_WIDENING",
+        f"No remaining eligible technician within {effective_radius_km:.0f} km after "
+        f"{failed_cycle_count} failed offer cycle(s); radius will widen further on retry.",
+    )
+
+
+def _maybe_signal_customer_delay(job_obj, failed_cycle_count: int) -> None:
+    """
+    Once a booking has burned through enough failed offer cycles that the
+    match is genuinely taking longer than usual, soften the customer app's
+    status signal instead of leaving it looking identical to a booking that
+    matched instantly (Booking Dispatch Framework section 4). Fires once,
+    exactly when the threshold is crossed, not on every subsequent cycle.
+
+    NOTE: this sends a "booking.dispatch_delayed" webhook event. As of this
+    change, the Customer app's webhook receiver
+    (Customer/backend/workforce_integration/views.py) does not yet have a
+    handler for that event type -- delivery will be logged but the event
+    itself is a no-op on the receiving end until that side adds one. Wiring
+    is deliberately vendor-side-only here (see module docstring in
+    services/customer_webhook.py for the cross-app boundary); the Customer
+    app's own receiver change is out of scope for this pass.
+    """
+    threshold = getattr(settings, "DISPATCH_CUSTOMER_DELAY_SIGNAL_AFTER_CYCLES", CUSTOMER_DELAY_SIGNAL_AFTER_CYCLES)
+    if failed_cycle_count != threshold:
+        return
+    try:
+        from workforce_api.services.customer_webhook import notify_customer_app
+        notify_customer_app(
+            "booking.dispatch_delayed",
+            job_obj,
+            failed_offer_cycles=failed_cycle_count,
+        )
+    except Exception as webhook_err:
+        logger.info(f"Could not notify Customer app of dispatch delay for Job #{job_obj.id}: {webhook_err}")
+
+
 def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, exclude_employee_ids: Optional[List[int]] = None) -> Tuple[bool, str]:
     """
     Executes automatic dispatch for a single ServiceRequest:
@@ -643,8 +832,20 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
             payload={"job_id": job_obj.id, "service": job_obj.service_category}
         )
 
+        # Progressive radius widening (Booking Dispatch Framework section 4):
+        # how many times has this job already failed a full offer cycle
+        # (decline/reject/expire)? Feeds both the search radius below and
+        # the customer delay signal further down.
+        failed_cycle_count = _count_failed_offer_cycles(job_obj)
+        effective_radius_km = get_effective_radius_km(failed_cycle_count)
+
         # Find eligible candidate technicians
-        candidates = get_eligible_candidates(job_obj, max_gps_age_seconds=max_gps_age_seconds, exclude_employee_ids=exclude_employee_ids)
+        candidates = get_eligible_candidates(
+            job_obj,
+            max_gps_age_seconds=max_gps_age_seconds,
+            exclude_employee_ids=exclude_employee_ids,
+            radius_km=effective_radius_km,
+        )
 
         WorkforceEventLog.objects.create(
             event_type="CANDIDATES_EVALUATED",
@@ -666,17 +867,31 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
             if not admin_user:
                 admin_user = get_user_model().objects.filter(is_superuser=True).first()
 
+            reason_code, reason_message = describe_unassigned_reason(failed_cycle_count, effective_radius_km)
+
             if admin_user:
                 service_name = job_obj.issue_title or job_obj.service_category or "Service"
                 WorkforceNotification.objects.create(
                     recipient=admin_user,
                     title="Automatic Dispatch: Awaiting Technician",
-                    message=f"No eligible nearby technician available for Job #{job_obj.id} ({service_name}). Job remains unassigned.",
+                    message=f"Job #{job_obj.id} ({service_name}) remains unassigned. {reason_message}",
                     notification_type="DISPATCH_UNASSIGNED",
                     company=job_obj.company,
                     related_object_id=str(job_obj.id),
                 )
-            return False, "No eligible technicians available for automatic dispatch."
+
+            WorkforceEventLog.objects.create(
+                event_type="DISPATCH_UNASSIGNED_REASON",
+                payload={
+                    "job_id": job_obj.id,
+                    "reason_code": reason_code,
+                    "reason_message": reason_message,
+                    "failed_cycle_count": failed_cycle_count,
+                    "effective_radius_km": effective_radius_km,
+                },
+            )
+            _maybe_signal_customer_delay(job_obj, failed_cycle_count)
+            return False, f"No eligible technicians available for automatic dispatch. {reason_message}"
 
         # Top nearest candidate
         top_candidate = candidates[0]
@@ -696,8 +911,13 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
         # Expire any previous offers for this job that might be dangling
         WorkforceJobOffer.objects.filter(job=job_obj, status=WorkforceJobOffer.Status.OFFERED).update(status=WorkforceJobOffer.Status.EXPIRED)
 
-        # Create new exclusive job offer valid for 5 minutes
-        expires_at = now + timedelta(minutes=DEFAULT_OFFER_DURATION_MINUTES)
+        # Variable offer window (Booking Dispatch Framework section 4): the
+        # window flexes by booking priority, how deep the eligible pool
+        # actually is, and service-category sparsity, instead of a fixed
+        # five minutes for every job everywhere.
+        offer_window_minutes = compute_offer_window_minutes(job_obj, len(candidates))
+        expires_at = now + timedelta(minutes=offer_window_minutes)
+        _maybe_signal_customer_delay(job_obj, failed_cycle_count)
         offer = WorkforceJobOffer.objects.create(
             job=job_obj,
             employee=top_emp,
