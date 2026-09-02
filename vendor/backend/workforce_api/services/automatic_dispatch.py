@@ -31,8 +31,8 @@ from workforce_api.services.workload import get_employee_active_job, ACTIVE_WORK
 
 logger = logging.getLogger("workforce.dispatch")
 
-# Strict GPS telemetry freshness requirement (2 minutes maximum age for live dispatch)
-MAX_GPS_AGE_SECONDS = 120
+# Strict GPS telemetry freshness requirement (5 minutes maximum age for live dispatch, matching UI / spec)
+MAX_GPS_AGE_SECONDS = 300
 
 # Maximum geographic dispatch radius (50 km) before any widening kicks in.
 MAX_DISPATCH_RADIUS_KM = 50.0
@@ -496,11 +496,10 @@ def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AG
         )
     )
 
-    if not job_obj.company_id:
-        logger.warning(f"[DISPATCH_COMPANY_MISSING] Job #{job_obj.id} lacks an associated company/vendor tenant. Cannot dispatch without company context.")
-        return []
-
-    candidates_qs = candidates_qs.filter(company_id=job_obj.company_id)
+    if not job_obj.company_id or job_obj.company_id == 1:
+        candidates_qs = candidates_qs.filter(Q(company_id=1) | Q(company__isnull=True))
+    else:
+        candidates_qs = candidates_qs.filter(company_id=job_obj.company_id)
 
     # Exclude candidates who have already received or rejected/cancelled an offer for this job, or explicitly excluded
     previous_offers = set(
@@ -825,7 +824,10 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
             if job_obj.status != "unassigned":
                 apply_transition(job_obj, "unassigned")
             logger.warning(f"[DISPATCH_GPS_MISSING] Job #{job_id} is missing coordinates.")
-            return False, "Customer booking is missing valid GPS coordinates."
+        # Ensure default platform company context if unassigned
+        if not job_obj.company_id:
+            job_obj.company_id = 1
+            job_obj.save(update_fields=["company_id"])
 
         WorkforceEventLog.objects.create(
             event_type="DISPATCH_STARTED",
@@ -1074,8 +1076,13 @@ def reconsider_jobs_for_employee(employee_or_id) -> int:
         return 0
 
     now = timezone.now()
+    if emp.company_id and emp.company_id > 1:
+        company_filter = Q(company_id=emp.company_id)
+    else:
+        company_filter = Q(company_id=1) | Q(company__isnull=True)
+
     pending_jobs = ServiceRequest.objects.filter(
-        company_id=emp.company_id,
+        company_filter,
         status__in=DISPATCHABLE_STATUSES,
         assigned_employee__isnull=True,
         latitude__isnull=False,

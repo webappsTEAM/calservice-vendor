@@ -196,7 +196,12 @@ class LoginView(APIView):
                 identifier, lookup_type, matched_user_id, matched_user_active, password_check, db_status, response_code, response_code_name
             )
 
-            is_platform_admin = bool(getattr(user, "is_superuser", False))
+            is_platform_admin = bool(
+                getattr(user, "is_superuser", False)
+                or (getattr(user, "is_staff", False) and getattr(user, "company_id", None) == 1)
+                or str(getattr(user, "role", "")).lower() in ("superadmin", "platform_admin")
+                or (str(getattr(user, "role", "")).lower() in ("admin", "manager") and getattr(user, "company_id", None) == 1)
+            )
             is_vendor_admin = bool(
                 not is_platform_admin
                 and (user_role in ["admin", "manager"] or getattr(user, "is_staff", False))
@@ -411,7 +416,12 @@ class MeView(APIView):
             if emp and user_role not in ["admin", "manager"]:
                 user_role = "employee"
 
-            is_platform_admin = bool(getattr(user, "is_superuser", False))
+            is_platform_admin = bool(
+                getattr(user, "is_superuser", False)
+                or (getattr(user, "is_staff", False) and getattr(user, "company_id", None) == 1)
+                or str(getattr(user, "role", "")).lower() in ("superadmin", "platform_admin")
+                or (str(getattr(user, "role", "")).lower() in ("admin", "manager") and getattr(user, "company_id", None) == 1)
+            )
             is_vendor_admin = bool(
                 not is_platform_admin
                 and (user_role in ["admin", "manager"] or getattr(user, "is_staff", False))

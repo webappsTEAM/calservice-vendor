@@ -166,6 +166,21 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
         # in this function's own try/except, so a settlement failure logs
         # loudly but never blocks the job from actually completing.
         if target == "completed":
+            # Auto-close open TimeLogs for the assigned employee
+            if service_request.assigned_employee:
+                try:
+                    from time_tracking.models import TimeLog
+                    TimeLog.objects.filter(
+                        employee=service_request.assigned_employee,
+                        clock_out__isnull=True
+                    ).update(
+                        clock_out=now,
+                        status="submitted",
+                        submitted_at=now
+                    )
+                except Exception as _tl_err:
+                    logger.warning("Could not auto-close TimeLog on job completion: %s", _tl_err)
+
             try:
                 from workforce_api.services.commission import settle_completed_job
                 settle_completed_job(service_request)
