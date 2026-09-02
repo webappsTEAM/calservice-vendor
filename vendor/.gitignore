@@ -45,6 +45,8 @@ dist/
 build/
 .next/
 .out/
+.vite/
+frontend/.vite/
 
 # Logs
 logs
