@@ -80,17 +80,17 @@ export function AdminDashboardPage() {
   const actionItems = [
     {
       title: 'Pending Applications',
-      count: pendingApps.length,
-      description: 'Dossiers awaiting verification & service authorization',
-      to: '/workforce/admin/applications?status=submitted',
-      badgeClass: 'bg-amber-100 text-amber-900',
+      count: applications.filter(a => a.status === 'SUBMITTED' || a.status === 'UNDER_REVIEW').length,
+      description: 'Technician registrations requiring document review',
+      to: '/workforce/admin/applications',
+      badgeClass: 'bg-amber-50 text-amber-900 border border-amber-200',
     },
     {
-      title: 'Documents to Verify',
-      count: docsToVerifyCount > 0 ? docsToVerifyCount : pendingApps.length,
-      description: 'Identification & certification files in queue',
-      to: '/workforce/admin/applications',
-      badgeClass: 'bg-blue-100 text-blue-900',
+      title: 'Active Technicians',
+      count: applications.filter(e => e.is_active).length,
+      description: 'Approved workforce field technicians',
+      to: '/workforce/admin/employees',
+      badgeClass: 'bg-zinc-100 text-zinc-900 border border-zinc-200',
     },
     {
       title: 'Jobs Awaiting Assignment',
@@ -113,25 +113,25 @@ export function AdminDashboardPage() {
       key: 'request_id',
       header: 'Job ID',
       render: (val, row) => (
-        <span className="font-mono font-bold text-blue-600">{val || `SR-${row.id}`}</span>
+        <span className="font-mono font-bold text-zinc-950">{val || `SR-${row.id}`}</span>
       ),
     },
     {
       key: 'customer_display_name',
       header: 'Customer',
-      render: (val) => <span className="font-medium text-slate-800">{val || '—'}</span>,
+      render: (val) => <span className="font-medium text-zinc-800">{val || '—'}</span>,
     },
     {
       key: 'service_category',
       header: 'Service',
       render: (val, row) => (
-        <span className="text-slate-700">{row.service_title || val || '—'}</span>
+        <span className="text-zinc-700 font-medium">{row.service_title || val || '—'}</span>
       ),
     },
     {
       key: 'address',
       header: 'Location',
-      render: (val) => <span className="text-slate-500 truncate max-w-xs block">{val || '—'}</span>,
+      render: (val) => <span className="text-zinc-500 truncate max-w-xs block">{val || '—'}</span>,
     },
     {
       key: 'status',
@@ -142,7 +142,7 @@ export function AdminDashboardPage() {
       key: 'preferred_date',
       header: 'Scheduled Time',
       render: (val, row) => (
-        <span className="text-slate-500 font-mono text-[11px]">
+        <span className="text-zinc-500 font-mono text-[11px]">
           {val ? `${val}${row.preferred_time ? ` ${row.preferred_time}` : ''}` : '—'}
         </span>
       ),
@@ -235,8 +235,8 @@ export function AdminDashboardPage() {
                 label: 'Pending Review',
                 value: pendingApps.length,
                 icon: Clock,
-                iconColor: 'text-orange-600',
-                valueColor: 'text-orange-700',
+                iconColor: 'text-amber-700',
+                valueColor: 'text-amber-950',
                 subtext: 'Awaiting dossier check',
               },
             ]}
@@ -252,15 +252,15 @@ export function AdminDashboardPage() {
             </h2>
             <Link
               to="/workforce/admin/jobs"
-              className="text-xs font-semibold text-blue-600 hover:underline flex items-center gap-1"
+              className="text-xs font-bold text-zinc-950 hover:underline flex items-center gap-1"
             >
               <span>View All Jobs</span>
-              <ArrowRight className="w-3 h-3" />
+              <ArrowRight className="w-3.5 h-3.5" />
             </Link>
           </div>
 
           <DataTable
-            columns={recentJobsColumns}
+            columns={jobColumns}
             data={[...jobs].sort((a, b) => (b.id || 0) - (a.id || 0)).slice(0, 8)}
             isLoading={isLoading}
             emptyMessage="No active customer service operations in queue."
@@ -272,3 +272,4 @@ export function AdminDashboardPage() {
 }
 
 export default AdminDashboardPage;
+

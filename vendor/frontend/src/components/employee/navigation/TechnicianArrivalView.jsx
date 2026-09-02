@@ -24,14 +24,43 @@ export function TechnicianArrivalView({
   const mapRef = useRef(null);
   const [apiLoaded, setApiLoaded] = useState(false);
 
-  const custLat = job?.latitude != null ? parseFloat(job.latitude) : null;
-  const custLon = job?.longitude != null ? parseFloat(job.longitude) : null;
-  const techLat = technicianLocation?.latitude != null ? parseFloat(technicianLocation.latitude) : null;
-  const techLon = technicianLocation?.longitude != null ? parseFloat(technicianLocation.longitude) : null;
+  const resolveCoord = (...candidates) => {
+    for (const c of candidates) {
+      if (c !== null && c !== undefined && c !== '') {
+        const num = parseFloat(c);
+        if (!isNaN(num)) return num;
+      }
+    }
+    return null;
+  };
+
+  const custLat = resolveCoord(
+    job?.latitude,
+    job?.customer_latitude,
+    job?.site_latitude,
+    job?.customer_location?.latitude,
+    job?.customer_address_details?.latitude,
+    job?.lat
+  );
+  const custLon = resolveCoord(
+    job?.longitude,
+    job?.customer_longitude,
+    job?.site_longitude,
+    job?.customer_location?.longitude,
+    job?.customer_address_details?.longitude,
+    job?.lng,
+    job?.lon
+  );
+  const techLat = resolveCoord(technicianLocation?.latitude, technicianLocation?.lat);
+  const techLon = resolveCoord(technicianLocation?.longitude, technicianLocation?.lng, technicianLocation?.lon);
 
   const customerName = job?.customer_name || 'Customer';
   const customerPhone = job?.phone || job?.customer_phone;
   const customerAddress = job?.address || job?.customer_address || 'Customer Authorized Address';
+
+  const custMarkerRef = useRef(null);
+  const geofenceCircleRef = useRef(null);
+  const techMarkerRef = useRef(null);
 
   // Load Google Maps API singleton
   useEffect(() => {
@@ -73,12 +102,23 @@ export function TechnicianArrivalView({
       });
 
       mapRef.current = map;
+    } catch (err) {
+      console.error('[ARRIVAL_MAP_INIT_ERROR]', err);
+    }
+  }, [apiLoaded, custLat, custLon, techLat, techLon]);
 
-      // 1. Customer Destination Marker
-      if (custLat != null && custLon != null) {
-        const custPos = { lat: custLat, lng: custLon };
+  // Update / Render Customer Pin, Geofence Circle & Tech Pin
+  useEffect(() => {
+    if (!apiLoaded || !mapRef.current || !window.google?.maps) return;
+    const google = window.google;
+    const map = mapRef.current;
 
-        new google.maps.Marker({
+    // 1. Customer Site Destination Pin
+    if (custLat != null && custLon != null) {
+      const custPos = { lat: custLat, lng: custLon };
+
+      if (!custMarkerRef.current) {
+        custMarkerRef.current = new google.maps.Marker({
           position: custPos,
           map,
           title: `Customer Site: ${customerAddress}`,
@@ -101,24 +141,34 @@ export function TechnicianArrivalView({
             anchor: new google.maps.Point(18, 44),
           },
         });
-
-        // 2. Verified 300m Green Geofence Circle
-        new google.maps.Circle({
-          map,
-          center: custPos,
-          radius: geofenceRadius,
-          strokeColor: '#059669',
-          strokeOpacity: 0.8,
-          strokeWeight: 2,
-          fillColor: '#10B981',
-          fillOpacity: 0.15,
-        });
+      } else {
+        custMarkerRef.current.setPosition(custPos);
       }
 
-      // 3. Technician Location Marker
-      if (techLat != null && techLon != null) {
-        new google.maps.Marker({
-          position: { lat: techLat, lng: techLon },
+      // 2. Verified 250m/300m Green Geofence Circle
+      if (!geofenceCircleRef.current) {
+        geofenceCircleRef.current = new google.maps.Circle({
+          map,
+          center: custPos,
+          radius: Number(geofenceRadius) || 250,
+          strokeColor: '#059669',
+          strokeOpacity: 0.85,
+          strokeWeight: 2.5,
+          fillColor: '#10B981',
+          fillOpacity: 0.16,
+        });
+      } else {
+        geofenceCircleRef.current.setCenter(custPos);
+        geofenceCircleRef.current.setRadius(Number(geofenceRadius) || 250);
+      }
+    }
+
+    // 3. Technician Location Marker (Blue Puck)
+    if (techLat != null && techLon != null) {
+      const techPos = { lat: techLat, lng: techLon };
+      if (!techMarkerRef.current) {
+        techMarkerRef.current = new google.maps.Marker({
+          position: techPos,
           map,
           title: 'Your Location',
           icon: {
@@ -132,63 +182,46 @@ export function TechnicianArrivalView({
             anchor: new google.maps.Point(14, 14),
           },
         });
+      } else {
+        techMarkerRef.current.setPosition(techPos);
       }
+    }
 
-      // Fit bounds to show both customer site and technician
-      if (custLat != null && techLat != null) {
-        const bounds = new google.maps.LatLngBounds();
-        bounds.extend({ lat: custLat, lng: custLon });
-        bounds.extend({ lat: techLat, lng: techLon });
-        map.fitBounds(bounds, { top: 40, right: 40, bottom: 40, left: 40 });
-      }
-    } catch (err) {
-      console.error('[ARRIVAL_MAP_INIT_ERROR]', err);
+    // Fit bounds
+    if (custLat != null && techLat != null) {
+      const bounds = new google.maps.LatLngBounds();
+      bounds.extend({ lat: custLat, lng: custLon });
+      bounds.extend({ lat: techLat, lng: techLon });
+      map.fitBounds(bounds, { top: 50, right: 50, bottom: 50, left: 50 });
+    } else if (custLat != null) {
+      map.panTo({ lat: custLat, lng: custLon });
     }
   }, [apiLoaded, custLat, custLon, customerAddress, geofenceRadius, techLat, techLon]);
 
   return (
-    <div className="w-full bg-white rounded-xl overflow-hidden border border-slate-200 shadow-sm flex flex-col">
-      {/* ── Top Arrival Banner ── */}
-      <div className="px-4 py-3 bg-emerald-600 text-white flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <div className="w-8 h-8 rounded-full bg-emerald-500/80 flex items-center justify-center shrink-0">
-            <CheckCircle2 className="w-5 h-5 text-white" />
-          </div>
-          <div className="min-w-0">
-            <div className="text-xs font-black uppercase tracking-wider text-emerald-50 flex items-center gap-1.5">
-              <span>Arrival Verified</span>
-              <span className="text-[10px] px-1.5 py-0.2 bg-emerald-700/80 rounded font-semibold text-emerald-100">
-                Inside {geofenceRadius}m Geofence
-              </span>
-            </div>
-            <div className="text-xs text-emerald-100 truncate">
-              You are at the customer location. Proceed with Work Start verification below.
-            </div>
-          </div>
-        </div>
+    <div className="w-full h-full flex-1 flex flex-col min-h-0 bg-white relative overflow-hidden">
+      {/* ── Floating Top-Right Action Button: Call Customer ── */}
+      {customerPhone && (
+        <a
+          href={`tel:${customerPhone}`}
+          className="absolute top-4 right-4 z-20 bg-white/95 backdrop-blur-md hover:bg-white text-slate-800 border border-slate-200/80 shadow-md px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer transition-all"
+        >
+          <Phone className="w-3.5 h-3.5 text-slate-600" />
+          <span>Call Customer</span>
+        </a>
+      )}
 
-        {customerPhone && (
-          <a
-            href={`tel:${customerPhone}`}
-            className="px-3 py-1.5 bg-white hover:bg-emerald-50 text-emerald-800 text-xs font-bold rounded-lg flex items-center gap-1.5 shadow-xs transition-colors shrink-0"
-          >
-            <Phone className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Call</span>
-          </a>
-        )}
-      </div>
-
-      {/* ── Contextual Location Map ── */}
-      <div className="w-full h-[180px] sm:h-[220px] bg-slate-100 relative">
-        <div ref={mapContainerRef} className="w-full h-full" />
+      {/* ── Contextual Location Map (Edge-to-Edge 100% Full Height) ── */}
+      <div className="w-full flex-1 min-h-0 relative bg-slate-100">
+        <div ref={mapContainerRef} className="w-full h-full absolute inset-0" />
       </div>
 
       {/* ── Customer Address Bar ── */}
-      <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs text-slate-700">
+      <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-xs text-slate-700 shrink-0">
         <div className="flex items-center gap-1.5 min-w-0">
           <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0" />
-          <span className="font-semibold text-slate-900 shrink-0">{customerName}:</span>
-          <span className="truncate text-slate-600">{customerAddress}</span>
+          <span className="font-bold text-slate-900 shrink-0">{customerName}:</span>
+          <span className="truncate text-slate-600 font-medium">{customerAddress}</span>
         </div>
       </div>
     </div>

@@ -14,28 +14,28 @@ export function Pagination({
 
   return (
     <div
-      className={`px-4 py-2.5 bg-white border border-slate-200 rounded shadow-sm flex items-center justify-between text-xs text-slate-600 ${className}`}
+      className={`px-4 py-3 bg-white border border-zinc-200/90 rounded-md shadow-card flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-zinc-600 ${className}`}
     >
       <div>
         <span>
-          Showing <strong className="text-slate-900">{startItem}</strong> to{' '}
-          <strong className="text-slate-900">{endItem}</strong> of{' '}
-          <strong className="text-slate-900">{totalItems}</strong> records
+          Showing <strong className="text-zinc-900 font-bold">{startItem}</strong> to{' '}
+          <strong className="text-zinc-900 font-bold">{endItem}</strong> of{' '}
+          <strong className="text-zinc-900 font-bold">{totalItems}</strong> records
         </span>
       </div>
 
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1.5">
         <button
           type="button"
           onClick={() => onPageChange(currentPage - 1)}
           disabled={currentPage <= 1}
-          className="p-1 px-2 rounded border border-slate-300 hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-white flex items-center gap-1 font-medium transition-colors"
+          className="py-1 px-2.5 rounded-lg border border-zinc-300 bg-white hover:bg-zinc-50 active:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-white flex items-center gap-1 font-semibold text-zinc-800 transition-all shadow-xs disabled:shadow-none"
         >
           <ChevronLeft className="w-3.5 h-3.5" />
           <span>Previous</span>
         </button>
 
-        <span className="px-2 font-medium text-slate-700">
+        <span className="px-3 font-semibold text-zinc-900">
           Page {currentPage} of {totalPages}
         </span>
 
@@ -43,7 +43,7 @@ export function Pagination({
           type="button"
           onClick={() => onPageChange(currentPage + 1)}
           disabled={currentPage >= totalPages}
-          className="p-1 px-2 rounded border border-slate-300 hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-white flex items-center gap-1 font-medium transition-colors"
+          className="py-1 px-2.5 rounded-lg border border-zinc-300 bg-white hover:bg-zinc-50 active:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-white flex items-center gap-1 font-semibold text-zinc-800 transition-all shadow-xs disabled:shadow-none"
         >
           <span>Next</span>
           <ChevronRight className="w-3.5 h-3.5" />
@@ -54,3 +54,4 @@ export function Pagination({
 }
 
 export default Pagination;
+

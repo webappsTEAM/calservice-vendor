@@ -101,7 +101,7 @@ export function TechnicianFirstPersonNavView({
       className={`w-full bg-slate-950 text-slate-900 transition-all font-sans select-none ${
         isFullscreen
           ? 'fixed inset-0 z-[9999] w-screen h-screen flex flex-col'
-          : 'relative rounded-2xl overflow-hidden shadow-2xl border border-slate-800 flex flex-col h-[520px] sm:h-[600px]'
+          : 'relative flex-1 w-full h-full min-h-0 flex flex-col overflow-hidden'
       }`}
     >
       {/* ── 1. Top Floating Deep Teal Maneuver Card ── */}
@@ -223,8 +223,8 @@ export function TechnicianFirstPersonNavView({
             title={cameraMode === 'driving' ? 'Show Route Overview' : 'Resume 3D Driving View'}
             className={`w-12 h-12 rounded-full flex items-center justify-center transition-transform hover:scale-105 active:scale-95 cursor-pointer shadow-xs ${
               cameraMode === 'overview'
-                ? 'bg-blue-600 text-white'
-                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                ? 'bg-zinc-900 text-white shadow-xs'
+                : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-700'
             }`}
           >
             <Shuffle className="w-5 h-5 stroke-[2.5]" />

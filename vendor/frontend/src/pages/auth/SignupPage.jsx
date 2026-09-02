@@ -90,10 +90,10 @@ export function SignupPage() {
       />
 
       <div className="sm:mx-auto sm:w-full sm:max-w-md text-center">
-        <div className="inline-flex w-10 h-10 rounded bg-blue-600 items-center justify-center text-white font-bold mb-2 shadow-sm">
-          <Wrench className="w-5 h-5" />
+        <div className="inline-flex w-11 h-11 rounded-lg bg-zinc-950 items-center justify-center text-white font-bold mb-3 shadow-xs border border-zinc-800">
+          <Wrench className="w-5 h-5 text-zinc-200" />
         </div>
-        <h1 className="text-xl font-bold text-slate-900 tracking-tight">
+        <h1 className="text-xl sm:text-2xl font-bold text-zinc-950 tracking-tight">
           Join the Workforce Platform
         </h1>
         <p className="text-xs text-slate-500 mt-0.5">
@@ -249,7 +249,7 @@ export function SignupPage() {
           <div className="pt-3 border-t border-slate-100 text-center space-y-1">
             <p className="text-xs text-slate-500">
               Already have an account?{' '}
-              <Link to="/workforce/login" className="text-blue-600 font-semibold hover:underline">
+              <Link to="/workforce/login" className="text-zinc-950 font-bold hover:underline">
                 Sign In
               </Link>
             </p>
@@ -266,48 +266,48 @@ export function SignupPage() {
 
         {/* ── FOOTER: PRIVACY, TERMS, SUPPORT & COMPLIANCE ── */}
         <footer className="w-full max-w-md mx-auto pt-6 pb-2 text-center">
-          <div className="flex flex-wrap justify-center items-center gap-x-3 gap-y-1 text-[11px] text-slate-500 font-medium">
+          <div className="flex flex-wrap justify-center items-center gap-x-3 gap-y-1 text-[11px] text-zinc-500 font-medium">
             <button
               type="button"
               onClick={() => openLegalModal('privacy')}
-              className="hover:text-blue-600 transition-colors cursor-pointer"
+              className="hover:text-zinc-900 transition-colors cursor-pointer"
             >
               Privacy Policy
             </button>
-            <span className="text-slate-300">&bull;</span>
+            <span className="text-zinc-300 select-none">&bull;</span>
             <button
               type="button"
               onClick={() => openLegalModal('terms')}
-              className="hover:text-blue-600 transition-colors cursor-pointer"
+              className="hover:text-zinc-900 transition-colors cursor-pointer"
             >
               Terms of Service
             </button>
-            <span className="text-slate-300">&bull;</span>
+            <span className="text-zinc-300 select-none">&bull;</span>
             <button
               type="button"
               onClick={() => openLegalModal('contact')}
-              className="hover:text-blue-600 transition-colors cursor-pointer"
+              className="hover:text-zinc-900 transition-colors cursor-pointer"
             >
               Support & Contact
             </button>
-            <span className="text-slate-300">&bull;</span>
+            <span className="text-zinc-300 select-none">&bull;</span>
             <button
               type="button"
               onClick={() => openLegalModal('refunds')}
-              className="hover:text-blue-600 transition-colors cursor-pointer"
+              className="hover:text-zinc-900 transition-colors cursor-pointer"
             >
               Cancellation & Refunds
             </button>
-            <span className="text-slate-300">&bull;</span>
+            <span className="text-zinc-300 select-none">&bull;</span>
             <button
               type="button"
               onClick={() => openLegalModal('shipping')}
-              className="hover:text-blue-600 transition-colors cursor-pointer"
+              className="hover:text-zinc-900 transition-colors cursor-pointer"
             >
               Service Delivery
             </button>
           </div>
-          <p className="text-[10px] text-slate-400 mt-2">
+          <p className="text-[10px] text-zinc-400 mt-2">
             &copy; {new Date().getFullYear()} CALDIM ENGINEERING PRIVATE LIMITED. All rights reserved.
           </p>
         </footer>
@@ -317,3 +317,4 @@ export function SignupPage() {
 }
 
 export default SignupPage;
+

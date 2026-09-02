@@ -1,6 +1,7 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthProvider.jsx';
+import { ThemeProvider } from './context/ThemeContext.jsx';
 import { EmployeeRuntimeProvider } from './context/EmployeeRuntimeProvider.jsx';
 import { AdminRoute, EmployeeRoute, PlatformAdminRoute, AuthenticatedRoute } from './components/common/ProtectedRoute.jsx';
 
@@ -20,7 +21,10 @@ import { CorrectionRequiredPage } from './pages/onboarding/CorrectionRequiredPag
 import { RejectedPage } from './pages/onboarding/RejectedPage.jsx';
 
 import { EmployeeDashboardPage } from './pages/employee/EmployeeDashboardPage.jsx';
+import { EmployeeJobsPage } from './pages/employee/EmployeeJobsPage.jsx';
 import { EmployeeProfilePage } from './pages/employee/EmployeeProfilePage.jsx';
+import { EmployeeDocumentsPage } from './pages/employee/EmployeeDocumentsPage.jsx';
+import { EmployeeServicesPage } from './pages/employee/EmployeeServicesPage.jsx';
 import { EmployeeSettingsPage } from './pages/employee/EmployeeSettingsPage.jsx';
 import { EmployeePerformancePage } from './pages/employee/EmployeePerformancePage.jsx';
 import { EmployeeEarningsPage } from './pages/employee/EmployeeEarningsPage.jsx';
@@ -37,7 +41,6 @@ function EmployeeWorkspaceLayout() {
     </EmployeeRoute>
   );
 }
-
 
 import { AdminDashboardPage } from './pages/admin/AdminDashboardPage.jsx';
 import { AdminApplicationsPage } from './pages/admin/AdminApplicationsPage.jsx';
@@ -61,10 +64,10 @@ function RootRedirect() {
 
   if (!isReady) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-100 text-slate-700 font-sans">
+      <div className="min-h-screen flex items-center justify-center bg-zinc-100 text-zinc-700 font-sans">
         <div className="flex flex-col items-center gap-3">
-          <div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-          <p className="text-xs font-semibold text-slate-600">Loading workforce portal...</p>
+          <div className="w-8 h-8 border-2 border-zinc-900 border-t-transparent rounded-full animate-spin" />
+          <p className="text-xs font-bold text-zinc-600">Loading workforce portal...</p>
         </div>
       </div>
     );
@@ -90,70 +93,71 @@ function RootRedirect() {
 
 export function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <Routes>
-          {/* Root */}
-          <Route path="/" element={<RootRedirect />} />
+    <ThemeProvider>
+      <AuthProvider>
+        <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <Routes>
+            {/* Root */}
+            <Route path="/" element={<RootRedirect />} />
 
-          {/* Direct Role Route Aliases */}
-          <Route path="/admin" element={<Navigate to="/workforce/admin" replace />} />
-          <Route path="/admin/*" element={<Navigate to="/workforce/admin" replace />} />
-          <Route path="/employee" element={<Navigate to="/workforce/employee/dashboard" replace />} />
-          <Route path="/employee/*" element={<Navigate to="/workforce/employee/dashboard" replace />} />
+            {/* Direct Role Route Aliases */}
+            <Route path="/admin" element={<Navigate to="/workforce/admin" replace />} />
+            <Route path="/admin/*" element={<Navigate to="/workforce/admin" replace />} />
+            <Route path="/employee" element={<Navigate to="/workforce/employee/dashboard" replace />} />
+            <Route path="/employee/*" element={<Navigate to="/workforce/employee/dashboard" replace />} />
 
           {/* Public Auth */}
           <Route path="/workforce/login" element={<LoginPage />} />
           <Route path="/workforce/signup" element={<SignupPage />} />
           <Route path="/workforce/provider-signup" element={<ProviderSignupPage />} />
 
-          {/* Public Legal, Compliance & Support Hub */}
-          <Route path="/terms" element={<TermsAndConditionsPage />} />
-          <Route path="/workforce/terms" element={<TermsAndConditionsPage />} />
-          <Route path="/privacy" element={<PrivacyPolicyPage />} />
-          <Route path="/workforce/privacy" element={<PrivacyPolicyPage />} />
-          <Route path="/support" element={<SupportAndContactPage />} />
-          <Route path="/contact" element={<SupportAndContactPage />} />
-          <Route path="/workforce/support" element={<SupportAndContactPage />} />
-          <Route path="/cancellation-refunds" element={<CancellationRefundsPage />} />
-          <Route path="/refunds" element={<CancellationRefundsPage />} />
-          <Route path="/workforce/cancellation-refunds" element={<CancellationRefundsPage />} />
-          <Route path="/shipping-policy" element={<ShippingPolicyPage />} />
-          <Route path="/workforce/shipping-policy" element={<ShippingPolicyPage />} />
+            {/* Public Legal, Compliance & Support Hub */}
+            <Route path="/terms" element={<TermsAndConditionsPage />} />
+            <Route path="/workforce/terms" element={<TermsAndConditionsPage />} />
+            <Route path="/privacy" element={<PrivacyPolicyPage />} />
+            <Route path="/workforce/privacy" element={<PrivacyPolicyPage />} />
+            <Route path="/support" element={<SupportAndContactPage />} />
+            <Route path="/contact" element={<SupportAndContactPage />} />
+            <Route path="/workforce/support" element={<SupportAndContactPage />} />
+            <Route path="/cancellation-refunds" element={<CancellationRefundsPage />} />
+            <Route path="/refunds" element={<CancellationRefundsPage />} />
+            <Route path="/workforce/cancellation-refunds" element={<CancellationRefundsPage />} />
+            <Route path="/shipping-policy" element={<ShippingPolicyPage />} />
+            <Route path="/workforce/shipping-policy" element={<ShippingPolicyPage />} />
 
-          {/* Technician Onboarding Lifecycle */}
-          <Route
-            path="/workforce/onboarding/wizard"
-            element={
-              <EmployeeRoute>
-                <OnboardingWizardPage />
-              </EmployeeRoute>
-            }
-          />
-          <Route
-            path="/workforce/onboarding/pending-review"
-            element={
-              <EmployeeRoute>
-                <PendingReviewPage />
-              </EmployeeRoute>
-            }
-          />
-          <Route
-            path="/workforce/onboarding/corrections"
-            element={
-              <EmployeeRoute>
-                <CorrectionRequiredPage />
-              </EmployeeRoute>
-            }
-          />
-          <Route
-            path="/workforce/onboarding/rejected"
-            element={
-              <EmployeeRoute>
-                <RejectedPage />
-              </EmployeeRoute>
-            }
-          />
+            {/* Technician Onboarding Lifecycle */}
+            <Route
+              path="/workforce/onboarding/wizard"
+              element={
+                <EmployeeRoute>
+                  <OnboardingWizardPage />
+                </EmployeeRoute>
+              }
+            />
+            <Route
+              path="/workforce/onboarding/pending-review"
+              element={
+                <EmployeeRoute>
+                  <PendingReviewPage />
+                </EmployeeRoute>
+              }
+            />
+            <Route
+              path="/workforce/onboarding/corrections"
+              element={
+                <EmployeeRoute>
+                  <CorrectionRequiredPage />
+                </EmployeeRoute>
+              }
+            />
+            <Route
+              path="/workforce/onboarding/rejected"
+              element={
+                <EmployeeRoute>
+                  <RejectedPage />
+                </EmployeeRoute>
+              }
+            />
 
           {/* Approved Technician Workspace with Persistent Session Runtime */}
           <Route path="/workforce/employee" element={<EmployeeWorkspaceLayout />}>
@@ -176,6 +180,99 @@ export function App() {
             <Route path="invitations" element={<TechnicianInvitationsPage />} />
           </Route>
 
+            {/* Workforce Admin Operations Workspace */}
+            <Route
+              path="/workforce/admin"
+              element={
+                <AdminRoute>
+                  <AdminDashboardPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/service-providers"
+              element={
+                <SuperadminRoute>
+                  <AdminServiceProvidersPage />
+                </SuperadminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/provider-profile"
+              element={
+                <AdminRoute>
+                  <ProviderProfilePage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/provider/profile"
+              element={<Navigate to="/workforce/admin/provider-profile" replace />}
+            />
+            <Route
+              path="/workforce/admin/applications"
+              element={
+                <AdminRoute>
+                  <AdminApplicationsPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/applications/:id"
+              element={
+                <AdminRoute>
+                  <AdminApplicationDetailPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/employees"
+              element={
+                <AdminRoute>
+                  <AdminEmployeesPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/jobs"
+              element={
+                <AdminRoute>
+                  <AdminJobsPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/dispatch"
+              element={
+                <AdminRoute>
+                  <AdminOperationsPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/operations"
+              element={
+                <AdminRoute>
+                  <AdminOperationsPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/services"
+              element={
+                <AdminRoute>
+                  <AdminApplicationsPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/skills"
+              element={
+                <AdminRoute>
+                  <AdminSkillsPage />
+                </AdminRoute>
+              }
+            />
 
           {/* Workforce Admin Operations Workspace */}
           <Route
@@ -286,14 +383,39 @@ export function App() {
             }
           />
 
-          {/* Removed Admin Routes Redirects */}
-          <Route path="/workforce/admin/documents" element={<Navigate to="/workforce/admin/applications" replace />} />
-          <Route path="/workforce/admin/scheduling" element={<Navigate to="/workforce/admin" replace />} />
-          <Route path="/workforce/admin/attendance" element={<Navigate to="/workforce/admin" replace />} />
-          <Route path="/workforce/admin/timesheets" element={<Navigate to="/workforce/admin" replace />} />
-          <Route path="/workforce/admin/leave" element={<Navigate to="/workforce/admin" replace />} />
-          <Route path="/workforce/admin/payroll" element={<Navigate to="/workforce/admin" replace />} />
-          <Route path="/workforce/admin/compliance" element={<Navigate to="/workforce/admin" replace />} />
+            {/* Admin Wallet Governance */}
+            <Route
+              path="/workforce/admin/wallet"
+              element={
+                <AdminRoute>
+                  <WalletDashboardPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/wallet/transactions"
+              element={
+                <AdminRoute>
+                  <WalletTransactionsPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/wallet/withdrawals"
+              element={
+                <AdminRoute>
+                  <WalletWithdrawalsPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/wallet/payout-accounts"
+              element={
+                <AdminRoute>
+                  <WalletPayoutAccountsPage />
+                </AdminRoute>
+              }
+            />
 
           <Route
             path="/workforce/admin/wallet"
@@ -345,6 +467,7 @@ export function App() {
         </Routes>
       </BrowserRouter>
     </AuthProvider>
+    </ThemeProvider>
   );
 }
 

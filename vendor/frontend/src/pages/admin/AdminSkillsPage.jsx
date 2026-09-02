@@ -92,71 +92,71 @@ export function AdminSkillsPage() {
   return (
     <AppShell breadcrumbs={[{ label: 'Workforce' }, { label: 'Skills & Qualifications' }]}>
       <div className="space-y-4 text-xs">
-        <div className="flex items-center justify-between bg-white p-4 border border-slate-200 rounded shadow-sm">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-5 border border-zinc-200/90 rounded-md shadow-card">
           <div>
-            <h1 className="text-base font-bold text-slate-900 flex items-center gap-2">
-              <Award className="w-5 h-5 text-blue-600" />
-              Workforce Skills & Verification Matrix
+            <h1 className="text-base font-bold text-zinc-950 flex items-center gap-2 tracking-tight">
+              <Award className="w-5 h-5 text-zinc-800" />
+              <span>Workforce Skills & Verification Matrix</span>
             </h1>
-            <p className="text-slate-500 text-[11px] mt-0.5">
+            <p className="text-zinc-500 text-xs mt-1 leading-relaxed">
               Manage skill certifications and verify technician service proficiency for dispatch qualification.
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2.5 shrink-0">
             <button
               type="button"
               onClick={() => setShowSkillModal(true)}
-              className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded shadow-sm inline-flex items-center gap-1.5"
+              className="px-4 py-2 min-h-[38px] bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-950 text-white font-bold rounded-lg shadow-xs inline-flex items-center gap-2 transition-all cursor-pointer"
             >
-              <PlusCircle className="w-4 h-4" />
-              New Skill
+              <PlusCircle className="w-4 h-4 text-zinc-200" />
+              <span>New Skill</span>
             </button>
             <button
               type="button"
               onClick={() => setShowAssignModal(true)}
-              className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded shadow-sm inline-flex items-center gap-1.5"
+              className="px-4 py-2 min-h-[38px] bg-white hover:bg-zinc-50 active:bg-zinc-100 text-zinc-900 border border-zinc-300 font-bold rounded-lg shadow-xs inline-flex items-center gap-2 transition-all cursor-pointer"
             >
-              <ShieldCheck className="w-4 h-4" />
-              Assign Skill
+              <ShieldCheck className="w-4 h-4 text-zinc-700" />
+              <span>Assign Skill</span>
             </button>
           </div>
         </div>
 
         {statusMsg.text && (
-          <div className={`p-3 rounded border font-semibold flex items-center gap-2 ${statusMsg.type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-rose-50 border-rose-200 text-rose-800'}`}>
-            {statusMsg.type === 'success' ? <CheckCircle2 className="w-4 h-4 text-emerald-600" /> : <AlertCircle className="w-4 h-4 text-rose-600" />}
+          <div className={`p-3.5 rounded-lg border font-semibold flex items-center gap-2 text-xs ${statusMsg.type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-rose-50 border-rose-200 text-rose-900'}`}>
+            {statusMsg.type === 'success' ? <CheckCircle2 className="w-4 h-4 text-emerald-700" /> : <AlertCircle className="w-4 h-4 text-rose-700" />}
             <span>{statusMsg.text}</span>
           </div>
         )}
 
-        <div className="bg-white border border-slate-200 rounded overflow-hidden shadow-sm">
-          <div className="bg-slate-50 px-4 py-2.5 border-b border-slate-200 font-bold text-slate-800 uppercase tracking-wider text-[11px]">
+        <div className="bg-white border border-zinc-200/90 rounded-md overflow-hidden shadow-card">
+          <div className="bg-zinc-50/80 px-4 py-3 border-b border-zinc-200/80 font-bold text-zinc-950 uppercase tracking-wider text-xs">
             Master Skill Catalog ({skills.length})
           </div>
           <table className="w-full text-left text-xs">
-            <thead className="bg-slate-50 text-slate-600 uppercase text-[11px] font-semibold border-b border-slate-200">
+            <thead className="bg-zinc-50/60 text-zinc-500 uppercase text-[11px] font-bold border-b border-zinc-200">
               <tr>
-                <th className="px-4 py-3">Skill Name</th>
-                <th className="px-4 py-3">Category</th>
-                <th className="px-4 py-3">Description</th>
+                <th className="px-5 py-3.5">Skill Name</th>
+                <th className="px-5 py-3.5">Category</th>
+                <th className="px-5 py-3.5">Description</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-zinc-100">
               {skills.length > 0 ? (
                 skills.map((s) => (
-                  <tr key={s.id} className="hover:bg-slate-50">
-                    <td className="px-4 py-3 font-bold text-slate-900">{s.name}</td>
-                    <td className="px-4 py-3">
-                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                  <tr key={s.id} className="hover:bg-zinc-50/80 transition-colors">
+                    <td className="px-5 py-3.5 font-bold text-zinc-950">{s.name}</td>
+                    <td className="px-5 py-3.5">
+                      <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-zinc-100 text-zinc-800 border border-zinc-200">
                         {s.category}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-slate-500">{s.description || '—'}</td>
+                    <td className="px-5 py-3.5 text-zinc-500 leading-relaxed">{s.description || '—'}</td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={3} className="px-4 py-12 text-center text-slate-500">
+                  <td colSpan={3} className="px-5 py-12 text-center text-zinc-500">
                     No skills cataloged yet.
                   </td>
                 </tr>
@@ -164,6 +164,7 @@ export function AdminSkillsPage() {
             </tbody>
           </table>
         </div>
+
 
         {/* Modal: New Skill */}
         <Modal isOpen={showSkillModal} onClose={() => setShowSkillModal(false)} title="Create New Skill Certification">

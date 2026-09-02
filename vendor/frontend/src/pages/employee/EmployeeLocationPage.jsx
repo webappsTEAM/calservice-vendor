@@ -49,9 +49,9 @@ const LABEL_ICONS = {
 };
 
 const LABEL_COLORS = {
-  home: 'text-emerald-600 bg-emerald-50 border-emerald-200',
-  work: 'text-blue-600 bg-blue-50 border-blue-200',
-  other: 'text-slate-600 bg-slate-50 border-slate-200',
+  home: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+  work: 'text-zinc-800 bg-zinc-100 border-zinc-200',
+  other: 'text-zinc-600 bg-zinc-50 border-zinc-200',
 };
 
 const EMPTY_FORM = {
@@ -246,17 +246,25 @@ export function EmployeeLocationPage() {
                 Back to list
               </button>
             )}
-            <h1 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-              <MapPin className="w-4 h-4 text-blue-600" />
-              {view === 'list'
-                ? 'My Saved Locations'
-                : view === 'add'
-                ? 'Add New Location'
-                : 'Edit Location'}
+          </div>
+        </div>
+
+        {/* Top Header Card */}
+        <div className="bg-white border border-zinc-200/90 p-5 rounded-md shadow-card flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-base sm:text-lg font-bold text-zinc-950 flex items-center gap-2 tracking-tight">
+              <MapPin className="w-5 h-5 text-zinc-800" />
+              <span>
+                {view === 'list'
+                  ? 'My Saved Locations'
+                  : view === 'add'
+                  ? 'Add New Location'
+                  : 'Edit Location'}
+              </span>
             </h1>
-            <p className="text-[11px] text-slate-500 mt-0.5">
+            <p className="text-xs text-zinc-500 mt-1 leading-relaxed">
               {view === 'list'
-                ? 'Manage your personal saved locations for quick access during jobs.'
+                ? 'Manage your personal saved locations for quick access during field jobs.'
                 : 'Select a position on the map, then fill in the details below.'}
             </p>
           </div>
@@ -264,10 +272,10 @@ export function EmployeeLocationPage() {
             <button
               type="button"
               onClick={openAdd}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-bold shadow-sm transition-colors"
+              className="inline-flex items-center gap-1.5 px-4 py-2 min-h-[38px] bg-slate-800 hover:bg-slate-700 active:bg-slate-900 text-white rounded-lg text-xs font-bold shadow-xs transition-all cursor-pointer shrink-0"
             >
-              <Plus className="w-3.5 h-3.5" />
-              Add Location
+              <Plus className="w-4 h-4 text-slate-200" />
+              <span>Add Location</span>
             </button>
           )}
         </div>
@@ -277,9 +285,9 @@ export function EmployeeLocationPage() {
           <ErrorState type="error" message={error} onDismiss={() => setError('')} />
         )}
         {success && (
-          <div className="flex items-center gap-2 px-3 py-2 bg-emerald-50 border border-emerald-200 rounded text-xs text-emerald-800 font-medium">
-            <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-            {success}
+          <div className="flex items-center gap-2 px-3.5 py-2.5 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-900 font-semibold shadow-xs">
+            <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+            <span>{success}</span>
           </div>
         )}
 
@@ -289,55 +297,51 @@ export function EmployeeLocationPage() {
             {isLoading ? (
               <LoadingState message="Loading your saved locations…" />
             ) : locations.length === 0 ? (
-              <div className="border border-slate-200 rounded bg-white p-10 text-center space-y-2">
-                <MapPin className="w-8 h-8 text-slate-300 mx-auto" />
-                <p className="text-sm font-semibold text-slate-600">No saved locations yet</p>
-                <p className="text-xs text-slate-400">
+              <div className="border border-zinc-200/90 rounded-md bg-white p-12 text-center space-y-2 shadow-card">
+                <MapPin className="w-10 h-10 text-zinc-300 mx-auto" />
+                <p className="text-sm font-bold text-zinc-900">No saved locations yet</p>
+                <p className="text-xs text-zinc-500 max-w-sm mx-auto leading-relaxed">
                   Click "Add Location" to save your home, work, or any frequently visited place.
                 </p>
               </div>
             ) : (
-              <div className="space-y-2">
+              <div className="space-y-3">
                 {locations.map((loc) => {
                   const LabelIcon = LABEL_ICONS[loc.label] || MapPin;
-                  const labelColor = LABEL_COLORS[loc.label] || LABEL_COLORS.other;
                   return (
                     <div
                       key={loc.id}
-                      className="bg-white border border-slate-200 rounded p-3.5 flex items-start justify-between gap-3 hover:border-slate-300 transition-colors"
+                      className="bg-white border border-zinc-200/90 rounded-md p-4 shadow-card flex items-start justify-between gap-3 hover:border-zinc-300 transition-all"
                     >
-                      <div className="flex items-start gap-3 min-w-0">
-                        <div
-                          className={`w-8 h-8 rounded border flex items-center justify-center shrink-0 ${labelColor}`}
-                        >
+                      <div className="flex items-start gap-3.5 min-w-0">
+                        <div className="w-9 h-9 rounded-lg border border-zinc-200 bg-zinc-100 text-zinc-900 flex items-center justify-center shrink-0 shadow-xs">
                           <LabelIcon className="w-4 h-4" />
                         </div>
                         <div className="min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <span className="text-xs font-bold text-slate-900 truncate">
+                            <span className="text-xs font-bold text-zinc-950 truncate">
                               {loc.name}
                             </span>
                             {loc.is_default && (
-                              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-[10px] font-bold text-amber-700">
-                                <Star className="w-2.5 h-2.5" />
-                                Default
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-[10px] font-bold text-amber-900">
+                                <Star className="w-2.5 h-2.5 text-amber-700" />
+                                <span>Default</span>
                               </span>
                             )}
-                            <span
-                              className={`px-1.5 py-0.5 rounded border text-[10px] font-semibold capitalize ${labelColor}`}
-                            >
+                            <span className="px-2.5 py-0.5 rounded-full border border-zinc-200 bg-zinc-100 text-[10px] font-bold capitalize text-zinc-800">
                               {loc.label}
                             </span>
                           </div>
                           {loc.address && (
-                            <p className="text-[11px] text-slate-500 mt-0.5 truncate max-w-xs">
+                            <p className="text-xs text-zinc-600 mt-1 truncate max-w-md font-medium">
                               {loc.address}
                             </p>
                           )}
-                          <p className="text-[10px] font-mono text-slate-400 mt-0.5">
-                            {parseFloat(loc.latitude).toFixed(5)},{' '}
-                            {parseFloat(loc.longitude).toFixed(5)}
-                          </p>
+                          {(loc.locality || loc.city) && (
+                            <p className="text-[11px] font-semibold text-zinc-500 mt-0.5">
+                              {[loc.locality, loc.city, loc.state].filter(Boolean).join(', ')}
+                            </p>
+                          )}
                         </div>
                       </div>
 
@@ -347,7 +351,7 @@ export function EmployeeLocationPage() {
                             type="button"
                             title="Set as default"
                             onClick={() => handleSetDefault(loc)}
-                            className="p-1.5 rounded hover:bg-amber-50 text-slate-400 hover:text-amber-600 transition-colors"
+                            className="p-2 rounded-lg hover:bg-amber-50 text-zinc-400 hover:text-amber-700 transition-colors cursor-pointer"
                           >
                             <Star className="w-3.5 h-3.5" />
                           </button>
@@ -356,7 +360,7 @@ export function EmployeeLocationPage() {
                           type="button"
                           title="Edit location"
                           onClick={() => openEdit(loc)}
-                          className="p-1.5 rounded hover:bg-blue-50 text-slate-400 hover:text-blue-600 transition-colors"
+                          className="p-2 rounded-lg hover:bg-zinc-100 text-zinc-400 hover:text-zinc-900 transition-colors cursor-pointer"
                         >
                           <Edit2 className="w-3.5 h-3.5" />
                         </button>
@@ -364,7 +368,7 @@ export function EmployeeLocationPage() {
                           type="button"
                           title="Delete location"
                           onClick={() => setDeleteConfirmId(loc.id)}
-                          className="p-1.5 rounded hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition-colors"
+                          className="p-2 rounded-lg hover:bg-rose-50 text-zinc-400 hover:text-rose-600 transition-colors cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -381,10 +385,10 @@ export function EmployeeLocationPage() {
         {(view === 'add' || view === 'edit') && (
           <form onSubmit={handleSave} className="space-y-4">
             {/* Map */}
-            <div className="bg-white border border-slate-200 rounded p-4">
-              <h3 className="text-xs font-bold text-slate-800 mb-3 flex items-center gap-1.5">
-                <Navigation className="w-3.5 h-3.5 text-blue-500" />
-                Select Location on Map
+            <div className="bg-white border border-zinc-200/90 rounded-md p-5 shadow-card">
+              <h3 className="text-xs font-bold text-zinc-950 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                <Navigation className="w-3.5 h-3.5 text-zinc-800" />
+                <span>Select Location on Map</span>
               </h3>
               <LocationPickerMap
                 latitude={formLat}
@@ -394,23 +398,26 @@ export function EmployeeLocationPage() {
                 height="260px"
               />
               {geocoding && (
-                <p className="text-[10px] text-blue-600 mt-1">Resolving address…</p>
+                <p className="text-[11px] text-zinc-600 font-semibold mt-1 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                  <span>Resolving street address & territory…</span>
+                </p>
               )}
             </div>
 
             {/* Address fields */}
-            <div className="bg-white border border-slate-200 rounded p-4 space-y-3">
-              <h3 className="text-xs font-bold text-slate-800">Location Details</h3>
+            <div className="bg-white border border-zinc-200/90 rounded-md p-5 shadow-card space-y-4">
+              <h3 className="text-xs font-bold text-zinc-950 uppercase tracking-wider">Location Details</h3>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                    Label
+                  <label className="block text-[11px] font-bold text-zinc-700 mb-1">
+                    Category Tag
                   </label>
                   <select
                     value={form.label}
                     onChange={(e) => setForm({ ...form, label: e.target.value })}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs focus:ring-1 focus:ring-blue-500 bg-white"
+                    className="w-full px-3 py-2 border border-zinc-300 rounded-lg text-xs focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 bg-white shadow-xs"
                   >
                     <option value="home">Home</option>
                     <option value="work">Work</option>
@@ -418,101 +425,101 @@ export function EmployeeLocationPage() {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  <label className="block text-[11px] font-bold text-zinc-700 mb-1">
                     Location Name <span className="text-rose-500">*</span>
                   </label>
                   <input
                     required
                     type="text"
-                    placeholder="e.g. My Home / Office"
+                    placeholder="e.g. My Primary Hub / Residence"
                     value={form.name}
                     onChange={(e) => setForm({ ...form, name: e.target.value })}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs focus:ring-1 focus:ring-blue-500"
+                    className="w-full px-3 py-2 border border-zinc-300 rounded-lg text-xs focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                  Full Address
+                <label className="block text-[11px] font-bold text-zinc-700 mb-1">
+                  Full Street Address
                 </label>
                 <textarea
                   rows={2}
                   value={form.address}
                   onChange={(e) => setForm({ ...form, address: e.target.value })}
-                  className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs focus:ring-1 focus:ring-blue-500 resize-none"
-                  placeholder="Auto-filled from map selection (you can edit)"
+                  className="w-full px-3 py-2 border border-zinc-300 rounded-lg text-xs focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 resize-none shadow-xs"
+                  placeholder="Auto-resolved from map selection (editable)"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  <label className="block text-[11px] font-bold text-zinc-700 mb-1">
                     Area / Locality
                   </label>
                   <input
                     type="text"
                     value={form.locality}
                     onChange={(e) => setForm({ ...form, locality: e.target.value })}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs focus:ring-1 focus:ring-blue-500"
+                    className="w-full px-3 py-2 border border-zinc-300 rounded-lg text-xs focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs"
                   />
                 </div>
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  <label className="block text-[11px] font-bold text-zinc-700 mb-1">
                     City
                   </label>
                   <input
                     type="text"
                     value={form.city}
                     onChange={(e) => setForm({ ...form, city: e.target.value })}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs focus:ring-1 focus:ring-blue-500"
+                    className="w-full px-3 py-2 border border-zinc-300 rounded-lg text-xs focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  <label className="block text-[11px] font-bold text-zinc-700 mb-1">
                     State
                   </label>
                   <input
                     type="text"
                     value={form.state}
                     onChange={(e) => setForm({ ...form, state: e.target.value })}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs focus:ring-1 focus:ring-blue-500"
+                    className="w-full px-3 py-2 border border-zinc-300 rounded-lg text-xs focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs"
                   />
                 </div>
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  <label className="block text-[11px] font-bold text-zinc-700 mb-1">
                     Pincode
                   </label>
                   <input
                     type="text"
                     value={form.pincode}
                     onChange={(e) => setForm({ ...form, pincode: e.target.value })}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs focus:ring-1 focus:ring-blue-500"
+                    className="w-full px-3 py-2 border border-zinc-300 rounded-lg text-xs focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs"
                   />
                 </div>
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  <label className="block text-[11px] font-bold text-zinc-700 mb-1">
                     Landmark (optional)
                   </label>
                   <input
                     type="text"
                     value={form.landmark}
                     onChange={(e) => setForm({ ...form, landmark: e.target.value })}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs focus:ring-1 focus:ring-blue-500"
+                    className="w-full px-3 py-2 border border-zinc-300 rounded-lg text-xs focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs"
                   />
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 pt-1">
                 <input
                   id="is-default-check"
                   type="checkbox"
                   checked={form.is_default}
                   onChange={(e) => setForm({ ...form, is_default: e.target.checked })}
-                  className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600"
+                  className="w-4 h-4 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-950/20 cursor-pointer"
                 />
                 <label
                   htmlFor="is-default-check"

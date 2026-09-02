@@ -113,8 +113,8 @@ export function EmployeePerformancePage() {
   ];
 
   return (
-    <AppShell breadcrumbs={[{ label: 'Home' }, { label: 'Feedback & Performance' }]}>
-      <div className="space-y-4 max-w-6xl mx-auto">
+    <AppShell breadcrumbs={[{ label: 'Home', to: '/workforce/employee/dashboard' }, { label: 'Performance' }]}>
+      <div className="space-y-4 max-w-6xl mx-auto text-xs">
         {error && <ErrorState message={error} onDismiss={() => setError('')} />}
 
         {/* Top Metric Strip */}
@@ -122,15 +122,15 @@ export function EmployeePerformancePage() {
           {metricCards.map((m, idx) => {
             const Icon = m.icon;
             return (
-              <div key={idx} className="bg-white border border-slate-200 rounded p-3.5 shadow-sm space-y-1">
+              <div key={idx} className="bg-white border border-zinc-200/90 rounded-md p-4 shadow-card space-y-1.5">
                 <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">{m.title}</span>
-                  <div className="p-1 rounded bg-slate-50 border border-slate-100 text-slate-600">
+                  <span className="text-[11px] font-bold text-zinc-500 uppercase tracking-wider">{m.title}</span>
+                  <div className="p-1.5 rounded-md bg-zinc-100 border border-zinc-200 text-zinc-800 shadow-2xs">
                     <Icon className="w-3.5 h-3.5" />
                   </div>
                 </div>
-                <div className="text-xl font-bold text-slate-900 font-mono">{m.value}</div>
-                <p className="text-[10px] text-slate-500 truncate">{m.change}</p>
+                <div className="text-xl font-extrabold text-zinc-950 font-mono tracking-tight">{m.value}</div>
+                <p className="text-[10px] text-zinc-500 truncate font-medium">{m.change}</p>
               </div>
             );
           })}
@@ -160,33 +160,33 @@ export function EmployeePerformancePage() {
         {/* Rating Breakdown & CSAT Overview */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
           {/* Left Column: Star Rating Distribution (5 cols) */}
-          <div className="lg:col-span-5 bg-white border border-slate-200 rounded overflow-hidden shadow-sm flex flex-col">
-            <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex items-center justify-between">
-              <h2 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2">
+          <div className="lg:col-span-5 bg-white border border-zinc-200/90 rounded-md overflow-hidden shadow-card flex flex-col">
+            <div className="bg-zinc-50/80 px-4 py-3 border-b border-zinc-200/80 flex items-center justify-between">
+              <h2 className="text-xs font-bold text-zinc-950 uppercase tracking-wider flex items-center gap-2">
                 <Star className="w-4 h-4 text-amber-500 fill-amber-500" />
-                Rating Distribution ({totalFeedbackCount} Reviews)
+                <span>Rating Distribution ({totalFeedbackCount} Reviews)</span>
               </h2>
             </div>
 
             <div className="p-5 space-y-4 text-xs flex-1 flex flex-col justify-center">
               {totalFeedbackCount > 0 ? (
-                <div className="space-y-2.5">
+                <div className="space-y-3">
                   {[5, 4, 3, 2, 1].map((stars) => {
                     const count = distribution[stars] || 0;
                     const pct = totalFeedbackCount > 0 ? Math.round((count / totalFeedbackCount) * 100) : 0;
                     return (
                       <div key={stars} className="flex items-center gap-3">
-                        <span className="w-12 font-bold text-slate-700 font-mono text-[11px] flex items-center gap-1">
+                        <span className="w-12 font-bold text-zinc-800 font-mono text-[11px] flex items-center gap-1">
                           <span>{stars}</span>
                           <Star className="w-3 h-3 text-amber-500 fill-amber-500" />
                         </span>
-                        <div className="flex-1 h-3 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
+                        <div className="flex-1 h-2.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
                           <div
-                            className="h-full bg-amber-400 rounded-full transition-all"
+                            className="h-full bg-slate-800 rounded-full transition-all"
                             style={{ width: `${pct}%` }}
                           />
                         </div>
-                        <span className="w-12 text-right text-slate-500 font-mono text-[11px]">
+                        <span className="w-14 text-right text-zinc-500 font-mono text-[11px] font-semibold">
                           {count} ({pct}%)
                         </span>
                       </div>
@@ -194,12 +194,12 @@ export function EmployeePerformancePage() {
                   })}
                 </div>
               ) : (
-                <div className="text-center py-6 space-y-2">
-                  <div className="w-10 h-10 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center mx-auto text-slate-400">
+                <div className="text-center py-8 space-y-2">
+                  <div className="w-10 h-10 rounded-full bg-zinc-100 border border-zinc-200 flex items-center justify-center mx-auto text-zinc-400">
                     <Star className="w-5 h-5" />
                   </div>
-                  <h3 className="font-bold text-slate-800 text-xs">No customer ratings yet</h3>
-                  <p className="text-[11px] text-slate-500 max-w-xs mx-auto">
+                  <h3 className="font-bold text-zinc-950 text-xs">No customer ratings yet</h3>
+                  <p className="text-[11px] text-zinc-500 max-w-xs mx-auto leading-relaxed">
                     Ratings will be calculated automatically when customers review your completed service requests.
                   </p>
                 </div>
@@ -208,33 +208,33 @@ export function EmployeePerformancePage() {
           </div>
 
           {/* Right Column: Performance Guidelines & Quality Standards (7 cols) */}
-          <div className="lg:col-span-7 bg-white border border-slate-200 rounded overflow-hidden shadow-sm flex flex-col">
-            <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex items-center justify-between">
-              <h2 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2">
-                <Award className="w-4 h-4 text-blue-600" />
-                Workforce Service Quality Benchmark
+          <div className="lg:col-span-7 bg-white border border-zinc-200/90 rounded-md overflow-hidden shadow-card flex flex-col">
+            <div className="bg-zinc-50/80 px-4 py-3 border-b border-zinc-200/80 flex items-center justify-between">
+              <h2 className="text-xs font-bold text-zinc-950 uppercase tracking-wider flex items-center gap-2">
+                <Award className="w-4 h-4 text-zinc-800" />
+                <span>Workforce Service Quality Benchmark</span>
               </h2>
             </div>
 
-            <div className="p-5 space-y-3.5 text-xs text-slate-600 flex-1">
+            <div className="p-5 space-y-4 text-xs text-zinc-600 flex-1 flex flex-col justify-between">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded space-y-1">
-                  <h4 className="font-bold text-slate-900 text-xs">Target CSAT Standard</h4>
-                  <p className="text-[11px] text-slate-500">
-                    Maintain an average CSAT &ge; <strong>85%</strong> to remain eligible for priority automated dispatching.
+                <div className="p-3.5 bg-zinc-50 border border-zinc-200/80 rounded-lg space-y-1">
+                  <h4 className="font-bold text-zinc-950 text-xs">Target CSAT Standard</h4>
+                  <p className="text-[11px] text-zinc-500 leading-relaxed">
+                    Maintain an average CSAT &ge; <strong className="text-zinc-950">85%</strong> to remain eligible for priority automated dispatching.
                   </p>
                 </div>
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded space-y-1">
-                  <h4 className="font-bold text-slate-900 text-xs">Proof of Work Compliance</h4>
-                  <p className="text-[11px] text-slate-500">
-                    100% of jobs require valid arrival GPS geofencing, customer work start OTP, and before/after photos.
+                <div className="p-3.5 bg-zinc-50 border border-zinc-200/80 rounded-lg space-y-1">
+                  <h4 className="font-bold text-zinc-950 text-xs">Proof of Work Compliance</h4>
+                  <p className="text-[11px] text-zinc-500 leading-relaxed">
+                    100% of jobs require valid arrival GPS telemetry, customer work start OTP, and before/after photos.
                   </p>
                 </div>
               </div>
 
-              <div className="p-3 bg-blue-50/60 border border-blue-200 rounded text-[11px] text-blue-900">
-                <p className="font-bold">Authoritative Data Integration Notice</p>
-                <p className="text-blue-800 mt-0.5">
+              <div className="p-3.5 bg-zinc-100/70 border border-zinc-200/90 rounded-lg text-xs text-zinc-800 space-y-0.5">
+                <p className="font-bold text-zinc-950">Authoritative Data Integration Notice</p>
+                <p className="text-zinc-500 leading-relaxed">
                   All metrics displayed here are computed directly from completed ServiceRequest records and customer feedback submissions stored in PostgreSQL.
                 </p>
               </div>
@@ -243,16 +243,16 @@ export function EmployeePerformancePage() {
         </div>
 
         {/* Customer Reviews & Feedback Submissions */}
-        <div className="bg-white border border-slate-200 rounded overflow-hidden shadow-sm">
-          <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex items-center justify-between">
-            <h2 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2">
-              <MessageSquare className="w-4 h-4 text-blue-600" />
-              Customer Feedback & Reviews ({feedbacks.length})
+        <div className="bg-white border border-zinc-200/90 rounded-md overflow-hidden shadow-card">
+          <div className="bg-zinc-50/80 px-4 py-3 border-b border-zinc-200/80 flex items-center justify-between">
+            <h2 className="text-xs font-bold text-zinc-950 uppercase tracking-wider flex items-center gap-2">
+              <MessageSquare className="w-4 h-4 text-zinc-800" />
+              <span>Customer Feedback & Reviews ({feedbacks.length})</span>
             </h2>
             <button
               type="button"
               onClick={loadPerformance}
-              className="text-[11px] font-semibold text-blue-600 hover:underline"
+              className="text-xs font-bold text-zinc-800 hover:text-zinc-950 hover:underline cursor-pointer"
             >
               Refresh
             </button>
@@ -260,40 +260,40 @@ export function EmployeePerformancePage() {
 
           <div className="p-0">
             {feedbacks.length > 0 ? (
-              <div className="divide-y divide-slate-100">
+              <div className="divide-y divide-zinc-100">
                 {feedbacks.map((fb) => (
-                  <div key={fb.id} className="p-4 space-y-2 hover:bg-slate-50/50 transition-colors">
+                  <div key={fb.id} className="p-4 space-y-2 hover:bg-zinc-50/80 transition-colors">
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <div className="flex items-center text-amber-500">
                           {[1, 2, 3, 4, 5].map((s) => (
                             <Star
                               key={s}
                               className={`w-3.5 h-3.5 ${
-                                s <= fb.rating ? 'fill-amber-400 text-amber-400' : 'text-slate-300'
+                                s <= fb.rating ? 'fill-amber-400 text-amber-400' : 'text-zinc-300'
                               }`}
                             />
                           ))}
                         </div>
-                        <span className="font-bold text-slate-900 text-xs">{fb.rating}.0</span>
-                        <span className="text-slate-400">•</span>
-                        <span className="font-semibold text-slate-700 text-xs">
+                        <span className="font-bold text-zinc-950 text-xs">{fb.rating}.0</span>
+                        <span className="text-zinc-400">•</span>
+                        <span className="font-bold text-zinc-800 text-xs">
                           {fb.customer_name || 'Customer'}
                         </span>
                       </div>
-                      <div className="flex items-center gap-2 text-[10px] text-slate-500 font-mono">
-                        <span>Job: <strong className="text-blue-600">{fb.request_id || `SR-${fb.job}`}</strong></span>
+                      <div className="flex items-center gap-2 text-[11px] text-zinc-500 font-mono">
+                        <span>Job: <strong className="text-zinc-950">{fb.request_id || `SR-${fb.job}`}</strong></span>
                         <span>•</span>
                         <span>{new Date(fb.created_at).toLocaleDateString()}</span>
                       </div>
                     </div>
 
-                    <p className="text-xs text-slate-700 italic">
+                    <p className="text-xs text-zinc-700 italic leading-relaxed">
                       "{fb.review || 'Service completed satisfactorily according to scope.'}"
                     </p>
 
                     {fb.service_title && (
-                      <span className="inline-block px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-[10px] font-medium border border-slate-200">
+                      <span className="inline-block px-2.5 py-0.5 bg-zinc-100 text-zinc-800 rounded-full text-[10px] font-bold border border-zinc-200">
                         {fb.service_title}
                       </span>
                     )}
@@ -302,11 +302,11 @@ export function EmployeePerformancePage() {
               </div>
             ) : (
               <div className="py-12 px-4 text-center space-y-2">
-                <div className="w-12 h-12 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center mx-auto text-slate-400">
+                <div className="w-12 h-12 rounded-full bg-zinc-100 border border-zinc-200 flex items-center justify-center mx-auto text-zinc-400">
                   <MessageSquare className="w-6 h-6" />
                 </div>
-                <h3 className="font-bold text-slate-800 text-xs">No customer feedback yet</h3>
-                <p className="text-[11px] text-slate-500 max-w-sm mx-auto">
+                <h3 className="font-bold text-zinc-950 text-xs">No customer feedback yet</h3>
+                <p className="text-xs text-zinc-500 max-w-sm mx-auto leading-relaxed">
                   Customer feedback will appear here as soon as clients review your completed work orders.
                 </p>
               </div>
@@ -319,3 +319,4 @@ export function EmployeePerformancePage() {
 }
 
 export default EmployeePerformancePage;
+

@@ -64,71 +64,71 @@ export function CorrectionRequiredPage() {
   return (
     <AppShell breadcrumbs={[{ label: 'Correction Action Required' }]}>
       <div className="max-w-2xl mx-auto space-y-4 py-6">
-        <div className="bg-white border border-slate-200 rounded p-6 shadow-sm space-y-4">
+        <div className="bg-white border border-zinc-200/90 rounded-md p-6 sm:p-8 shadow-card space-y-5">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded bg-amber-50 border border-amber-200 text-amber-700 flex items-center justify-center">
+            <div className="w-10 h-10 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 flex items-center justify-center shadow-xs">
               <AlertTriangle className="w-5 h-5" />
             </div>
             <div>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 uppercase">
+              <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-900 border border-amber-200 uppercase tracking-wider">
                 Action Required
               </span>
-              <h1 className="text-base font-bold text-slate-900 mt-0.5">
+              <h1 className="text-lg font-bold text-zinc-950 mt-1 tracking-tight">
                 Application Correction Requested
               </h1>
             </div>
           </div>
 
           {/* Admin Feedback Box */}
-          <div className="p-3.5 bg-amber-50 border border-amber-200 rounded text-xs">
-            <p className="font-bold text-amber-900 uppercase tracking-wider text-[11px] mb-1">
+          <div className="p-4 bg-amber-50/80 border border-amber-200 rounded-lg text-xs">
+            <p className="font-bold text-amber-950 uppercase tracking-wider text-[11px] mb-1">
               Admin Review Notes:
             </p>
-            <p className="text-slate-800 leading-relaxed font-medium">
+            <p className="text-zinc-800 leading-relaxed font-medium">
               "{correctionNotes}"
             </p>
           </div>
 
           {error && <ErrorState message={error} onDismiss={() => setError('')} />}
           {successMsg && (
-            <div className="p-3 rounded border border-emerald-200 bg-emerald-50 text-emerald-800 text-xs font-semibold flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <div className="p-3.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 text-xs font-semibold flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
               <span>{successMsg}</span>
             </div>
           )}
 
           {/* Document list */}
-          <div className="space-y-2">
-            <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+          <div className="space-y-2.5">
+            <h3 className="text-xs font-bold text-zinc-900 uppercase tracking-wider">
               Documents to Review
             </h3>
 
-            <div className="border border-slate-200 rounded divide-y divide-slate-100">
+            <div className="border border-zinc-200 rounded-lg divide-y divide-zinc-100 overflow-hidden">
               {Object.entries(docs).map(([key, doc]) => {
                 const isRejected = doc.status === 'rejected';
                 return (
                   <div
                     key={key}
-                    className={`p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs ${
-                      isRejected ? 'bg-rose-50/50' : ''
+                    className={`p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs ${
+                      isRejected ? 'bg-rose-50/40' : 'bg-white'
                     }`}
                   >
                     <div>
-                      <div className="flex items-center gap-2">
-                        <FileText className="w-4 h-4 text-slate-500" />
-                        <span className="font-bold text-slate-900">{doc.title || key}</span>
+                      <div className="flex items-center gap-2.5">
+                        <FileText className="w-4 h-4 text-zinc-500" />
+                        <span className="font-bold text-zinc-950">{doc.title || key}</span>
                         <StatusBadge status={doc.status} size="xs" />
                       </div>
                       {doc.rejection_reason && (
-                        <p className="text-rose-600 font-semibold text-[11px] mt-0.5">
+                        <p className="text-rose-700 font-medium text-[11px] mt-1">
                           Flag: {doc.rejection_reason}
                         </p>
                       )}
                     </div>
 
                     <div>
-                      <label className="cursor-pointer px-2.5 py-1 rounded bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 font-semibold text-xs inline-flex items-center gap-1 transition-colors">
-                        <Upload className="w-3.5 h-3.5 text-blue-600" />
+                      <label className="cursor-pointer px-3 py-1.5 rounded-lg bg-white hover:bg-zinc-50 active:bg-zinc-100 border border-zinc-300 text-zinc-800 font-semibold text-xs inline-flex items-center gap-1.5 transition-all shadow-xs min-h-[34px]">
+                        <Upload className="w-3.5 h-3.5 text-zinc-700" />
                         <span>Upload Replacement</span>
                         <input
                           type="file"
@@ -148,15 +148,15 @@ export function CorrectionRequiredPage() {
             </div>
           </div>
 
-          <div className="flex items-center justify-between pt-3 border-t border-slate-200">
-            <p className="text-[11px] text-slate-500">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3.5 border-t border-zinc-100">
+            <p className="text-[11px] text-zinc-500 leading-relaxed">
               Once replacements are uploaded, resubmit for Admin re-evaluation.
             </p>
             <button
               type="button"
               onClick={handleResubmit}
               disabled={isSubmitting}
-              className="px-4 py-1.5 rounded bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm inline-flex items-center gap-1.5 transition-colors disabled:opacity-50"
+              className="px-4 py-2 min-h-[38px] rounded-lg bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-950 text-white text-xs font-bold shadow-xs inline-flex items-center justify-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
             >
               <span>{isSubmitting ? 'Resubmitting...' : 'Resubmit Application'}</span>
               <ArrowRight className="w-3.5 h-3.5" />
@@ -169,3 +169,4 @@ export function CorrectionRequiredPage() {
 }
 
 export default CorrectionRequiredPage;
+
