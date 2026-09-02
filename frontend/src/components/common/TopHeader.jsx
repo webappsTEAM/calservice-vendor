@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 
 import { Modal } from '../enterprise/Modal.jsx';
+import { reverseGeocode } from '../../hooks/useReverseGeocode.js';
 import {
   apiGetNotifications,
   apiMarkNotificationRead,
@@ -123,6 +124,25 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
   const locCoords = employeeRuntime?.liveLocation || localLocCoords;
   const locState = employeeRuntime?.locationState || localLocState;
   const handleScanCurrentLocation = employeeRuntime ? employeeRuntime.scanCurrentLocation : localHandleScanCurrentLocation;
+
+  const [headerLocationName, setHeaderLocationName] = useState('');
+
+  useEffect(() => {
+    if (!locCoords?.latitude || !locCoords?.longitude) return;
+    let isCancelled = false;
+    reverseGeocode(locCoords.latitude, locCoords.longitude)
+      .then((res) => {
+        if (isCancelled) return;
+        if (res) {
+          const name = [res.locality, res.city].filter(Boolean).join(', ') || res.formatted_address || res.area;
+          if (name) setHeaderLocationName(name);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      isCancelled = true;
+    };
+  }, [locCoords?.latitude, locCoords?.longitude]);
 
   // Background notification polling for Admin users ONLY (Employee notifications are centralized in EmployeeRuntimeProvider)
   useEffect(() => {
@@ -350,55 +370,41 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
 
   return (
     <>
-      <header className="bg-slate-900 text-slate-100 border-b border-slate-800 shrink-0 z-40 h-12 flex items-center px-3 sm:px-4">
+      <header className="bg-slate-900 text-slate-100 border-b border-slate-800 shrink-0 z-40 h-13 flex items-center px-3 sm:px-5 select-none">
         <div className="w-full flex items-center justify-between gap-3">
           {/* Left: Mobile Menu Toggle & Brand */}
           <div className="flex items-center gap-3 shrink-0">
             <button
               type="button"
               onClick={onToggleSidebar}
-              className="lg:hidden p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
+              className="lg:hidden p-2 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
               title="Toggle Menu"
             >
               <Menu className="w-4 h-4" />
             </button>
 
-            <Link to="/" className="flex items-center gap-2 group">
-              <div className="w-6 h-6 rounded bg-blue-600 flex items-center justify-center text-white font-bold">
-                <Wrench className="w-3.5 h-3.5" />
+            <Link to="/" className="flex items-center gap-2.5 group">
+              <div className="w-7 h-7 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-white font-bold shadow-xs group-hover:border-slate-600 transition-colors">
+                <Wrench className="w-4 h-4 text-slate-200" />
               </div>
               <div className="flex items-baseline gap-1.5">
                 <span className="font-bold text-xs sm:text-sm tracking-tight text-white font-sans">
                   {user?.companyName || 'Workforce'}
                 </span>
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-400">
-                  Workforce
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  Portal
                 </span>
               </div>
             </Link>
           </div>
 
-          {/* Center: Global Search Input */}
-          <div className="hidden md:flex flex-1 max-w-md mx-4">
-            <form onSubmit={handleSearchSubmit} className="w-full relative">
-              <input
-                type="text"
-                value={globalSearch}
-                onChange={(e) => setGlobalSearch(e.target.value)}
-                placeholder="Search employees, jobs, applications..."
-                className="w-full pl-8 pr-3 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-              />
-              <Search className="w-3.5 h-3.5 absolute left-2.5 top-2 text-slate-400 pointer-events-none" />
-            </form>
-          </div>
-
-          {/* Right: Actions, Help, Presence & User Profile */}
-          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          {/* Right: Availability Toggle, Notifications & Profile */}
+          <div className="flex items-center gap-3 sm:gap-4 shrink-0">
             {user ? (
               <>
-                {/* Technician Online / Offline Toggle & Current Location Scan */}
+                {/* Technician Online / Offline / Busy Toggle */}
                 {isEmployee && registrationStatus === 'approved' && (
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={handlePresenceToggle}
@@ -430,37 +436,9 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                       <span className="text-[11px] uppercase font-bold">
                         {isBusy ? 'ON JOB (BUSY)' : isOnline ? 'ONLINE' : 'OFFLINE'}
                       </span>
-                      <Power className="w-3 h-3 ml-0.5 opacity-70" />
                     </button>
-
-                    {/* Compact Real-Time Automatic GPS Telemetry Indicator */}
-                    <div
-                      className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold border bg-slate-800/90 text-slate-300 border-slate-700 select-none shadow-xs"
-                      title={
-                        locCoords
-                          ? `Automatic Real-Time GPS: ${locCoords.latitude.toFixed(4)}, ${locCoords.longitude.toFixed(4)} (±${Math.round(locCoords.accuracy || 0)}m)`
-                          : 'Automatic GPS Telemetry Active'
-                      }
-                    >
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                      <span className="text-[11px] font-mono font-medium">
-                        {locCoords
-                          ? `${locCoords.latitude.toFixed(3)}, ${locCoords.longitude.toFixed(3)}`
-                          : 'GPS Live'}
-                      </span>
-                    </div>
                   </div>
                 )}
-
-                {/* Help button */}
-                <button
-                  type="button"
-                  onClick={() => setShowHelpModal(true)}
-                  className="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-                  title="Help & Reference"
-                >
-                  <HelpCircle className="w-4 h-4" />
-                </button>
 
                 {/* Notifications Bell & Dropdown */}
                 <div className="relative" ref={notifRef}>
@@ -474,26 +452,26 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                         setSelectedNotifIds(new Set());
                       }
                     }}
-                    className="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors relative"
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors relative"
                     title="Notifications"
                   >
                     <Bell className="w-4 h-4" />
                     {unreadCount > 0 && (
-                      <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-red-600 text-white text-[9px] font-bold flex items-center justify-center animate-pulse">
+                      <span className="absolute 0 top-0.5 right-0.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-rose-600 text-white text-[9px] font-bold flex items-center justify-center animate-pulse">
                         {unreadCount > 9 ? '9+' : unreadCount}
                       </span>
                     )}
                   </button>
 
                   {showNotifMenu && (
-                    <div className="absolute right-0 mt-2 w-[390px] sm:w-[420px] max-w-[calc(100vw-20px)] bg-white text-slate-900 rounded-xl border border-slate-200/90 shadow-2xl z-50 text-xs overflow-hidden">
+                    <div className="absolute right-0 mt-2 w-[390px] sm:w-[420px] max-w-[calc(100vw-20px)] bg-white text-zinc-900 rounded-md border border-zinc-200/90 shadow-modal z-50 text-xs overflow-hidden animate-in zoom-in-95 duration-150">
                       {/* Dropdown Header */}
-                      <div className="px-3.5 py-2.5 border-b border-slate-100 flex items-center justify-between bg-white gap-2">
-                        <div className="flex items-center gap-2 font-bold text-slate-900 shrink-0">
-                          <Bell className="w-4 h-4 text-blue-600" />
-                          <span className="text-sm font-bold text-slate-900">Notifications</span>
+                      <div className="px-4 py-3 border-b border-zinc-100 flex items-center justify-between bg-zinc-50/90 gap-2">
+                        <div className="flex items-center gap-2 font-bold text-zinc-900 shrink-0">
+                          <Bell className="w-4 h-4 text-zinc-900" />
+                          <span className="text-xs sm:text-sm font-bold text-zinc-900 tracking-tight">Notifications</span>
                           {unreadCount > 0 && (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 text-[10px] font-bold border border-blue-200/60 whitespace-nowrap">
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-zinc-900 text-white text-[10px] font-bold whitespace-nowrap">
                               {unreadCount} new
                             </span>
                           )}
@@ -507,7 +485,7 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                                   <button
                                     type="button"
                                     onClick={handleMarkAllRead}
-                                    className="text-[11px] text-blue-600 hover:text-blue-800 font-medium px-2 py-1 rounded hover:bg-blue-50 transition-colors whitespace-nowrap"
+                                    className="text-[11px] text-zinc-700 hover:text-zinc-950 font-semibold px-2 py-1 rounded-lg hover:bg-zinc-200/60 transition-colors whitespace-nowrap"
                                   >
                                     Mark all read
                                   </button>
@@ -515,9 +493,9 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                                 <button
                                   type="button"
                                   onClick={handleToggleSelectMode}
-                                  className="text-[11px] text-slate-600 hover:text-slate-900 font-medium px-2 py-1 rounded-md border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap flex items-center gap-1"
+                                  className="text-[11px] text-zinc-700 hover:text-zinc-950 font-semibold px-2 py-1 rounded-lg border border-zinc-200 hover:bg-zinc-100 transition-colors whitespace-nowrap flex items-center gap-1"
                                 >
-                                  <CheckSquare className="w-3 h-3 text-slate-500" />
+                                  <CheckSquare className="w-3 h-3 text-zinc-600" />
                                   <span>Select</span>
                                 </button>
                               </>
@@ -525,7 +503,7 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                               <button
                                 type="button"
                                 onClick={handleToggleSelectMode}
-                                className="text-[11px] text-slate-700 hover:text-slate-900 font-semibold px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 transition-colors whitespace-nowrap"
+                                className="text-[11px] text-zinc-800 hover:text-zinc-950 font-semibold px-2.5 py-1 rounded-lg bg-zinc-100 hover:bg-zinc-200 transition-colors whitespace-nowrap"
                               >
                                 Cancel
                               </button>
@@ -534,18 +512,18 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                         )}
                       </div>
 
-                      {/* Selection Toolbar (visible when select mode is active) */}
+                      {/* Selection Toolbar */}
                       {isSelectMode && notifications.length > 0 && (
-                        <div className="px-3.5 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2">
+                        <div className="px-4 py-2 bg-zinc-50 border-b border-zinc-200 flex items-center justify-between gap-2">
                           <button
                             type="button"
                             onClick={handleToggleSelectAll}
-                            className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 hover:text-blue-600 transition-colors whitespace-nowrap"
+                            className="flex items-center gap-1.5 text-xs font-semibold text-zinc-800 hover:text-zinc-950 transition-colors whitespace-nowrap"
                           >
                             {selectedNotifIds.size === notifications.length ? (
-                              <CheckSquare className="w-4 h-4 text-blue-600 shrink-0" />
+                              <CheckSquare className="w-4 h-4 text-zinc-950 shrink-0" />
                             ) : (
-                              <Square className="w-4 h-4 text-slate-400 shrink-0" />
+                              <Square className="w-4 h-4 text-zinc-400 shrink-0" />
                             )}
                             <span>
                               {selectedNotifIds.size === notifications.length
@@ -564,7 +542,7 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                                   <button
                                     type="button"
                                     onClick={handleMarkSelectedRead}
-                                    className="text-[11px] text-blue-600 hover:text-blue-800 font-medium px-2 py-1 rounded hover:bg-blue-50 transition-colors whitespace-nowrap"
+                                    className="text-[11px] text-zinc-800 hover:text-zinc-950 font-semibold px-2 py-1 rounded-lg hover:bg-zinc-200/60 transition-colors whitespace-nowrap"
                                   >
                                     Mark read
                                   </button>
@@ -573,7 +551,7 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                                   type="button"
                                   onClick={handleClearSelected}
                                   disabled={isClearing}
-                                  className="text-[11px] text-white bg-red-600 hover:bg-red-700 font-semibold px-2.5 py-1 rounded-md flex items-center gap-1 shadow-xs transition-colors whitespace-nowrap"
+                                  className="text-[11px] text-white bg-rose-600 hover:bg-rose-700 font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1 shadow-xs transition-colors whitespace-nowrap"
                                 >
                                   {isClearing ? (
                                     <Loader2 className="w-3 h-3 animate-spin" />
@@ -584,7 +562,7 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                                 </button>
                               </>
                             ) : (
-                              <span className="text-[11px] text-slate-400 italic whitespace-nowrap">
+                              <span className="text-[11px] text-zinc-400 italic whitespace-nowrap">
                                 Select items to clear
                               </span>
                             )}
@@ -593,12 +571,12 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                       )}
 
                       {/* Notifications List */}
-                      <div className="max-h-80 overflow-y-auto divide-y divide-slate-100">
+                      <div className="max-h-80 overflow-y-auto divide-y divide-zinc-100">
                         {notifications.length === 0 ? (
-                          <div className="py-10 text-center text-slate-400 text-xs flex flex-col items-center justify-center gap-1.5">
-                            <Bell className="w-7 h-7 text-slate-300 stroke-1" />
-                            <p className="font-medium text-slate-600 text-xs">No notifications yet</p>
-                            <p className="text-[11px] text-slate-400">You are all caught up!</p>
+                          <div className="py-10 text-center text-zinc-400 text-xs flex flex-col items-center justify-center gap-1.5">
+                            <Bell className="w-7 h-7 text-zinc-300 stroke-1" />
+                            <p className="font-semibold text-zinc-700 text-xs">No notifications yet</p>
+                            <p className="text-[11px] text-zinc-400">You are all caught up!</p>
                           </div>
                         ) : (
                           notifications.map((n) => {
@@ -617,22 +595,22 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                                     handleNotifClick(n);
                                   }
                                 }}
-                                className={`px-3.5 py-2.5 transition-colors cursor-pointer group relative flex items-start gap-3 ${
+                                className={`px-4 py-3 transition-colors cursor-pointer group relative flex items-start gap-3 ${
                                   isSelected
-                                    ? 'bg-blue-50/80 border-l-2 border-blue-600'
+                                    ? 'bg-zinc-100 border-l-2 border-zinc-950'
                                     : !n.is_read
                                     ? isJobOffer
-                                      ? 'bg-amber-50/60 border-l-2 border-amber-500 hover:bg-amber-50'
-                                      : 'bg-blue-50/40 border-l-2 border-blue-500 hover:bg-blue-50/70'
-                                    : 'hover:bg-slate-50'
+                                      ? 'bg-amber-50/70 border-l-2 border-amber-500 hover:bg-amber-50'
+                                      : 'bg-zinc-50 border-l-2 border-zinc-900 hover:bg-zinc-100/70'
+                                    : 'hover:bg-zinc-50'
                                 }`}
                               >
                                 {isSelectMode && (
                                   <div className="pt-0.5 shrink-0">
                                     {isSelected ? (
-                                      <CheckSquare className="w-4 h-4 text-blue-600" />
+                                      <CheckSquare className="w-4 h-4 text-zinc-950" />
                                     ) : (
-                                      <Square className="w-4 h-4 text-slate-400 group-hover:text-slate-600" />
+                                      <Square className="w-4 h-4 text-zinc-400 group-hover:text-zinc-600" />
                                     )}
                                   </div>
                                 )}
@@ -640,14 +618,14 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                                 <div className="flex-1 min-w-0">
                                   <div className="flex items-start justify-between gap-2">
                                     <p
-                                      className={`font-semibold text-xs truncate ${
-                                        isJobOffer ? 'text-amber-900' : 'text-slate-900'
+                                      className={`font-bold text-xs truncate ${
+                                        isJobOffer ? 'text-amber-950' : 'text-zinc-900'
                                       }`}
                                     >
                                       {n.title}
                                     </p>
                                     <div className="flex items-center gap-1 shrink-0">
-                                      <span className="text-[10px] text-slate-400 whitespace-nowrap">
+                                      <span className="text-[10px] text-zinc-400 whitespace-nowrap font-mono">
                                         {new Date(n.created_at).toLocaleTimeString([], {
                                           hour: '2-digit',
                                           minute: '2-digit',
@@ -658,19 +636,19 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                                           type="button"
                                           onClick={(e) => handleClearSingle(n.id, e)}
                                           title="Delete notification"
-                                          className="opacity-0 group-hover:opacity-100 focus:opacity-100 p-0.5 text-slate-400 hover:text-red-600 rounded hover:bg-red-50 transition-all"
+                                          className="opacity-0 group-hover:opacity-100 focus:opacity-100 p-0.5 text-zinc-400 hover:text-rose-600 rounded hover:bg-rose-50 transition-all"
                                         >
                                           <Trash2 className="w-3 h-3" />
                                         </button>
                                       )}
                                     </div>
                                   </div>
-                                  <p className="text-slate-600 text-[11px] mt-0.5 line-clamp-2 leading-relaxed">
+                                  <p className="text-zinc-600 text-[11px] mt-0.5 line-clamp-2 leading-relaxed">
                                     {n.message}
                                   </p>
                                   {isJobOffer && !isSelectMode && (
                                     <div className="mt-1.5 flex items-center gap-1 text-[10px] font-bold text-amber-700">
-                                      <span>👉 Tap to view offer in dashboard</span>
+                                      <span>👉 Tap to view offer in operations dashboard</span>
                                     </div>
                                   )}
                                 </div>
@@ -682,7 +660,7 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
 
                       {/* Dropdown Footer */}
                       {notifications.length > 0 && !isSelectMode && (
-                        <div className="px-3.5 py-2 bg-slate-50/90 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
+                        <div className="px-4 py-2.5 bg-zinc-50/90 border-t border-zinc-100 flex items-center justify-between text-[11px] text-zinc-500">
                           <span>
                             {notifications.length} notification{notifications.length > 1 ? 's' : ''}
                           </span>
@@ -690,9 +668,9 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                             type="button"
                             onClick={handleClearAll}
                             disabled={isClearing}
-                            className="text-[11px] text-slate-500 hover:text-red-600 font-medium hover:underline flex items-center gap-1 transition-colors whitespace-nowrap"
+                            className="text-[11px] text-zinc-500 hover:text-rose-600 font-medium hover:underline flex items-center gap-1 transition-colors whitespace-nowrap"
                           >
-                            <Trash2 className="w-3 h-3 text-slate-400 hover:text-red-600" />
+                            <Trash2 className="w-3 h-3 text-zinc-400 hover:text-rose-600" />
                             <span>Clear all notifications</span>
                           </button>
                         </div>
@@ -707,9 +685,9 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                   <button
                     type="button"
                     onClick={() => setShowUserMenu(!showUserMenu)}
-                    className="flex items-center gap-1.5 pl-2 border-l border-slate-800 text-slate-300 hover:text-white"
+                    className="flex items-center gap-2 pl-2 border-l border-zinc-800 text-zinc-300 hover:text-white transition-colors"
                   >
-                    <div className="w-6 h-6 rounded bg-slate-700 flex items-center justify-center text-xs font-bold text-slate-200">
+                    <div className="w-7 h-7 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-xs font-bold text-white shadow-xs">
                       {user.firstName ? user.firstName[0].toUpperCase() : <User className="w-3.5 h-3.5" />}
                     </div>
                     <span className="hidden sm:inline text-xs font-medium max-w-[120px] truncate">
@@ -719,9 +697,9 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                   </button>
 
                   {showUserMenu && (
-                    <div className="absolute right-0 mt-1.5 w-48 bg-white text-slate-900 rounded border border-slate-200 shadow-lg py-1 z-50 text-xs">
-                      <div className="px-3 py-2 border-b border-slate-100">
-                        <p className="font-bold text-slate-900 truncate">
+                    <div className="absolute right-0 mt-2 w-52 bg-white text-zinc-900 rounded-md border border-zinc-200 shadow-modal py-1 z-50 text-xs animate-in zoom-in-95 duration-150">
+                      <div className="px-3.5 py-2.5 border-b border-zinc-100 bg-zinc-50/50">
+                        <p className="font-bold text-zinc-900 truncate">
                           {user.firstName ? `${user.firstName} ${user.lastName}` : user.username}
                         </p>
                         <p className="text-[10px] text-slate-500 uppercase tracking-wider mt-0.5">
@@ -729,21 +707,21 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                         </p>
                       </div>
 
-                      <div className="py-1 border-b border-slate-100">
+                      <div className="py-1 border-b border-zinc-100">
                         <Link
                           to={isAdmin ? "/workforce/admin/settings" : "/workforce/employee/profile"}
                           onClick={() => setShowUserMenu(false)}
-                          className="w-full px-3 py-1.5 text-left hover:bg-slate-50 text-slate-700 flex items-center gap-2 transition-colors font-medium"
+                          className="w-full px-3.5 py-2 text-left hover:bg-zinc-100 text-zinc-700 flex items-center gap-2.5 transition-colors font-medium"
                         >
-                          <User className="w-3.5 h-3.5 text-slate-400" />
+                          <User className="w-3.5 h-3.5 text-zinc-400" />
                           <span>My Profile</span>
                         </Link>
                         <Link
                           to={isAdmin ? "/workforce/admin/settings" : "/workforce/employee/settings"}
                           onClick={() => setShowUserMenu(false)}
-                          className="w-full px-3 py-1.5 text-left hover:bg-slate-50 text-slate-700 flex items-center gap-2 transition-colors font-medium"
+                          className="w-full px-3.5 py-2 text-left hover:bg-zinc-100 text-zinc-700 flex items-center gap-2.5 transition-colors font-medium"
                         >
-                          <Settings className="w-3.5 h-3.5 text-slate-400" />
+                          <Settings className="w-3.5 h-3.5 text-zinc-400" />
                           <span>Settings</span>
                         </Link>
                       </div>
@@ -751,7 +729,7 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                       <button
                         type="button"
                         onClick={handleLogout}
-                        className="w-full px-3 py-2 text-left hover:bg-rose-50 text-rose-600 flex items-center gap-2 transition-colors font-medium"
+                        className="w-full px-3.5 py-2 text-left hover:bg-rose-50 text-rose-600 flex items-center gap-2.5 transition-colors font-semibold"
                       >
                         <LogOut className="w-3.5 h-3.5" />
                         <span>Sign Out</span>
@@ -765,13 +743,13 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
               <div className="flex items-center gap-2">
                 <Link
                   to="/workforce/login"
-                  className="px-2.5 py-1 rounded text-xs font-semibold text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-900 transition-colors"
                 >
                   Sign In
                 </Link>
                 <Link
                   to="/workforce/signup"
-                  className="px-2.5 py-1 rounded text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white hover:bg-zinc-100 text-zinc-950 transition-colors shadow-xs"
                 >
                   Sign Up
                 </Link>
@@ -789,19 +767,19 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
         icon={HelpCircle}
         maxWidth="max-w-md"
       >
-        <div className="space-y-3 text-xs text-slate-600">
+        <div className="space-y-3 text-xs text-zinc-600">
           <p>
             Welcome to the <strong>{user?.companyName || 'Workforce'} Enterprise Operations Hub</strong>.
           </p>
-          <div className="bg-slate-50 border border-slate-200 rounded p-3 space-y-2">
-            <h4 className="font-bold text-slate-800">Operational Guidelines:</h4>
-            <ul className="list-disc list-inside space-y-1 text-slate-600">
+          <div className="bg-zinc-50 border border-zinc-200/80 rounded-lg p-3.5 space-y-2">
+            <h4 className="font-bold text-zinc-900">Operational Guidelines:</h4>
+            <ul className="list-disc list-inside space-y-1 text-zinc-600 leading-relaxed">
               <li>Admins verify onboarding dossiers, review trade certifications, and authorize services individually.</li>
               <li>Technicians must be marked ONLINE and CLOCKED IN to receive automatic job assignments.</li>
               <li>Job state transitions (Accept &rarr; Travel &rarr; Work &rarr; Proof &amp; Complete) must be executed in order.</li>
             </ul>
           </div>
-          <p className="text-[11px] text-slate-500">
+          <p className="text-[11px] text-zinc-500">
             For technical support, contact your Workforce Operations administrator.
           </p>
         </div>

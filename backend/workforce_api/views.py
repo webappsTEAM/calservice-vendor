@@ -6,6 +6,8 @@ import uuid
 import os
 import json
 import time
+import datetime
+from datetime import timedelta
 import logging
 from decimal import Decimal
 from django.conf import settings
@@ -2238,7 +2240,8 @@ class WorkforceJobCashCollectView(APIView):
                     "employee": emp,
                     "payment_method": JobPayment.PaymentMethod.CASH_ON_SERVICE,
                     "payment_status": JobPayment.PaymentStatus.PENDING,
-                    "amount_due": job.total_amount,
+                    "amount_due": job.total_amount or Decimal("450.00"),
+                    "reconciled": False,
                 }
             )
 
@@ -2266,8 +2269,10 @@ class WorkforceJobCashCollectView(APIView):
 
             # Parse amount_received (never trust frontend amount_due)
             raw_received = request.data.get("amount_received")
-            if raw_received is None:
+            if raw_received is None or str(raw_received).strip() in ["", "0", "0.0", "0.00", "null", "undefined"]:
                 raw_received = request.data.get("amount")
+            if raw_received is None or str(raw_received).strip() in ["", "0", "0.0", "0.00", "null", "undefined"]:
+                raw_received = pmt.amount_due
 
             try:
                 amt_received = Decimal(str(raw_received if raw_received is not None else pmt.amount_due))

@@ -35,7 +35,13 @@ import {
   apiCancelJob,
   apiUploadDocument,
 } from '../../api/workforceService.js';
-import { apiClockIn } from '../../api/clockInApi.js';
+import {
+  apiClockIn,
+  apiClockOut,
+  apiStartBreak,
+  apiEndBreak,
+  apiGetTimeTracking as apiGetShiftTimeTracking,
+} from '../../api/clockInApi.js';
 import { TechnicianNavigationView } from '../../components/employee/navigation/TechnicianNavigationView.jsx';
 
 import { AppShell } from '../../components/common/AppShell.jsx';
@@ -899,7 +905,7 @@ export function EmployeeDashboardPage() {
       setCustomCancelReason('');
     };
 
-    const handleConfirmCancelJob = async (e) => {
+    const handleConfirmCancelAssignment = async (e) => {
       if (e) e.preventDefault();
       if (!cancelModalJob) return;
       const cancellingId = cancelModalJob.id;
@@ -913,15 +919,25 @@ export function EmployeeDashboardPage() {
         setIsCancellingJob(true);
         setActionLoading(cancellingId);
         setError('');
-        await apiCancelJob(cancellingId, selectedCancelReason, customCancelReason.trim());
+        const reasonText = selectedCancelReason === 'OTHER' ? customCancelReason.trim() : (customCancelReason.trim() || selectedCancelReason);
+        await apiCancelJobAssignment(cancellingId, selectedCancelReason, reasonText);
         setCancelModalJob(null);
-        setSuccessMsg('Job assignment cancelled. Redispatch initiated for next available technician.');
+        setSuccessMsg('Job assignment cancelled. You are now AVAILABLE for new requests.');
+        if (typeof reconcileJobCompleted === 'function') {
+          reconcileJobCompleted(cancellingId, { id: cancellingId, status: 'unassigned' });
+        }
         setSelectedJob(null);
-        await loadDashboard();
+        if (typeof refreshActiveJobs === 'function') {
+          await refreshActiveJobs({ force: true });
+        }
+        if (typeof refreshProfile === 'function') {
+          refreshProfile(true).catch(() => {});
+        }
+        await loadDashboard({ force: true });
         setTimeout(() => setSuccessMsg(''), 4000);
       } catch (err) {
-        if (err.code === 'CANCELLATION_WINDOW_EXPIRED' || err.status === 409) {
-          setError('Cancellation window closed (5 minutes elapsed since acceptance).');
+        if (err.code === 'CANCELLATION_LOCKED_AFTER_OTP' || err.status === 409) {
+          setError('Cancellation is locked once Customer OTP is verified.');
         } else if (err.code === 'CANCELLATION_NOT_ALLOWED_IN_CURRENT_STATE') {
           setError('Cancellation is not allowed in the current state.');
         } else {

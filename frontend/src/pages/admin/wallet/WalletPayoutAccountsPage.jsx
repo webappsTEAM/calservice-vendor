@@ -152,77 +152,78 @@ export function WalletPayoutAccountsPage() {
   };
 
   return (
-    <AppShell>
-      <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
-        <div className="flex items-center justify-between">
+    <AppShell breadcrumbs={[{ label: 'Home', to: '/workforce/admin' }, { label: 'Wallets', to: '/workforce/admin/wallet/dashboard' }, { label: 'Bank Accounts' }]}>
+      <div className="max-w-3xl mx-auto space-y-4 text-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white border border-zinc-200/90 p-5 rounded-md shadow-card">
           <div>
-            <h1 className="text-xl font-bold text-slate-900">Bank Accounts</h1>
-            <p className="text-xs text-slate-500 mt-0.5">Payout accounts for withdrawal disbursement</p>
+            <h1 className="text-base sm:text-lg font-bold text-zinc-950 tracking-tight">Bank Accounts</h1>
+            <p className="text-xs text-zinc-500 mt-1">Payout accounts for technician withdrawal disbursement</p>
           </div>
           <button
             onClick={() => setShowAdd(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded hover:bg-blue-700"
+            className="inline-flex items-center justify-center gap-1.5 px-4 py-2 min-h-[38px] text-xs font-bold bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-950 text-white rounded-lg shadow-xs transition-all cursor-pointer"
           >
-            <Plus size={12} /> Add Account
+            <Plus size={14} className="text-zinc-200" />
+            <span>Add Account</span>
           </button>
         </div>
 
         {error && (
-          <div className="enterprise-card border-red-200 bg-red-50 p-3 text-xs text-red-700">{error}</div>
+          <div className="p-3.5 rounded-lg bg-rose-50 border border-rose-200 text-xs font-semibold text-rose-900">{error}</div>
         )}
 
         {loading ? (
-          <div className="enterprise-card p-8"><LoadingState /></div>
+          <div className="bg-white border border-zinc-200/90 rounded-md p-12 shadow-card"><LoadingState /></div>
         ) : accounts.length === 0 ? (
-          <div className="enterprise-card p-8 text-center">
-            <CreditCard size={28} className="mx-auto text-slate-300 mb-2" />
-            <p className="text-sm font-semibold text-slate-600">No bank accounts added</p>
-            <p className="text-xs text-slate-400 mt-1">Add a bank account to enable withdrawal disbursement.</p>
+          <div className="bg-white border border-zinc-200/90 rounded-md p-12 shadow-card text-center">
+            <CreditCard size={28} className="mx-auto text-zinc-300 mb-2" />
+            <p className="text-sm font-bold text-zinc-900">No bank accounts added</p>
+            <p className="text-xs text-zinc-500 mt-1">Add a bank account to enable withdrawal disbursement.</p>
           </div>
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-3">
             {accounts.map((acct) => (
-              <div key={acct.id} className="enterprise-card p-4 flex items-center justify-between gap-4">
+              <div key={acct.id} className="bg-white border border-zinc-200/90 rounded-md p-4 shadow-card flex items-center justify-between gap-4">
                 <div className="flex items-center gap-3">
-                  <div className="p-2 bg-slate-100 rounded-lg">
-                    <CreditCard size={16} className="text-slate-600" />
+                  <div className="p-2.5 bg-zinc-100 border border-zinc-200 rounded-lg text-zinc-800 shadow-xs">
+                    <CreditCard size={18} />
                   </div>
                   <div>
                     <div className="flex items-center gap-2">
-                      <p className="text-sm font-semibold text-slate-800">{acct.bank_name || 'Bank Account'}</p>
+                      <p className="text-sm font-bold text-zinc-950">{acct.bank_name || 'Bank Account'}</p>
                       {acct.is_primary && (
-                        <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">
+                        <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-amber-900 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
                           <Star size={8} /> PRIMARY
                         </span>
                       )}
-                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-semibold ${VERIFICATION_COLORS[acct.verification_status] || 'bg-slate-100 text-slate-500'}`}>
+                      <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold ${VERIFICATION_COLORS[acct.verification_status] || 'bg-zinc-100 text-zinc-800 border border-zinc-200'}`}>
                         {acct.verification_status}
                       </span>
                     </div>
-                    <p className="text-xs text-slate-500 mt-0.5">
+                    <p className="text-xs text-zinc-600 mt-1 font-medium">
                       {acct.account_holder_name} · ****{acct.account_number_last4} · {acct.account_type}
                     </p>
                     {acct.ifsc_code && (
-                      <p className="text-[10px] text-slate-400 mt-0.5">IFSC: {acct.ifsc_code}</p>
+                      <p className="text-[11px] text-zinc-400 font-mono mt-0.5">IFSC: {acct.ifsc_code}</p>
                     )}
                   </div>
                 </div>
                 <button
                   onClick={() => handleDelete(acct.id)}
                   disabled={deleting === acct.id}
-                  className="p-1.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors disabled:opacity-50"
+                  className="p-2 rounded-lg text-zinc-400 hover:text-rose-600 hover:bg-rose-50 transition-all disabled:opacity-50 cursor-pointer"
                   title="Deactivate account"
                 >
-                  <Trash2 size={14} />
+                  <Trash2 size={15} />
                 </button>
               </div>
             ))}
           </div>
         )}
 
-        <div className="enterprise-card bg-slate-50 p-3">
-          <p className="text-xs text-slate-500">
-            <strong>Security:</strong> Full account numbers are never stored in our system.
+        <div className="bg-zinc-50/80 border border-zinc-200/90 rounded-md p-4 shadow-card">
+          <p className="text-xs text-zinc-600 leading-relaxed">
+            <strong className="text-zinc-950">Security:</strong> Full account numbers are never stored in our system.
             Only the last 4 digits are displayed for identification.
             Newly added accounts are pending admin verification before they can be used for withdrawals.
           </p>
@@ -242,3 +243,5 @@ export function WalletPayoutAccountsPage() {
     </AppShell>
   );
 }
+
+export default WalletPayoutAccountsPage;

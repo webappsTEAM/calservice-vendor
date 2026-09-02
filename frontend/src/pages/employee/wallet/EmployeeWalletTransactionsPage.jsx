@@ -82,46 +82,46 @@ export function EmployeeWalletTransactionsPage() {
     >
       <div className="space-y-5 max-w-7xl mx-auto">
         {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 sm:p-5 rounded-lg border border-slate-200 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-5 rounded-md border border-zinc-200/90 shadow-card">
           <div>
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex items-center gap-2 mb-1.5">
               <Link
                 to="/workforce/employee/wallet"
-                className="text-xs font-semibold text-blue-600 hover:underline flex items-center gap-1"
+                className="text-xs font-bold text-zinc-600 hover:text-zinc-950 flex items-center gap-1 transition-colors"
               >
                 <ArrowLeft className="w-3.5 h-3.5" />
-                Back to Wallet
+                <span>Back to Wallet</span>
               </Link>
             </div>
-            <h1 className="text-lg sm:text-xl font-bold text-slate-900 flex items-center gap-2">
-              <ReceiptText className="w-5 h-5 text-blue-600" />
-              Financial Ledger & Transactions
+            <h1 className="text-base sm:text-lg font-bold text-zinc-950 flex items-center gap-2 tracking-tight">
+              <ReceiptText className="w-5 h-5 text-zinc-800" />
+              <span>Financial Ledger & Transactions</span>
             </h1>
-            <p className="text-xs text-slate-500 mt-0.5">
+            <p className="text-xs text-zinc-500 mt-1">
               Immutable audit log of all commission earnings, T+7 releases, and withdrawal debits.
             </p>
           </div>
 
           <button
             onClick={loadTransactions}
-            className="self-start sm:self-auto px-3 py-1.5 text-xs font-semibold text-slate-600 bg-white border border-slate-200 rounded-md hover:bg-slate-50 flex items-center gap-1.5 transition-colors"
+            className="self-start sm:self-auto px-3.5 py-2 min-h-[38px] text-xs font-bold text-zinc-800 bg-white border border-zinc-300 rounded-lg hover:bg-zinc-50 active:bg-zinc-100 flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
           >
             <RefreshCw className="w-3.5 h-3.5" />
-            Refresh
+            <span>Refresh</span>
           </button>
         </div>
 
         {error && (
-          <div className="p-3.5 rounded-lg bg-rose-50 border border-rose-200 text-xs font-medium text-rose-800 flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+          <div className="p-3.5 rounded-lg bg-rose-50 border border-rose-200 text-xs font-semibold text-rose-900 flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-700 shrink-0" />
             <span>{error}</span>
           </div>
         )}
 
         {/* Filters */}
-        <div className="bg-white border border-slate-200 rounded-lg p-3 flex flex-wrap items-center gap-3 text-xs shadow-xs">
-          <div className="flex items-center gap-1.5 text-slate-500 font-bold">
-            <Filter className="w-3.5 h-3.5" />
+        <div className="bg-white border border-zinc-200/90 rounded-md p-4 flex flex-wrap items-center gap-3 text-xs shadow-card">
+          <div className="flex items-center gap-1.5 text-zinc-700 font-bold">
+            <Filter className="w-3.5 h-3.5 text-zinc-500" />
             <span>Filter:</span>
           </div>
 
@@ -131,7 +131,7 @@ export function EmployeeWalletTransactionsPage() {
               setTypeFilter(e.target.value);
               setPage(1);
             }}
-            className="px-2.5 py-1 border border-slate-200 rounded-md bg-slate-50 focus:bg-white text-xs outline-none"
+            className="px-3 py-1.5 min-h-[36px] border border-zinc-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 text-xs text-zinc-900 shadow-xs"
           >
             <option value="">All Transaction Types</option>
             <option value="SERVICE_EARNING">Service Earnings (60%)</option>
@@ -148,7 +148,7 @@ export function EmployeeWalletTransactionsPage() {
               setStatusFilter(e.target.value);
               setPage(1);
             }}
-            className="px-2.5 py-1 border border-slate-200 rounded-md bg-slate-50 focus:bg-white text-xs outline-none"
+            className="px-3 py-1.5 min-h-[36px] border border-zinc-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 text-xs text-zinc-900 shadow-xs"
           >
             <option value="">All Statuses</option>
             <option value="COMPLETED">Completed</option>
@@ -163,7 +163,7 @@ export function EmployeeWalletTransactionsPage() {
                 setStatusFilter('');
                 setPage(1);
               }}
-              className="text-xs text-blue-600 hover:underline font-semibold ml-auto"
+              className="text-xs text-zinc-600 hover:text-zinc-950 font-bold ml-auto cursor-pointer"
             >
               Clear Filters
             </button>
@@ -171,20 +171,20 @@ export function EmployeeWalletTransactionsPage() {
         </div>
 
         {/* Table */}
-        <div className="enterprise-card rounded-lg border border-slate-200 bg-white shadow-xs overflow-hidden">
+        <div className="rounded-md border border-zinc-200/90 bg-white shadow-card overflow-hidden">
           {loading ? (
-            <div className="py-14 text-center text-slate-400 text-xs flex items-center justify-center gap-2">
-              <RefreshCw className="w-4 h-4 animate-spin text-blue-600" />
-              Loading ledger records...
+            <div className="py-14 text-center text-zinc-400 text-xs flex items-center justify-center gap-2">
+              <RefreshCw className="w-4 h-4 animate-spin text-zinc-800" />
+              <span>Loading ledger records...</span>
             </div>
           ) : transactions.length === 0 ? (
-            <div className="py-14 text-center text-slate-400 text-xs">
+            <div className="py-14 text-center text-zinc-500 text-xs font-medium">
               No ledger records found matching your filters.
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
+                <thead className="bg-zinc-50/80 border-b border-zinc-200/80 text-zinc-700 font-bold uppercase tracking-wider text-[10px]">
                   <tr>
                     <th className="py-3 px-4">Date</th>
                     <th className="py-3 px-4">Description</th>
@@ -195,7 +195,7 @@ export function EmployeeWalletTransactionsPage() {
                     <th className="py-3 px-4 text-center">Audit</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                <tbody className="divide-y divide-zinc-100 font-medium text-zinc-800">
                   {transactions.map((t) => {
                     const isCredit = t.direction === 'CREDIT';
                     return (
@@ -279,81 +279,81 @@ export function EmployeeWalletTransactionsPage() {
 
         {/* Audit Detail Modal */}
         {selectedTxn && (
-          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-            <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-5 space-y-3.5 text-xs">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
-                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                  <ReceiptText className="w-4 h-4 text-blue-600" />
-                  Ledger Transaction #{selectedTxn.id}
+          <div className="fixed inset-0 z-50 bg-zinc-950/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-md shadow-modal max-w-md w-full p-6 space-y-4 text-xs border border-zinc-200/90">
+              <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+                <h3 className="text-sm font-bold text-zinc-950 flex items-center gap-2">
+                  <ReceiptText className="w-4 h-4 text-zinc-800" />
+                  <span>Ledger Transaction #{selectedTxn.id}</span>
                 </h3>
-                <button onClick={() => setSelectedTxn(null)} className="text-slate-400 hover:text-slate-600">
+                <button onClick={() => setSelectedTxn(null)} className="text-zinc-400 hover:text-zinc-700 p-1 cursor-pointer">
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
-              <div className="space-y-2 divide-y divide-slate-100">
-                <div className="flex justify-between py-1">
-                  <span className="text-slate-500">Description:</span>
-                  <span className="font-bold text-slate-900 text-right">{selectedTxn.description || '—'}</span>
+              <div className="space-y-2 divide-y divide-zinc-100">
+                <div className="flex justify-between py-1.5">
+                  <span className="text-zinc-500">Description:</span>
+                  <span className="font-bold text-zinc-950 text-right">{selectedTxn.description || '—'}</span>
                 </div>
-                <div className="flex justify-between py-1">
-                  <span className="text-slate-500">Transaction Type:</span>
-                  <span className="font-mono font-bold text-slate-800">{selectedTxn.transaction_type}</span>
+                <div className="flex justify-between py-1.5">
+                  <span className="text-zinc-500">Transaction Type:</span>
+                  <span className="font-mono font-bold text-zinc-800">{selectedTxn.transaction_type}</span>
                 </div>
-                <div className="flex justify-between py-1">
-                  <span className="text-slate-500">Amount:</span>
-                  <span className="font-mono font-bold text-sm text-slate-900">
+                <div className="flex justify-between py-1.5">
+                  <span className="text-zinc-500">Amount:</span>
+                  <span className="font-mono font-bold text-sm text-zinc-950">
                     {selectedTxn.direction === 'CREDIT' ? '+' : '-'}{fmt(selectedTxn.amount)}
                   </span>
                 </div>
                 {selectedTxn.gross_amount && (
-                  <div className="flex justify-between py-1">
-                    <span className="text-slate-500">Gross Job Payment:</span>
-                    <span className="font-mono font-bold text-slate-900">
+                  <div className="flex justify-between py-1.5">
+                    <span className="text-zinc-500">Gross Job Payment:</span>
+                    <span className="font-mono font-bold text-zinc-950">
                       {fmt(selectedTxn.gross_amount)}
                     </span>
                   </div>
                 )}
                 {selectedTxn.earn_rate_snapshot && (
-                  <div className="flex justify-between py-1">
-                    <span className="text-slate-500">Earn Rate Applied:</span>
-                    <span className="font-mono font-bold text-blue-700">
+                  <div className="flex justify-between py-1.5">
+                    <span className="text-zinc-500">Earn Rate Applied:</span>
+                    <span className="font-mono font-bold text-emerald-700">
                       {parseFloat(selectedTxn.earn_rate_snapshot) * 100}%
                     </span>
                   </div>
                 )}
                 {selectedTxn.platform_deduction_amount && (
-                  <div className="flex justify-between py-1">
-                    <span className="text-slate-500">Company & GST Share:</span>
-                    <span className="font-mono text-slate-600">
+                  <div className="flex justify-between py-1.5">
+                    <span className="text-zinc-500">Company & GST Share:</span>
+                    <span className="font-mono text-zinc-600">
                       {fmt(selectedTxn.platform_deduction_amount)}
                     </span>
                   </div>
                 )}
-                <div className="flex justify-between py-1">
-                  <span className="text-slate-500">Balance Before → After:</span>
-                  <span className="font-mono text-slate-700">
+                <div className="flex justify-between py-1.5">
+                  <span className="text-zinc-500">Balance Before → After:</span>
+                  <span className="font-mono text-zinc-700">
                     {fmt(selectedTxn.balance_before)} → {fmt(selectedTxn.balance_after)} ({selectedTxn.balance_type})
                   </span>
                 </div>
                 {selectedTxn.settlement_release_at && (
-                  <div className="flex justify-between py-1">
-                    <span className="text-slate-500">T+7 Release Date:</span>
-                    <span className="font-semibold text-amber-700">
+                  <div className="flex justify-between py-1.5">
+                    <span className="text-zinc-500">T+7 Release Date:</span>
+                    <span className="font-semibold text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
                       {new Date(selectedTxn.settlement_release_at).toLocaleDateString('en-IN')}
                     </span>
                   </div>
                 )}
-                <div className="flex justify-between py-1">
-                  <span className="text-slate-500">Reference:</span>
-                  <span className="font-mono text-[10px] text-slate-400">{selectedTxn.reference_type}:{selectedTxn.reference_id}</span>
+                <div className="flex justify-between py-1.5">
+                  <span className="text-zinc-500">Reference:</span>
+                  <span className="font-mono text-[10px] text-zinc-400">{selectedTxn.reference_type}:{selectedTxn.reference_id}</span>
                 </div>
               </div>
 
-              <div className="pt-2 flex justify-end">
+              <div className="pt-3 border-t border-zinc-100 flex justify-end">
                 <button
                   onClick={() => setSelectedTxn(null)}
-                  className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded"
+                  className="px-4 py-2 min-h-[38px] bg-zinc-100 hover:bg-zinc-200 text-zinc-800 font-bold rounded-lg transition-all cursor-pointer"
                 >
                   Close
                 </button>

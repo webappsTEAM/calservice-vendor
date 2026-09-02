@@ -41,19 +41,24 @@ export function TechnicianNavigationView({
         />
       );
 
-    case 'arrived':
-      return (
-        <TechnicianArrivalView
-          job={job}
-          technicianLocation={technicianLocation}
-          geofenceRadius={geofenceRadius}
-        />
-      );
-
-    case 'in_progress':
-    case 'completed':
-    case 'cancelled':
-    default:
-      return null;
+  if (isOtpDone || status === 'in_progress' || status === 'inspection' || status === 'proof_submitted' || status === 'completed') {
+    return (
+      <TechnicianArrivalView
+        job={job}
+        technicianLocation={technicianLocation}
+        geofenceRadius={geofenceRadius}
+      />
+    );
   }
+
+  return (
+    <TechnicianFirstPersonNavView
+      job={job}
+      technicianLocation={technicianLocation}
+      preServiceState={preServiceState}
+      geofenceRadius={geofenceRadius}
+      onLocationReport={onLocationReport}
+      onExitNavigation={onExitNavigation}
+    />
+  );
 }

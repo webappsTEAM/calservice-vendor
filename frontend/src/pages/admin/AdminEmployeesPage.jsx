@@ -96,7 +96,7 @@ export function AdminEmployeesPage() {
         const approved = (row.all_requested_services || []).filter((s) => s.status === 'approved');
         return (
           <div>
-            <span className="font-semibold text-slate-800 text-xs">
+            <span className="font-bold text-zinc-900 text-xs">
               {approved.length} Services
             </span>
             <p className="text-[10px] text-slate-500 truncate max-w-[200px]">
@@ -139,7 +139,7 @@ export function AdminEmployeesPage() {
             e.stopPropagation();
             setSelectedTech(row);
           }}
-          className="px-2.5 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs transition-colors"
+          className="px-3 py-1.5 rounded-lg bg-zinc-100 hover:bg-zinc-200 active:bg-zinc-300 text-zinc-900 font-bold text-xs transition-all cursor-pointer shadow-xs"
         >
           View Details
         </button>

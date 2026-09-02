@@ -126,48 +126,51 @@ export function WalletTransactionsPage() {
   const hasFilters = filters.type || filters.direction || filters.status || filters.date_from || filters.date_to || filters.search;
 
   return (
-    <AppShell>
-      <div className="max-w-6xl mx-auto px-4 py-6 space-y-4">
-        <div className="flex items-center justify-between">
+    <AppShell breadcrumbs={[{ label: 'Home', to: '/workforce/admin' }, { label: 'Wallets', to: '/workforce/admin/wallet/dashboard' }, { label: 'Ledger' }]}>
+      <div className="space-y-4 text-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white border border-zinc-200/90 p-5 rounded-md shadow-card">
           <div>
-            <h1 className="text-xl font-bold text-slate-900">Transaction Ledger</h1>
-            <p className="text-xs text-slate-500 mt-0.5">{data.count} total records · immutable audit trail</p>
+            <h1 className="text-base sm:text-lg font-bold text-zinc-950 tracking-tight">Transaction Ledger</h1>
+            <p className="text-xs text-zinc-500 mt-1">{data.count} total records · immutable financial audit trail</p>
           </div>
-          <button onClick={() => loadData()} className="p-1.5 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100">
+          <button
+            onClick={() => loadData()}
+            className="p-2 rounded-lg text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 border border-zinc-200 transition-all cursor-pointer"
+          >
             <RefreshCw size={14} />
           </button>
         </div>
 
         {/* Filters */}
-        <div className="enterprise-card p-3">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <div className="bg-white border border-zinc-200/90 p-4 rounded-md shadow-card space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
             <div className="relative">
-              <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400" />
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
               <input
                 type="text"
                 placeholder="Search description / ref…"
-                className="w-full pl-6 pr-2 py-1.5 text-xs rounded border border-slate-200"
+                className="w-full pl-9 pr-3 py-2 text-xs rounded-lg border border-zinc-300 min-h-[38px] focus:outline-none focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs"
                 value={filters.search}
                 onChange={(e) => setFilters(f => ({ ...f, search: e.target.value }))}
                 onKeyDown={(e) => e.key === 'Enter' && applyFilters()}
               />
             </div>
             <select
-              className="text-xs rounded border border-slate-200 py-1.5 px-2"
+              className="text-xs rounded-lg border border-zinc-300 py-2 px-3 min-h-[38px] bg-white text-zinc-800 focus:outline-none focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs"
               value={filters.type}
               onChange={(e) => setFilters(f => ({ ...f, type: e.target.value }))}
             >
               {TXN_TYPES.map(t => <option key={t} value={t}>{t || 'All Types'}</option>)}
             </select>
             <select
-              className="text-xs rounded border border-slate-200 py-1.5 px-2"
+              className="text-xs rounded-lg border border-zinc-300 py-2 px-3 min-h-[38px] bg-white text-zinc-800 focus:outline-none focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs"
               value={filters.direction}
               onChange={(e) => setFilters(f => ({ ...f, direction: e.target.value }))}
             >
               {DIRECTIONS.map(d => <option key={d} value={d}>{d || 'All Directions'}</option>)}
             </select>
             <select
-              className="text-xs rounded border border-slate-200 py-1.5 px-2"
+              className="text-xs rounded-lg border border-zinc-300 py-2 px-3 min-h-[38px] bg-white text-zinc-800 focus:outline-none focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs"
               value={filters.status}
               onChange={(e) => setFilters(f => ({ ...f, status: e.target.value }))}
             >
@@ -175,90 +178,99 @@ export function WalletTransactionsPage() {
             </select>
             <input
               type="date"
-              className="text-xs rounded border border-slate-200 py-1.5 px-2"
+              className="text-xs rounded-lg border border-zinc-300 py-2 px-3 min-h-[38px] bg-white text-zinc-800 shadow-xs"
               value={filters.date_from}
               onChange={(e) => setFilters(f => ({ ...f, date_from: e.target.value }))}
               title="From date"
             />
             <input
               type="date"
-              className="text-xs rounded border border-slate-200 py-1.5 px-2"
+              className="text-xs rounded-lg border border-zinc-300 py-2 px-3 min-h-[38px] bg-white text-zinc-800 shadow-xs"
               value={filters.date_to}
               onChange={(e) => setFilters(f => ({ ...f, date_to: e.target.value }))}
               title="To date"
             />
-            <button
-              onClick={applyFilters}
-              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
-            >
-              <Filter size={10} /> Apply
-            </button>
-            {hasFilters && (
-              <button onClick={clearFilters} className="text-xs text-slate-500 hover:text-slate-700 flex items-center gap-1">
-                <X size={10} /> Clear
+            <div className="flex items-center gap-2">
+              <button
+                onClick={applyFilters}
+                className="inline-flex items-center justify-center gap-1.5 px-4 py-2 min-h-[38px] text-xs font-bold bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-950 text-white rounded-lg transition-all shadow-xs cursor-pointer flex-1"
+              >
+                <Filter size={12} />
+                <span>Apply</span>
               </button>
-            )}
+              {hasFilters && (
+                <button
+                  onClick={clearFilters}
+                  className="px-3 py-2 min-h-[38px] text-xs font-bold text-zinc-600 hover:text-zinc-900 border border-zinc-300 rounded-lg hover:bg-zinc-50 flex items-center gap-1 transition-all cursor-pointer"
+                >
+                  <X size={12} />
+                  <span>Clear</span>
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Error */}
-        {error && (
-          <div className="enterprise-card border-red-200 bg-red-50 p-3 text-xs text-red-700">{error}</div>
-        )}
-
         {/* Table */}
-        <div className="enterprise-card overflow-hidden">
+        <div className="bg-white border border-zinc-200/90 rounded-md shadow-card overflow-hidden text-xs">
           {loading ? (
-            <div className="p-8"><LoadingState /></div>
+            <LoadingState message="Loading transactions…" />
+          ) : error ? (
+            <div className="p-8 text-center text-rose-700">{error}</div>
           ) : data.results.length === 0 ? (
-            <p className="text-xs text-slate-400 p-6 text-center">No transactions found.</p>
+            <div className="p-12 text-center text-zinc-500">No transactions found matching the filter criteria.</div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="table-header">
-                    <th className="px-3 py-2 text-left">ID</th>
-                    <th className="px-3 py-2 text-left">Type</th>
-                    <th className="px-3 py-2 text-left">Dir</th>
-                    <th className="px-3 py-2 text-right">Amount</th>
-                    <th className="px-3 py-2 text-right">Balance After</th>
-                    <th className="px-3 py-2 text-left">Balance</th>
-                    <th className="px-3 py-2 text-left">Status</th>
-                    <th className="px-3 py-2 text-left">Date</th>
-                    <th className="px-3 py-2 text-left"></th>
+              <table className="w-full text-left">
+                <thead className="bg-zinc-50/60 text-zinc-500 uppercase text-[11px] font-bold border-b border-zinc-200">
+                  <tr>
+                    <th className="px-5 py-3.5">ID</th>
+                    <th className="px-5 py-3.5">Type</th>
+                    <th className="px-5 py-3.5">Direction</th>
+                    <th className="px-5 py-3.5 text-right">Amount</th>
+                    <th className="px-5 py-3.5 text-right">Balance After</th>
+                    <th className="px-5 py-3.5 text-center">Status</th>
+                    <th className="px-5 py-3.5">Date</th>
+                    <th className="px-5 py-3.5 text-center">Action</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="divide-y divide-zinc-100 font-medium text-zinc-800">
                   {data.results.map((txn) => (
-                    <tr key={txn.id} className="table-row cursor-pointer" onClick={() => setSelected(txn)}>
-                      <td className="px-3 py-2 text-slate-400 font-mono">#{txn.id}</td>
-                      <td className="px-3 py-2 font-medium text-slate-700 max-w-[140px] truncate">
-                        {txn.transaction_type?.replace(/_/g, ' ')}
+                    <tr key={txn.id} className="hover:bg-zinc-50/80 transition-colors">
+                      <td className="px-5 py-3.5 font-mono font-bold text-zinc-950">#{txn.id}</td>
+                      <td className="px-5 py-3.5 font-semibold text-zinc-900">{txn.transaction_type}</td>
+                      <td className="px-5 py-3.5">
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          txn.direction === 'CREDIT' ? 'bg-emerald-50 text-emerald-900 border border-emerald-200' : 'bg-rose-50 text-rose-900 border border-rose-200'
+                        }`}>
+                          {txn.direction}
+                        </span>
                       </td>
-                      <td className="px-3 py-2">
-                        {txn.direction === 'CREDIT'
-                          ? <span className="text-emerald-600 font-bold">↑</span>
-                          : <span className="text-red-500 font-bold">↓</span>}
+                      <td className="px-5 py-3.5 text-right font-mono font-bold text-zinc-950">
+                        {fmt(txn.amount)}
                       </td>
-                      <td className={`px-3 py-2 text-right font-mono font-semibold ${txn.direction === 'CREDIT' ? 'text-emerald-700' : 'text-red-600'}`}>
-                        {txn.direction === 'CREDIT' ? '+' : '−'}{fmt(txn.amount)}
+                      <td className="px-5 py-3.5 text-right font-mono text-zinc-600">
+                        {fmt(txn.balance_after)}
                       </td>
-                      <td className="px-3 py-2 text-right font-mono text-slate-700">{fmt(txn.balance_after)}</td>
-                      <td className="px-3 py-2">
-                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-semibold ${
-                          txn.balance_type === 'PENDING' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'
-                        }`}>{txn.balance_type}</span>
+                      <td className="px-5 py-3.5 text-center">
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          txn.status === 'COMPLETED' ? 'bg-emerald-50 text-emerald-900 border border-emerald-200' :
+                          txn.status === 'PENDING_SETTLEMENT' ? 'bg-amber-50 text-amber-900 border border-amber-200' :
+                          txn.status === 'REVERSED' ? 'bg-rose-50 text-rose-900 border border-rose-200' :
+                          'bg-zinc-100 text-zinc-700 border border-zinc-200'
+                        }`}>
+                          {txn.status?.replace(/_/g, ' ')}
+                        </span>
                       </td>
-                      <td className="px-3 py-2">
-                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-semibold ${
-                          txn.status === 'COMPLETED' ? 'bg-emerald-100 text-emerald-700' :
-                          txn.status === 'PENDING_SETTLEMENT' ? 'bg-amber-100 text-amber-700' :
-                          txn.status === 'REVERSED' ? 'bg-red-100 text-red-600' :
-                          'bg-slate-100 text-slate-500'
-                        }`}>{txn.status?.replace('_', ' ')}</span>
+                      <td className="px-5 py-3.5 text-zinc-500 font-mono">{new Date(txn.created_at).toLocaleDateString('en-IN')}</td>
+                      <td className="px-5 py-3.5 text-center">
+                        <button
+                          onClick={() => setSelected(txn)}
+                          className="px-2.5 py-1 text-xs font-bold text-zinc-800 hover:text-zinc-950 hover:bg-zinc-100 rounded-lg transition-colors cursor-pointer"
+                        >
+                          Details
+                        </button>
                       </td>
-                      <td className="px-3 py-2 text-slate-400">{new Date(txn.created_at).toLocaleDateString('en-IN')}</td>
-                      <td className="px-3 py-2 text-blue-500 text-[10px]">Details</td>
                     </tr>
                   ))}
                 </tbody>
@@ -268,24 +280,24 @@ export function WalletTransactionsPage() {
 
           {/* Pagination */}
           {data.total_pages > 1 && (
-            <div className="flex items-center justify-between px-4 py-3 border-t border-slate-100">
-              <p className="text-xs text-slate-500">
-                Page {data.page} of {data.total_pages} · {data.count} records
+            <div className="flex items-center justify-between px-5 py-3.5 border-t border-zinc-100 bg-zinc-50/50">
+              <p className="text-xs text-zinc-500 font-medium">
+                Page <strong className="text-zinc-900">{data.page}</strong> of <strong className="text-zinc-900">{data.total_pages}</strong> · {data.count} records
               </p>
-              <div className="flex gap-1">
+              <div className="flex items-center gap-1.5">
                 <button
                   disabled={data.page <= 1}
                   onClick={() => changePage(data.page - 1)}
-                  className="p-1 rounded border border-slate-200 disabled:opacity-40 hover:bg-slate-50"
+                  className="p-1.5 rounded-lg border border-zinc-300 disabled:opacity-40 hover:bg-white transition-colors cursor-pointer"
                 >
-                  <ChevronLeft size={12} />
+                  <ChevronLeft size={14} />
                 </button>
                 <button
                   disabled={data.page >= data.total_pages}
                   onClick={() => changePage(data.page + 1)}
-                  className="p-1 rounded border border-slate-200 disabled:opacity-40 hover:bg-slate-50"
+                  className="p-1.5 rounded-lg border border-zinc-300 disabled:opacity-40 hover:bg-white transition-colors cursor-pointer"
                 >
-                  <ChevronRight size={12} />
+                  <ChevronRight size={14} />
                 </button>
               </div>
             </div>

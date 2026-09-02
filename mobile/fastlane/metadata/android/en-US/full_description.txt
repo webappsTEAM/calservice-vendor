@@ -1,0 +1,16 @@
+Sevo Partner is a mobile application for service partners to manage their assigned service work and job activities.
+
+Partners can use the app to:
+
+• View and manage assigned service jobs
+• Review job details and service information
+• Accept and update assigned work
+• Complete job checklists and required steps
+• Upload photos as evidence of completed work
+• Update job status and service progress
+• Manage their profile and required documents
+• Use location-related features when required for service activities
+
+Sevo Partner helps service partners keep their assigned work, job information, and completion updates organized in one place.
+
+Access to the application is provided through the company's account process. Some accounts may require administrator verification before the application can be used.
