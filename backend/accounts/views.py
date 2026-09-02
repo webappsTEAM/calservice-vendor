@@ -207,11 +207,42 @@ class LoginView(APIView):
                 from workforce_api.models import VendorTechnicianRelationship
                 has_active_rel = VendorTechnicianRelationship.objects.filter(
                     technician=emp,
-                    status=VendorTechnicianRelationship.Status.ACTIVE,
+                    status__in=[
+                        VendorTechnicianRelationship.Status.ACTIVE,
+                        VendorTechnicianRelationship.Status.RESIGNATION_REQUESTED,
+                    ],
                 ).exists()
-                is_tied_worker = bool(has_active_rel or emp.company_id)
+                if not has_active_rel and emp.company_id:
+                    emp.company = None
+                    emp.save(update_fields=["company"])
+                    company_id = None
+                    company_name = None
+                is_tied_worker = bool(has_active_rel)
 
             is_solo_worker = is_technician and not is_tied_worker
+            if is_solo_worker:
+                company_id = None
+                company_name = None
+                if getattr(user, "company_id", None):
+                    user.company = None
+                    user.save(update_fields=["company"])
+            if is_solo_worker and emp:
+                try:
+                    from workforce_api.models import WalletAccount
+                    WalletAccount.objects.get_or_create(
+                        employee=emp,
+                        account_type=WalletAccount.AccountType.INDIVIDUAL_WORKER,
+                        defaults={"company": None, "is_active": True},
+                    )
+                    from vendor_wallet.models import EmployeeWallet
+                    from vendor_wallet.constants import WALLET_ACTIVE
+                    EmployeeWallet.objects.get_or_create(
+                        employee=emp,
+                        defaults={"company": None, "currency": "INR", "status": WALLET_ACTIVE},
+                    )
+                except Exception as _w_err:
+                    logger.warning("Could not ensure individual wallet: %s", str(_w_err))
+
             user_type = (
                 "platform_admin"
                 if is_platform_admin
@@ -379,11 +410,42 @@ class MeView(APIView):
                 from workforce_api.models import VendorTechnicianRelationship
                 has_active_rel = VendorTechnicianRelationship.objects.filter(
                     technician=emp,
-                    status=VendorTechnicianRelationship.Status.ACTIVE,
+                    status__in=[
+                        VendorTechnicianRelationship.Status.ACTIVE,
+                        VendorTechnicianRelationship.Status.RESIGNATION_REQUESTED,
+                    ],
                 ).exists()
-                is_tied_worker = bool(has_active_rel or emp.company_id)
+                if not has_active_rel and emp.company_id:
+                    emp.company = None
+                    emp.save(update_fields=["company"])
+                    company_id = None
+                    company_name = None
+                is_tied_worker = bool(has_active_rel)
 
             is_solo_worker = is_technician and not is_tied_worker
+            if is_solo_worker:
+                company_id = None
+                company_name = None
+                if getattr(user, "company_id", None):
+                    user.company = None
+                    user.save(update_fields=["company"])
+            if is_solo_worker and emp:
+                try:
+                    from workforce_api.models import WalletAccount
+                    WalletAccount.objects.get_or_create(
+                        employee=emp,
+                        account_type=WalletAccount.AccountType.INDIVIDUAL_WORKER,
+                        defaults={"company": None, "is_active": True},
+                    )
+                    from vendor_wallet.models import EmployeeWallet
+                    from vendor_wallet.constants import WALLET_ACTIVE
+                    EmployeeWallet.objects.get_or_create(
+                        employee=emp,
+                        defaults={"company": None, "currency": "INR", "status": WALLET_ACTIVE},
+                    )
+                except Exception as _w_err:
+                    logger.warning("Could not ensure individual wallet: %s", str(_w_err))
+
             user_type = (
                 "platform_admin"
                 if is_platform_admin

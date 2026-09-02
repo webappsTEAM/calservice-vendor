@@ -55,6 +55,11 @@ import { WalletDashboardPage } from './pages/admin/wallet/WalletDashboardPage.js
 import { WalletPayoutAccountsPage } from './pages/admin/wallet/WalletPayoutAccountsPage.jsx';
 import { WalletTransactionsPage } from './pages/admin/wallet/WalletTransactionsPage.jsx';
 import { WalletWithdrawalsPage } from './pages/admin/wallet/WalletWithdrawalsPage.jsx';
+import { EmployeeWalletDashboardPage } from './pages/employee/wallet/EmployeeWalletDashboardPage.jsx';
+import { EmployeeWalletTransactionsPage } from './pages/employee/wallet/EmployeeWalletTransactionsPage.jsx';
+import { EmployeeWalletWithdrawalsPage } from './pages/employee/wallet/EmployeeWalletWithdrawalsPage.jsx';
+import { EmployeePayoutAccountsPage } from './pages/employee/wallet/EmployeePayoutAccountsPage.jsx';
+
 
 function EmployeeWorkspaceLayout() {
   return (
@@ -175,7 +180,10 @@ export function App() {
             <Route path="attendance" element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="leave" element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="earnings" element={<EmployeeEarningsPage />} />
-            <Route path="wallet" element={<AdminWalletPage />} />
+            <Route path="wallet" element={<EmployeeWalletDashboardPage />} />
+            <Route path="wallet/transactions" element={<EmployeeWalletTransactionsPage />} />
+            <Route path="wallet/withdrawals" element={<EmployeeWalletWithdrawalsPage />} />
+            <Route path="wallet/payout-accounts" element={<EmployeePayoutAccountsPage />} />
             <Route path="documents" element={<EmployeeDashboardPage />} />
             <Route path="services" element={<EmployeeDashboardPage />} />
             <Route path="profile" element={<EmployeeProfilePage />} />

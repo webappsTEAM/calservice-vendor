@@ -55,8 +55,8 @@ export function AuthProvider({ children }) {
           }
 
           const isEmployee = Boolean(empData) || (!isAdmin && (me.role || '').toLowerCase() === 'employee');
-          const isTiedWorker = isEmployee && Boolean(me.is_tied_worker || empData?.is_tied);
-          const isSoloWorker = isEmployee && !isTiedWorker;
+          const isTiedWorker = isEmployee && Boolean(me.is_tied_worker || empData?.is_tied || empData?.workforce_type === 'TIED');
+          const isSoloWorker = isEmployee && (!isTiedWorker || Boolean(me.is_solo_worker) || empData?.workforce_type === 'SOLO' || !me.company);
           const computedRole = isPlatformAdmin ? 'platform_admin' : (isVendorAdmin ? 'vendor_admin' : 'employee');
 
           const u = {
@@ -118,6 +118,8 @@ export function AuthProvider({ children }) {
 
     if (res.user) {
       const isAdmin = ['admin', 'manager'].includes((res.user.role || '').toLowerCase()) || Boolean(res.user.is_superuser);
+      const isTied = Boolean(res.user.is_tied_worker);
+      const isSolo = Boolean(res.user.is_solo_worker) || (!isTied && !isAdmin);
       const initialUser = {
         id: res.user.id,
         username: res.user.username,
@@ -129,6 +131,8 @@ export function AuthProvider({ children }) {
         companyName: res.user.company_name || '',
         isAdmin: isAdmin,
         isEmployee: !isAdmin,
+        isTiedWorker: isTied,
+        isSoloWorker: isSolo,
         registrationStatus: isAdmin ? 'approved' : 'not_started',
         isOnline: false,
         availability: 'offline',
