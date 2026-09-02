@@ -16,6 +16,26 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
+
+class SettlementError(Exception):
+    """
+    Raised by settle_completed_job() for the three "expected" ways a
+    completed job can't be settled yet (no resolvable payee wallet, no
+    JobPayment record, zero gross amount).
+
+    Bug found: these three cases used to only log an error and return None
+    -- since that's a normal return, not an exception, the caller in
+    service_requests/state_machine.py (which only notifies on an *exception*
+    from this call) never found out, so a job could sit COMPLETED with an
+    uncredited wallet and nothing anywhere would say why. Raising here lets
+    that existing exception-handling/notification path (and the
+    retry_failed_settlements management command's own except-block
+    reporting) cover all three cases with the real reason, instead of only
+    covering genuine unexpected errors.
+    """
+    pass
+
+
 DISPUTE_HOLD_HOURS = int(getattr(settings, "SEVO_DISPUTE_HOLD_HOURS", 48))
 PROMO_PERIOD_DAYS = int(getattr(settings, "SEVO_PROMO_PERIOD_DAYS", 90))
 
@@ -119,23 +139,26 @@ def settle_completed_job(service_request):
 
     wallet, channel = resolve_payee_wallet(service_request)
     if not wallet:
-        logger.error(
+        msg = (
             f"[SETTLEMENT_NO_WALLET] Job #{service_request.id} completed but has no "
             f"resolvable payee wallet (assigned_employee={service_request.assigned_employee_id}). "
             "This job's earnings cannot be credited until the technician/provider has "
             "completed wallet onboarding."
         )
-        return None
+        logger.error(msg)
+        raise SettlementError(msg)
 
     payment = JobPayment.objects.filter(job=service_request).first()
     if not payment:
-        logger.error(f"[SETTLEMENT_NO_PAYMENT] Job #{service_request.id} completed but has no JobPayment record.")
-        return None
+        msg = f"[SETTLEMENT_NO_PAYMENT] Job #{service_request.id} completed but has no JobPayment record."
+        logger.error(msg)
+        raise SettlementError(msg)
 
     gross = payment.amount_due or payment.amount_paid or Decimal("0")
     if gross <= 0:
-        logger.warning(f"[SETTLEMENT_ZERO_AMOUNT] Job #{service_request.id} has gross amount {gross} -- skipping settlement.")
-        return None
+        msg = f"[SETTLEMENT_ZERO_AMOUNT] Job #{service_request.id} has gross amount {gross} -- skipping settlement."
+        logger.warning(msg)
+        raise SettlementError(msg)
 
     rate = commission_rate_for(wallet, channel)
     commission = (gross * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
