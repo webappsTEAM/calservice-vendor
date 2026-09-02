@@ -89,9 +89,14 @@ class LoginView(APIView):
                             lookup_type = "employee_id"
                     break
                 except (OperationalError, DatabaseError) as db_lookup_err:
+                    from django.db import connection
+                    try:
+                        connection.close()
+                    except Exception:
+                        pass
                     if attempt < max_attempts - 1:
                         import time
-                        time.sleep(0.05)
+                        time.sleep(0.1)
                         continue
                     db_status = "error"
                     response_code = status.HTTP_503_SERVICE_UNAVAILABLE
@@ -134,6 +139,11 @@ class LoginView(APIView):
                             status=response_code
                         )
                 except (OperationalError, DatabaseError) as db_inact_err:
+                    from django.db import connection
+                    try:
+                        connection.close()
+                    except Exception:
+                        pass
                     db_status = "error"
                     response_code = status.HTTP_503_SERVICE_UNAVAILABLE
                     response_code_name = "DB_UNAVAILABLE"
@@ -204,12 +214,15 @@ class LoginView(APIView):
             is_technician = not (is_platform_admin or is_vendor_admin)
             is_tied_worker = False
             if emp:
-                from workforce_api.models import VendorTechnicianRelationship
-                has_active_rel = VendorTechnicianRelationship.objects.filter(
-                    technician=emp,
-                    status=VendorTechnicianRelationship.Status.ACTIVE,
-                ).exists()
-                is_tied_worker = bool(has_active_rel or emp.company_id)
+                try:
+                    from workforce_api.models import VendorTechnicianRelationship
+                    has_active_rel = VendorTechnicianRelationship.objects.filter(
+                        technician=emp,
+                        status=VendorTechnicianRelationship.Status.ACTIVE,
+                    ).exists()
+                    is_tied_worker = bool(has_active_rel or emp.company_id)
+                except Exception:
+                    is_tied_worker = bool(emp.company_id)
 
             is_solo_worker = is_technician and not is_tied_worker
             user_type = (
