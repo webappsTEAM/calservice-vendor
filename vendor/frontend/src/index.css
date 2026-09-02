@@ -1,0 +1,185 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 98%;
+    --foreground: 240 10% 3.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 3.9%;
+    --primary: 240 5.9% 10%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 240 4.8% 95.9%;
+    --secondary-foreground: 240 5.9% 10%;
+    --muted: 240 4.8% 95.9%;
+    --muted-foreground: 240 3.8% 46.1%;
+    --accent: 240 4.8% 95.9%;
+    --accent-foreground: 240 5.9% 10%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 5.9% 90%;
+    --input: 240 5.9% 90%;
+    --ring: 240 5.9% 10%;
+
+    --radius-outside: 0px;
+    --radius-mid: 0.5rem;
+    --radius-inside: 0.75rem;
+  }
+
+  * {
+    @apply border-slate-200;
+  }
+
+  body {
+    @apply bg-slate-100/90 text-slate-800 font-sans text-xs antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Form controls with soft inside edges and clean focus ring */
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="number"],
+  input[type="tel"],
+  input[type="date"],
+  input[type="time"],
+  input[type="search"],
+  select,
+  textarea {
+    @apply bg-white border border-slate-300 text-slate-900 text-xs rounded-lg shadow-xs focus:outline-none focus:ring-2 focus:ring-slate-800/10 focus:border-slate-700 transition-all;
+  }
+
+  button {
+    @apply transition-all duration-150 active:scale-[0.99];
+  }
+}
+
+/* Minimalist Modern Scrollbars */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Enterprise & Bento Card Classes (Medium-Sharp Edges) */
+.enterprise-card,
+.bento-card {
+  @apply bg-white border border-slate-200/90 rounded-md shadow-card transition-all;
+}
+
+.enterprise-header {
+  @apply bg-slate-900 text-white border-b border-slate-800;
+}
+
+.table-header {
+  @apply bg-slate-50/90 text-slate-700 text-[11px] font-semibold uppercase tracking-wider border-b border-slate-200 select-none;
+}
+
+.table-row {
+  @apply hover:bg-slate-50/90 transition-colors border-b border-slate-100;
+}
+
+/* Button & Control Classes */
+.btn-primary {
+  @apply bg-slate-800 hover:bg-slate-700 active:bg-slate-900 text-white font-bold rounded-lg shadow-xs transition-all cursor-pointer;
+}
+
+.btn-mild {
+  @apply bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-800 font-bold rounded-lg transition-all cursor-pointer;
+}
+
+/* Soft Inside Interactive Controls */
+.inside-control {
+  @apply rounded-lg;
+}
+
+.inside-pill {
+  @apply rounded-full;
+}
+
+/* Dynamic Theme Accent Utilities */
+.btn-accent {
+  background-color: var(--accent-primary, #10b981);
+  color: #ffffff;
+  transition: all 0.15s ease;
+}
+
+.btn-accent:hover {
+  background-color: var(--accent-hover, #059669);
+  filter: brightness(0.96);
+}
+
+.badge-accent {
+  background-color: var(--accent-subtle, #ecfdf5);
+  color: var(--accent-text, #065f46);
+  border: 1px solid var(--accent-subtle-border, #a7f3d0);
+}
+
+.text-accent-dynamic {
+  color: var(--accent-primary, #10b981);
+}
+
+.border-accent-dynamic {
+  border-color: var(--accent-primary, #10b981);
+}
+
+.bg-accent-dynamic {
+  background-color: var(--accent-primary, #10b981);
+}
+
+.bg-accent-subtle {
+  background-color: var(--accent-subtle, #ecfdf5);
+}
+
+.ring-accent-dynamic {
+  box-shadow: 0 0 0 3px var(--accent-ring, rgba(16, 185, 129, 0.35));
+}
+
+/* Radar Pulse & Scanning Animation */
+@keyframes radar-sweep {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.8;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 0.3;
+  }
+  100% {
+    transform: scale(0.95);
+    opacity: 0.8;
+  }
+}
+
+.animate-radar-sweep {
+  animation: radar-sweep 4s linear infinite;
+}
+
+.animate-pulse-ring {
+  animation: pulse-ring 2.5s ease-in-out infinite;
+}

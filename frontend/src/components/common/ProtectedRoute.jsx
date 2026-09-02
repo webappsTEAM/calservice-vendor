@@ -3,9 +3,9 @@ import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthProvider.jsx';
 import { AdminRoute } from './AdminRoute.jsx';
 import { EmployeeRoute } from './EmployeeRoute.jsx';
-import { SuperadminRoute } from './SuperadminRoute.jsx';
+import { PlatformAdminRoute } from './PlatformAdminRoute.jsx';
 
-export { AdminRoute, EmployeeRoute, SuperadminRoute };
+export { AdminRoute, EmployeeRoute, PlatformAdminRoute };
 
 export function AuthenticatedRoute({ children }) {
   const { isReady, isAuthenticated } = useAuth();

@@ -8,6 +8,25 @@ from django.utils import timezone
 
 logger = logging.getLogger("workforce.state_machine")
 
+# Fixes X-01: maps this app's status vocabulary to the event_type strings
+# the Customer app's webhook receiver recognizes (workforce_integration/
+# views.py). Not every vendor status has a customer-side handler -- entries
+# with no receiver-side effect (cancelled/redispatching/reassigned/
+# unable_to_complete/proof_submitted/follow_up_required) are deliberately
+# left out rather than sent as events nothing will act on. "service_started"
+# is also left out: the Customer app has only one concept ("in_progress"),
+# and firing it at the earlier, not-yet-clocked-in "service_started"
+# checkpoint would tell the customer work began before it actually gated
+# open (see apply_transition's IN_PROGRESS TimeLog gate below).
+_CUSTOMER_WEBHOOK_EVENT_MAP = {
+    "accepted": "employee_accepted",
+    "on_the_way": "employee_on_the_way",
+    "en_route": "employee_on_the_way",
+    "arrived": "employee_arrived",
+    "in_progress": "service_started",
+    "completed": "service_completed",
+}
+
 ALLOWED_TRANSITIONS = {
     "draft": ["new_request", "confirmed", "offering", "dispatching", "assigned", "unassigned", "cancelled"],
     "new_request": ["confirmed", "offering", "dispatching", "assigned", "unassigned", "cancelled"],
@@ -40,6 +59,21 @@ def can_transition(current_status: str, target_status: str) -> bool:
         return True
     allowed = ALLOWED_TRANSITIONS.get(current, [])
     return target in allowed
+
+
+def _technician_dict(emp):
+    """Best-effort technician summary for the customer webhook payload."""
+    if not emp:
+        return {}
+    try:
+        name = emp.user.get_full_name() if getattr(emp, "user", None) else ""
+    except Exception:
+        name = ""
+    return {
+        "id": str(getattr(emp, "id", "") or ""),
+        "name": name or "",
+        "phone": getattr(emp, "phone", "") or "",
+    }
 
 
 def apply_transition(service_request, target_status: str, actor=None) -> str:
@@ -92,52 +126,20 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
     service_request.status = target
     service_request.save(update_fields=["status"])
 
-    # ── Employee Wallet Credit ──────────────────────────────────────────────
-    # Triggered only on COMPLETED transition. Non-blocking: a wallet error must
-    # never roll back a successfully completed job. Failures are logged for
-    # admin reconciliation via `python manage.py reconcile_wallets`.
-    if target == "completed":
+    # Notify the Customer app (fixes X-01). Isolated in its own try/except --
+    # notify_customer_app() itself never raises, but this is defense in depth
+    # so a webhook-layer bug can never take down a real status transition.
+    webhook_event = _CUSTOMER_WEBHOOK_EVENT_MAP.get(target)
+    if webhook_event:
         try:
-            from workforce_api.models import JobPayment
-            from vendor_wallet.services.wallet_service import credit_job_earning
-            from vendor_wallet.exceptions import IdempotentTransactionError, CommissionConfigMissingError
-
-            job_payment = JobPayment.objects.filter(job=service_request).first()
-            employee = service_request.assigned_employee
-            if not employee:
-                logger.warning(
-                    "[WALLET_SKIP] Job #%s: assigned_employee is null. Employee wallet credit skipped.",
-                    service_request.pk,
-                )
-            elif job_payment and job_payment.payment_status == "PAID":
-                credit_job_earning(
-                    employee=employee,
-                    job=service_request,
-                    job_payment=job_payment,
-                    actor=actor,
-                )
-            else:
-                logger.info(
-                    "[WALLET_SKIP] Job #%s: payment not PAID (status=%s). Wallet credit deferred.",
-                    service_request.pk,
-                    getattr(job_payment, "payment_status", "NO_PAYMENT"),
-                )
-        except IdempotentTransactionError:
-            # Already credited — safe to ignore on retries
-            logger.info("[WALLET_IDEMPOTENT] Job #%s already credited.", service_request.pk)
-        except CommissionConfigMissingError as _wce:
-            logger.error(
-                "[WALLET_CREDIT_FAILED] Job #%s — COMMISSION_CONFIG_MISSING: %s. "
-                "Admin must create an EmployeeCommissionConfig and run reconcile_wallets.",
-                service_request.pk, _wce,
+            from workforce_api.services.customer_webhook import notify_customer_app
+            notify_customer_app(
+                webhook_event,
+                service_request,
+                technician=_technician_dict(emp),
             )
-        except Exception as _wce:
-            logger.error(
-                "[WALLET_CREDIT_FAILED] Job #%s: %s. Run `reconcile_wallets` to detect and correct.",
-                service_request.pk, _wce,
-                exc_info=True,
-            )
-    # ── End Wallet Credit ───────────────────────────────────────────────────
+        except Exception as webhook_err:
+            logger.info("Could not notify Customer app of transition to '%s': %s", target, webhook_err)
 
     # Sync EmployeeJob status and timestamps
     try:
@@ -146,27 +148,36 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
         emp_job_updates = {"status": target.upper()}
         if target == "completed":
             emp_job_updates["completed_date"] = now
-            if not service_request.completed_at:
-                service_request.completed_at = now
-                service_request.save(update_fields=["completed_at", "updated_at"])
         elif target == "in_progress":
             emp_job_updates["started_date"] = now
-            if not service_request.started_at:
-                service_request.started_at = now
-                service_request.save(update_fields=["started_at", "updated_at"])
         elif target == "accepted":
             emp_job_updates["accepted_date"] = now
-            if not service_request.accepted_at:
-                service_request.accepted_at = now
-                service_request.save(update_fields=["accepted_at", "updated_at"])
         elif target == "redispatching":
             emp_job_updates["status"] = "EMPLOYEE_CANCELLED"
             emp_job_updates["is_primary"] = False
 
-        EmployeeJob.objects.filter(service_request=service_request, is_primary=True).update(**emp_job_updates)
+        EmployeeJob.objects.filter(service_request=service_request).update(**emp_job_updates)
+
+        # SEVO business plan Section 4: the instant a job becomes COMPLETED
+        # is the single authoritative moment it becomes billable -- settle
+        # here, not in any individual view, so commission is computed
+        # exactly once regardless of which endpoint triggered completion.
+        # settle_completed_job() is itself idempotent and already wrapped
+        # in this function's own try/except, so a settlement failure logs
+        # loudly but never blocks the job from actually completing.
+        if target == "completed":
+            try:
+                from workforce_api.services.commission import settle_completed_job
+                settle_completed_job(service_request)
+            except Exception as _settlement_err:
+                logger.exception(
+                    "Wallet settlement failed for Job #%s -- job is COMPLETED but "
+                    "earnings were NOT credited. Needs manual settlement: %s",
+                    service_request.pk, _settlement_err,
+                )
 
         if target in ["completed", "cancelled", "redispatching", "unable_to_complete"]:
-            from workforce_api.models import JobTrackingSession, WorkforceEventLog
+            from workforce_api.models import JobTrackingSession
             closing_status = (
                 JobTrackingSession.SessionStatus.COMPLETED
                 if target == "completed"
@@ -179,63 +190,13 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
                 status=closing_status,
                 ended_at=now,
             )
-
-            # Auto Clock-Out active TimeLog upon job completion
-            eval_emp = service_request.assigned_employee or emp
-            if target == "completed" and eval_emp:
-                try:
-                    from time_tracking.services import close_employee_active_timelog
-                    close_employee_active_timelog(eval_emp)
-                except Exception as _to_err:
-                    logger.warning("Auto clock-out error on job #%s completion: %s", service_request.pk, _to_err)
-
-            if eval_emp:
+            if service_request.assigned_employee:
                 from workforce_api.services.workload import reconcile_employee_availability
-                new_avail = reconcile_employee_availability(eval_emp)
+                reconcile_employee_availability(service_request.assigned_employee)
                 logger.info(
-                    f"[EMPLOYEE_RELEASED] employee={eval_emp.id} "
-                    f"job={service_request.id} target_state={target.upper()} availability={new_avail}"
+                    f"[EMPLOYEE_RELEASED] employee={service_request.assigned_employee.id} "
+                    f"job={service_request.id} target_state={target.upper()}"
                 )
-
-                # Emit realtime events so technician and admin UI reconcile without refresh
-                try:
-                    user_obj = getattr(eval_emp, "user", None)
-                    if user_obj:
-                        WorkforceEventLog.objects.create(
-                            user=user_obj,
-                            event_type="JOB_COMPLETED" if target == "completed" else "EMPLOYEE_JOB_CANCELLED",
-                            payload={
-                                "job_id": service_request.id,
-                                "request_id": service_request.request_id or f"SR-{service_request.id}",
-                                "status": target,
-                                "employee_id": eval_emp.id,
-                                "availability": new_avail,
-                                "is_online": eval_emp.is_online,
-                            }
-                        )
-                        if target == "completed":
-                            WorkforceEventLog.objects.create(
-                                user=user_obj,
-                                event_type="EMPLOYEE_JOB_COMPLETED",
-                                payload={
-                                    "job_id": service_request.id,
-                                    "request_id": service_request.request_id or f"SR-{service_request.id}",
-                                    "status": "completed",
-                                    "employee_id": eval_emp.id,
-                                }
-                            )
-                        WorkforceEventLog.objects.create(
-                            user=user_obj,
-                            event_type="EMPLOYEE_AVAILABILITY_CHANGED",
-                            payload={
-                                "employee_id": eval_emp.id,
-                                "availability": new_avail,
-                                "is_online": eval_emp.is_online,
-                                "has_active_job": False if new_avail == "available" else True,
-                            }
-                        )
-                except Exception as _ev_err:
-                    logger.warning("Failed to emit completion WorkforceEventLog: %s", _ev_err)
     except Exception as _sm_err:
         logger.exception(
             "Non-fatal error in post-transition side-effects for Job #%s -> %s: %s",

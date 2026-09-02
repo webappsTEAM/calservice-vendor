@@ -77,7 +77,6 @@ export function CustomerLiveTrackingModal({
 
       // Poll every 5s for authoritative telemetry reconciliation
       pollTimerRef.current = setInterval(() => {
-        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
         fetchTracking(true);
       }, 5000);
     } else {

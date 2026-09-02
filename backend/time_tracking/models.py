@@ -162,29 +162,18 @@ class TimeLog(models.Model):
     def is_open(self) -> bool:
         return self.clock_out is None
 
-    def break_seconds(self, as_of=None) -> int:
-        from django.utils import timezone
-        ref_time = as_of or timezone.now()
+    def break_seconds(self) -> int:
         total = 0
         for b in self.breaks.all():
             if b.break_end:
-                total += max(0, int((b.break_end - b.break_start).total_seconds()))
-            elif b.break_start:
-                end_pt = min(ref_time, self.clock_out) if self.clock_out else ref_time
-                if end_pt > b.break_start:
-                    total += max(0, int((end_pt - b.break_start).total_seconds()))
+                total += int((b.break_end - b.break_start).total_seconds())
         return total
 
-    def worked_seconds(self, as_of=None) -> int:
-        from django.utils import timezone
-        if not self.clock_in:
+    def worked_seconds(self) -> int:
+        if not self.clock_out:
             return 0
-        end = self.clock_out or as_of or timezone.now()
-        if end < self.clock_in:
-            return 0
-        elapsed = int((end - self.clock_in).total_seconds())
-        total_breaks = self.break_seconds(as_of=end)
-        return max(0, elapsed - total_breaks)
+        raw = int((self.clock_out - self.clock_in).total_seconds())
+        return max(0, raw - self.break_seconds())
 
 
 class Break(models.Model):

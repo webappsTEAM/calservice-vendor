@@ -17,7 +17,7 @@
  *  - Zero manual arrival buttons (100% backend automatic geofence evaluation).
  */
 
-import React, { useEffect, useRef, useState, useMemo, useCallback, useContext } from 'react';
+import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import {
   MapPin,
   Navigation,
@@ -38,7 +38,7 @@ import {
   LocateFixed,
 } from 'lucide-react';
 import { getGPSPosition } from '../../hooks/useGPSPosition.js';
-import { EmployeeRuntimeContext } from '../../context/EmployeeRuntimeContext.jsx';
+import { apiUpdateLocationFull } from '../../api/workforceService.js';
 import { loadMapsApi } from '../../utils/loadGoogleMaps.js';
 import { TechnicianNavigationView } from './navigation/TechnicianNavigationView.jsx';
 
@@ -66,7 +66,7 @@ export function JobTrackingMap({
   job,
   technicianLocation,
   preServiceState = {},
-  geofenceRadius = 250,
+  geofenceRadius = 300,
   viewRole = 'technician', // 'technician' or 'customer'
 }) {
   if (viewRole === 'technician') {
@@ -80,7 +80,6 @@ export function JobTrackingMap({
     );
   }
 
-  const employeeRuntime = useContext(EmployeeRuntimeContext);
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
   const techMarkerRef = useRef(null);
@@ -495,7 +494,7 @@ export function JobTrackingMap({
                   ${job.issue_title || job.service_category || 'Service Request'}
                 </span>
                 <span style="font-size: 10px; color: #10B981; font-weight: 700;">
-                  250m Arrival Zone
+                  300m Arrival Zone
                 </span>
               </div>
             </div>
@@ -619,27 +618,29 @@ export function JobTrackingMap({
     if (isRefreshingGps) return;
     setIsRefreshingGps(true);
     try {
-      if (employeeRuntime?.scanCurrentLocation) {
-        const loc = await employeeRuntime.scanCurrentLocation();
-        if (loc && loc.latitude && loc.longitude) {
-          setLiveTechCoords(loc);
-          if (custLat != null && custLon != null) {
-            updateRoadRoute(loc.latitude, loc.longitude, custLat, custLon, true);
-          }
-        }
-      } else {
-        const pos = await getGPSPosition(true);
-        const { latitude, longitude, accuracy } = pos.coords;
-        const newCoords = {
-          latitude,
-          longitude,
-          accuracy,
-          updated_at: new Date().toISOString(),
-        };
-        setLiveTechCoords(newCoords);
-        if (custLat != null && custLon != null) {
-          updateRoadRoute(latitude, longitude, custLat, custLon, true);
-        }
+      const pos = await getGPSPosition(true);
+      const { latitude, longitude, accuracy } = pos.coords;
+      await apiUpdateLocationFull(latitude, longitude, accuracy);
+      const newCoords = {
+        latitude,
+        longitude,
+        accuracy,
+        updated_at: new Date().toISOString(),
+      };
+      setLiveTechCoords(newCoords);
+      window.dispatchEvent(
+        new CustomEvent('workforce:location-updated', {
+          detail: {
+            latitude,
+            longitude,
+            accuracy,
+            timestamp: Date.now(),
+            source: 'manual_fix',
+          },
+        })
+      );
+      if (custLat != null && custLon != null) {
+        updateRoadRoute(latitude, longitude, custLat, custLon, true);
       }
     } catch (_) {
     } finally {
@@ -670,10 +671,10 @@ export function JobTrackingMap({
       return { code: 'IN_PROGRESS', label: 'WORK IN PROGRESS', sub: 'Technician currently servicing appliance at customer site.', tone: 'blue' };
     }
     if (isBackendArrived) {
-      return { code: 'ARRIVED', label: 'ARRIVAL VERIFIED', sub: 'Inside 250m site perimeter. Customer Work Start OTP required.', tone: 'emerald' };
+      return { code: 'ARRIVED', label: 'ARRIVAL VERIFIED', sub: 'Inside 300m site perimeter. Customer Work Start OTP required.', tone: 'emerald' };
     }
     if (distanceMeters != null && distanceMeters <= geofenceRadius) {
-      return { code: 'ARRIVING_NOW', label: 'ARRIVING SOON', sub: 'Entering 250m arrival perimeter...', tone: 'blue' };
+      return { code: 'ARRIVING_NOW', label: 'ARRIVING SOON', sub: 'Entering 300m arrival perimeter...', tone: 'blue' };
     }
     if (distanceMeters != null && distanceMeters <= 1000) {
       return { code: 'APPROACHING', label: 'APPROACHING CUSTOMER', sub: 'Technician is within 1 km of destination.', tone: 'blue' };
@@ -692,7 +693,7 @@ export function JobTrackingMap({
 
   const displayEta = !directionsFailed && roadEtaText ? roadEtaText : (
     distanceMeters != null
-      ? distanceMeters <= 250
+      ? distanceMeters <= 300
         ? 'Arriving now'
         : `${Math.max(1, Math.round((distanceMeters / 1000) * 3))} min`
       : '--'
@@ -929,7 +930,7 @@ export function JobTrackingMap({
           </div>
           <div className="flex items-center gap-2 font-bold text-emerald-700">
             <span className="w-3 h-3 rounded-full border-2 border-emerald-500 bg-emerald-100" />
-            <span>250m Arrival Geofence</span>
+            <span>300m Arrival Geofence</span>
           </div>
         </div>
 
@@ -961,12 +962,12 @@ export function JobTrackingMap({
           <span className="truncate">
             {isBackendArrived ? (
               <strong className="text-emerald-700 font-bold">
-                ✓ ARRIVAL VERIFIED — Arrived within 250m of customer site.
+                ✓ ARRIVAL VERIFIED — Arrived within 300m of customer site.
                 {viewRole === 'technician' ? ' Ask customer for Work Start OTP.' : ' Share your 6-digit OTP with technician.'}
               </strong>
             ) : (
               <span>
-                Move along the road route. Backend GPS automatically verifies arrival within <strong className="text-slate-900 font-bold">250 meters</strong> of customer destination.
+                Move along the road route. Backend GPS automatically verifies arrival within <strong className="text-slate-900 font-bold">300 meters</strong> of customer destination.
               </span>
             )}
           </span>

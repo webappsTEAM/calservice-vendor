@@ -62,46 +62,9 @@ export function PendingReviewPage() {
             </div>
           </div>
 
-          {/* Provider Affiliation / Join Request Status */}
-          {profile?.requested_provider_name && profile?.association_status === 'PENDING' && (
-            <div className="p-3.5 bg-amber-50/70 border border-amber-200 rounded-lg text-left text-xs text-amber-900 flex items-start gap-2.5">
-              <Clock className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
-              <div>
-                <strong className="font-bold block text-xs text-amber-950">Service Provider Join Request Pending</strong>
-                <span className="text-amber-800 text-[11px] mt-0.5 block leading-relaxed">
-                  Your request to join <strong>{profile.requested_provider_name}</strong> is awaiting approval from their administrator.
-                </span>
-              </div>
-            </div>
-          )}
-
-          {profile?.provider_name && profile?.association_status === 'APPROVED' && (
-            <div className="p-3.5 bg-emerald-50/70 border border-emerald-200 rounded-lg text-left text-xs text-emerald-900 flex items-start gap-2.5">
-              <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
-              <div>
-                <strong className="font-bold block text-xs text-emerald-950">Organization Affiliation Approved</strong>
-                <span className="text-emerald-800 text-[11px] mt-0.5 block leading-relaxed">
-                  You are officially enrolled under <strong>{profile.provider_name}</strong>.
-                </span>
-              </div>
-            </div>
-          )}
-
-          {profile?.association_status === 'REJECTED' && profile?.requested_provider_name && (
-            <div className="p-3.5 bg-zinc-100 border border-zinc-200 rounded-lg text-left text-xs text-zinc-700 flex items-start gap-2.5">
-              <AlertCircle className="w-4 h-4 text-zinc-500 shrink-0 mt-0.5" />
-              <div>
-                <strong className="font-bold block text-xs text-zinc-900">Independent Contractor Mode</strong>
-                <span className="text-zinc-600 text-[11px] mt-0.5 block leading-relaxed">
-                  Your request to join {profile.requested_provider_name} was declined. You are progressing as an Independent Technician.
-                </span>
-              </div>
-            </div>
-          )}
-
-          <div className="p-3.5 bg-zinc-100/80 border border-zinc-200 rounded-lg text-left text-xs text-zinc-800 flex items-start gap-2.5">
-            <AlertCircle className="w-4 h-4 text-zinc-600 shrink-0 mt-0.5" />
-            <span className="text-xs leading-relaxed">
+          <div className="p-3 bg-blue-50 border border-blue-200 rounded text-left text-xs text-blue-900 flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+            <span>
               You will be notified once verification is completed. You cannot receive job dispatches until your application is approved.
             </span>
           </div>

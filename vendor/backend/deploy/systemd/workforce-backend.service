@@ -1,0 +1,37 @@
+[Unit]
+Description=CalTrack Workforce Backend Gunicorn/Uvicorn Service
+After=network.target redis.service
+Wants=redis.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/workforce/backend
+Environment="DJANGO_SETTINGS_MODULE=workforce_core.settings"
+EnvironmentFile=/var/www/workforce/backend/.env
+
+# Gunicorn + Uvicorn worker for ASGI / Server-Sent Events (SSE) support
+ExecStart=/var/www/workforce/backend/venv/bin/gunicorn workforce_core.asgi:application \
+    --workers 4 \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --bind 127.0.0.1:8001 \
+    --timeout 120 \
+    --keep-alive 5 \
+    --log-level info
+
+Restart=always
+RestartSec=5s
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=workforce-backend
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

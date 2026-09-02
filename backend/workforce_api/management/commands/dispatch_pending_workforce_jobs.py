@@ -17,7 +17,39 @@ Usage:
 import time
 import sys
 from django.core.management.base import BaseCommand
+from django.utils import timezone
 from workforce_api.services.automatic_dispatch import dispatch_pending_jobs, expire_and_reassign_offers
+
+
+def _write_heartbeat(status, detail=None):
+    """
+    Fixes X-11 (partial): this is the ONLY dispatch mechanism the vendor app
+    has, and previously had no way for anything outside its own stdout logs
+    to tell whether it was still alive. Upserts a single WorkforceEventLog
+    row (no new migration needed -- reuses the existing payload JSONField)
+    each cycle, so an external health check or monitoring script can detect
+    a silently-dead loop (process killed, hung, never restarted) instead of
+    discovering it only when jobs stop being dispatched.
+    Restart-on-crash still needs a process supervisor (systemd/supervisord/
+    Docker restart policy) at the deployment layer -- that is outside what a
+    Python management command can guarantee for itself.
+    """
+    try:
+        from workforce_api.models import WorkforceEventLog
+        row, _ = WorkforceEventLog.objects.get_or_create(
+            event_type="dispatch_engine_heartbeat",
+            user=None,
+            defaults={"payload": {}},
+        )
+        row.payload = {
+            "last_heartbeat": timezone.now().isoformat(),
+            "status": status,
+            "detail": detail or {},
+        }
+        row.save(update_fields=["payload"])
+    except Exception:
+        # Heartbeat is best-effort observability, never let it break dispatch.
+        pass
 
 
 class Command(BaseCommand):
@@ -51,6 +83,10 @@ class Command(BaseCommand):
         if run_once or not run_loop:
             # Single pass reconciliation
             result = dispatch_pending_jobs()
+            _write_heartbeat("ok", {
+                "pending_jobs_found": result.get("pending_jobs_found"),
+                "dispatched_count": result.get("dispatched_count"),
+            })
             self.stdout.write(
                 self.style.SUCCESS(
                     f"[DISPATCH ENGINE] Completed single pass: {result['pending_jobs_found']} pending found, "
@@ -68,6 +104,11 @@ class Command(BaseCommand):
             while True:
                 try:
                     result = dispatch_pending_jobs()
+                    _write_heartbeat("ok", {
+                        "pending_jobs_found": result.get("pending_jobs_found"),
+                        "dispatched_count": result.get("dispatched_count"),
+                        "expired_offers_swept": result.get("expired_offers_swept"),
+                    })
                     if result["pending_jobs_found"] > 0 or result["expired_offers_swept"] > 0:
                         self.stdout.write(
                             f"[DISPATCH] Swept {result['expired_offers_swept']} expired, "
@@ -75,6 +116,7 @@ class Command(BaseCommand):
                         )
                 except Exception as exc:
                     self.stderr.write(self.style.ERROR(f"[DISPATCH ERROR] Error during reconciliation cycle: {exc}"))
+                    _write_heartbeat("error", {"error": str(exc)})
 
                 time.sleep(interval)
         except KeyboardInterrupt:

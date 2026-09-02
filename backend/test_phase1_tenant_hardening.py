@@ -4,7 +4,7 @@ import django
 from decimal import Decimal
 
 # Setup Django environment
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "workforce_core.settings")
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "core.settings")
 django.setup()
 
 from django.contrib.auth import get_user_model
@@ -177,7 +177,6 @@ def run_tests():
         status="assigned",
         assigned_employee=tech_a,
         total_amount=Decimal("1500.00"),
-        preferred_date=timezone.now().date(),
     )
     job_b = ServiceRequest.objects.create(
         request_id=f"JOB-B-{ts}",
@@ -187,7 +186,6 @@ def run_tests():
         status="assigned",
         assigned_employee=tech_b,
         total_amount=Decimal("2000.00"),
-        preferred_date=timezone.now().date(),
     )
 
     passed_tests = 0

@@ -11,10 +11,6 @@ import { MapPin, Navigation, Car, ShieldCheck, Clock, RefreshCw, AlertCircle } f
 
 export function CustomerTrackingMap({
   trackingData,
-  technicianCoords,
-  serviceLocation,
-  technicianInfo,
-  jobStatus,
   isLoading = false,
   onRefresh,
   className = '',
@@ -24,17 +20,16 @@ export function CustomerTrackingMap({
   const techMarkerRef = useRef(null);
   const custMarkerRef = useRef(null);
   const routePolylineRef = useRef(null);
-  const initialFitDoneRef = useRef(false);
 
   const [mapLoaded, setMapLoaded] = useState(false);
 
-  const custLat = trackingData?.customer_location?.latitude ?? serviceLocation?.latitude;
-  const custLon = trackingData?.customer_location?.longitude ?? serviceLocation?.longitude;
-  const techLoc = trackingData?.assigned_technician?.location ?? technicianCoords;
+  const custLat = trackingData?.customer_location?.latitude;
+  const custLon = trackingData?.customer_location?.longitude;
+  const techLoc = trackingData?.assigned_technician?.location;
   const techLat = techLoc?.latitude;
   const techLon = techLoc?.longitude;
   const heading = techLoc?.heading || 0;
-  const status = (trackingData?.status || jobStatus || 'ASSIGNED').toUpperCase();
+  const status = trackingData?.status || 'ASSIGNED';
   const startOtp = trackingData?.start_otp;
   const freshness = trackingData?.freshness_state || 'LIVE';
 
@@ -136,10 +131,7 @@ export function CustomerTrackingMap({
     }
 
     if (bounds.length > 0) {
-      if (!initialFitDoneRef.current) {
-        map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 });
-        initialFitDoneRef.current = true;
-      }
+      map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 });
     }
   }, [custLat, custLon, techLat, techLon, heading, status]);
 
