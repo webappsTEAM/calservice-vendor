@@ -108,7 +108,8 @@ export function AdminDashboardPage() {
     },
   ];
 
-  const recentJobsColumns = [
+  const jobColumns = [
+
     {
       key: 'request_id',
       header: 'Job ID',
