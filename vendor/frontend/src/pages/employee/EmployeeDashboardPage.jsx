@@ -515,7 +515,7 @@ export function EmployeeDashboardPage() {
   const jobChatEndRef = useRef(null);
 
   useEffect(() => {
-    if (!selectedJob?.id) { setJobChatMessages([]); return; }
+    if (!selectedJob?.id || selectedJob?.status === 'OFFERED') { setJobChatMessages([]); return; }
     let cancelled = false;
     const fetchMessages = () => {
       apiGetJobMessages(selectedJob.id)
@@ -527,7 +527,7 @@ export function EmployeeDashboardPage() {
     fetchMessages();
     const interval = setInterval(fetchMessages, 10000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, [selectedJob?.id]);
+  }, [selectedJob?.id, selectedJob?.status]);
 
   useEffect(() => {
     jobChatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -2610,8 +2610,8 @@ export function EmployeeDashboardPage() {
                             </div>
                           )}
 
-                          {/* X-09: in-app chat with the customer. */}
-                          {selectedJob?.id && (
+                          {/* X-09: in-app chat with the customer (only after job is accepted). */}
+                          {selectedJob?.id && selectedJob?.status !== 'OFFERED' && (
                             <div className="p-3 bg-white border border-slate-200 rounded space-y-2">
                               <h4 className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
                                 <MessageSquare className="w-3.5 h-3.5 text-blue-600" />

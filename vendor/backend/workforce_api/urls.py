@@ -124,6 +124,33 @@ from .views import (
     WorkforceEmployeeSavedLocationDetailView,
     WorkforceAdminLocationToggleView,
     WorkforceAdminLocationAssignEmployeeView,
+    # Technician-Vendor Network
+    VendorNetworkTechniciansView,
+    VendorNetworkDetailView,
+    VendorNetworkStatusUpdateView,
+    VendorInvitationsView,
+    VendorInvitationCancelView,
+    VendorDiscoverySearchView,
+    VendorCriteriaListView,
+    VendorCriteriaDetailView,
+    TechnicianVendorNetworkView,
+    TechnicianInvitationsView,
+    TechnicianInvitationRespondView,
+    TechnicianLeaveVendorView,
+    PublicInvitationVerifyView,
+    # Platform oversight & Tie/Untie
+    PlatformVendorsListView,
+    PlatformWorkforceListView,
+    PlatformTieTechnicianView,
+    PlatformUntieTechnicianView,
+    # Resignation & Relieving Lifecycle
+    TechnicianSubmitResignationView,
+    TechnicianRelievingStatusView,
+    VendorRelievingRequestsView,
+    VendorApproveRelievingView,
+    PlatformRelievingRequestsView,
+    PlatformApproveRelievingView,
+    RelievingLegalSignoffView,
 )
 
 
@@ -328,6 +355,41 @@ urlpatterns = [
 
     # Dispatch engine health check (X-11)
     path("dispatch/health/", WorkforceDispatchHealthView.as_view(), name="workforce-dispatch-health"),
+
+    # ── Technician-Vendor Network Routes ─────────────────────────────────────
+    # Vendor Admin endpoints
+    path("vendor/network/", VendorNetworkTechniciansView.as_view(), name="vendor-network-technicians"),
+    path("vendor/network/<int:pk>/", VendorNetworkDetailView.as_view(), name="vendor-network-detail"),
+    path("vendor/network/<int:pk>/status/", VendorNetworkStatusUpdateView.as_view(), name="vendor-network-status"),
+    path("vendor/invitations/", VendorInvitationsView.as_view(), name="vendor-invitations"),
+    path("vendor/invitations/<int:pk>/cancel/", VendorInvitationCancelView.as_view(), name="vendor-invitation-cancel"),
+    path("vendor/criteria/", VendorCriteriaListView.as_view(), name="vendor-criteria-list"),
+    path("vendor/criteria/<int:pk>/", VendorCriteriaDetailView.as_view(), name="vendor-criteria-detail"),
+    path("vendor/discover/", VendorDiscoverySearchView.as_view(), name="vendor-discover-technicians"),
+
+    # Technician endpoints
+    path("technician/network/", TechnicianVendorNetworkView.as_view(), name="technician-vendor-network"),
+    path("technician/network/<int:pk>/leave/", TechnicianLeaveVendorView.as_view(), name="technician-leave-vendor"),
+    path("technician/invitations/", TechnicianInvitationsView.as_view(), name="technician-invitations"),
+    path("technician/invitations/<int:pk>/respond/", TechnicianInvitationRespondView.as_view(), name="technician-invitation-respond"),
+
+    # Public verification
+    path("invitations/verify-token/", PublicInvitationVerifyView.as_view(), name="public-invitation-verify"),
+
+    # ── SEVO Platform Superadmin Routes ──────────────────────────────────────
+    path("platform/vendors/", PlatformVendorsListView.as_view(), name="platform-vendors"),
+    path("platform/workforce/", PlatformWorkforceListView.as_view(), name="platform-workforce"),
+    path("platform/workforce/<int:pk>/tie-vendor/", PlatformTieTechnicianView.as_view(), name="platform-tie-technician"),
+    path("platform/workforce/<int:pk>/untie-vendor/", PlatformUntieTechnicianView.as_view(), name="platform-untie-technician"),
+
+    # ── Resignation & Relieving Lifecycle Routes ──────────────────────────────
+    path("technician/relieve/request/", TechnicianSubmitResignationView.as_view(), name="technician-submit-resignation"),
+    path("technician/relieve/status/", TechnicianRelievingStatusView.as_view(), name="technician-relieving-status"),
+    path("vendor/relieving-requests/", VendorRelievingRequestsView.as_view(), name="vendor-relieving-requests"),
+    path("vendor/relieving-requests/<int:pk>/approve/", VendorApproveRelievingView.as_view(), name="vendor-approve-relieving"),
+    path("platform/relieving-requests/", PlatformRelievingRequestsView.as_view(), name="platform-relieving-requests"),
+    path("platform/relieving-requests/<int:pk>/approve/", PlatformApproveRelievingView.as_view(), name="platform-approve-relieving"),
+    path("relieving-requests/<int:pk>/signoff/", RelievingLegalSignoffView.as_view(), name="relieving-legal-signoff"),
 ]
 
 

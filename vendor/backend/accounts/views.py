@@ -196,6 +196,28 @@ class LoginView(APIView):
                 identifier, lookup_type, matched_user_id, matched_user_active, password_check, db_status, response_code, response_code_name
             )
 
+            is_platform_admin = bool(getattr(user, "is_superuser", False))
+            is_vendor_admin = bool(
+                not is_platform_admin
+                and (user_role in ["admin", "manager"] or getattr(user, "is_staff", False))
+            )
+            is_technician = not (is_platform_admin or is_vendor_admin)
+            is_tied_worker = False
+            if emp:
+                from workforce_api.models import VendorTechnicianRelationship
+                has_active_rel = VendorTechnicianRelationship.objects.filter(
+                    technician=emp,
+                    status=VendorTechnicianRelationship.Status.ACTIVE,
+                ).exists()
+                is_tied_worker = bool(has_active_rel or emp.company_id)
+
+            is_solo_worker = is_technician and not is_tied_worker
+            user_type = (
+                "platform_admin"
+                if is_platform_admin
+                else ("vendor_admin" if is_vendor_admin else "technician")
+            )
+
             response = Response({
                 "message": "Login successful.",
                 "access_token": access_token_str,
@@ -211,6 +233,12 @@ class LoginView(APIView):
                     "company": company_id,
                     "company_name": company_name,
                     "is_superuser": getattr(user, "is_superuser", False),
+                    "is_platform_admin": is_platform_admin,
+                    "is_vendor_admin": is_vendor_admin,
+                    "is_technician": is_technician,
+                    "is_tied_worker": is_tied_worker,
+                    "is_solo_worker": is_solo_worker,
+                    "user_type": user_type,
                     "employee_id": getattr(emp, "employee_id", None) if emp else None,
                 }
             }, status=response_code)
@@ -340,6 +368,28 @@ class MeView(APIView):
             if emp and user_role not in ["admin", "manager"]:
                 user_role = "employee"
 
+            is_platform_admin = bool(getattr(user, "is_superuser", False))
+            is_vendor_admin = bool(
+                not is_platform_admin
+                and (user_role in ["admin", "manager"] or getattr(user, "is_staff", False))
+            )
+            is_technician = not (is_platform_admin or is_vendor_admin)
+            is_tied_worker = False
+            if emp:
+                from workforce_api.models import VendorTechnicianRelationship
+                has_active_rel = VendorTechnicianRelationship.objects.filter(
+                    technician=emp,
+                    status=VendorTechnicianRelationship.Status.ACTIVE,
+                ).exists()
+                is_tied_worker = bool(has_active_rel or emp.company_id)
+
+            is_solo_worker = is_technician and not is_tied_worker
+            user_type = (
+                "platform_admin"
+                if is_platform_admin
+                else ("vendor_admin" if is_vendor_admin else "technician")
+            )
+
             return Response({
                 "id": user.id,
                 "username": user.username,
@@ -350,6 +400,12 @@ class MeView(APIView):
                 "company": company_id,
                 "company_name": company_name,
                 "is_superuser": getattr(user, "is_superuser", False),
+                "is_platform_admin": is_platform_admin,
+                "is_vendor_admin": is_vendor_admin,
+                "is_technician": is_technician,
+                "is_tied_worker": is_tied_worker,
+                "is_solo_worker": is_solo_worker,
+                "user_type": user_type,
                 "employee_id": getattr(emp, "employee_id", None) if emp else None,
             }, status=status.HTTP_200_OK)
         except (OperationalError, DatabaseError) as db_err:

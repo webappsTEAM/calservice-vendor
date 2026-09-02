@@ -1046,6 +1046,15 @@ class JobTrackingSession(models.Model):
     last_fix_lon = models.FloatField(null=True, blank=True)
     last_fix_time = models.DateTimeField(null=True, blank=True)
 
+    # Spatial & Geofence movement state
+    movement_status = models.CharField(max_length=50, default="UNKNOWN")
+    geofence_status = models.CharField(max_length=50, default="OUTSIDE")
+    prev_latitude = models.FloatField(null=True, blank=True)
+    prev_longitude = models.FloatField(null=True, blank=True)
+    prev_captured_at = models.DateTimeField(null=True, blank=True)
+    last_event_emitted_at = models.DateTimeField(null=True, blank=True)
+    last_event_state_key = models.CharField(max_length=100, default="", blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1753,3 +1762,309 @@ class WorkforceScorecard(models.Model):
 
     def __str__(self):
         return f"Scorecard(employee={self.employee_id}) rating={self.average_rating} sla={self.sla_score} tier={self.tier}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TECHNICIAN-VENDOR NETWORK MODELS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class VendorCriteria(models.Model):
+    """
+    Saved, reusable search/requirement set created by a vendor (Company).
+    """
+    vendor = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="technician_criteria",
+    )
+    name = models.CharField(max_length=150)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_vendor_criteria"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.vendor.company_name} - {self.name}"
+
+
+class CriteriaTerm(models.Model):
+    """
+    Individual attribute condition within a VendorCriteria set.
+    Terms with the same group_id are OR'd together. Distinct groups are AND'd together.
+    """
+    class AttributeType(models.TextChoices):
+        SKILL = "SKILL", "Skill"
+        SERVICE_CATEGORY = "SERVICE_CATEGORY", "Service Category"
+        LOCATION = "LOCATION", "Location / City"
+        EXPERIENCE_YEARS = "EXPERIENCE_YEARS", "Experience (Years)"
+        AVAILABILITY = "AVAILABILITY", "Availability"
+        EMPLOYMENT_TYPE = "EMPLOYMENT_TYPE", "Employment Type"
+        MIN_RATING = "MIN_RATING", "Minimum Rating"
+
+    class Operator(models.TextChoices):
+        EQUALS = "EQUALS", "Equals"
+        IN = "IN", "In"
+        GTE = "GTE", "Greater Than or Equal"
+        LTE = "LTE", "Less Than or Equal"
+        CONTAINS = "CONTAINS", "Contains"
+
+    criteria = models.ForeignKey(
+        VendorCriteria,
+        on_delete=models.CASCADE,
+        related_name="terms",
+    )
+    attribute_type = models.CharField(
+        max_length=40,
+        choices=AttributeType.choices,
+        default=AttributeType.SKILL,
+    )
+    operator = models.CharField(
+        max_length=20,
+        choices=Operator.choices,
+        default=Operator.EQUALS,
+    )
+    value = models.JSONField(default=dict)
+    group_id = models.IntegerField(default=1, db_index=True)
+
+    class Meta:
+        db_table = "workforce_criteria_term"
+
+    def __str__(self):
+        return f"CriteriaTerm({self.attribute_type} {self.operator} {self.value}, group={self.group_id})"
+
+
+class VendorInvitation(models.Model):
+    """
+    Disposable, request-scoped invitation sent from a vendor (Company)
+    to a technician (by email and/or Employee foreign key).
+    """
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        ACCEPTED = "ACCEPTED", "Accepted"
+        REJECTED = "REJECTED", "Rejected"
+        EXPIRED = "EXPIRED", "Expired"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    class Channel(models.TextChoices):
+        DIRECT_EMAIL = "DIRECT_EMAIL", "Direct Email"
+        MATCHING_RESULT = "MATCHING_RESULT", "Matching Result"
+
+    vendor = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="sent_technician_invitations",
+    )
+    technician = models.ForeignKey(
+        "employees.Employee",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="received_vendor_invitations",
+    )
+    invited_email = models.EmailField(db_index=True)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    channel = models.CharField(
+        max_length=30,
+        choices=Channel.choices,
+        default=Channel.DIRECT_EMAIL,
+    )
+    matched_criteria = models.ForeignKey(
+        VendorCriteria,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="invitations",
+    )
+    message = models.TextField(blank=True, default="")
+    token = models.CharField(max_length=128, unique=True, db_index=True)
+    expires_at = models.DateTimeField(db_index=True)
+    responded_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_vendor_invitation"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Invitation #{self.id} from {self.vendor.company_name} to {self.invited_email} [{self.status}]"
+
+
+class VendorTechnicianRelationship(models.Model):
+    """
+    Durable, many-to-many operational connection between a vendor (Company)
+    and an independent technician (Employee).
+    """
+    class Status(models.TextChoices):
+        ACTIVE = "ACTIVE", "Active"
+        RESIGNATION_REQUESTED = "RESIGNATION_REQUESTED", "Resignation Requested"
+        RESIGNED = "RESIGNED", "Resigned"
+        SUSPENDED = "SUSPENDED", "Suspended"
+        TERMINATED = "TERMINATED", "Terminated"
+
+    class EngagementType(models.TextChoices):
+        PER_JOB = "PER_JOB", "Per Job"
+        PART_TIME = "PART_TIME", "Part Time"
+        FULL_TIME = "FULL_TIME", "Full Time"
+        ON_CALL = "ON_CALL", "On Call"
+
+    class PaymentModel(models.TextChoices):
+        DIRECT_TO_TECHNICIAN = "DIRECT_TO_TECHNICIAN", "Direct to Technician"
+        THROUGH_VENDOR = "THROUGH_VENDOR", "Through Vendor"
+
+    vendor = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="technician_relationships",
+    )
+    technician = models.ForeignKey(
+        "employees.Employee",
+        on_delete=models.CASCADE,
+        related_name="vendor_relationships",
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+        db_index=True,
+    )
+    source_invitation = models.ForeignKey(
+        VendorInvitation,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="resulting_relationships",
+    )
+    scope_skills = models.JSONField(default=list, blank=True)
+    engagement_type = models.CharField(
+        max_length=30,
+        choices=EngagementType.choices,
+        default=EngagementType.PER_JOB,
+    )
+    payment_model = models.CharField(
+        max_length=30,
+        choices=PaymentModel.choices,
+        default=PaymentModel.DIRECT_TO_TECHNICIAN,
+    )
+    started_at = models.DateTimeField(auto_now_add=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_vendor_relationships",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_vendor_technician_relationship"
+        unique_together = ("vendor", "technician")
+        ordering = ["-started_at"]
+
+    def __str__(self):
+        return f"Relationship: {self.vendor.company_name} <-> {self.technician} [{self.status}]"
+
+
+class VendorRelievingRequest(models.Model):
+    """
+    Formal Multi-Party Resignation & Relieving Lifecycle:
+    1. Technician requests resignation with reason & details.
+    2. Vendor verifies internal job dues & approves settlement clearance.
+    3. SEVO Platform Superadmin verifies platform job settlements & approves clearance.
+    4. Mutual legal release signoff completed between Vendor & Technician.
+    5. Technician is unlinked to become an independent Solo Worker + Individual Wallet is provisioned.
+    """
+    class Status(models.TextChoices):
+        REQUESTED = "REQUESTED", "Resignation Requested"
+        VENDOR_APPROVED = "VENDOR_APPROVED", "Vendor Approved Dues Clearance"
+        SEVO_APPROVED = "SEVO_APPROVED", "SEVO Admin Cleared"
+        COMPLETED = "COMPLETED", "Completed & Relieved"
+        REJECTED = "REJECTED", "Rejected"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    class ReasonCategory(models.TextChoices):
+        TRANSITION_TO_SOLO = "TRANSITION_TO_SOLO", "Transitioning to Independent Solo Worker"
+        RELOCATION = "RELOCATION", "Relocation / Moving"
+        PERSONAL = "PERSONAL", "Personal / Family Reasons"
+        RATE_DISPUTE = "RATE_DISPUTE", "Compensation / Rate Dispute"
+        CAREER_GROWTH = "CAREER_GROWTH", "Career Growth / Alternative Opportunities"
+        OTHER = "OTHER", "Other"
+
+    relationship = models.ForeignKey(
+        VendorTechnicianRelationship,
+        on_delete=models.CASCADE,
+        related_name="relieving_requests",
+    )
+    technician = models.ForeignKey(
+        "employees.Employee",
+        on_delete=models.CASCADE,
+        related_name="relieving_requests",
+    )
+    vendor = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="relieving_requests",
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=Status.choices,
+        default=Status.REQUESTED,
+        db_index=True,
+    )
+    reason_category = models.CharField(
+        max_length=40,
+        choices=ReasonCategory.choices,
+        default=ReasonCategory.TRANSITION_TO_SOLO,
+    )
+    resignation_notes = models.TextField(blank=True, default="")
+    desired_relieving_date = models.DateField(null=True, blank=True)
+
+    # Vendor approval & settlement
+    vendor_settlement_notes = models.TextField(blank=True, default="")
+    vendor_approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="approved_vendor_relievings",
+    )
+    vendor_approved_at = models.DateTimeField(null=True, blank=True)
+
+    # SEVO Admin audit & approval
+    sevo_audit_notes = models.TextField(blank=True, default="")
+    sevo_approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="cleared_sevo_relievings",
+    )
+    sevo_approved_at = models.DateTimeField(null=True, blank=True)
+
+    # Mutual Legal Signoff
+    worker_signoff_ack = models.BooleanField(default=False)
+    worker_signed_at = models.DateTimeField(null=True, blank=True)
+    vendor_signoff_ack = models.BooleanField(default=False)
+    vendor_signed_at = models.DateTimeField(null=True, blank=True)
+
+    rejection_reason = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_vendor_relieving_request"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Relieving Request #{self.id}: {self.technician} from {self.vendor.company_name} [{self.status}]"
+
+

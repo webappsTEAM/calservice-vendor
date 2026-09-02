@@ -93,9 +93,20 @@ from .models import (
     JobLocationPoint,
     WorkforceScorecard,
     SocialSecurityRegistration,
+    VendorCriteria,
+    CriteriaTerm,
+    VendorInvitation,
+    VendorTechnicianRelationship,
+    VendorRelievingRequest,
 )
 from time_tracking.models import TimeLog, Break
 from time_tracking.serializers import TimeLogSerializer
+from .services.vendor_network import (
+    VendorDiscoveryEngine,
+    VendorInvitationService,
+    VendorRelationshipService,
+    VendorRelievingService,
+)
 import json
 import time
 from django.http import StreamingHttpResponse, JsonResponse, HttpResponse
@@ -255,6 +266,13 @@ class WorkforceSignupView(APIView):
                         "-- will need manual wallet provisioning before this worker can be paid.",
                         employee.id,
                     )
+
+            # Automatically backfill any pending vendor invitations sent to this email
+            try:
+                from workforce_api.services.vendor_network import VendorInvitationService
+                VendorInvitationService.backfill_invitations_for_employee(employee)
+            except Exception:
+                logger.exception("Failed to backfill vendor invitations for employee #%s", employee.id)
 
         refresh = RefreshToken.for_user(user)
         refresh["company_id"] = company.id
@@ -8610,3 +8628,1250 @@ class WorkforceJobMessagesView(APIView):
             "body": msg.body,
             "created_at": msg.created_at,
         }, status=status.HTTP_201_CREATED)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TECHNICIAN-VENDOR NETWORK API VIEWS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class VendorNetworkTechniciansView(APIView):
+    """
+    Vendor Admin: Lists and filters all technicians in this vendor's network.
+    GET /api/workforce/vendor/network/?status=ACTIVE&search=AC
+    """
+    permission_classes = [IsWorkforceAdmin]
+
+    def get(self, request):
+        company = resolve_actor_company(request)
+        if not company and getattr(request.user, "is_superuser", False):
+            company = Company.objects.first()
+        if not company or not is_admin_role(request.user):
+            return Response({"error": "Admin access and company tenant required."}, status=status.HTTP_403_FORBIDDEN)
+
+        status_filter = request.query_params.get("status", "").upper()
+        search_query = request.query_params.get("search", "").strip()
+
+        qs = VendorTechnicianRelationship.objects.filter(vendor=company).select_related(
+            "technician__user", "technician__company", "source_invitation"
+        )
+        if status_filter and status_filter != "ALL":
+            qs = qs.filter(status=status_filter)
+
+        if search_query:
+            qs = qs.filter(
+                Q(technician__user__first_name__icontains=search_query)
+                | Q(technician__user__last_name__icontains=search_query)
+                | Q(technician__user__email__icontains=search_query)
+                | Q(technician__phone__icontains=search_query)
+                | Q(technician__title__icontains=search_query)
+            )
+
+        # Pre-fetch skills and scorecards
+        technician_ids = [rel.technician_id for rel in qs]
+        skills_by_emp = {}
+        for es in WorkforceEmployeeSkill.objects.filter(employee_id__in=technician_ids).select_related("skill"):
+            skills_by_emp.setdefault(es.employee_id, []).append(es.skill.name)
+
+        scorecards = {sc.employee_id: sc for sc in WorkforceScorecard.objects.filter(employee_id__in=technician_ids)}
+
+        results = []
+        for rel in qs:
+            emp = rel.technician
+            user = emp.user
+            sc = scorecards.get(emp.id)
+            emp_skills = skills_by_emp.get(emp.id, []) or (emp.service_roles if isinstance(emp.service_roles, list) else [])
+            results.append({
+                "relationship_id": rel.id,
+                "technician_id": emp.id,
+                "user_id": user.id,
+                "name": f"{user.first_name} {user.last_name}".strip() or user.username,
+                "email": user.email,
+                "phone": emp.phone or "",
+                "title": emp.title or "Technician",
+                "state": emp.state or "",
+                "status": rel.status,
+                "scope_skills": rel.scope_skills or emp_skills,
+                "engagement_type": rel.engagement_type,
+                "payment_model": rel.payment_model,
+                "started_at": rel.started_at,
+                "ended_at": rel.ended_at,
+                "average_rating": float(sc.average_rating) if sc else 0.0,
+                "rating_count": sc.rating_count if sc else 0,
+                "tier": sc.tier if sc else "UNRATED",
+                "is_online": emp.is_online,
+                "current_availability": emp.current_availability,
+            })
+
+        # Summary counts
+        counts = {
+            "all": VendorTechnicianRelationship.objects.filter(vendor=company).count(),
+            "active": VendorTechnicianRelationship.objects.filter(vendor=company, status="ACTIVE").count(),
+            "suspended": VendorTechnicianRelationship.objects.filter(vendor=company, status="SUSPENDED").count(),
+            "terminated": VendorTechnicianRelationship.objects.filter(vendor=company, status="TERMINATED").count(),
+        }
+
+        return Response({"counts": counts, "technicians": results}, status=status.HTTP_200_OK)
+
+
+class VendorNetworkDetailView(APIView):
+    """
+    Vendor Admin: Detailed view & update of a technician relationship.
+    GET /api/workforce/vendor/network/<int:pk>/
+    PATCH /api/workforce/vendor/network/<int:pk>/
+    """
+    permission_classes = [IsWorkforceAdmin]
+
+    def get(self, request, pk):
+        company = resolve_actor_company(request)
+        if not company and getattr(request.user, "is_superuser", False):
+            company = Company.objects.first()
+        if not company or not is_admin_role(request.user):
+            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+        rel = VendorTechnicianRelationship.objects.filter(pk=pk, vendor=company).select_related(
+            "technician__user", "source_invitation"
+        ).first()
+        if not rel:
+            return Response({"error": "Relationship not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        emp = rel.technician
+        user = emp.user
+        sc = WorkforceScorecard.objects.filter(employee=emp).first()
+        emp_skills = list(WorkforceEmployeeSkill.objects.filter(employee=emp).values(
+            "skill__id", "skill__name", "skill__category", "proficiency_level", "is_verified"
+        ))
+
+        return Response({
+            "relationship": {
+                "id": rel.id,
+                "status": rel.status,
+                "engagement_type": rel.engagement_type,
+                "payment_model": rel.payment_model,
+                "scope_skills": rel.scope_skills,
+                "started_at": rel.started_at,
+                "ended_at": rel.ended_at,
+                "source_invitation_id": rel.source_invitation_id,
+            },
+            "technician": {
+                "id": emp.id,
+                "name": f"{user.first_name} {user.last_name}".strip() or user.username,
+                "email": user.email,
+                "phone": emp.phone,
+                "title": emp.title,
+                "state": emp.state,
+                "country": emp.country,
+                "hourly_rate": float(emp.hourly_rate or 0),
+                "is_online": emp.is_online,
+                "current_availability": emp.current_availability,
+                "skills": emp_skills,
+                "scorecard": {
+                    "average_rating": float(sc.average_rating) if sc else 0.0,
+                    "rating_count": sc.rating_count if sc else 0,
+                    "csat_average": float(sc.csat_average) if sc else 0.0,
+                    "tier": sc.tier if sc else "UNRATED",
+                } if sc else None,
+            }
+        }, status=status.HTTP_200_OK)
+
+    def patch(self, request, pk):
+        company = resolve_actor_company(request)
+        if not company and getattr(request.user, "is_superuser", False):
+            company = Company.objects.first()
+        if not company or not is_admin_role(request.user):
+            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+        rel = VendorTechnicianRelationship.objects.filter(pk=pk, vendor=company).first()
+        if not rel:
+            return Response({"error": "Relationship not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if "engagement_type" in request.data:
+            rel.engagement_type = request.data["engagement_type"]
+        if "payment_model" in request.data:
+            rel.payment_model = request.data["payment_model"]
+        if "scope_skills" in request.data and isinstance(request.data["scope_skills"], list):
+            rel.scope_skills = request.data["scope_skills"]
+
+        rel.save()
+        return Response({"message": "Relationship terms updated successfully.", "id": rel.id}, status=status.HTTP_200_OK)
+
+
+class VendorNetworkStatusUpdateView(APIView):
+    """
+    Vendor Admin: Suspend, Reactivate, or Terminate a relationship.
+    POST /api/workforce/vendor/network/<int:pk>/status/
+    Body: {"action": "SUSPEND" | "REACTIVATE" | "TERMINATE"}
+    """
+    permission_classes = [IsWorkforceAdmin]
+
+    def post(self, request, pk):
+        from workforce_api.services.vendor_network import VendorRelationshipService
+
+        company = resolve_actor_company(request)
+        if not company and getattr(request.user, "is_superuser", False):
+            company = Company.objects.first()
+        if not company or not is_admin_role(request.user):
+            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+        action = request.data.get("action", "")
+        try:
+            rel = VendorRelationshipService.update_status(
+                relationship_id=pk,
+                vendor=company,
+                action=action,
+                actor=request.user,
+            )
+            return Response({
+                "message": f"Technician relationship status updated to {rel.status}.",
+                "status": rel.status,
+                "relationship_id": rel.id,
+            }, status=status.HTTP_200_OK)
+        except ValidationError as e:
+            return Response({"error": str(e.message if hasattr(e, 'message') else e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception("Error updating relationship status: %s", e)
+            return Response({"error": "Failed to update relationship status."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class VendorInvitationsView(APIView):
+    """
+    Vendor Admin: List sent invitations and send direct or matched invitations.
+    GET /api/workforce/vendor/invitations/?status=PENDING
+    POST /api/workforce/vendor/invitations/
+    """
+    permission_classes = [IsWorkforceAdmin]
+
+    def get(self, request):
+        company = resolve_actor_company(request)
+        if not company and getattr(request.user, "is_superuser", False):
+            company = Company.objects.first()
+        if not company or not is_admin_role(request.user):
+            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+        status_filter = request.query_params.get("status", "").upper()
+        qs = VendorInvitation.objects.filter(vendor=company).select_related(
+            "technician__user", "matched_criteria"
+        ).order_by("-created_at")
+
+        if status_filter and status_filter != "ALL":
+            qs = qs.filter(status=status_filter)
+
+        results = []
+        for inv in qs:
+            tech_name = None
+            if inv.technician and inv.technician.user:
+                tech_name = f"{inv.technician.user.first_name} {inv.technician.user.last_name}".strip() or inv.technician.user.username
+
+            results.append({
+                "id": inv.id,
+                "invited_email": inv.invited_email,
+                "technician_id": inv.technician_id,
+                "technician_name": tech_name,
+                "status": inv.status,
+                "channel": inv.channel,
+                "message": inv.message,
+                "matched_criteria_name": inv.matched_criteria.name if inv.matched_criteria else None,
+                "expires_at": inv.expires_at,
+                "responded_at": inv.responded_at,
+                "created_at": inv.created_at,
+            })
+
+        counts = {
+            "all": VendorInvitation.objects.filter(vendor=company).count(),
+            "pending": VendorInvitation.objects.filter(vendor=company, status="PENDING").count(),
+            "accepted": VendorInvitation.objects.filter(vendor=company, status="ACCEPTED").count(),
+            "rejected": VendorInvitation.objects.filter(vendor=company, status="REJECTED").count(),
+            "expired": VendorInvitation.objects.filter(vendor=company, status="EXPIRED").count(),
+            "cancelled": VendorInvitation.objects.filter(vendor=company, status="CANCELLED").count(),
+        }
+
+        return Response({"counts": counts, "invitations": results}, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        from workforce_api.services.vendor_network import VendorInvitationService
+
+        company = resolve_actor_company(request)
+        if not company and getattr(request.user, "is_superuser", False):
+            company = Company.objects.first()
+        if not company or not is_admin_role(request.user):
+            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+        invited_email = request.data.get("invited_email", "")
+        technician_id = request.data.get("technician_id")
+        technician = None
+        if technician_id:
+            technician = Employee.objects.filter(pk=technician_id).first()
+            if technician and not invited_email:
+                invited_email = technician.user.email
+
+        if not invited_email:
+            return Response({"error": "An email address or technician ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        message = request.data.get("message", "").strip()
+        channel = request.data.get("channel", VendorInvitation.Channel.DIRECT_EMAIL)
+        criteria_id = request.data.get("criteria_id")
+        criteria = None
+        if criteria_id:
+            criteria = VendorCriteria.objects.filter(pk=criteria_id, vendor=company).first()
+
+        try:
+            invitation = VendorInvitationService.create_invitation(
+                vendor=company,
+                invited_email=invited_email,
+                technician=technician,
+                channel=channel,
+                message=message,
+                criteria=criteria,
+                actor=request.user,
+            )
+            return Response({
+                "message": f"Invitation sent to {invitation.invited_email}.",
+                "invitation_id": invitation.id,
+                "status": invitation.status,
+                "expires_at": invitation.expires_at,
+                "token": invitation.token,
+            }, status=status.HTTP_201_CREATED)
+        except ValidationError as e:
+            return Response({"error": str(e.message if hasattr(e, 'message') else e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception("Error creating vendor invitation: %s", e)
+            return Response({"error": "Failed to create invitation."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class VendorInvitationCancelView(APIView):
+    """
+    Vendor Admin: Cancel / withdraw a pending invitation.
+    POST /api/workforce/vendor/invitations/<int:pk>/cancel/
+    """
+    permission_classes = [IsWorkforceAdmin]
+
+    def post(self, request, pk):
+        from workforce_api.services.vendor_network import VendorInvitationService
+
+        company = resolve_actor_company(request)
+        if not company and getattr(request.user, "is_superuser", False):
+            company = Company.objects.first()
+        if not company or not is_admin_role(request.user):
+            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            inv = VendorInvitationService.cancel_invitation(
+                invitation_id=pk,
+                vendor=company,
+                actor=request.user,
+            )
+            return Response({"message": "Invitation cancelled successfully.", "id": inv.id, "status": inv.status}, status=status.HTTP_200_OK)
+        except ValidationError as e:
+            return Response({"error": str(e.message if hasattr(e, 'message') else e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class VendorDiscoverySearchView(APIView):
+    """
+    Vendor Admin: Run matching candidate discovery search with boolean criteria.
+    POST /api/workforce/vendor/discover/
+    """
+    permission_classes = [IsWorkforceAdmin]
+
+    def post(self, request):
+        from workforce_api.services.vendor_network import VendorDiscoveryEngine
+
+        company = resolve_actor_company(request)
+        if not company and getattr(request.user, "is_superuser", False):
+            company = Company.objects.first()
+        if not company or not is_admin_role(request.user):
+            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+        terms = request.data.get("terms", [])
+        criteria_id = request.data.get("criteria_id")
+        search_query = request.data.get("search", "")
+
+        criteria = None
+        if criteria_id:
+            criteria = VendorCriteria.objects.filter(pk=criteria_id, vendor=company).first()
+
+        matches = VendorDiscoveryEngine.evaluate_candidates(
+            vendor=company,
+            terms=terms,
+            criteria=criteria,
+            search_query=search_query,
+            limit=100,
+        )
+
+        return Response({
+            "total_matches": len(matches),
+            "results": matches,
+        }, status=status.HTTP_200_OK)
+
+
+class VendorCriteriaListView(APIView):
+    """
+    Vendor Admin: Manage saved search criteria sets and terms.
+    GET /api/workforce/vendor/criteria/
+    POST /api/workforce/vendor/criteria/
+    """
+    permission_classes = [IsWorkforceAdmin]
+
+    def get(self, request):
+        company = resolve_actor_company(request)
+        if not company and getattr(request.user, "is_superuser", False):
+            company = Company.objects.first()
+        if not company or not is_admin_role(request.user):
+            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+        criteria_qs = VendorCriteria.objects.filter(vendor=company, is_active=True).prefetch_related("terms")
+        results = []
+        for c in criteria_qs:
+            terms = [
+                {
+                    "id": t.id,
+                    "attribute_type": t.attribute_type,
+                    "operator": t.operator,
+                    "value": t.value,
+                    "group_id": t.group_id,
+                }
+                for t in c.terms.all()
+            ]
+            results.append({
+                "id": c.id,
+                "name": c.name,
+                "terms": terms,
+                "created_at": c.created_at,
+            })
+
+        return Response({"criteria": results}, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        company = resolve_actor_company(request)
+        if not company and getattr(request.user, "is_superuser", False):
+            company = Company.objects.first()
+        if not company or not is_admin_role(request.user):
+            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+        name = request.data.get("name", "").strip()
+        if not name:
+            return Response({"error": "Criteria name is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        terms_data = request.data.get("terms", [])
+
+        with transaction.atomic():
+            criteria = VendorCriteria.objects.create(
+                vendor=company,
+                name=name,
+                is_active=True,
+            )
+            for t in terms_data:
+                CriteriaTerm.objects.create(
+                    criteria=criteria,
+                    attribute_type=t.get("attribute_type", CriteriaTerm.AttributeType.SKILL),
+                    operator=t.get("operator", CriteriaTerm.Operator.EQUALS),
+                    value=t.get("value", {}),
+                    group_id=t.get("group_id", 1),
+                )
+
+        return Response({"message": "Criteria saved successfully.", "id": criteria.id}, status=status.HTTP_201_CREATED)
+
+
+class VendorCriteriaDetailView(APIView):
+    """
+    Vendor Admin: Delete/deactivate a saved criteria set.
+    DELETE /api/workforce/vendor/criteria/<int:pk>/
+    """
+    permission_classes = [IsWorkforceAdmin]
+
+    def delete(self, request, pk):
+        company = resolve_actor_company(request)
+        if not company and getattr(request.user, "is_superuser", False):
+            company = Company.objects.first()
+        if not company or not is_admin_role(request.user):
+            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+        criteria = VendorCriteria.objects.filter(pk=pk, vendor=company).first()
+        if not criteria:
+            return Response({"error": "Criteria not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        criteria.is_active = False
+        criteria.save(update_fields=["is_active", "updated_at"])
+        return Response({"message": "Criteria removed successfully."}, status=status.HTTP_200_OK)
+
+
+# ─── Technician Side Views ───────────────────────────────────────────────────
+
+class TechnicianVendorNetworkView(APIView):
+    """
+    Technician: Lists all vendor relationships where this technician is a member.
+    GET /api/workforce/technician/network/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp:
+            from employees.models import Employee
+            emp = Employee.objects.filter(user=request.user).first()
+
+        if not emp:
+            return Response({"error": "Employee profile required."}, status=status.HTTP_403_FORBIDDEN)
+
+        relationships = VendorTechnicianRelationship.objects.filter(
+            technician=emp
+        ).select_related("vendor", "source_invitation").order_by("-started_at")
+
+        results = []
+        for rel in relationships:
+            results.append({
+                "relationship_id": rel.id,
+                "vendor_id": rel.vendor.id,
+                "vendor_name": getattr(rel.vendor, "company_name", getattr(rel.vendor, "name", "Vendor")),
+                "vendor_address": getattr(rel.vendor, "address", "") or "",
+                "status": rel.status,
+                "scope_skills": rel.scope_skills,
+                "engagement_type": rel.engagement_type,
+                "payment_model": rel.payment_model,
+                "started_at": rel.started_at,
+                "ended_at": rel.ended_at,
+            })
+
+        active_rel = next((r for r in relationships if r.status == VendorTechnicianRelationship.Status.ACTIVE), None)
+        active_vendor_info = None
+        if active_rel:
+            active_vendor_info = {
+                "relationship_id": active_rel.id,
+                "vendor_id": active_rel.vendor.id,
+                "vendor_name": getattr(active_rel.vendor, "company_name", getattr(active_rel.vendor, "name", "Vendor")),
+                "vendor_address": getattr(active_rel.vendor, "address", "") or "",
+                "started_at": active_rel.started_at,
+            }
+
+        return Response({
+            "relationships": results,
+            "active_vendor": active_vendor_info,
+            "total_count": len(results),
+            "active_count": 1 if active_vendor_info else 0,
+        }, status=status.HTTP_200_OK)
+
+
+class TechnicianInvitationsView(APIView):
+    """
+    Technician: View incoming vendor invitations and history.
+    GET /api/workforce/technician/invitations/?status=PENDING
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp:
+            from employees.models import Employee
+            emp = Employee.objects.filter(user=request.user).first()
+
+        user_email = (request.user.email or "").strip().lower()
+
+        # Match either technician FK or email
+        qs = VendorInvitation.objects.filter(
+            Q(technician=emp) if emp else Q() | Q(invited_email__iexact=user_email)
+        ).select_related("vendor", "matched_criteria").order_by("-created_at")
+
+        status_filter = request.query_params.get("status", "").upper()
+        if status_filter and status_filter != "ALL":
+            qs = qs.filter(status=status_filter)
+
+        results = []
+        for inv in qs:
+            terms = []
+            if inv.matched_criteria:
+                terms = [
+                    {"attribute": t.attribute_type, "value": t.value, "operator": t.operator}
+                    for t in inv.matched_criteria.terms.all()
+                ]
+
+            results.append({
+                "id": inv.id,
+                "vendor_id": inv.vendor.id,
+                "vendor_name": getattr(inv.vendor, "company_name", getattr(inv.vendor, "name", "Vendor")),
+                "vendor_address": getattr(inv.vendor, "address", "") or "",
+                "status": inv.status,
+                "channel": inv.channel,
+                "message": inv.message,
+                "matched_criteria": terms,
+                "expires_at": inv.expires_at,
+                "responded_at": inv.responded_at,
+                "created_at": inv.created_at,
+            })
+
+        active_rel = (
+            VendorTechnicianRelationship.objects.filter(
+                technician=emp,
+                status=VendorTechnicianRelationship.Status.ACTIVE,
+            )
+            .select_related("vendor")
+            .first()
+        ) if emp else None
+
+        active_vendor_info = None
+        if active_rel:
+            active_vendor_info = {
+                "relationship_id": active_rel.id,
+                "vendor_id": active_rel.vendor_id,
+                "vendor_name": getattr(active_rel.vendor, "company_name", getattr(active_rel.vendor, "name", "Current Vendor")),
+                "started_at": active_rel.started_at,
+            }
+
+        pending_count = sum(1 for r in results if r["status"] == "PENDING")
+        return Response({
+            "invitations": results,
+            "active_vendor": active_vendor_info,
+            "pending_count": pending_count,
+        }, status=status.HTTP_200_OK)
+
+
+class TechnicianInvitationRespondView(APIView):
+    """
+    Technician: Accept or Reject an invitation.
+    POST /api/workforce/technician/invitations/<int:pk>/respond/
+    Body: {"decision": "ACCEPT" | "REJECT"}
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        from workforce_api.services.vendor_network import VendorInvitationService
+
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp:
+            from employees.models import Employee
+            emp = Employee.objects.filter(user=request.user).first()
+
+        if not emp:
+            return Response({"error": "Employee profile required."}, status=status.HTTP_403_FORBIDDEN)
+
+        decision = request.data.get("decision", "")
+        try:
+            inv, rel = VendorInvitationService.respond_to_invitation(
+                invitation_id=pk,
+                employee=emp,
+                decision=decision,
+                actor=request.user,
+            )
+            return Response({
+                "message": f"Invitation {inv.status.lower()} successfully.",
+                "status": inv.status,
+                "relationship_id": rel.id if rel else None,
+                "vendor_name": getattr(inv.vendor, "company_name", "Vendor"),
+            }, status=status.HTTP_200_OK)
+        except ValidationError as e:
+            return Response({"error": str(e.message if hasattr(e, 'message') else e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception("Error responding to invitation: %s", e)
+            return Response({"error": "Failed to respond to invitation."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class TechnicianLeaveVendorView(APIView):
+    """
+    Technician: Leave / terminate a vendor network connection.
+    POST /api/workforce/technician/network/<int:pk>/leave/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        from workforce_api.services.vendor_network import VendorRelationshipService
+
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp:
+            from employees.models import Employee
+            emp = Employee.objects.filter(user=request.user).first()
+
+        if not emp:
+            return Response({"error": "Employee profile required."}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            rel = VendorRelationshipService.leave_vendor(
+                relationship_id=pk,
+                employee=emp,
+                actor=request.user,
+            )
+            return Response({
+                "message": f"You have left {getattr(rel.vendor, 'company_name', 'Vendor')}'s technician network.",
+                "status": rel.status,
+                "relationship_id": rel.id,
+            }, status=status.HTTP_200_OK)
+        except ValidationError as e:
+            return Response({"error": str(e.message if hasattr(e, 'message') else e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PublicInvitationVerifyView(APIView):
+    """
+    Public: Validate an invitation token to pre-fill signup info.
+    GET /api/workforce/invitations/verify-token/?token=...
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        token = request.query_params.get("token", "").strip()
+        if not token:
+            return Response({"error": "Token is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        inv = VendorInvitation.objects.filter(token=token).select_related("vendor").first()
+        if not inv:
+            return Response({"valid": False, "error": "Invalid invitation token."}, status=status.HTTP_404_NOT_FOUND)
+
+        is_expired = inv.expires_at and inv.expires_at < timezone.now()
+        if is_expired:
+            return Response({
+                "valid": False,
+                "error": "This invitation has expired.",
+                "status": "EXPIRED",
+                "vendor_name": getattr(inv.vendor, "company_name", "Vendor"),
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if inv.status != VendorInvitation.Status.PENDING:
+            return Response({
+                "valid": False,
+                "error": f"This invitation is already {inv.status.lower()}.",
+                "status": inv.status,
+                "vendor_name": getattr(inv.vendor, "company_name", "Vendor"),
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            "valid": True,
+            "invitation_id": inv.id,
+            "invited_email": inv.invited_email,
+            "vendor_name": getattr(inv.vendor, "company_name", "Vendor"),
+            "message": inv.message,
+            "expires_at": inv.expires_at,
+        }, status=status.HTTP_200_OK)
+
+
+# ─── SEVO Platform Admin: Vendor & Workforce Management ──────────────────────
+
+class PlatformVendorsListView(APIView):
+    """
+    SEVO Platform Admin: Manage all registered Vendor Companies.
+    GET /api/workforce/platform/vendors/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not getattr(request.user, "is_superuser", False):
+            return Response({"error": "Platform Superadmin privileges required."}, status=status.HTTP_403_FORBIDDEN)
+
+        companies = list(Company.objects.select_related("region").all().order_by("-id"))
+        company_ids = [c.id for c in companies]
+        
+        # Precompute tied worker counts per company
+        from django.db.models import Count
+        tied_counts = dict(
+            VendorTechnicianRelationship.objects.filter(
+                vendor_id__in=company_ids,
+                status=VendorTechnicianRelationship.Status.ACTIVE,
+            )
+            .values("vendor_id")
+            .annotate(cnt=Count("id"))
+            .values_list("vendor_id", "cnt")
+        )
+
+        # Precompute pending invitations per company
+        pending_inv_counts = dict(
+            VendorInvitation.objects.filter(
+                vendor_id__in=company_ids,
+                status=VendorInvitation.Status.PENDING,
+            )
+            .values("vendor_id")
+            .annotate(cnt=Count("id"))
+            .values_list("vendor_id", "cnt")
+        )
+
+        # Bulk fetch company users
+        admin_users_by_company = {}
+        for u in User.objects.filter(company_id__in=company_ids).order_by("id"):
+            if u.company_id not in admin_users_by_company or u.role in ["admin", "manager"]:
+                admin_users_by_company[u.company_id] = u
+
+        results = []
+        for c in companies:
+            admin_user = admin_users_by_company.get(c.id)
+
+            results.append({
+                "id": c.id,
+                "company_name": c.company_name,
+                "slug": c.slug,
+                "city": getattr(c, "region", None).name if getattr(c, "region", None) else "",
+                "address": c.address or "",
+                "owner_name": f"{admin_user.first_name} {admin_user.last_name}".strip() if admin_user else "",
+                "owner_email": admin_user.email if admin_user else "",
+                "owner_phone": getattr(admin_user, "mobile_number", "") or getattr(admin_user, "phone", "") if admin_user else "",
+                "tied_workers_count": tied_counts.get(c.id, 0),
+                "pending_invitations_count": pending_inv_counts.get(c.id, 0),
+                "created_at": c.created_at if hasattr(c, "created_at") else None,
+            })
+
+        return Response({
+            "vendors": results,
+            "total_count": len(results),
+        }, status=status.HTTP_200_OK)
+
+
+class PlatformWorkforceListView(APIView):
+    """
+    SEVO Platform Admin: Manage all Workforce (Solo Workers & Tied Workers).
+    GET /api/workforce/platform/workforce/?type=ALL|SOLO|TIED&vendor_id=...&search=...
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not getattr(request.user, "is_superuser", False):
+            return Response({"error": "Platform Superadmin privileges required."}, status=status.HTTP_403_FORBIDDEN)
+
+        workforce_type = request.query_params.get("type", "ALL").upper()
+        vendor_id = request.query_params.get("vendor_id")
+        search = (request.query_params.get("search") or "").strip().lower()
+
+        employees_qs = Employee.objects.select_related("user", "company").order_by("-id")
+
+        if search:
+            employees_qs = employees_qs.filter(
+                Q(user__first_name__icontains=search)
+                | Q(user__last_name__icontains=search)
+                | Q(user__email__icontains=search)
+                | Q(user__mobile_number__icontains=search)
+                | Q(employee_id__icontains=search)
+            )
+
+        employee_ids = list(employees_qs.values_list("id", flat=True))
+
+        # Active vendor relationships
+        active_rels = {
+            rel.technician_id: rel
+            for rel in VendorTechnicianRelationship.objects.filter(
+                technician_id__in=employee_ids,
+                status=VendorTechnicianRelationship.Status.ACTIVE,
+            ).select_related("vendor")
+        }
+
+        # Skills prefetch
+        skills_qs = WorkforceEmployeeSkill.objects.filter(employee_id__in=employee_ids).select_related("skill")
+        skills_by_emp = {}
+        for s in skills_qs:
+            skills_by_emp.setdefault(s.employee_id, []).append(s.skill.name)
+
+        results = []
+        solo_count = 0
+        tied_count = 0
+
+        for emp in employees_qs:
+            rel = active_rels.get(emp.id)
+            is_tied = rel is not None
+            tied_vendor = None
+
+            if is_tied:
+                tied_count += 1
+                tied_vendor = {
+                    "id": rel.vendor.id,
+                    "company_name": getattr(rel.vendor, "company_name", getattr(rel.vendor, "name", "Vendor")),
+                    "started_at": rel.started_at,
+                    "relationship_id": rel.id,
+                }
+            else:
+                solo_count += 1
+
+            # Filter by type
+            if workforce_type == "SOLO" and is_tied:
+                continue
+            if workforce_type == "TIED" and not is_tied:
+                continue
+            if vendor_id and (not is_tied or str(rel.vendor_id) != str(vendor_id)):
+                continue
+
+            emp_skills = skills_by_emp.get(emp.id, [])
+            if isinstance(emp.service_roles, list):
+                emp_skills = list(set(emp_skills + [str(r) for r in emp.service_roles]))
+
+            full_name = f"{emp.user.first_name} {emp.user.last_name}".strip() or emp.user.username
+            results.append({
+                "id": emp.id,
+                "employee_id": emp.employee_id,
+                "name": full_name,
+                "email": emp.user.email,
+                "phone": getattr(emp.user, "mobile_number", "") or getattr(emp.user, "phone", "") or emp.phone,
+                "city": emp.state or "",
+                "skills": emp_skills,
+                "is_online": emp.is_online,
+                "current_availability": emp.current_availability,
+                "workforce_type": "TIED" if is_tied else "SOLO",
+                "tied_vendor": tied_vendor,
+                "registration_status": "approved" if getattr(emp, "is_active", True) else "pending",
+                "hourly_rate": float(emp.hourly_rate or 0),
+            })
+
+        return Response({
+            "workers": results,
+            "total_count": len(results),
+            "counts": {
+                "all": solo_count + tied_count,
+                "solo": solo_count,
+                "tied": tied_count,
+            },
+        }, status=status.HTTP_200_OK)
+
+
+class PlatformTieTechnicianView(APIView):
+    """
+    SEVO Platform Admin: Directly tie/assign a Solo Worker to any Vendor Company.
+    POST /api/workforce/platform/workforce/<int:pk>/tie-vendor/
+    Body: { "vendor_id": <int>, "engagement_type": "PER_JOB", "payment_model": "DIRECT_TO_TECHNICIAN", "notes": "" }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        if not getattr(request.user, "is_superuser", False):
+            return Response({"error": "Platform Superadmin privileges required."}, status=status.HTTP_403_FORBIDDEN)
+
+        vendor_id = request.data.get("vendor_id")
+        if not vendor_id:
+            return Response({"error": "Target vendor_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        engagement_type = request.data.get("engagement_type", VendorTechnicianRelationship.EngagementType.PER_JOB)
+        payment_model = request.data.get("payment_model", VendorTechnicianRelationship.PaymentModel.DIRECT_TO_TECHNICIAN)
+        notes = request.data.get("notes", "").strip()
+
+        try:
+            rel = VendorRelationshipService.tie_technician_to_vendor(
+                employee_id=pk,
+                vendor_id=int(vendor_id),
+                actor=request.user,
+                engagement_type=engagement_type,
+                payment_model=payment_model,
+                notes=notes,
+            )
+            return Response({
+                "message": f"Technician successfully tied to {getattr(rel.vendor, 'company_name', 'Vendor')}.",
+                "relationship_id": rel.id,
+                "vendor_id": rel.vendor_id,
+                "vendor_name": getattr(rel.vendor, "company_name", getattr(rel.vendor, "name", "Vendor")),
+                "status": rel.status,
+                "started_at": rel.started_at,
+            }, status=status.HTTP_200_OK)
+        except ValidationError as e:
+            return Response({"error": str(e.message if hasattr(e, 'message') else e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class PlatformUntieTechnicianView(APIView):
+    """
+    SEVO Platform Admin: Untie a technician from all vendors, making them a free Solo Worker.
+    POST /api/workforce/platform/workforce/<int:pk>/untie-vendor/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        if not getattr(request.user, "is_superuser", False):
+            return Response({"error": "Platform Superadmin privileges required."}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            untied_rels = VendorRelationshipService.untie_technician(
+                employee_id=pk,
+                actor=request.user,
+            )
+            return Response({
+                "message": "Technician successfully relieved from vendor. Now operating as an independent Solo Worker.",
+                "untied_count": len(untied_rels),
+                "workforce_type": "SOLO",
+            }, status=status.HTTP_200_OK)
+        except ValidationError as e:
+            return Response({"error": str(e.message if hasattr(e, 'message') else e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ─── Technician Resignation & Relieving Endpoints ────────────────────────────
+
+class TechnicianSubmitResignationView(APIView):
+    """
+    Technician submits a formal resignation request to leave their assigned vendor.
+    POST /api/workforce/technician/relieve/request/
+    Body: {"reason_category": "TRANSITION_TO_SOLO", "resignation_notes": "...", "desired_relieving_date": "YYYY-MM-DD"}
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp:
+            emp = Employee.objects.filter(user=request.user).first()
+        if not emp:
+            return Response({"error": "Technician employee profile required."}, status=status.HTTP_403_FORBIDDEN)
+
+        reason_category = request.data.get("reason_category", VendorRelievingRequest.ReasonCategory.TRANSITION_TO_SOLO)
+        notes = request.data.get("resignation_notes", "")
+        desired_date = request.data.get("desired_relieving_date", None)
+
+        try:
+            req = VendorRelievingService.submit_resignation(
+                employee=emp,
+                reason_category=reason_category,
+                notes=notes,
+                desired_date=desired_date,
+                actor=request.user,
+            )
+            return Response({
+                "message": "Formal resignation submitted successfully. Pending vendor dues clearance & platform audit.",
+                "request_id": req.id,
+                "status": req.status,
+                "vendor_name": getattr(req.vendor, "company_name", getattr(req.vendor, "name", "Vendor")),
+                "reason_category": req.reason_category,
+                "desired_relieving_date": req.desired_relieving_date,
+            }, status=status.HTTP_201_CREATED)
+        except ValidationError as e:
+            return Response({"error": str(e.message if hasattr(e, "message") else e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception("Error submitting resignation: %s", e)
+            return Response({"error": "Failed to submit resignation."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class TechnicianRelievingStatusView(APIView):
+    """
+    Technician checks the active resignation and relieving lifecycle progress.
+    GET /api/workforce/technician/relieve/status/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp:
+            emp = Employee.objects.filter(user=request.user).first()
+        if not emp:
+            return Response({"error": "Technician employee profile required."}, status=status.HTTP_403_FORBIDDEN)
+
+        req = (
+            VendorRelievingRequest.objects.filter(technician=emp)
+            .select_related("vendor", "relationship")
+            .order_by("-created_at")
+            .first()
+        )
+        if not req:
+            return Response({"has_active_request": False, "request": None}, status=status.HTTP_200_OK)
+
+        return Response({
+            "has_active_request": req.status in [
+                VendorRelievingRequest.Status.REQUESTED,
+                VendorRelievingRequest.Status.VENDOR_APPROVED,
+                VendorRelievingRequest.Status.SEVO_APPROVED,
+            ],
+            "request": {
+                "id": req.id,
+                "status": req.status,
+                "vendor_id": req.vendor_id,
+                "vendor_name": getattr(req.vendor, "company_name", getattr(req.vendor, "name", "Vendor")),
+                "reason_category": req.reason_category,
+                "reason_display": req.get_reason_category_display(),
+                "resignation_notes": req.resignation_notes,
+                "desired_relieving_date": req.desired_relieving_date,
+                "vendor_approved_at": req.vendor_approved_at,
+                "vendor_settlement_notes": req.vendor_settlement_notes,
+                "sevo_approved_at": req.sevo_approved_at,
+                "sevo_audit_notes": req.sevo_audit_notes,
+                "worker_signoff_ack": req.worker_signoff_ack,
+                "worker_signed_at": req.worker_signed_at,
+                "vendor_signoff_ack": req.vendor_signoff_ack,
+                "vendor_signed_at": req.vendor_signed_at,
+                "created_at": req.created_at,
+            }
+        }, status=status.HTTP_200_OK)
+
+
+class VendorRelievingRequestsView(APIView):
+    """
+    Vendor Admin: View and manage all resignation and relieving requests for their company.
+    GET /api/workforce/vendor/relieving-requests/
+    """
+    permission_classes = [IsWorkforceAdmin]
+
+    def get(self, request):
+        company = resolve_actor_company(request)
+        if not company and getattr(request.user, "is_superuser", False):
+            company = Company.objects.first()
+        if not company:
+            return Response({"error": "Vendor company context required."}, status=status.HTTP_403_FORBIDDEN)
+
+        requests_qs = (
+            VendorRelievingRequest.objects.filter(vendor=company)
+            .select_related("technician__user", "relationship")
+            .order_by("-created_at")
+        )
+
+        results = []
+        for r in requests_qs:
+            user = r.technician.user
+            results.append({
+                "id": r.id,
+                "relationship_id": r.relationship_id,
+                "technician_id": r.technician_id,
+                "technician_name": f"{user.first_name} {user.last_name}".strip() or user.username,
+                "technician_email": user.email,
+                "technician_phone": getattr(user, "mobile_number", "") or getattr(user, "phone", "") or r.technician.phone,
+                "status": r.status,
+                "reason_category": r.reason_category,
+                "reason_display": r.get_reason_category_display(),
+                "resignation_notes": r.resignation_notes,
+                "desired_relieving_date": r.desired_relieving_date,
+                "vendor_settlement_notes": r.vendor_settlement_notes,
+                "vendor_approved_at": r.vendor_approved_at,
+                "sevo_approved_at": r.sevo_approved_at,
+                "sevo_audit_notes": r.sevo_audit_notes,
+                "worker_signoff_ack": r.worker_signoff_ack,
+                "vendor_signoff_ack": r.vendor_signoff_ack,
+                "created_at": r.created_at,
+            })
+
+        return Response({
+            "relieving_requests": results,
+            "count": len(results),
+            "pending_count": sum(1 for x in results if x["status"] == "REQUESTED"),
+        }, status=status.HTTP_200_OK)
+
+
+class VendorApproveRelievingView(APIView):
+    """
+    Vendor Admin approves job dues and settlement for a technician's resignation.
+    POST /api/workforce/vendor/relieving-requests/<int:pk>/approve/
+    Body: {"settlement_notes": "..."}
+    """
+    permission_classes = [IsWorkforceAdmin]
+
+    def post(self, request, pk):
+        company = resolve_actor_company(request)
+        if not company and getattr(request.user, "is_superuser", False):
+            company = Company.objects.first()
+        if not company:
+            return Response({"error": "Vendor company context required."}, status=status.HTTP_403_FORBIDDEN)
+
+        settlement_notes = request.data.get("settlement_notes", "All dues and equipment accounts verified.")
+        try:
+            req = VendorRelievingService.vendor_approve_relieving(
+                request_id=pk,
+                vendor=company,
+                settlement_notes=settlement_notes,
+                actor=request.user,
+            )
+            return Response({
+                "message": "Vendor dues settlement clearance approved. Request forwarded for SEVO Platform Audit.",
+                "request_id": req.id,
+                "status": req.status,
+            }, status=status.HTTP_200_OK)
+        except ValidationError as e:
+            return Response({"error": str(e.message if hasattr(e, "message") else e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception("Error approving relieving: %s", e)
+            return Response({"error": "Failed to approve relieving request."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class PlatformRelievingRequestsView(APIView):
+    """
+    SEVO Platform Superadmin: Lists all platform-wide relieving requests.
+    GET /api/workforce/platform/relieving-requests/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not getattr(request.user, "is_superuser", False):
+            return Response({"error": "Platform Superadmin privileges required."}, status=status.HTTP_403_FORBIDDEN)
+
+        requests_qs = (
+            VendorRelievingRequest.objects.select_related("technician__user", "vendor", "relationship")
+            .order_by("-created_at")
+        )
+
+        results = []
+        for r in requests_qs:
+            user = r.technician.user
+            results.append({
+                "id": r.id,
+                "relationship_id": r.relationship_id,
+                "technician_id": r.technician_id,
+                "technician_name": f"{user.first_name} {user.last_name}".strip() or user.username,
+                "technician_email": user.email,
+                "technician_phone": getattr(user, "mobile_number", "") or getattr(user, "phone", "") or r.technician.phone,
+                "vendor_id": r.vendor_id,
+                "vendor_name": getattr(r.vendor, "company_name", getattr(r.vendor, "name", "Vendor")),
+                "status": r.status,
+                "reason_category": r.reason_category,
+                "reason_display": r.get_reason_category_display(),
+                "resignation_notes": r.resignation_notes,
+                "desired_relieving_date": r.desired_relieving_date,
+                "vendor_settlement_notes": r.vendor_settlement_notes,
+                "vendor_approved_at": r.vendor_approved_at,
+                "sevo_approved_at": r.sevo_approved_at,
+                "sevo_audit_notes": r.sevo_audit_notes,
+                "worker_signoff_ack": r.worker_signoff_ack,
+                "vendor_signoff_ack": r.vendor_signoff_ack,
+                "created_at": r.created_at,
+            })
+
+        return Response({
+            "relieving_requests": results,
+            "total_count": len(results),
+            "pending_sevo_count": sum(1 for x in results if x["status"] == "VENDOR_APPROVED"),
+        }, status=status.HTTP_200_OK)
+
+
+class PlatformApproveRelievingView(APIView):
+    """
+    SEVO Platform Superadmin verifies general job settlement and compliance check,
+    then issues official platform relieving approval.
+    POST /api/workforce/platform/relieving-requests/<int:pk>/approve/
+    Body: {"audit_notes": "..."}
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        if not getattr(request.user, "is_superuser", False):
+            return Response({"error": "Platform Superadmin privileges required."}, status=status.HTTP_403_FORBIDDEN)
+
+        audit_notes = request.data.get("audit_notes", "Verified all platform job commissions and billings have settled.")
+        try:
+            req = VendorRelievingService.sevo_approve_relieving(
+                request_id=pk,
+                audit_notes=audit_notes,
+                actor=request.user,
+            )
+            return Response({
+                "message": "SEVO Platform audit clearance approved. Legal relieving signoff executed.",
+                "request_id": req.id,
+                "status": req.status,
+            }, status=status.HTTP_200_OK)
+        except ValidationError as e:
+            return Response({"error": str(e.message if hasattr(e, "message") else e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception("Error in platform approving relieving: %s", e)
+            return Response({"error": "Failed to approve platform relieving audit."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class RelievingLegalSignoffView(APIView):
+    """
+    Mutual Legal Signoff between Technician and Vendor.
+    POST /api/workforce/relieving-requests/<int:pk>/signoff/
+    Body: {"persona": "technician" | "vendor"}
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        persona = request.data.get("persona", "technician")
+        try:
+            req = VendorRelievingService.complete_legal_signoff(
+                request_id=pk,
+                actor=request.user,
+                persona=persona,
+            )
+            return Response({
+                "message": "Legal signoff recorded successfully.",
+                "request_id": req.id,
+                "status": req.status,
+                "worker_signoff_ack": req.worker_signoff_ack,
+                "vendor_signoff_ack": req.vendor_signoff_ack,
+            }, status=status.HTTP_200_OK)
+        except ValidationError as e:
+            return Response({"error": str(e.message if hasattr(e, "message") else e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception("Error in legal signoff: %s", e)
+            return Response({"error": "Failed to record legal signoff."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+
+
+

@@ -2,7 +2,7 @@ import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthProvider.jsx';
 import { EmployeeRuntimeProvider } from './context/EmployeeRuntimeProvider.jsx';
-import { AdminRoute, EmployeeRoute, AuthenticatedRoute } from './components/common/ProtectedRoute.jsx';
+import { AdminRoute, EmployeeRoute, PlatformAdminRoute, AuthenticatedRoute } from './components/common/ProtectedRoute.jsx';
 
 import { LoginPage } from './pages/auth/LoginPage.jsx';
 import { SignupPage } from './pages/auth/SignupPage.jsx';
@@ -25,6 +25,8 @@ import { EmployeeSettingsPage } from './pages/employee/EmployeeSettingsPage.jsx'
 import { EmployeePerformancePage } from './pages/employee/EmployeePerformancePage.jsx';
 import { EmployeeEarningsPage } from './pages/employee/EmployeeEarningsPage.jsx';
 import { EmployeeLocationPage } from './pages/employee/EmployeeLocationPage.jsx';
+import { MyVendorNetworkPage } from './pages/employee/MyVendorNetworkPage.jsx';
+import { TechnicianInvitationsPage } from './pages/employee/TechnicianInvitationsPage.jsx';
 
 function EmployeeWorkspaceLayout() {
   return (
@@ -48,6 +50,10 @@ import { AdminScorecardsPage } from './pages/admin/AdminScorecardsPage.jsx';
 import { AdminSocialSecurityPage } from './pages/admin/AdminSocialSecurityPage.jsx';
 import { AdminReportsPage } from './pages/admin/AdminReportsPage.jsx';
 import { AdminSkillsPage } from './pages/admin/AdminSkillsPage.jsx';
+import { VendorTechnicianNetworkPage } from './pages/admin/VendorTechnicianNetworkPage.jsx';
+import { VendorInvitationsPage } from './pages/admin/VendorInvitationsPage.jsx';
+import { PlatformVendorsPage } from './pages/platform/PlatformVendorsPage.jsx';
+import { PlatformWorkforcePage } from './pages/platform/PlatformWorkforcePage.jsx';
 import { CustomerTrackingPage } from './pages/customer/CustomerTrackingPage.jsx';
 
 function RootRedirect() {
@@ -158,6 +164,7 @@ export function App() {
             <Route path="attendance" element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="leave" element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="earnings" element={<EmployeeEarningsPage />} />
+            <Route path="wallet" element={<AdminWalletPage />} />
             <Route path="documents" element={<EmployeeDashboardPage />} />
             <Route path="services" element={<EmployeeDashboardPage />} />
             <Route path="profile" element={<EmployeeProfilePage />} />
@@ -165,6 +172,8 @@ export function App() {
             <Route path="performance" element={<EmployeePerformancePage />} />
             <Route path="feedback" element={<EmployeePerformancePage />} />
             <Route path="location" element={<EmployeeLocationPage />} />
+            <Route path="vendor-network" element={<MyVendorNetworkPage />} />
+            <Route path="invitations" element={<TechnicianInvitationsPage />} />
           </Route>
 
 
@@ -198,6 +207,41 @@ export function App() {
             element={
               <AdminRoute>
                 <AdminEmployeesPage />
+              </AdminRoute>
+            }
+          />
+          {/* SEVO Platform Admin Routes */}
+          <Route
+            path="/workforce/platform/vendors"
+            element={
+              <PlatformAdminRoute>
+                <PlatformVendorsPage />
+              </PlatformAdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/platform/workforce"
+            element={
+              <PlatformAdminRoute>
+                <PlatformWorkforcePage />
+              </PlatformAdminRoute>
+            }
+          />
+
+          {/* Vendor Admin & Operations Routes */}
+          <Route
+            path="/workforce/admin/technician-network"
+            element={
+              <AdminRoute>
+                <VendorTechnicianNetworkPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/vendor-invitations"
+            element={
+              <AdminRoute>
+                <VendorInvitationsPage />
               </AdminRoute>
             }
           />

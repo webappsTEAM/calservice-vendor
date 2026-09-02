@@ -64,30 +64,47 @@ def resolve_wallet_for_user(user):
     """
     Which wallet (if any) the currently-authenticated user is entitled to
     see/manage, and what kind of owner they are. Used by
-    WalletPayoutDetailsView and any future wallet-dashboard endpoint.
+    WalletPayoutDetailsView and any wallet-dashboard endpoints.
 
-    Returns (wallet, owner_role) where owner_role is one of:
-      "individual_worker" -- an individually-onboarded technician's own wallet
-      "provider_admin"     -- a provider business's admin/manager, managing
-                               their company's shared head wallet
-      None, None            -- user has no wallet to manage (not yet
-                               onboarded, or a pure customer/kiosk account)
+    Rules:
+      - Solo Worker (independent technician): individual_worker wallet.
+      - Tied Worker (dedicated to a vendor): None, None (money flows directly to company wallet).
+      - Provider / Vendor Admin: provider_admin (company head wallet).
+      - Platform Superadmin: None, None or company head wallet if tenant scoped.
     """
-    from workforce_api.models import WalletAccount
+    from workforce_api.models import WalletAccount, VendorTechnicianRelationship
 
     emp = getattr(user, "employee_profile", None)
     if emp is not None:
+        # Check if worker is tied to a vendor
+        has_active_rel = VendorTechnicianRelationship.objects.filter(
+            technician=emp,
+            status=VendorTechnicianRelationship.Status.ACTIVE,
+        ).exists()
+        if has_active_rel or emp.company_id:
+            # Tied workers do not have a separate wallet; job revenue flows to their vendor
+            return None, None
+
+        # Solo worker
         try:
             return emp.individual_wallet, "individual_worker"
         except WalletAccount.DoesNotExist:
-            pass
+            wallet, _ = WalletAccount.objects.get_or_create(
+                employee=emp,
+                account_type=WalletAccount.AccountType.INDIVIDUAL_WORKER,
+            )
+            return wallet, "individual_worker"
 
     company = getattr(user, "company", None)
     if company is not None and getattr(user, "role", "") in ("admin", "manager"):
         try:
             return company.head_wallet, "provider_admin"
         except WalletAccount.DoesNotExist:
-            pass
+            wallet, _ = WalletAccount.objects.get_or_create(
+                company=company,
+                account_type=WalletAccount.AccountType.PROVIDER_HEAD,
+            )
+            return wallet, "provider_admin"
 
     return None, None
 

@@ -38,7 +38,12 @@ export function AuthProvider({ children }) {
         const me = await apiFetchMe();
 
         if (me && me.username) {
-          const isAdmin = ['admin', 'manager'].includes((me.role || '').toLowerCase()) || Boolean(me.is_superuser);
+          const isPlatformAdmin = Boolean(me.is_superuser || me.is_platform_admin);
+          const isVendorAdmin = Boolean(
+            me.is_vendor_admin ||
+            (!isPlatformAdmin && ['admin', 'manager'].includes((me.role || '').toLowerCase()))
+          );
+          const isAdmin = isPlatformAdmin || isVendorAdmin;
           let empData = null;
 
           if (!isAdmin) {
@@ -49,8 +54,10 @@ export function AuthProvider({ children }) {
             }
           }
 
-          const isEmployee = Boolean(empData) || (me.role || '').toLowerCase() === 'employee';
-          const computedRole = isAdmin ? (me.role || 'admin').toLowerCase() : (isEmployee ? 'employee' : (me.role || 'employee').toLowerCase());
+          const isEmployee = Boolean(empData) || (!isAdmin && (me.role || '').toLowerCase() === 'employee');
+          const isTiedWorker = isEmployee && Boolean(me.is_tied_worker || empData?.is_tied);
+          const isSoloWorker = isEmployee && !isTiedWorker;
+          const computedRole = isPlatformAdmin ? 'platform_admin' : (isVendorAdmin ? 'vendor_admin' : 'employee');
 
           const u = {
             id: me.id,
@@ -62,7 +69,11 @@ export function AuthProvider({ children }) {
             companyId: me.company,
             companyName: me.company_name || '',
             isAdmin: isAdmin,
+            isPlatformAdmin: isPlatformAdmin,
+            isVendorAdmin: isVendorAdmin,
             isEmployee: isEmployee,
+            isTiedWorker: isTiedWorker,
+            isSoloWorker: isSoloWorker,
             registrationStatus: empData ? (empData.registration_status || 'not_started') : (isAdmin ? 'approved' : 'not_started'),
             isOnline: empData ? Boolean(empData.is_online) : false,
             availability: empData ? (empData.live_availability || 'offline') : 'offline',
@@ -251,7 +262,11 @@ export function AuthProvider({ children }) {
     togglePresence,
     isAuthenticated: Boolean(user),
     isAdmin: user?.isAdmin || false,
+    isPlatformAdmin: user?.isPlatformAdmin || false,
+    isVendorAdmin: user?.isVendorAdmin || false,
     isEmployee: user?.isEmployee || false,
+    isTiedWorker: user?.isTiedWorker || false,
+    isSoloWorker: user?.isSoloWorker || false,
     registrationStatus: user?.registrationStatus || 'not_started',
   }), [isReady, user, employee, login, signup, providerSignup, logout, refreshProfile, togglePresence]);
 

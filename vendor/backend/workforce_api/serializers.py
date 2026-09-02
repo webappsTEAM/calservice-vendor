@@ -59,6 +59,9 @@ class WorkforceEmployeeProfileSerializer(serializers.ModelSerializer):
     all_requested_services = serializers.SerializerMethodField()
     documents_status = serializers.SerializerMethodField()
     controlled_fields = serializers.SerializerMethodField()
+    is_tied = serializers.SerializerMethodField()
+    is_solo = serializers.SerializerMethodField()
+    tied_vendor = serializers.SerializerMethodField()
 
     class Meta:
         model = Employee
@@ -94,6 +97,9 @@ class WorkforceEmployeeProfileSerializer(serializers.ModelSerializer):
             "all_requested_services",
             "documents_status",
             "controlled_fields",
+            "is_tied",
+            "is_solo",
+            "tied_vendor",
             "is_active",
         ]
 
@@ -176,6 +182,39 @@ class WorkforceEmployeeProfileSerializer(serializers.ModelSerializer):
                 "identity_documents",
             ] if is_locked else [],
         }
+
+    def get_is_tied(self, obj):
+        from workforce_api.models import VendorTechnicianRelationship
+        has_active_rel = VendorTechnicianRelationship.objects.filter(
+            technician=obj,
+            status=VendorTechnicianRelationship.Status.ACTIVE,
+        ).exists()
+        return bool(has_active_rel or obj.company_id)
+
+    def get_is_solo(self, obj):
+        return not self.get_is_tied(obj)
+
+    def get_tied_vendor(self, obj):
+        from workforce_api.models import VendorTechnicianRelationship
+        active_rel = VendorTechnicianRelationship.objects.filter(
+            technician=obj,
+            status=VendorTechnicianRelationship.Status.ACTIVE,
+        ).select_related("vendor").first()
+        if active_rel and active_rel.vendor:
+            return {
+                "id": active_rel.vendor.id,
+                "company_name": getattr(active_rel.vendor, "company_name", getattr(active_rel.vendor, "name", "Vendor")),
+                "engagement_type": active_rel.engagement_type,
+                "started_at": active_rel.started_at,
+            }
+        elif obj.company:
+            return {
+                "id": obj.company.id,
+                "company_name": getattr(obj.company, "company_name", getattr(obj.company, "name", "Vendor")),
+                "engagement_type": "EMPLOYEE",
+                "started_at": obj.hire_date,
+            }
+        return None
 
 
 

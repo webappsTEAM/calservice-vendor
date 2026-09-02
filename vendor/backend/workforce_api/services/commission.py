@@ -27,32 +27,50 @@ INDIVIDUAL_PROMO_RATE = Decimal(str(getattr(settings, "SEVO_INDIVIDUAL_PROMO_RAT
 
 def resolve_payee_wallet(service_request):
     """
-    Which wallet gets credited for this job. An individually-onboarded
-    worker's own wallet takes priority if they have one; otherwise the
-    job's assigned employee is on a provider's team and the provider's
-    head wallet is credited instead. Returns (None, None) if the job has
-    no assigned employee or neither wallet exists yet (e.g. onboarding
-    incomplete) -- callers must handle that as "cannot settle yet", not
-    silently drop the money.
+    Which wallet gets credited for this job.
+    1. If the worker is TIED to a vendor (via active VendorTechnicianRelationship or emp.company_id),
+       the TIED VENDOR's head_wallet is ALWAYS credited (PROVIDER_HEAD).
+    2. If the worker is a SOLO WORKER (no active vendor assignment),
+       the worker's own individual_wallet is credited (INDIVIDUAL_WORKER).
     """
-    from workforce_api.models import WalletAccount
+    from workforce_api.models import WalletAccount, VendorTechnicianRelationship
 
     emp = service_request.assigned_employee
     if not emp:
         return None, None
 
+    # Priority 1: Check active VendorTechnicianRelationship or company affiliation
+    active_rel = VendorTechnicianRelationship.objects.filter(
+        technician=emp,
+        status=VendorTechnicianRelationship.Status.ACTIVE,
+    ).select_related("vendor").first()
+
+    target_company = None
+    if active_rel and active_rel.vendor:
+        target_company = active_rel.vendor
+    elif emp.company_id:
+        target_company = emp.company
+
+    if target_company:
+        # Tied to a vendor -> credit the Vendor Company's head wallet!
+        try:
+            return target_company.head_wallet, "PROVIDER_HEAD"
+        except WalletAccount.DoesNotExist:
+            wallet, _ = WalletAccount.objects.get_or_create(
+                company=target_company,
+                account_type=WalletAccount.AccountType.PROVIDER_HEAD,
+            )
+            return wallet, "PROVIDER_HEAD"
+
+    # Priority 2: Solo Worker -> credit the worker's individual wallet
     try:
         return emp.individual_wallet, "INDIVIDUAL_WORKER"
     except WalletAccount.DoesNotExist:
-        pass
-
-    if emp.company_id:
-        try:
-            return emp.company.head_wallet, "PROVIDER_HEAD"
-        except WalletAccount.DoesNotExist:
-            pass
-
-    return None, None
+        wallet, _ = WalletAccount.objects.get_or_create(
+            employee=emp,
+            account_type=WalletAccount.AccountType.INDIVIDUAL_WORKER,
+        )
+        return wallet, "INDIVIDUAL_WORKER"
 
 
 def is_in_promo_period(wallet) -> bool:
