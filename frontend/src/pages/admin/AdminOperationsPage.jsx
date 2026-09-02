@@ -24,6 +24,8 @@ import {
   apiAdminDecideExtension,
   apiToggleLocationActive,
   apiGetJobTimeline,
+  apiGetDispatchRadius,
+  apiUpdateDispatchRadius,
 } from '../../api/workforceService.js';
 import { apiGetLocations, apiCreateLocation } from '../../api/clockInApi.js';
 import { apiRequest } from '../../api/client.js';
@@ -432,11 +434,33 @@ export function AdminOperationsPage() {
   const [timelineLoading, setTimelineLoading] = useState(false);
   const [timelineData, setTimelineData] = useState(null);
 
+  const [dispatchRadiusKm, setDispatchRadiusKm] = useState(20.0);
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  const [editingRadius, setEditingRadius] = useState('20.0');
+  const [updatingRadius, setUpdatingRadius] = useState(false);
+
+  const handleSaveDispatchRadius = async () => {
+    try {
+      setUpdatingRadius(true);
+      const val = parseFloat(editingRadius);
+      const res = await apiUpdateDispatchRadius(val);
+      if (res?.dispatch_radius_km !== undefined) {
+        setDispatchRadiusKm(res.dispatch_radius_km);
+        setEditingRadius(res.dispatch_radius_km.toString());
+        setStatusMsg({ type: 'success', text: `Global automatic dispatch radius updated to ${res.dispatch_radius_km} km.` });
+      }
+    } catch (err) {
+      setStatusMsg({ type: 'error', text: err?.data?.error || err.message || 'Failed to update dispatch radius.' });
+    } finally {
+      setUpdatingRadius(false);
+    }
+  };
+
   const fetchCandidatesForJob = async (job) => {
     if (!job) return;
     try {
       setCandidatesLoading(true);
-      const res = await apiGetEligibleTechnicians(job.id, job.service_category || job.issue_title, 20.0);
+      const res = await apiGetEligibleTechnicians(job.id, job.service_category || job.issue_title, dispatchRadiusKm);
       const list = Array.isArray(res) ? res : res?.candidates || res?.results || [];
       setEligibleFleet(list);
     } catch (_) {
@@ -449,8 +473,16 @@ export function AdminOperationsPage() {
   const loadData = async () => {
     try {
       setIsLoading(true);
-      // Note: approved-employee list removed — online/offline counts now derived from fleetMap.
-      // This eliminates a duplicate of the /applications/?status=approved request.
+      apiGetDispatchRadius().then((res) => {
+        if (res?.dispatch_radius_km !== undefined) {
+          setDispatchRadiusKm(res.dispatch_radius_km);
+          setEditingRadius(res.dispatch_radius_km.toString());
+        }
+        if (res?.is_superadmin !== undefined) {
+          setIsSuperAdmin(res.is_superadmin);
+        }
+      }).catch(() => {});
+
       const [jobsList, locsData, fleetData, pendingSvcData, pendingExtData] =
         await Promise.all([
           apiGetWorkforceJobs().catch(() => []),
@@ -728,18 +760,18 @@ export function AdminOperationsPage() {
             {activeTab === 'dispatch' && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
                 {/* Service Request Queue Column (5 cols) */}
-                <div className="lg:col-span-5 border border-slate-200 rounded overflow-hidden flex flex-col">
-                  <div className="bg-slate-50 px-3.5 py-2.5 border-b border-slate-200 flex items-center justify-between">
-                    <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-                      <Clock className="w-3.5 h-3.5 text-blue-600" />
-                      1. Customer Service Requests ({jobs.length})
+                <div className="lg:col-span-5 border border-zinc-200/90 rounded-md overflow-hidden flex flex-col shadow-card">
+                  <div className="bg-zinc-50/80 px-4 py-3 border-b border-zinc-200/80 flex items-center justify-between">
+                    <h3 className="text-xs font-bold text-zinc-950 uppercase tracking-wider flex items-center gap-2">
+                      <Clock className="w-3.5 h-3.5 text-zinc-700" />
+                      <span>1. Customer Service Requests ({jobs.length})</span>
                     </h3>
-                    <span className="text-[10px] font-mono text-slate-500 bg-slate-200/70 px-1.5 py-0.5 rounded">
+                    <span className="text-[10px] font-mono font-bold text-zinc-700 bg-zinc-200/70 px-2 py-0.5 rounded-full">
                       Auto-Dispatched
                     </span>
                   </div>
 
-                  <div className="divide-y divide-slate-100 max-h-[520px] overflow-y-auto">
+                  <div className="divide-y divide-zinc-100 max-h-[520px] overflow-y-auto">
                     {jobs.length > 0 ? (
                       jobs.map((j) => {
                         const isSelected = selectedJob?.id === j.id;
@@ -747,21 +779,21 @@ export function AdminOperationsPage() {
                           <div
                             key={j.id}
                             onClick={() => setSelectedJob(j)}
-                            className={`p-3 cursor-pointer transition-colors ${
-                              isSelected ? 'bg-blue-50/70 border-l-4 border-blue-600' : 'hover:bg-slate-50'
+                            className={`p-3.5 cursor-pointer transition-all ${
+                              isSelected ? 'bg-zinc-100/90 border-l-4 border-zinc-950 font-medium' : 'hover:bg-zinc-50'
                             }`}
                           >
-                            <div className="flex items-center justify-between text-[11px] mb-1">
-                              <span className="font-mono font-bold text-blue-600">
+                            <div className="flex items-center justify-between text-xs mb-1">
+                              <span className="font-mono font-bold text-zinc-950">
                                 {j.request_id || `SR-${j.id}`}
                               </span>
                               <StatusBadge status={j.status} size="xs" />
                             </div>
-                            <p className="text-xs font-bold text-slate-900 truncate">
+                            <p className="text-xs font-bold text-zinc-900 truncate">
                               {j.service_title || j.service_category || j.issue_title}
                             </p>
-                            <p className="text-[11px] text-slate-500 truncate mt-0.5">{j.address || 'Location provided in GPS coordinates'}</p>
-                            <div className="flex items-center justify-between mt-1 pt-1 border-t border-slate-100 text-[10px] text-slate-500">
+                            <p className="text-[11px] text-zinc-500 truncate mt-0.5">{j.address || 'Location provided in GPS coordinates'}</p>
+                            <div className="flex items-center justify-between mt-2 pt-1.5 border-t border-zinc-100 text-[10px] text-zinc-500">
                               <span>
                                 {j.assigned_employee
                                   ? `Assigned: ${j.assigned_employee.name || j.assigned_employee.employee_id || 'Tech'}`
@@ -769,7 +801,7 @@ export function AdminOperationsPage() {
                                   ? 'Offer Active (Awaiting Acceptance)'
                                   : 'Auto-Dispatch Active'}
                               </span>
-                              <span className="font-mono font-bold text-slate-600">
+                              <span className="font-mono font-bold text-zinc-700">
                                 {j.preferred_date || 'Today'}
                               </span>
                             </div>
@@ -777,7 +809,7 @@ export function AdminOperationsPage() {
                         );
                       })
                     ) : (
-                      <div className="p-8 text-center text-xs text-slate-500">
+                      <div className="p-8 text-center text-xs text-zinc-500">
                         No active service bookings in queue.
                       </div>
                     )}
@@ -785,16 +817,16 @@ export function AdminOperationsPage() {
                 </div>
 
                 {/* Automated Dispatch Telemetry & Candidate Monitor Column (7 cols) */}
-                <div className="lg:col-span-7 border border-slate-200 rounded overflow-hidden flex flex-col">
-                  <div className="bg-slate-50 px-3.5 py-2.5 border-b border-slate-200 flex items-center justify-between">
+                <div className="lg:col-span-7 border border-zinc-200/90 rounded-md overflow-hidden flex flex-col shadow-card">
+                  <div className="bg-zinc-50/80 px-4 py-3 border-b border-zinc-200/80 flex items-center justify-between flex-wrap gap-2">
                     <div>
-                      <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-                        <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-                        2. Live Automated Geo-Dispatch Engine Monitor
+                      <h3 className="text-xs font-bold text-zinc-950 uppercase tracking-wider flex items-center gap-2">
+                        <Sparkles className="w-3.5 h-3.5 text-zinc-800" />
+                        <span>2. Live Automated Geo-Dispatch Engine Monitor</span>
                       </h3>
-                      <span className="text-[11px] text-slate-500">
+                      <span className="text-[11px] text-zinc-500 mt-0.5 block">
                         Inspecting Job:{' '}
-                        <strong className="text-blue-600">
+                        <strong className="text-zinc-950 font-bold">
                           {selectedJob ? selectedJob.request_id || `SR-${selectedJob.id}` : 'None Selected'}
                         </strong>
                         {selectedJob?.status && ` (${selectedJob.status.toUpperCase()})`}
@@ -805,30 +837,55 @@ export function AdminOperationsPage() {
                         <button
                           type="button"
                           onClick={() => handleOpenTimeline(selectedJob)}
-                          className="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 font-bold rounded text-xs inline-flex items-center gap-1.5 shadow-sm transition-colors"
+                          className="px-3 py-1.5 min-h-[34px] bg-white hover:bg-zinc-50 border border-zinc-300 text-zinc-800 font-bold rounded-lg text-xs inline-flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
                         >
-                          <History className="w-3.5 h-3.5 text-blue-600" />
-                          View Timeline
+                          <History className="w-3.5 h-3.5 text-zinc-700" />
+                          <span>Timeline</span>
                         </button>
                         <button
                           type="button"
                           onClick={handleTriggerAutoDispatch}
                           disabled={dispatchLoading}
-                          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded text-xs inline-flex items-center gap-1 shadow-sm transition-colors"
+                          className="px-3.5 py-1.5 min-h-[34px] bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-950 text-white font-bold rounded-lg text-xs inline-flex items-center gap-1.5 shadow-xs transition-all cursor-pointer disabled:opacity-50"
                         >
                           <Sparkles className="w-3.5 h-3.5" />
-                          {dispatchLoading ? 'Reconciling...' : 'Re-evaluate Auto-Dispatch'}
+                          <span>{dispatchLoading ? 'Reconciling...' : 'Re-evaluate Auto-Dispatch'}</span>
                         </button>
                       </div>
                     )}
                   </div>
 
-                  {/* Operational Protocol Banner */}
-                  <div className="p-3 bg-emerald-50/70 border-b border-emerald-200/60 text-[11px] text-emerald-900 flex items-start gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                    <div>
-                      <span className="font-bold">20 KM Geographic Dispatch Active:</span> Fallback search evaluates candidates across a <strong>true 20 km circular radius</strong> in all 360° directions using authoritative geodesic Haversine calculation and 9-Gate qualification.
+
+                  {/* Operational Protocol & SuperAdmin Radius Banner */}
+                  <div className="p-3 bg-emerald-50/70 border-b border-emerald-200/60 text-[11px] text-emerald-900 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                    <div className="flex items-start gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-bold">{dispatchRadiusKm} KM Global Geographic Dispatch Active:</span> Candidate discovery evaluates technicians across a <strong>true {dispatchRadiusKm} km circular radius</strong> in all 360° directions using authoritative Redis GEOSEARCH and PostgreSQL 9-Gate qualification.
+                      </div>
                     </div>
+                    {isSuperAdmin && (
+                      <div className="flex items-center gap-2 shrink-0 bg-white/90 p-1.5 rounded border border-emerald-300 shadow-xs">
+                        <span className="text-[10px] font-bold text-emerald-900 uppercase">SuperAdmin Radius (KM):</span>
+                        <input
+                          type="number"
+                          step="0.5"
+                          min="0.1"
+                          max="500"
+                          value={editingRadius}
+                          onChange={(e) => setEditingRadius(e.target.value)}
+                          className="w-16 px-1.5 py-0.5 text-xs font-bold border border-slate-300 rounded bg-white text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleSaveDispatchRadius}
+                          disabled={updatingRadius}
+                          className="px-2 py-0.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] rounded transition-colors"
+                        >
+                          {updatingRadius ? 'Saving...' : 'Save Radius'}
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   {/* 20 KM Distance Bands Classification Tabs */}

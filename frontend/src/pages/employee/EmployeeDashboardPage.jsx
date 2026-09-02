@@ -30,9 +30,16 @@ import {
   apiCancelJob,
   apiUploadDocument,
 } from '../../api/workforceService.js';
-import { apiClockIn } from '../../api/clockInApi.js';
+import {
+  apiClockIn,
+  apiClockOut,
+  apiStartBreak,
+  apiEndBreak,
+  apiGetTimeTracking as apiGetShiftTimeTracking,
+} from '../../api/clockInApi.js';
 import { TechnicianNavigationView } from '../../components/employee/navigation/TechnicianNavigationView.jsx';
 import { TechnicianDashboard } from '../../components/employee/dashboard/TechnicianDashboard.jsx';
+import { PortalCockpitLayout } from '../../components/employee/dashboard/PortalCockpitLayout.jsx';
 
 import { AppShell } from '../../components/common/AppShell.jsx';
 import { StatusBadge } from '../../components/enterprise/StatusBadge.jsx';
@@ -391,8 +398,8 @@ export function EmployeeDashboardPage() {
     };
   }, [selectedJob?.id, selectedJob?.status, preServiceState.geofence_passed]);
 
-  // Centralized Auto Clock-In Effect: Triggers automatically when geofence_passed && otp_verified && presence_photo
-  // regardless of which prerequisite was satisfied last (Geofence last, OTP last, or Selfie last).
+  // Centralized Auto Clock-In Effect: Triggers automatically only when ALL 4 mandatory fields are complete:
+  // geofence_passed && otp_verified && presence_photo && work_area_photo.
   useEffect(() => {
     if (!selectedJob?.id) return;
     const st = (selectedJob.status || '').toLowerCase();
@@ -400,19 +407,21 @@ export function EmployeeDashboardPage() {
     if (isClockedIn || isClockingInRef.current) return;
 
     const isAllReady = Boolean(
-      preServiceState.is_complete ||
-      (preServiceState.geofence_passed && preServiceState.otp_verified && preServiceState.presence_photo)
+      preServiceState.geofence_passed &&
+      preServiceState.otp_verified &&
+      preServiceState.presence_photo &&
+      preServiceState.work_area_photo
     );
 
     if (isAllReady) {
-      console.info(`[EmployeeDashboard] Auto Clock-In condition satisfied for Job #${selectedJob.id}. Executing auto clock-in...`);
+      console.info(`[EmployeeDashboard] All 4 mandatory gates satisfied for Job #${selectedJob.id}. Executing auto clock-in...`);
       handleDirectJobClockIn();
     }
   }, [
-    preServiceState.is_complete,
     preServiceState.geofence_passed,
     preServiceState.otp_verified,
     preServiceState.presence_photo,
+    preServiceState.work_area_photo,
     selectedJob?.id,
     selectedJob?.status,
     isClockedIn,
@@ -428,9 +437,9 @@ export function EmployeeDashboardPage() {
       const updatedState = { ...preServiceState, otp_verified: true, is_complete: res.is_complete };
       setPreServiceState(updatedState);
       await loadDashboard();
-      // Auto Clock-In Trigger: if all 3 mandatory conditions are now satisfied
-      if (res.is_complete || (updatedState.geofence_passed && updatedState.presence_photo)) {
-        console.info('[EmployeeDashboard] All mandatory pre-checks complete after OTP verification. Triggering auto clock-in...');
+      // Auto Clock-In Trigger: only if ALL 4 mandatory gates are now satisfied
+      if (updatedState.geofence_passed && updatedState.presence_photo && updatedState.work_area_photo) {
+        console.info('[EmployeeDashboard] All 4 mandatory pre-checks complete after OTP verification. Triggering auto clock-in...');
         await handleDirectJobClockIn(targetJob);
       }
       setTimeout(() => setSuccessMsg(''), 4000);
@@ -470,9 +479,15 @@ export function EmployeeDashboardPage() {
       };
       setPreServiceState(updatedState);
       await loadDashboard();
-      // Auto Clock-In Trigger: if all 3 mandatory conditions are now satisfied
-      if (res.is_complete || (updatedState.geofence_passed && updatedState.otp_verified && (photoType === 'presence' || updatedState.presence_photo))) {
-        console.info('[EmployeeDashboard] All mandatory pre-checks complete after photo upload. Triggering auto clock-in...');
+      // Auto Clock-In Trigger: only if ALL 4 mandatory gates are now satisfied
+      const allFourSatisfied =
+        updatedState.geofence_passed &&
+        updatedState.otp_verified &&
+        (photoType === 'presence' || updatedState.presence_photo) &&
+        (photoType === 'work_area' || updatedState.work_area_photo);
+
+      if (allFourSatisfied) {
+        console.info('[EmployeeDashboard] All 4 mandatory pre-checks complete after photo upload. Triggering auto clock-in...');
         await handleDirectJobClockIn(targetJob);
       }
       setTimeout(() => setSuccessMsg(''), 4000);
@@ -509,6 +524,79 @@ export function EmployeeDashboardPage() {
     } finally {
       setActionLoading(null);
       isClockingInRef.current = false;
+    }
+  };
+
+  const handleClockInAction = async () => {
+    try {
+      setActionLoading('clockin');
+      const loc = liveLocation || (await scanCurrentLocation());
+      await apiClockIn({
+        latitude: loc?.latitude,
+        longitude: loc?.longitude,
+        accuracy: loc?.accuracy,
+        address: 'Technician GPS Location',
+      });
+      setSuccessMsg('Clocked in successfully!');
+      const timeData = await apiGetTimeTracking().catch(() => null);
+      if (timeData) setTimeTracking(timeData);
+      await loadDashboard({ force: true });
+      setTimeout(() => setSuccessMsg(''), 4000);
+    } catch (err) {
+      setError(err.message || 'Clock-in failed');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleClockOutAction = async () => {
+    try {
+      setActionLoading('clockout');
+      const loc = liveLocation || (await scanCurrentLocation());
+      await apiClockOut({
+        latitude: loc?.latitude,
+        longitude: loc?.longitude,
+        accuracy: loc?.accuracy,
+      });
+      setSuccessMsg('Clocked out successfully!');
+      const timeData = await apiGetTimeTracking().catch(() => null);
+      if (timeData) setTimeTracking(timeData);
+      await loadDashboard({ force: true });
+      setTimeout(() => setSuccessMsg(''), 4000);
+    } catch (err) {
+      setError(err.message || 'Clock-out failed');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleStartBreakAction = async (breakType = 'LUNCH') => {
+    try {
+      setActionLoading('break');
+      await apiStartBreak(breakType);
+      setSuccessMsg(`Break (${breakType}) started.`);
+      const timeData = await apiGetTimeTracking().catch(() => null);
+      if (timeData) setTimeTracking(timeData);
+      setTimeout(() => setSuccessMsg(''), 4000);
+    } catch (err) {
+      setError(err.message || 'Failed to start break');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleEndBreakAction = async () => {
+    try {
+      setActionLoading('break');
+      await apiEndBreak();
+      setSuccessMsg('Break ended. Shift resumed.');
+      const timeData = await apiGetTimeTracking().catch(() => null);
+      if (timeData) setTimeTracking(timeData);
+      setTimeout(() => setSuccessMsg(''), 4000);
+    } catch (err) {
+      setError(err.message || 'Failed to end break');
+    } finally {
+      setActionLoading(null);
     }
   };
 
@@ -816,7 +904,9 @@ export function EmployeeDashboardPage() {
       if (!candidateJob) return;
 
       const targetJob = (activeJobs && activeJobs.find(j => j.id === candidateJob.id)) || candidateJob;
-      const amtDue = parseFloat(customAmount !== null && customAmount !== undefined ? customAmount : (targetJob.payment?.amount_due || targetJob.total_amount || 0));
+      const amtDue = (customAmount !== null && customAmount !== undefined && !isNaN(customAmount) && parseFloat(customAmount) > 0)
+        ? parseFloat(customAmount)
+        : (targetJob.payment?.amount_due ? parseFloat(targetJob.payment.amount_due) : (targetJob.total_amount ? parseFloat(targetJob.total_amount) : null));
 
       try {
         setIsCollectingCash(true);
@@ -944,7 +1034,7 @@ export function EmployeeDashboardPage() {
       setCustomCancelReason('');
     };
 
-    const handleConfirmCancelJob = async (e) => {
+    const handleConfirmCancelAssignment = async (e) => {
       if (e) e.preventDefault();
       if (!cancelModalJob) return;
       const cancellingId = cancelModalJob.id;
@@ -958,15 +1048,25 @@ export function EmployeeDashboardPage() {
         setIsCancellingJob(true);
         setActionLoading(cancellingId);
         setError('');
-        await apiCancelJob(cancellingId, selectedCancelReason, customCancelReason.trim());
+        const reasonText = selectedCancelReason === 'OTHER' ? customCancelReason.trim() : (customCancelReason.trim() || selectedCancelReason);
+        await apiCancelJobAssignment(cancellingId, selectedCancelReason, reasonText);
         setCancelModalJob(null);
-        setSuccessMsg('Job assignment cancelled. Redispatch initiated for next available technician.');
+        setSuccessMsg('Job assignment cancelled. You are now AVAILABLE for new requests.');
+        if (typeof reconcileJobCompleted === 'function') {
+          reconcileJobCompleted(cancellingId, { id: cancellingId, status: 'unassigned' });
+        }
         setSelectedJob(null);
-        await loadDashboard();
+        if (typeof refreshActiveJobs === 'function') {
+          await refreshActiveJobs({ force: true });
+        }
+        if (typeof refreshProfile === 'function') {
+          refreshProfile(true).catch(() => {});
+        }
+        await loadDashboard({ force: true });
         setTimeout(() => setSuccessMsg(''), 4000);
       } catch (err) {
-        if (err.code === 'CANCELLATION_WINDOW_EXPIRED' || err.status === 409) {
-          setError('Cancellation window closed (5 minutes elapsed since acceptance).');
+        if (err.code === 'CANCELLATION_LOCKED_AFTER_OTP' || err.status === 409) {
+          setError('Cancellation is locked once Customer OTP is verified.');
         } else if (err.code === 'CANCELLATION_NOT_ALLOWED_IN_CURRENT_STATE') {
           setError('Cancellation is not allowed in the current state.');
         } else {
@@ -1072,20 +1172,191 @@ export function EmployeeDashboardPage() {
     const isSettingsRoute = pathname.includes('/settings');
     const isHomeRoute = !isJobsRoute && !isDocumentsRoute && !isServicesRoute && !isSettingsRoute;
 
-    const breadcrumbs = isHomeRoute
-      ? []
-      : [
-          { label: 'Home', to: '/workforce/employee/dashboard' },
-          ...(isJobsRoute
-            ? [{ label: 'Jobs Queue' }]
-            : isDocumentsRoute
-              ? [{ label: 'Documents' }]
-              : isServicesRoute
-                ? [{ label: 'Services' }]
-                : isSettingsRoute
-                  ? [{ label: 'Settings' }]
-                  : []),
-        ];
+    if (isHomeRoute) {
+      return (
+        <AppShell noPadding={true}>
+          <PortalCockpitLayout
+            user={user}
+            employee={employee}
+            profile={profile}
+            isOnline={isOnline}
+            isTogglingOnline={isTogglingOnline}
+            handleToggleOnline={handleToggleOnline}
+            timeTracking={timeTracking}
+            activeJobs={activeJobs}
+            completedJobs={completedJobs}
+            allJobs={allJobs}
+            incomingOffers={incomingOffers}
+            activeAssignedJob={activeAssignedJob}
+            hasActiveJob={hasActiveJob}
+            liveLocation={liveLocation}
+            actionLoading={actionLoading}
+            handleAcceptOffer={handleAcceptOffer}
+            handleRejectOffer={handleRejectOffer}
+            handleJobAction={handleJobAction}
+            handleManualVerifyArrival={handleManualVerifyArrival}
+            handleDirectJobClockIn={handleDirectJobClockIn}
+            onOpenCancelModal={handleOpenCancelModal}
+            preServiceState={preServiceState}
+            otpInput={otpInput}
+            setOtpInput={setOtpInput}
+            handleVerifyOtpSubmit={handleVerifyOtpSubmit}
+            handleResendOtp={handleResendOtp}
+            openLiveCamera={openLiveCamera}
+            handlePhotoUploadSubmit={handlePhotoUploadSubmit}
+            onRefreshData={loadDashboard}
+            onClockIn={handleDirectJobClockIn}
+            onClockOut={handleClockOutAction}
+            onStartBreak={handleStartBreakAction}
+            onEndBreak={handleEndBreakAction}
+          />
+
+          {/* Real-Time Live Camera Viewfinder & Snapshot Modal */}
+          <LiveCameraCaptureModal
+            isOpen={cameraModalConfig.isOpen}
+            onClose={closeLiveCamera}
+            title={cameraModalConfig.title}
+            defaultFacingMode={cameraModalConfig.defaultFacingMode}
+            fileNamePrefix={cameraModalConfig.fileNamePrefix}
+            onCapture={(file, previewUrl) => {
+              if (cameraModalConfig.onCapture) {
+                cameraModalConfig.onCapture(file, previewUrl);
+              }
+            }}
+          />
+
+          {/* Estimation & Commercial Quotation Builder Modal */}
+          {isQuotationModalOpen && selectedJob && (
+            <QuotationBuilderModal
+              job={selectedJob}
+              quoteId={selectedJob.active_quote_id}
+              isOpen={isQuotationModalOpen}
+              onClose={() => setIsQuotationModalOpen(false)}
+              onQuoteSaved={() => {
+                loadDashboard({ silent: true });
+              }}
+            />
+          )}
+
+          {/* Decline Offer Modal */}
+          {declineModalJob && (
+            <Modal
+              isOpen={Boolean(declineModalJob)}
+              onClose={() => setDeclineModalJob(null)}
+              title="Decline Job Offer"
+            >
+              <div className="space-y-4 text-xs font-sans">
+                <p className="text-slate-600">
+                  Select a reason for declining job #{declineModalJob.request_id || declineModalJob.id}:
+                </p>
+                <select
+                  value={selectedDeclineReason}
+                  onChange={(e) => setSelectedDeclineReason(e.target.value)}
+                  className="w-full p-2 border border-slate-300 rounded-lg text-xs font-medium"
+                >
+                  <option value="Too far">Too far away</option>
+                  <option value="Busy with personal work">Busy with personal schedule</option>
+                  <option value="Skill mismatch">Skill mismatch for required task</option>
+                  <option value="Vehicle problem">Vehicle problem / transit delay</option>
+                  <option value="Other">Other</option>
+                </select>
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setDeclineModalJob(null)}
+                    className="px-4 py-2 border border-slate-300 text-slate-700 font-bold rounded-lg hover:bg-slate-50 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmDeclineOffer}
+                    disabled={isDecliningOffer}
+                    className="px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg cursor-pointer"
+                  >
+                    {isDecliningOffer ? 'Declining...' : 'Confirm Decline'}
+                  </button>
+                </div>
+              </div>
+            </Modal>
+          )}
+
+          {/* Cancel Assignment Modal */}
+          {/* Cancel Assignment Modal */}
+          {cancelModalJob && (
+            <Modal
+              isOpen={Boolean(cancelModalJob)}
+              onClose={() => setCancelModalJob(null)}
+              title="Cancel Job Assignment"
+            >
+              <div className="space-y-4 text-xs font-sans">
+                <p className="text-slate-600">
+                  Select a reason for cancelling assignment <strong>#{cancelModalJob.request_id || cancelModalJob.id}</strong> (Available before Customer OTP):
+                </p>
+                <select
+                  value={selectedCancelReason}
+                  onChange={(e) => setSelectedCancelReason(e.target.value)}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-medium outline-none focus:bg-white focus:border-rose-500"
+                >
+                  <option value="VEHICLE_ISSUE">Vehicle Breakdown / Transit Issue</option>
+                  <option value="PERSONAL_EMERGENCY">Personal Emergency</option>
+                  <option value="TRAFFIC_ROUTE_ISSUE">Extreme Traffic / Road Closed</option>
+                  <option value="CUSTOMER_LOCATION_ISSUE">Customer Location Unreachable</option>
+                  <option value="TOO_FAR">Location Too Far / Out of Reach</option>
+                  <option value="SERVICE_MISMATCH">Skill / Tooling Mismatch</option>
+                  <option value="SAFETY_CONCERN">Safety Concern at Site</option>
+                  <option value="OTHER">Other Reason</option>
+                </select>
+
+                <div>
+                  <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                    Additional Notes / Explanation {selectedCancelReason === 'OTHER' ? '*' : '(Optional)'}
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={customCancelReason}
+                    onChange={(e) => setCustomCancelReason(e.target.value)}
+                    placeholder="Provide details about the cancellation reason..."
+                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-sans outline-none focus:bg-white focus:border-rose-500"
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setCancelModalJob(null)}
+                    className="px-4 py-2 border border-slate-300 text-slate-700 font-bold rounded-lg hover:bg-slate-50 cursor-pointer"
+                  >
+                    Keep Assignment
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmCancelAssignment}
+                    disabled={isCancellingJob}
+                    className="px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg cursor-pointer transition-all shadow-sm"
+                  >
+                    {isCancellingJob ? 'Cancelling...' : 'Confirm Cancellation'}
+                  </button>
+                </div>
+              </div>
+            </Modal>
+          )}
+        </AppShell>
+      );
+    }
+
+    const breadcrumbs = [
+      { label: 'Home', to: '/workforce/employee/dashboard' },
+      ...(isJobsRoute
+        ? [{ label: 'Jobs Queue' }]
+        : isDocumentsRoute
+          ? [{ label: 'Documents' }]
+          : isServicesRoute
+            ? [{ label: 'Services' }]
+            : isSettingsRoute
+              ? [{ label: 'Settings' }]
+              : []),
+    ];
 
     return (
       <AppShell breadcrumbs={breadcrumbs}>

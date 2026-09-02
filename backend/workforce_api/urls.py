@@ -58,6 +58,7 @@ from .views import (
     WorkforceNotificationListView,
     WorkforceNotificationMarkReadView,
     WorkforceNotificationClearView,
+    WorkforceDispatchRadiusConfigView,
     WorkforceScheduleManageView,
     WorkforceMyScheduleView,
     WorkforceSkillManageView,
@@ -356,6 +357,9 @@ urlpatterns = [
     path("admin/quotes/metrics/", WorkforceAdminQuoteMetricsView.as_view(), name="workforce-admin-quote-metrics"),
     path("admin/quotes/<int:pk>/clear-structural/", WorkforceAdminQuoteClearanceView.as_view(), name="workforce-admin-quote-clear-structural"),
     path("admin/quotes/<int:pk>/retry-conversion/", WorkforceAdminQuoteRetryConversionView.as_view(), name="workforce-admin-quote-retry-conversion"),
+
+    # Global Dispatch Configuration
+    path("admin/settings/dispatch-radius/", WorkforceDispatchRadiusConfigView.as_view(), name="workforce-admin-dispatch-radius"),
 ]
 
 

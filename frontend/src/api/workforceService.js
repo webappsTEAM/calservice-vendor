@@ -217,9 +217,16 @@ export async function apiGetJobPayment(jobId) {
 }
 
 export async function apiCollectJobCash(jobId, amountReceived) {
+  const payload =
+    amountReceived !== null &&
+    amountReceived !== undefined &&
+    !isNaN(amountReceived) &&
+    parseFloat(amountReceived) > 0
+      ? { amount_received: parseFloat(amountReceived) }
+      : {};
   return await apiRequest(`/workforce/jobs/${jobId}/payment/collect/`, {
     method: 'POST',
-    json: { amount_received: amountReceived },
+    json: payload,
   });
 }
 
@@ -1048,6 +1055,20 @@ export async function apiDecideJoinRequest(requestIdOrEmployeeId, action, reason
     },
   });
 }
+
+// ── SuperAdmin Global Dispatch Configuration ──────────────────────────────────
+
+export async function apiGetDispatchRadius() {
+  return await apiRequest('/workforce/admin/settings/dispatch-radius/');
+}
+
+export async function apiUpdateDispatchRadius(radiusKm) {
+  return await apiRequest('/workforce/admin/settings/dispatch-radius/', {
+    method: 'POST',
+    json: { dispatch_radius_km: radiusKm },
+  });
+}
+
 
 
 

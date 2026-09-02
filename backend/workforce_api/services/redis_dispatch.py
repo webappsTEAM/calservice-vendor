@@ -99,7 +99,7 @@ def remove_technician_from_dispatch_geo(employee_id: int) -> bool:
 def find_nearby_technician_candidates(
     latitude: float,
     longitude: float,
-    radius_km: float = DISPATCH_CANDIDATE_RADIUS_KM,
+    radius_km: Optional[float] = None,
     max_age_seconds: Optional[int] = None
 ) -> Optional[List[int]]:
     """
@@ -114,6 +114,10 @@ def find_nearby_technician_candidates(
     client = get_redis_client()
     if not client:
         return None
+
+    if radius_km is None:
+        from workforce_api.services.geo_spatial import get_global_dispatch_radius_km
+        radius_km = get_global_dispatch_radius_km()
 
     if max_age_seconds is None:
         max_age_seconds = DISPATCH_LOCATION_MAX_AGE_SECONDS

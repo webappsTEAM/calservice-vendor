@@ -224,10 +224,10 @@ export function CustomerTrackingPage() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white font-sans p-4">
+      <div className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center text-white font-sans p-4">
         <div className="flex flex-col items-center gap-4">
-          <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
-          <div className="text-sm font-semibold tracking-wide text-slate-300">Connecting to CalTrack Live GPS Stream...</div>
+          <div className="w-10 h-10 border-4 border-zinc-100 border-t-transparent rounded-full animate-spin" />
+          <div className="text-sm font-bold tracking-wide text-zinc-300">Connecting to CalTrack Live GPS Stream...</div>
         </div>
       </div>
     );
@@ -235,14 +235,14 @@ export function CustomerTrackingPage() {
 
   if (error) {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white font-sans p-4">
-        <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center shadow-2xl">
+      <div className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center text-white font-sans p-4">
+        <div className="max-w-md w-full bg-zinc-900 border border-zinc-800 rounded-md p-6 text-center shadow-card">
           <AlertCircle className="w-12 h-12 text-rose-500 mx-auto mb-3" />
-          <h2 className="text-lg font-bold text-white mb-2">Tracking Session Unavailable</h2>
-          <p className="text-xs text-slate-400 mb-6">{error}</p>
+          <h2 className="text-base font-bold text-white mb-2">Tracking Session Unavailable</h2>
+          <p className="text-xs text-zinc-400 mb-6 leading-relaxed">{error}</p>
           <button
             onClick={() => fetchTracking(false)}
-            className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl transition cursor-pointer"
+            className="w-full py-2.5 bg-zinc-100 hover:bg-white text-zinc-950 text-xs font-bold rounded-lg transition-all cursor-pointer shadow-xs"
           >
             Retry Connection
           </button>
@@ -254,32 +254,32 @@ export function CustomerTrackingPage() {
   // Terminal State: Service Completed (No Live Map)
   if (currentStatus === 'COMPLETED') {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col font-sans">
-        <header className="bg-slate-900 border-b border-slate-800 px-6 py-3.5 flex items-center justify-between">
+      <div className="min-h-screen bg-zinc-950 flex flex-col font-sans">
+        <header className="bg-zinc-900 border-b border-zinc-800 px-6 py-3.5 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-emerald-600 flex items-center justify-center font-black text-white text-sm">
+            <div className="w-8 h-8 rounded-lg bg-emerald-600 flex items-center justify-center font-black text-white text-sm shadow-xs">
               CT
             </div>
             <div>
               <h1 className="text-sm font-bold text-white">CalTrack Service</h1>
-              <p className="text-[10px] text-slate-400">Job #{jobId} • Completed</p>
+              <p className="text-[10px] text-zinc-400 font-mono">Job #{jobId} • Completed</p>
             </div>
           </div>
         </header>
 
         <main className="flex-1 flex items-center justify-center p-4">
-          <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center shadow-2xl space-y-4">
-            <div className="w-14 h-14 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto border border-emerald-500/30">
+          <div className="max-w-md w-full bg-zinc-900 border border-zinc-800 rounded-md p-6 text-center shadow-card space-y-4">
+            <div className="w-14 h-14 bg-emerald-500/10 text-emerald-400 rounded-full flex items-center justify-center mx-auto border border-emerald-500/20">
               <CheckCircle2 className="w-8 h-8" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white">Service Completed Successfully</h2>
-              <p className="text-xs text-slate-400 mt-1">
+              <h2 className="text-base font-bold text-white">Service Completed Successfully</h2>
+              <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
                 Your service has been completed by {trackingData?.assigned_technician?.name || 'our verified technician'}.
               </p>
             </div>
             {trackingData?.customer_location?.address && (
-              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800/80 text-left text-xs text-slate-300 flex items-start gap-2">
+              <div className="p-3 bg-zinc-950 rounded-lg border border-zinc-800 text-left text-xs text-zinc-300 flex items-start gap-2">
                 <MapPin className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
                 <span className="truncate">{trackingData.customer_location.address}</span>
               </div>
@@ -293,27 +293,27 @@ export function CustomerTrackingPage() {
   // Terminal State: Cancelled (No Live Map)
   if (currentStatus === 'CANCELLED') {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col font-sans">
-        <header className="bg-slate-900 border-b border-slate-800 px-6 py-3.5 flex items-center justify-between">
+      <div className="min-h-screen bg-zinc-950 flex flex-col font-sans">
+        <header className="bg-zinc-900 border-b border-zinc-800 px-6 py-3.5 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-rose-600 flex items-center justify-center font-black text-white text-sm">
+            <div className="w-8 h-8 rounded-lg bg-rose-600 flex items-center justify-center font-black text-white text-sm shadow-xs">
               CT
             </div>
             <div>
               <h1 className="text-sm font-bold text-white">CalTrack Service</h1>
-              <p className="text-[10px] text-slate-400">Job #{jobId} • Cancelled</p>
+              <p className="text-[10px] text-zinc-400 font-mono">Job #{jobId} • Cancelled</p>
             </div>
           </div>
         </header>
 
         <main className="flex-1 flex items-center justify-center p-4">
-          <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center shadow-2xl space-y-4">
-            <div className="w-14 h-14 bg-rose-500/20 text-rose-400 rounded-full flex items-center justify-center mx-auto border border-rose-500/30">
+          <div className="max-w-md w-full bg-zinc-900 border border-zinc-800 rounded-md p-6 text-center shadow-card space-y-4">
+            <div className="w-14 h-14 bg-rose-500/10 text-rose-400 rounded-full flex items-center justify-center mx-auto border border-rose-500/20">
               <AlertCircle className="w-8 h-8" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white">Service Booking Cancelled</h2>
-              <p className="text-xs text-slate-400 mt-1">
+              <h2 className="text-base font-bold text-white">Service Booking Cancelled</h2>
+              <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
                 This service booking was cancelled. Live vehicle tracking has ended.
               </p>
             </div>
@@ -324,25 +324,25 @@ export function CustomerTrackingPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 flex flex-col font-sans">
+    <div className="min-h-screen bg-zinc-950 flex flex-col font-sans">
       {/* Top Navbar */}
-      <header className="bg-slate-900 border-b border-slate-800 px-6 py-3.5 flex items-center justify-between z-20">
+      <header className="bg-zinc-900 border-b border-zinc-800 px-6 py-3.5 flex items-center justify-between z-20">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center font-black text-white text-sm tracking-tighter">
+          <div className="w-8 h-8 rounded-lg bg-zinc-100 text-zinc-950 flex items-center justify-center font-black text-sm tracking-tighter shadow-xs">
             CT
           </div>
           <div>
             <h1 className="text-sm font-bold text-white leading-tight">CalTrack Live Tracking</h1>
-            <p className="text-[10px] text-slate-400">Job #{jobId} • Real-time GPS</p>
+            <p className="text-[10px] text-zinc-400 font-mono">Job #{jobId} • Real-time GPS</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => fetchTracking(false)}
             disabled={isRefreshing}
-            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium rounded-lg transition flex items-center gap-1.5 border border-slate-700 cursor-pointer"
+            className="px-3.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 border border-zinc-700 cursor-pointer shadow-xs"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-blue-400' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-zinc-300' : ''}`} />
             <span className="hidden sm:inline">Refresh</span>
           </button>
         </div>

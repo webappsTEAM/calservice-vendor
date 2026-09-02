@@ -351,38 +351,37 @@ export function AdminApplicationDetailPage() {
                   </h1>
                   <StatusBadge status={regStatus} />
                   {application?.company_name ? (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-50 text-blue-800 border border-blue-200 text-xs font-semibold">
-                      <Building className="w-3 h-3 text-blue-600" />
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-900 border border-emerald-200 text-xs font-bold">
+                      <Building className="w-3.5 h-3.5 text-emerald-700" />
                       <span>{application.company_name}</span>
                     </span>
                   ) : application?.join_request && application.join_request.status === 'PENDING' ? (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 text-xs font-semibold">
-                      <Clock className="w-3 h-3 text-amber-600" />
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-900 border border-amber-200 text-xs font-bold">
+                      <Clock className="w-3.5 h-3.5 text-amber-700" />
                       <span>Join Request: {application.join_request.provider_name} (Pending)</span>
                     </span>
                   ) : (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-semibold">
-                      <ShieldCheck className="w-3 h-3 text-slate-500" />
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-zinc-100 text-zinc-800 text-xs font-bold">
+                      <ShieldCheck className="w-3.5 h-3.5 text-zinc-500" />
                       <span>Independent Technician</span>
                     </span>
                   )}
                 </div>
-                <p className="text-[11px] text-slate-500 font-mono mt-0.5">
-                  ID: <strong className="text-slate-800">{application?.employee_id || 'PENDING'}</strong> • {application?.email} • {application?.mobile_number || application?.phone}
+                <p className="text-xs text-zinc-500 font-mono mt-1">
+                  ID: <strong className="text-zinc-950 font-bold">{application?.employee_id || 'PENDING'}</strong> • {application?.email} • {application?.mobile_number || application?.phone}
                 </p>
               </div>
             </div>
 
-
             {/* Action Bar */}
-            <div className="flex items-center gap-2 self-end md:self-auto flex-wrap">
+            <div className="flex items-center gap-2.5 self-end md:self-auto flex-wrap">
               {regStatus !== 'approved' && regStatus !== 'rejected' && (
                 <>
                   <button
                     type="button"
                     onClick={() => setShowCorrectionModal(true)}
                     disabled={actionLoading}
-                    className="px-3 py-1.5 rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 font-bold text-xs transition-colors"
+                    className="px-3.5 py-2 min-h-[38px] rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 active:bg-amber-200 text-amber-900 font-bold text-xs transition-all shadow-xs cursor-pointer"
                   >
                     Request Correction
                   </button>
@@ -390,7 +389,7 @@ export function AdminApplicationDetailPage() {
                     type="button"
                     onClick={() => setShowRejectModal(true)}
                     disabled={actionLoading}
-                    className="px-3 py-1.5 rounded border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-900 font-bold text-xs transition-colors"
+                    className="px-3.5 py-2 min-h-[38px] rounded-lg border border-rose-300 bg-rose-50 hover:bg-rose-100 active:bg-rose-200 text-rose-900 font-bold text-xs transition-all shadow-xs cursor-pointer"
                   >
                     Reject Candidate
                   </button>
@@ -398,7 +397,7 @@ export function AdminApplicationDetailPage() {
                     type="button"
                     onClick={() => setShowApproveConfirm(true)}
                     disabled={actionLoading}
-                    className="px-4 py-1.5 rounded bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-sm transition-colors"
+                    className="px-4 py-2 min-h-[38px] rounded-lg bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-950 text-white font-bold text-xs shadow-xs transition-all cursor-pointer"
                   >
                     Approve Technician
                   </button>
@@ -407,6 +406,7 @@ export function AdminApplicationDetailPage() {
             </div>
           </div>
         </div>
+
 
         {/* Notifications */}
         {error && <ErrorState message={error} onDismiss={() => setError('')} />}

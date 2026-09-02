@@ -500,19 +500,22 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
 def get_eligible_candidates(
     job_id_or_obj,
     max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS,
-    radius_km: float = MAX_DISPATCH_RADIUS_KM,
+    radius_km: Optional[float] = None,
     exclude_employee_ids: Optional[List[int]] = None,
     candidate_employee_ids: Optional[List[int]] = None,
     check_workload: bool = False,
 ) -> List[Dict[str, Any]]:
     """
-    Finds and ranks all eligible candidate employees for a given ServiceRequest within 20 km.
+    Finds and ranks all eligible candidate employees for a given ServiceRequest within the configured global radius.
     Uses mathematical bounding-box prefiltering and exact Haversine distance calculation.
     
     If candidate_employee_ids is provided (e.g. from Redis GEO candidate discovery),
     evaluates only those candidate IDs, drastically reducing Supabase/PostgreSQL roundtrips.
     By default check_workload=False so busy employees are eligible to receive and view offers.
     """
+    from workforce_api.services.geo_spatial import get_global_dispatch_radius_km
+    if radius_km is None:
+        radius_km = get_global_dispatch_radius_km()
     if hasattr(job_id_or_obj, "latitude"):
         job_obj = job_id_or_obj
     else:
@@ -653,14 +656,14 @@ def get_eligible_candidates(
         # Exact geodesic distance
         dist_km = calculate_distance_km(cust_lat, cust_lon, emp_lat_f, emp_lon_f)
 
-        # Strict boundary enforcement: strictly <= 20.0 km
-        if not is_within_automatic_radius(dist_km):
-            rejected_reasons[emp.id] = f"Outside dispatch radius ({dist_km:.2f}km > 20.0km)"
+        # Strict boundary enforcement using configured global radius
+        if not is_within_automatic_radius(dist_km, max_radius_km=radius_km):
+            rejected_reasons[emp.id] = f"Outside dispatch radius ({dist_km:.2f}km > {radius_km:.1f}km)"
             logger.info(f"[DISPATCH_REJECT] job={job_obj.id} employee={emp.id} reason=RADIUS_EXCEEDED distance_km={dist_km}")
             continue
 
-        # Classify sequential distance wave (1 to 6)
-        wave_number = classify_wave(dist_km)
+        # Classify sequential distance wave (1 to 6) using configured global radius
+        wave_number = classify_wave(dist_km, max_radius_km=radius_km)
         if wave_number is None:
             rejected_reasons[emp.id] = f"Outside automatic waves ({dist_km:.2f}km)"
             logger.info(f"[DISPATCH_REJECT] job={job_obj.id} employee={emp.id} reason=OUTSIDE_AUTOMATIC_WAVES distance_km={dist_km}")

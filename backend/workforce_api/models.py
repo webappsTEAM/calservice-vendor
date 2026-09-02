@@ -1278,6 +1278,7 @@ class JobPayment(models.Model):
         null=True,
         blank=True,
     )
+    reconciled = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1754,5 +1755,23 @@ class WorkforceProviderJoinRequest(models.Model):
 
     def __str__(self):
         return f"JoinRequest #{self.id}: Tech #{self.technician_id} -> Provider #{self.provider_id} ({self.status})"
+
+
+class WorkforceSystemSetting(models.Model):
+    """
+    Persistent global key-value configuration for CalTrack Workforce.
+    SuperAdmin managed settings (e.g. DISPATCH_RADIUS_KM).
+    """
+    key = models.CharField(max_length=100, unique=True, db_index=True)
+    value = models.CharField(max_length=255)
+    description = models.TextField(blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_system_setting"
+
+    def __str__(self):
+        return f"{self.key} = {self.value}"
+
 
 

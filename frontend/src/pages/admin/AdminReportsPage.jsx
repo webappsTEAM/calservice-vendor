@@ -44,15 +44,15 @@ export function AdminReportsPage() {
 
   return (
     <AppShell breadcrumbs={[{ label: 'Home', to: '/workforce/admin' }, { label: 'Reports & Analytics' }]}>
-      <div className="space-y-4">
+      <div className="space-y-4 text-xs">
         {/* Top Header */}
-        <div className="bg-white border border-slate-200 p-4 rounded flex items-center justify-between">
+        <div className="bg-white border border-zinc-200/90 p-5 rounded-md shadow-card flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <h1 className="text-base font-bold text-slate-900 flex items-center gap-2">
-              <BarChart3 className="w-5 h-5 text-indigo-600" />
-              Workforce Enterprise Reporting Suite
+            <h1 className="text-base font-bold text-zinc-950 flex items-center gap-2 tracking-tight">
+              <BarChart3 className="w-5 h-5 text-zinc-800" />
+              <span>Workforce Enterprise Reporting Suite</span>
             </h1>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-zinc-500 mt-1 leading-relaxed">
               Query real database aggregations with multi-dimensional filtering across workforce operations.
             </p>
           </div>
@@ -60,16 +60,16 @@ export function AdminReportsPage() {
             type="button"
             onClick={handleExportCSV}
             disabled={!reportData.rows || reportData.rows.length === 0}
-            className="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs shadow-sm transition-colors flex items-center gap-1.5"
+            className="px-4 py-2 min-h-[38px] rounded-lg bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-950 disabled:opacity-50 text-white font-bold text-xs shadow-xs transition-all flex items-center gap-2 cursor-pointer shrink-0"
           >
-            <Download className="w-4 h-4" />
+            <Download className="w-4 h-4 text-zinc-200" />
             <span>Export CSV</span>
           </button>
         </div>
 
         {/* Report Selector Tabs & Filter Bar */}
-        <div className="bg-white border border-slate-200 rounded p-4 space-y-4">
-          <div className="flex items-center gap-2 border-b border-slate-200 pb-3 overflow-x-auto text-xs">
+        <div className="bg-white border border-zinc-200/90 rounded-md p-5 shadow-card space-y-4">
+          <div className="flex items-center gap-2 border-b border-zinc-200/80 pb-3 overflow-x-auto text-xs">
             {[
               { id: 'employee', label: 'Employee Roster' },
               { id: 'job', label: 'Field Jobs' },
@@ -78,8 +78,8 @@ export function AdminReportsPage() {
                 key={t.id}
                 type="button"
                 onClick={() => setReportType(t.id)}
-                className={`px-3 py-1.5 rounded font-bold transition-colors ${
-                  reportType === t.id ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                className={`px-3.5 py-2 rounded-lg font-bold text-xs transition-all cursor-pointer ${
+                  reportType === t.id ? 'bg-zinc-900 text-white shadow-xs' : 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200'
                 }`}
               >
                 {t.label}
@@ -88,9 +88,9 @@ export function AdminReportsPage() {
           </div>
 
           {/* Filter Controls */}
-          <div className="flex items-center gap-3 text-xs">
-            <div className="flex items-center gap-1 text-slate-600 font-semibold">
-              <Filter className="w-3.5 h-3.5" />
+          <div className="flex items-center gap-3 text-xs flex-wrap">
+            <div className="flex items-center gap-1.5 text-zinc-700 font-bold">
+              <Filter className="w-3.5 h-3.5 text-zinc-500" />
               <span>Filters:</span>
             </div>
             {reportType === 'job' && (
@@ -99,71 +99,53 @@ export function AdminReportsPage() {
                 placeholder="Service Category Filter..."
                 value={filters.service}
                 onChange={(e) => setFilters({ ...filters, service: e.target.value })}
-                className="px-2.5 py-1 border border-slate-300 rounded text-xs"
+                className="px-3 py-2 min-h-[38px] border border-zinc-300 rounded-lg text-xs w-56 text-zinc-900 focus:outline-none focus:ring-2 focus:ring-zinc-950/10 focus:border-zinc-900 shadow-xs"
               />
             )}
-            <input
-              type="text"
-              placeholder="Status Filter..."
-              value={filters.status}
-              onChange={(e) => setFilters({ ...filters, status: e.target.value })}
-              className="px-2.5 py-1 border border-slate-300 rounded text-xs"
-            />
             <button
               type="button"
               onClick={loadReport}
-              className="px-3 py-1 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded flex items-center gap-1 shadow-sm"
+              className="px-3.5 py-2 min-h-[38px] rounded-lg border border-zinc-300 bg-white hover:bg-zinc-50 active:bg-zinc-100 font-bold text-zinc-800 transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
             >
-              <RefreshCw className="w-3 h-3" />
-              Apply Query
+              <RefreshCw className="w-3.5 h-3.5 text-zinc-600" />
+              <span>Apply Filters</span>
             </button>
           </div>
         </div>
 
-        {/* Dynamic Report Results Table */}
-        <div className="bg-white border border-slate-200 rounded overflow-hidden">
-          <div className="bg-slate-50 px-4 py-2.5 border-b border-slate-200 flex items-center justify-between text-xs">
-            <span className="font-bold text-slate-800 uppercase tracking-wider">
-              {reportType.toUpperCase()} REPORT RESULTS ({reportData.total_records} RECORDS)
-            </span>
-            <span className="font-mono text-slate-500">System Report</span>
+        {/* Data Grid */}
+        <div className="bg-white border border-zinc-200/90 rounded-md overflow-hidden shadow-card">
+          <div className="bg-zinc-50/80 px-4 py-3 border-b border-zinc-200/80 font-bold text-zinc-950 text-xs flex items-center justify-between">
+            <span>Query Results ({reportData.total_records || reportData.rows?.length || 0} Records)</span>
+            {isLoading && <span className="text-zinc-500 font-normal">Executing database aggregate...</span>}
           </div>
 
-          <table className="w-full text-left text-xs">
+          <div className="overflow-x-auto max-h-[500px]">
             {reportData.rows && reportData.rows.length > 0 ? (
-              <>
-                <thead className="bg-slate-100 border-b border-slate-200 text-[11px] font-semibold text-slate-600 uppercase">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-zinc-50/60 text-zinc-500 uppercase text-[11px] font-bold border-b border-zinc-200 sticky top-0">
                   <tr>
-                    {Object.keys(reportData.rows[0]).map((col) => (
-                      <th key={col} className="px-4 py-2.5">
-                        {col.replace('_', ' ')}
-                      </th>
+                    {Object.keys(reportData.rows[0]).map((h) => (
+                      <th key={h} className="px-4 py-3 tracking-wider">{h.replace(/_/g, ' ')}</th>
                     ))}
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {reportData.rows.map((row, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50/50">
-                      {Object.values(row).map((val, cIdx) => (
-                        <td key={cIdx} className="px-4 py-3 font-mono text-slate-800">
-                          {val === true ? 'Yes' : val === false ? 'No' : String(val ?? '—')}
-                        </td>
+                <tbody className="divide-y divide-zinc-100">
+                  {reportData.rows.map((row, i) => (
+                    <tr key={i} className="hover:bg-zinc-50/80 transition-colors">
+                      {Object.values(row).map((val, j) => (
+                        <td key={j} className="px-4 py-3 text-zinc-700 whitespace-nowrap">{String(val || '—')}</td>
                       ))}
                     </tr>
                   ))}
                 </tbody>
-              </>
+              </table>
             ) : (
-              <tbody>
-                <tr>
-                  <td className="px-4 py-12 text-center text-slate-500 text-xs">
-                    <FileText className="w-8 h-8 mx-auto mb-2 text-slate-300" />
-                    No matching records found for this query filter.
-                  </td>
-                </tr>
-              </tbody>
+              <div className="p-12 text-center text-zinc-500 text-xs">
+                {isLoading ? 'Loading records...' : 'No operational report data matched current filters.'}
+              </div>
             )}
-          </table>
+          </div>
         </div>
       </div>
     </AppShell>
