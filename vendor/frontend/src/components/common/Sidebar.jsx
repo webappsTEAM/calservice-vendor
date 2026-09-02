@@ -487,14 +487,16 @@ export function Sidebar({ onCloseMobile = () => {} }) {
                 <Briefcase className="w-3.5 h-3.5 text-slate-400" />
                 <span>My Jobs</span>
               </NavLink>
-              <NavLink
-                to="/workforce/employee/vendor-network"
-                onClick={onCloseMobile}
-                className={navItemClass}
-              >
-                <Building2 className="w-3.5 h-3.5 text-blue-600" />
-                <span>My Vendor Assignment</span>
-              </NavLink>
+              {isTiedWorker && (
+                <NavLink
+                  to="/workforce/employee/vendor-network"
+                  onClick={onCloseMobile}
+                  className={navItemClass}
+                >
+                  <Building2 className="w-3.5 h-3.5 text-blue-600" />
+                  <span>My Vendor Assignment</span>
+                </NavLink>
+              )}
               <NavLink
                 to="/workforce/employee/invitations"
                 onClick={onCloseMobile}

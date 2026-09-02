@@ -74,7 +74,7 @@ export function AuthProvider({ children }) {
             isEmployee: isEmployee,
             isTiedWorker: isTiedWorker,
             isSoloWorker: isSoloWorker,
-            registrationStatus: empData ? (empData.registration_status || 'not_started') : (isAdmin ? 'approved' : 'not_started'),
+            registrationStatus: empData?.registration_status || me.registration_status || (isAdmin ? 'approved' : 'not_started'),
             isOnline: empData ? Boolean(empData.is_online) : false,
             availability: empData ? (empData.live_availability || 'offline') : 'offline',
           };
@@ -120,6 +120,7 @@ export function AuthProvider({ children }) {
       const isAdmin = ['admin', 'manager'].includes((res.user.role || '').toLowerCase()) || Boolean(res.user.is_superuser);
       const isTied = Boolean(res.user.is_tied_worker);
       const isSolo = Boolean(res.user.is_solo_worker) || (!isTied && !isAdmin);
+      const regStatus = res.user.registration_status || (isAdmin ? 'approved' : 'not_started');
       const initialUser = {
         id: res.user.id,
         username: res.user.username,
@@ -133,7 +134,7 @@ export function AuthProvider({ children }) {
         isEmployee: !isAdmin,
         isTiedWorker: isTied,
         isSoloWorker: isSolo,
-        registrationStatus: isAdmin ? 'approved' : 'not_started',
+        registrationStatus: regStatus,
         isOnline: false,
         availability: 'offline',
       };

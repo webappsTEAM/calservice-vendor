@@ -236,10 +236,18 @@ class LoginView(APIView):
                     )
                     from vendor_wallet.models import EmployeeWallet
                     from vendor_wallet.constants import WALLET_ACTIVE
-                    EmployeeWallet.objects.get_or_create(
-                        employee=emp,
-                        defaults={"company": None, "currency": "INR", "status": WALLET_ACTIVE},
-                    )
+                    target_company = emp.company or getattr(user, "company", None)
+                    if not target_company and getattr(emp, "company_id", None):
+                        from companies.models import Company
+                        target_company = Company.objects.filter(id=emp.company_id).first()
+                    if not target_company:
+                        from companies.models import Company
+                        target_company = Company.objects.order_by("id").first()
+                    if target_company:
+                        EmployeeWallet.objects.get_or_create(
+                            employee=emp,
+                            defaults={"company": target_company, "currency": "INR", "status": WALLET_ACTIVE},
+                        )
                 except Exception as _w_err:
                     logger.warning("Could not ensure individual wallet: %s", str(_w_err))
 
@@ -248,6 +256,9 @@ class LoginView(APIView):
                 if is_platform_admin
                 else ("vendor_admin" if is_vendor_admin else "technician")
             )
+
+            from workforce_api.services.registration import get_employee_registration_status
+            reg_status = get_employee_registration_status(user)
 
             response = Response({
                 "message": "Login successful.",
@@ -271,6 +282,7 @@ class LoginView(APIView):
                     "is_solo_worker": is_solo_worker,
                     "user_type": user_type,
                     "employee_id": getattr(emp, "employee_id", None) if emp else None,
+                    "registration_status": reg_status,
                 }
             }, status=response_code)
 
@@ -439,10 +451,18 @@ class MeView(APIView):
                     )
                     from vendor_wallet.models import EmployeeWallet
                     from vendor_wallet.constants import WALLET_ACTIVE
-                    EmployeeWallet.objects.get_or_create(
-                        employee=emp,
-                        defaults={"company": None, "currency": "INR", "status": WALLET_ACTIVE},
-                    )
+                    target_company = emp.company or getattr(user, "company", None)
+                    if not target_company and getattr(emp, "company_id", None):
+                        from companies.models import Company
+                        target_company = Company.objects.filter(id=emp.company_id).first()
+                    if not target_company:
+                        from companies.models import Company
+                        target_company = Company.objects.order_by("id").first()
+                    if target_company:
+                        EmployeeWallet.objects.get_or_create(
+                            employee=emp,
+                            defaults={"company": target_company, "currency": "INR", "status": WALLET_ACTIVE},
+                        )
                 except Exception as _w_err:
                     logger.warning("Could not ensure individual wallet: %s", str(_w_err))
 
@@ -451,6 +471,9 @@ class MeView(APIView):
                 if is_platform_admin
                 else ("vendor_admin" if is_vendor_admin else "technician")
             )
+
+            from workforce_api.services.registration import get_employee_registration_status
+            reg_status = get_employee_registration_status(user)
 
             return Response({
                 "id": user.id,
@@ -469,6 +492,7 @@ class MeView(APIView):
                 "is_solo_worker": is_solo_worker,
                 "user_type": user_type,
                 "employee_id": getattr(emp, "employee_id", None) if emp else None,
+                "registration_status": reg_status,
             }, status=status.HTTP_200_OK)
         except (OperationalError, DatabaseError) as db_err:
             logger.error("Database error in MeView: %s", str(db_err), exc_info=True)
