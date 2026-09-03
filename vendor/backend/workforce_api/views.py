@@ -144,6 +144,24 @@ def resolve_actor_company(request):
     return None
 
 
+def _is_admin_authorized_for_company(request, company) -> bool:
+    """
+    Fixes a recurring IDOR pattern: several endpoints granted any
+    is_admin_role() user access to any job/invoice just by checking their
+    role, without checking that the admin's own company actually matches
+    the job's company -- so one company's admin could act on another
+    company's data. Mirrors resolve_actor_company()'s superuser exception.
+    """
+    user = getattr(request, "user", None)
+    if not user or not is_admin_role(user):
+        return False
+    if getattr(user, "is_superuser", False):
+        return True
+    user_company = resolve_actor_company(request)
+    company_id = getattr(company, "id", company)
+    return bool(user_company and company_id and user_company.id == company_id)
+
+
 def get_request_company(request):
     """
     Compatibility wrapper around resolve_actor_company.
@@ -3700,6 +3718,11 @@ class WorkforceAutoDispatchTriggerView(APIView):
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        # Fixes IDOR: IsWorkforceAdmin only checks role, not company -- any
+        # company's admin could force-dispatch any other company's job.
+        if not _is_admin_authorized_for_company(request, job.company):
+            return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
         success, msg = run_automatic_dispatch(job)
         return Response({"message": msg, "success": success, "status": job.status}, status=status.HTTP_200_OK)
 
@@ -4002,7 +4025,7 @@ class WorkforceCustomerExtensionDetailView(APIView):
                 job.customer == request.user
                 or str(getattr(job, "customer_name", "")).lower() == request.user.username.lower()
                 or getattr(job, "phone", "") == getattr(request.user, "username", "")
-                or is_admin_role(request.user)
+                or _is_admin_authorized_for_company(request, job.company)
             )
         )
         is_valid_token = bool(token and extension.decision_token and token == extension.decision_token)
@@ -4053,7 +4076,7 @@ class WorkforceCustomerExtensionDecideView(APIView):
                     job.customer == request.user
                     or str(getattr(job, "customer_name", "")).lower() == request.user.username.lower()
                     or getattr(job, "phone", "") == getattr(request.user, "username", "")
-                    or is_admin_role(request.user)
+                    or _is_admin_authorized_for_company(request, job.company)
                 )
             )
             is_valid_token = bool(token and extension.decision_token and token == extension.decision_token)
@@ -4496,7 +4519,7 @@ class WorkforceCustomerSupplementalInvoiceListView(APIView):
             or str(getattr(job, "customer_name", "")).lower() == request.user.username.lower()
             or getattr(job, "phone", "") == getattr(request.user, "username", "")
         )
-        if not (is_customer or is_admin_role(request.user)):
+        if not (is_customer or _is_admin_authorized_for_company(request, job.company)):
             return Response({"error": "Unauthorized: Not your booking."}, status=status.HTTP_403_FORBIDDEN)
 
         invoices = WorkforceSupplementalInvoice.objects.filter(job=job).order_by("-created_at")
@@ -4515,7 +4538,7 @@ class WorkforcePaySupplementalInvoiceView(APIView):
         is_customer = (
             invoice.customer == request.user
             or invoice.job.customer == request.user
-            or is_admin_role(request.user)
+            or _is_admin_authorized_for_company(request, invoice.job.company)
         )
         if not is_customer:
             return Response({"error": "Unauthorized: Not your invoice."}, status=status.HTTP_403_FORBIDDEN)
@@ -4664,7 +4687,7 @@ class WorkforceCustomerRescheduleResponseView(APIView):
             or str(getattr(job, "customer_name", "")).lower() == request.user.username.lower()
             or getattr(job, "phone", "") == getattr(request.user, "username", "")
         )
-        if not (is_customer or is_admin_role(request.user)):
+        if not (is_customer or _is_admin_authorized_for_company(request, job.company)):
             return Response({"error": "Unauthorized: Not your booking."}, status=status.HTTP_403_FORBIDDEN)
 
         response_choice = str(request.data.get("response", "")).upper()  # ACCEPTED, OBJECTED, CALLBACK_REQUESTED
@@ -4699,6 +4722,10 @@ class WorkforceJobPurchaseRequestView(APIView):
         if not is_admin_role(request.user):
             if not emp or job.assigned_employee != emp:
                 return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
+            if not is_employee_authorized_for_job(emp, job):
+                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        elif not _is_admin_authorized_for_company(request, job.company):
+            return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         item_name = request.data.get("item_name", "Spare Part").strip()
         quantity = int(request.data.get("quantity", 1))
@@ -4744,6 +4771,11 @@ class WorkforceAdminPurchaseDecideView(APIView):
         job = ServiceRequest.objects.filter(pk=pk).first()
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Fixes IDOR: IsWorkforceAdmin only checks role, not company -- any
+        # company's admin could decide any other company's purchase request.
+        if not _is_admin_authorized_for_company(request, job.company):
+            return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         action = request.data.get("action", "").upper()
         reason = request.data.get("reason", "")
