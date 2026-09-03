@@ -157,6 +157,7 @@ export function EmployeeDashboardPage() {
     reconcileJobCompleted,
     reconcileOfferRemoved,
     liveLocation,
+    locationError,
     scanCurrentLocation,
     autoClockIn,
     getClockInReadiness,
@@ -1192,6 +1193,7 @@ export function EmployeeDashboardPage() {
             activeAssignedJob={activeAssignedJob}
             hasActiveJob={hasActiveJob}
             liveLocation={liveLocation}
+            locationError={locationError}
             actionLoading={actionLoading}
             handleAcceptOffer={handleAcceptOffer}
             handleRejectOffer={handleRejectOffer}

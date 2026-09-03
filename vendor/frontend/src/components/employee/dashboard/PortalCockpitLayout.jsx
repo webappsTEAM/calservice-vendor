@@ -83,6 +83,7 @@ export function PortalCockpitLayout({
   activeAssignedJob,
   hasActiveJob,
   liveLocation,
+  locationError,
   actionLoading,
   handleAcceptOffer,
   handleRejectOffer,
@@ -180,6 +181,20 @@ export function PortalCockpitLayout({
 
   return (
     <div className="w-full h-full flex-1 flex flex-col font-sans bg-slate-100/90 text-slate-900 overflow-hidden p-3 sm:p-4 lg:p-4">
+      {/* Bug found: useGPSPosition/useLocationTracker already produce a
+          real, user-facing error message per GeolocationPositionError code
+          (permission denied, position unavailable, timeout), but
+          EmployeeRuntimeProvider only console.warn'd it and this cockpit
+          never rendered anything -- a technician whose browser denied
+          location access just saw the map/standby view sit there with no
+          explanation. Surfaced here, dismissible-by-nature (clears itself
+          the moment a position succeeds via locationError=null). */}
+      {locationError && (
+        <div className="mb-2 flex items-center gap-2 px-3 py-2 bg-red-50 border border-red-300 rounded-xl text-red-900 shrink-0">
+          <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+          <span className="text-xs font-semibold">{locationError}</span>
+        </div>
+      )}
       {/* ── MAIN 2-COLUMN SPLIT WORKSPACE (Elevated Card Layout, Clean Separation from Header) ── */}
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 min-h-0 bg-white rounded-2xl border border-slate-200/90 shadow-card overflow-hidden">
         {/* ── LEFT COLUMN: FIRST-PERSON DRIVING NAVIGATION / SITE MAP / STANDBY RADAR (7 Cols / 58%) ── */}
