@@ -7221,11 +7221,45 @@ class WorkforceJobVerifyOTPView(APIView):
             verification.otp_code = canonical_otp
             verification.save(update_fields=["otp_code", "updated_at"])
 
+        def _ensure_job_started(job_obj, verification_obj):
+            if not verification_obj.is_complete:
+                return
+            if job_obj.status in ["accepted", "on_the_way", "en_route", "arrived"]:
+                from time_tracking.models import TimeLog
+                from service_requests.state_machine import apply_transition
+                from service_requests.models import EmployeeJob
+
+                time_log = TimeLog.objects.filter(employee=emp, clock_out__isnull=True).first()
+                if not time_log:
+                    company = emp.company or getattr(request.user, "company", None) or job_obj.company
+                    TimeLog.objects.create(
+                        employee=emp,
+                        company=company,
+                        user=request.user,
+                        work_date=timezone.localdate(),
+                        clock_in=now,
+                        clock_in_lat=job_obj.latitude or 0.0,
+                        clock_in_lon=job_obj.longitude or 0.0,
+                        clock_in_address=job_obj.address or "",
+                        clock_in_notes="Auto-clocked in upon Work Start OTP verification",
+                        distance_from_site_meters=0,
+                        geofence_passed=True,
+                        admin_override_used=False,
+                        status="draft",
+                    )
+                try:
+                    apply_transition(job_obj, "in_progress", actor=request.user)
+                    EmployeeJob.objects.filter(service_request=job_obj, employee=emp).update(status="IN_PROGRESS")
+                except Exception as ex:
+                    logger.warning(f"Failed to auto-transition job {job_obj.id} to IN_PROGRESS upon OTP verification: {ex}")
+
         if verification.otp_verified:
+            _ensure_job_started(job, verification)
             return Response({
                 "message": "Customer OTP already verified.",
                 "otp_verified": True,
                 "is_complete": verification.is_complete,
+                "status": job.status,
             }, status=status.HTTP_200_OK)
 
         # Max 5 attempts enforced
@@ -7258,10 +7292,13 @@ class WorkforceJobVerifyOTPView(APIView):
             is_complete = verification.check_completion()
             verification.save()
 
+            _ensure_job_started(job, verification)
+
             return Response({
                 "message": "Customer OTP verified successfully.",
                 "otp_verified": True,
                 "is_complete": is_complete,
+                "status": job.status,
             }, status=status.HTTP_200_OK)
 
         verification.otp_attempts += 1

@@ -317,14 +317,15 @@ export function EmployeeJobsPage() {
 
   const handleVerifyOtpSubmit = async (e) => {
     e.preventDefault();
-    if (!enteredOtp || enteredOtp.length < 4) {
-      setOtpError('Please enter a valid 4-digit customer start OTP.');
+    const cleanOtp = enteredOtp ? enteredOtp.trim() : '';
+    if (!cleanOtp || cleanOtp.length < 4) {
+      setOtpError('Please enter the customer work start OTP.');
       return;
     }
     try {
       setIsVerifyingOtp(true);
       setOtpError('');
-      await apiVerifyOTP(otpModalJob.id, enteredOtp);
+      await apiVerifyOTP(otpModalJob.id, cleanOtp);
       setOtpModalJob(null);
       setEnteredOtp('');
       await loadJobs();
@@ -898,7 +899,7 @@ export function EmployeeJobsPage() {
                   <span>Customer Verification Code</span>
                 </p>
                 <p className="text-[11px] leading-relaxed">
-                  Ask customer <strong>{otpModalJob.customer_display_name || 'Customer'}</strong> for their 4-digit code to start <strong>#{otpModalJob.request_id || otpModalJob.id}</strong>.
+                  Ask customer <strong>{otpModalJob.customer_display_name || 'Customer'}</strong> for their 6-digit code to start <strong>#{otpModalJob.request_id || otpModalJob.id}</strong>.
                 </p>
               </div>
 
@@ -914,7 +915,7 @@ export function EmployeeJobsPage() {
                   maxLength={6}
                   value={enteredOtp}
                   onChange={(e) => setEnteredOtp(e.target.value)}
-                  placeholder="• • • •"
+                  placeholder="• • • • • •"
                   className="w-full px-4 py-3 text-center font-mono font-black text-2xl tracking-[0.5em] bg-white border border-slate-300 rounded-xl outline-none focus:border-slate-800 shadow-xs text-slate-900"
                   required
                 />

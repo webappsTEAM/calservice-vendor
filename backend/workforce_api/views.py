@@ -46,7 +46,7 @@ from datetime import timedelta
 import secrets
 from django.contrib.auth.hashers import make_password, check_password
 from accounts.permissions import is_admin_role
-from .permissions import IsWorkforceAdmin, IsWorkforceEmployee, IsApprovedTechnician
+from .permissions import IsWorkforceAdmin, IsWorkforceEmployee, IsApprovedTechnician, IsInternalWorkforceCaller
 from .serializers import (
     WorkforceSignupSerializer,
     ProviderSignupSerializer,
@@ -141,6 +141,58 @@ def resolve_actor_company(request):
     emp = getattr(user, "employee_profile", None)
     if emp and getattr(emp, "company", None):
         return emp.company
+    return None
+
+
+def _is_admin_authorized_for_company(request, company) -> bool:
+    """
+    Fixes a recurring IDOR pattern: several endpoints granted any
+    is_admin_role() user access to any job/invoice just by checking their
+    role, without checking that the admin's own company actually matches
+    the job's company -- so one company's admin could act on another
+    company's data. Mirrors resolve_actor_company()'s superuser exception.
+    """
+    user = getattr(request, "user", None)
+    if not user or not is_admin_role(user):
+        return False
+    if getattr(user, "is_superuser", False):
+        return True
+    user_company = resolve_actor_company(request)
+    company_id = getattr(company, "id", company)
+    return bool(user_company and company_id and user_company.id == company_id)
+
+
+ALLOWED_PHOTO_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "heic", "heif"}
+ALLOWED_PHOTO_CONTENT_TYPES = {
+    "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif",
+}
+MAX_PHOTO_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+def _validate_photo_upload(f):
+    """
+    Fixes: proof/verification photo uploads (PreServiceVerification,
+    PostServiceProof) had zero server-side file-type or size validation
+    anywhere -- no extension check, no content-type check, no size cap.
+    Combined with the media location block's missing
+    X-Content-Type-Options: nosniff header (fixed separately in the nginx
+    config), that allowed a disguised .html/.svg "photo" to be uploaded and
+    served back from this app's own origin as executable content (stored
+    XSS). Returns an error string if the file should be rejected, or None
+    if it's acceptable.
+    """
+    if not f:
+        return None
+    name = (getattr(f, "name", "") or "").lower()
+    ext = name.rsplit(".", 1)[-1] if "." in name else ""
+    if ext not in ALLOWED_PHOTO_EXTENSIONS:
+        return f"Unsupported file type '.{ext}'. Allowed: {', '.join(sorted(ALLOWED_PHOTO_EXTENSIONS))}."
+    content_type = (getattr(f, "content_type", "") or "").lower()
+    if content_type and content_type not in ALLOWED_PHOTO_CONTENT_TYPES:
+        return f"Unsupported content type '{content_type}'."
+    size = getattr(f, "size", 0) or 0
+    if size > MAX_PHOTO_UPLOAD_BYTES:
+        return f"File too large ({size // (1024 * 1024)}MB). Maximum allowed is {MAX_PHOTO_UPLOAD_BYTES // (1024 * 1024)}MB."
     return None
 
 
@@ -2145,6 +2197,11 @@ class WorkforceJobProofView(APIView):
         if not after_presence and not after_appliance and not after_work_area:
             return Response({"error": "After-service completion requires After Face/Identity Selfie or service photo."}, status=status.HTTP_400_BAD_REQUEST)
 
+        for _f in (after_presence, after_appliance, after_work_area):
+            _photo_err = _validate_photo_upload(_f)
+            if _photo_err:
+                return Response({"error": _photo_err}, status=status.HTTP_400_BAD_REQUEST)
+
         proof, _ = PostServiceProof.objects.get_or_create(
             job=job,
             defaults={"employee": emp or job.assigned_employee}
@@ -2274,7 +2331,17 @@ class WorkforceJobCashCollectView(APIView):
                     "employee": emp,
                     "payment_method": JobPayment.PaymentMethod.CASH_ON_SERVICE,
                     "payment_status": JobPayment.PaymentStatus.PENDING,
-                    "amount_due": job.total_amount or Decimal("450.00"),
+                    # Bug found: this used to fall back to a hardcoded Decimal("450.00")
+                    # if job.total_amount was ever falsy -- since get_or_create()
+                    # persists these defaults, that fake amount would be written
+                    # into the JobPayment row and become what the technician was
+                    # told to collect from the customer. Fall back to 0.00 instead:
+                    # a genuinely zero/missing total_amount is a real data problem
+                    # that should now surface loudly via settle_completed_job()'s
+                    # SettlementError (SETTLEMENT_ZERO_AMOUNT) and the admin
+                    # notification it triggers, not be silently papered over with
+                    # a plausible-looking wrong number.
+                    "amount_due": job.total_amount or Decimal("0.00"),
                     "reconciled": False,
                 }
             )
@@ -3601,6 +3668,118 @@ class WorkforceJobTechnicianCancelView(APIView):
             }, status=status.HTTP_200_OK)
 
 
+class WorkforceJobCustomerCancelSyncView(APIView):
+    """
+    Server-to-server endpoint: the Customer app calls this when a customer
+    cancels their booking, so this app can release the assigned technician
+    and close the job out. Authenticated by a shared secret
+    (IsInternalWorkforceCaller), not a user session -- there is no
+    vendor-side user acting here.
+
+    Bug found (BLOCKER): before this endpoint existed,
+    WorkforceIntegrationService.cancel_workforce_job() on the Customer app
+    called jobs/<pk>/cancel/ (WorkforceJobTechnicianCancelView above) --
+    that view requires IsApprovedTechnician and treats the caller as "the
+    assigned technician cancelling their own job within a 5-minute window",
+    entirely wrong semantics for "the customer cancelled the whole
+    booking". It also only ever accepted a technician's own session, never
+    a service-to-service call, so it 401'd every single time regardless.
+    Both failures were silently swallowed on the Customer side and
+    reported back as success, so the technician was never actually
+    released -- Employee.current_availability stayed "busy" forever,
+    excluded from all future dispatch, until they happened to manually
+    toggle their own status off and back on.
+
+    apply_transition(job, "cancelled") below already does everything this
+    needs -- validates the transition is legal from the job's current
+    state, closes any active JobTrackingSession, and reconciles the
+    assigned employee's availability back to free (see
+    service_requests/state_machine.py) -- so this view stays intentionally
+    thin rather than re-implementing any of that.
+    """
+    permission_classes = [IsInternalWorkforceCaller]
+
+    def post(self, request, pk):
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if job.status == "cancelled":
+            # apply_transition() already no-ops current==target, but short-
+            # circuit here too so a retried call doesn't even hit the DB.
+            return Response({"message": "Job already cancelled.", "status": job.status}, status=status.HTTP_200_OK)
+
+        try:
+            new_status = apply_transition(job, "cancelled", actor=None)
+        except ValidationError as e:
+            return Response({"error": str(e.detail if hasattr(e, "detail") else e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            "message": f"Job #{job.id} cancelled (customer-initiated) and technician released.",
+            "job_id": job.id,
+            "status": new_status,
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceJobClawbackSyncView(APIView):
+    """
+    Server-to-server endpoint: the Customer app calls this when an admin
+    completes a refund for a booking, so this app can claw back the
+    technician's earnings for that job. Authenticated by a shared secret
+    (IsInternalWorkforceCaller), not a user session -- there is no
+    vendor-side user acting here, mirroring
+    WorkforceJobCustomerCancelSyncView above.
+
+    Bug found (gap, not a blocker): before this endpoint existed, a
+    completed refund on the Customer side never told this app anything --
+    admin_complete_refund() only ran the payment gateway refund and
+    flipped RefundRequest.status to COMPLETED. The technician's earnings
+    for that job (a JOB_CREDIT WalletLedgerEntry, HELD or already
+    RELEASED) were left untouched, so a fully refunded customer could
+    still result in a paid-out technician for the same job with no
+    reconciling entry anywhere. clawback_job() below already does
+    everything this needs -- idempotent, handles both the still-HELD case
+    (mark CLAWED_BACK in place) and the already-RELEASED case (an
+    offsetting CLAWBACK_DEBIT entry, since the immutable ledger is never
+    rewritten after release) -- so this view stays intentionally thin
+    rather than re-implementing any of that.
+    """
+    permission_classes = [IsInternalWorkforceCaller]
+
+    def post(self, request, pk):
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        reason = (request.data.get("reason") or "").strip() or "Customer refund completed."
+
+        from .models import WalletLedgerEntry
+        already = WalletLedgerEntry.objects.filter(
+            job=job,
+            entry_type__in=[WalletLedgerEntry.EntryType.JOB_CREDIT],
+            status=WalletLedgerEntry.EntryStatus.CLAWED_BACK,
+        ).exists()
+        already = already or WalletLedgerEntry.objects.filter(
+            job=job, entry_type=WalletLedgerEntry.EntryType.CLAWBACK_DEBIT,
+        ).exists()
+        if already:
+            # clawback_job() is itself idempotent, but short-circuit here
+            # too so a retried call from the Customer side doesn't even
+            # hit the DB for a lookup it already knows the answer to.
+            return Response({"message": "Job already clawed back.", "job_id": job.id}, status=status.HTTP_200_OK)
+
+        from .services import clawback_job
+        result = clawback_job(job, reason)
+        if not result:
+            return Response({"message": "No earnings entry found for this job -- nothing to claw back.", "job_id": job.id}, status=status.HTTP_200_OK)
+
+        return Response({
+            "message": f"Job #{job.id} earnings clawed back.",
+            "job_id": job.id,
+            "ledger_entry_id": result.id,
+            "status": result.status,
+        }, status=status.HTTP_200_OK)
+
 
 class WorkforceJobRejectOfferView(APIView):
     permission_classes = [IsApprovedTechnician]
@@ -3689,6 +3868,11 @@ class WorkforceAutoDispatchTriggerView(APIView):
         job = ServiceRequest.objects.filter(pk=pk).first()
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Fixes IDOR: IsWorkforceAdmin only checks role, not company -- any
+        # company's admin could force-dispatch any other company's job.
+        if not _is_admin_authorized_for_company(request, job.company):
+            return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         success, msg = run_automatic_dispatch(job)
         return Response({"message": msg, "success": success, "status": job.status}, status=status.HTTP_200_OK)
@@ -3992,7 +4176,7 @@ class WorkforceCustomerExtensionDetailView(APIView):
                 job.customer == request.user
                 or str(getattr(job, "customer_name", "")).lower() == request.user.username.lower()
                 or getattr(job, "phone", "") == getattr(request.user, "username", "")
-                or is_admin_role(request.user)
+                or _is_admin_authorized_for_company(request, job.company)
             )
         )
         is_valid_token = bool(token and extension.decision_token and token == extension.decision_token)
@@ -4043,7 +4227,7 @@ class WorkforceCustomerExtensionDecideView(APIView):
                     job.customer == request.user
                     or str(getattr(job, "customer_name", "")).lower() == request.user.username.lower()
                     or getattr(job, "phone", "") == getattr(request.user, "username", "")
-                    or is_admin_role(request.user)
+                    or _is_admin_authorized_for_company(request, job.company)
                 )
             )
             is_valid_token = bool(token and extension.decision_token and token == extension.decision_token)
@@ -4417,6 +4601,24 @@ class WorkforceCreateSupplementalInvoiceView(APIView):
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        # Fixes IDOR: this endpoint used to only require IsAuthenticated with
+        # no ownership check at all, so any authenticated account on the
+        # platform could act on any other company's job just by guessing/
+        # incrementing pk. Mirrors the company-check pattern already used
+        # correctly on WorkforceJobExtensionView just above.
+        emp = getattr(request.user, "employee_profile", None)
+        if not is_admin_role(request.user):
+            if not emp or job.assigned_employee != emp:
+                return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
+            if not is_employee_authorized_for_job(emp, job):
+                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        elif not getattr(request.user, "is_superuser", False):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+            if not job.company_id or user_company.id != job.company_id:
+                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
         extension = WorkforceWorkExtension.objects.filter(pk=ext_id, job=job).first()
         if not extension:
             return Response({"error": "Work extension not found."}, status=status.HTTP_404_NOT_FOUND)
@@ -4468,7 +4670,7 @@ class WorkforceCustomerSupplementalInvoiceListView(APIView):
             or str(getattr(job, "customer_name", "")).lower() == request.user.username.lower()
             or getattr(job, "phone", "") == getattr(request.user, "username", "")
         )
-        if not (is_customer or is_admin_role(request.user)):
+        if not (is_customer or _is_admin_authorized_for_company(request, job.company)):
             return Response({"error": "Unauthorized: Not your booking."}, status=status.HTTP_403_FORBIDDEN)
 
         invoices = WorkforceSupplementalInvoice.objects.filter(job=job).order_by("-created_at")
@@ -4487,7 +4689,7 @@ class WorkforcePaySupplementalInvoiceView(APIView):
         is_customer = (
             invoice.customer == request.user
             or invoice.job.customer == request.user
-            or is_admin_role(request.user)
+            or _is_admin_authorized_for_company(request, invoice.job.company)
         )
         if not is_customer:
             return Response({"error": "Unauthorized: Not your invoice."}, status=status.HTTP_403_FORBIDDEN)
@@ -4539,6 +4741,24 @@ class WorkforceJobRescheduleView(APIView):
         job = ServiceRequest.objects.filter(pk=pk).first()
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Fixes IDOR: this endpoint used to only require IsAuthenticated with
+        # no ownership check at all, so any authenticated account on the
+        # platform could act on any other company's job just by guessing/
+        # incrementing pk. Mirrors the company-check pattern already used
+        # correctly on WorkforceJobExtensionView just above.
+        emp = getattr(request.user, "employee_profile", None)
+        if not is_admin_role(request.user):
+            if not emp or job.assigned_employee != emp:
+                return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
+            if not is_employee_authorized_for_job(emp, job):
+                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        elif not getattr(request.user, "is_superuser", False):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+            if not job.company_id or user_company.id != job.company_id:
+                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         new_date = request.data.get("rescheduled_date") or request.data.get("date")
         reason = str(request.data.get("reason", "")).strip()
@@ -4618,7 +4838,7 @@ class WorkforceCustomerRescheduleResponseView(APIView):
             or str(getattr(job, "customer_name", "")).lower() == request.user.username.lower()
             or getattr(job, "phone", "") == getattr(request.user, "username", "")
         )
-        if not (is_customer or is_admin_role(request.user)):
+        if not (is_customer or _is_admin_authorized_for_company(request, job.company)):
             return Response({"error": "Unauthorized: Not your booking."}, status=status.HTTP_403_FORBIDDEN)
 
         response_choice = str(request.data.get("response", "")).upper()  # ACCEPTED, OBJECTED, CALLBACK_REQUESTED
@@ -4653,6 +4873,10 @@ class WorkforceJobPurchaseRequestView(APIView):
         if not is_admin_role(request.user):
             if not emp or job.assigned_employee != emp:
                 return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
+            if not is_employee_authorized_for_job(emp, job):
+                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        elif not _is_admin_authorized_for_company(request, job.company):
+            return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         item_name = request.data.get("item_name", "Spare Part").strip()
         quantity = int(request.data.get("quantity", 1))
@@ -4698,6 +4922,11 @@ class WorkforceAdminPurchaseDecideView(APIView):
         job = ServiceRequest.objects.filter(pk=pk).first()
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Fixes IDOR: IsWorkforceAdmin only checks role, not company -- any
+        # company's admin could decide any other company's purchase request.
+        if not _is_admin_authorized_for_company(request, job.company):
+            return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         action = request.data.get("action", "").upper()
         reason = request.data.get("reason", "")
@@ -6992,11 +7221,45 @@ class WorkforceJobVerifyOTPView(APIView):
             verification.otp_code = canonical_otp
             verification.save(update_fields=["otp_code", "updated_at"])
 
+        def _ensure_job_started(job_obj, verification_obj):
+            if not verification_obj.is_complete:
+                return
+            if job_obj.status in ["accepted", "on_the_way", "en_route", "arrived"]:
+                from time_tracking.models import TimeLog
+                from service_requests.state_machine import apply_transition
+                from service_requests.models import EmployeeJob
+
+                time_log = TimeLog.objects.filter(employee=emp, clock_out__isnull=True).first()
+                if not time_log:
+                    company = emp.company or getattr(request.user, "company", None) or job_obj.company
+                    TimeLog.objects.create(
+                        employee=emp,
+                        company=company,
+                        user=request.user,
+                        work_date=timezone.localdate(),
+                        clock_in=now,
+                        clock_in_lat=job_obj.latitude or 0.0,
+                        clock_in_lon=job_obj.longitude or 0.0,
+                        clock_in_address=job_obj.address or "",
+                        clock_in_notes="Auto-clocked in upon Work Start OTP verification",
+                        distance_from_site_meters=0,
+                        geofence_passed=True,
+                        admin_override_used=False,
+                        status="draft",
+                    )
+                try:
+                    apply_transition(job_obj, "in_progress", actor=request.user)
+                    EmployeeJob.objects.filter(service_request=job_obj, employee=emp).update(status="IN_PROGRESS")
+                except Exception as ex:
+                    logger.warning(f"Failed to auto-transition job {job_obj.id} to IN_PROGRESS upon OTP verification: {ex}")
+
         if verification.otp_verified:
+            _ensure_job_started(job, verification)
             return Response({
                 "message": "Customer OTP already verified.",
                 "otp_verified": True,
                 "is_complete": verification.is_complete,
+                "status": job.status,
             }, status=status.HTTP_200_OK)
 
         # Max 5 attempts enforced
@@ -7029,10 +7292,13 @@ class WorkforceJobVerifyOTPView(APIView):
             is_complete = verification.check_completion()
             verification.save()
 
+            _ensure_job_started(job, verification)
+
             return Response({
                 "message": "Customer OTP verified successfully.",
                 "otp_verified": True,
                 "is_complete": is_complete,
+                "status": job.status,
             }, status=status.HTTP_200_OK)
 
         verification.otp_attempts += 1
@@ -7180,6 +7446,10 @@ class WorkforceJobPreServicePhotoView(APIView):
 
         if not photo_file:
             return Response({"error": "Photo file required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        _photo_err = _validate_photo_upload(photo_file)
+        if _photo_err:
+            return Response({"error": _photo_err}, status=status.HTTP_400_BAD_REQUEST)
 
         verification, _ = PreServiceVerification.objects.get_or_create(
             job=job,
