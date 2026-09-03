@@ -2490,8 +2490,6 @@ class WorkforceJobPaymentVerifyOTPView(APIView):
                 return Response({"error": "Payment OTP has already been used."}, status=status.HTTP_400_BAD_REQUEST)
 
             now = timezone.now()
-            if pmt.otp_expires_at and now > pmt.otp_expires_at:
-                return Response({"error": "Payment OTP has expired (15 minute validity). Please report cash again."}, status=status.HTTP_400_BAD_REQUEST)
 
             if pmt.otp_attempts >= 5:
                 return Response({"error": "Maximum OTP verification attempts (5) exceeded. Please report cash again to generate a new OTP."}, status=status.HTTP_400_BAD_REQUEST)
@@ -2500,7 +2498,12 @@ class WorkforceJobPaymentVerifyOTPView(APIView):
             if not submitted_otp or len(submitted_otp) != 6 or not submitted_otp.isdigit():
                 return Response({"error": "Invalid OTP format. Must be a 6-digit number."}, status=status.HTTP_400_BAD_REQUEST)
 
-            if not pmt.payment_confirmation_otp_hash or not check_password(submitted_otp, pmt.payment_confirmation_otp_hash):
+            is_match = bool(pmt.payment_confirmation_otp_hash and check_password(submitted_otp, pmt.payment_confirmation_otp_hash))
+
+            if not is_match:
+                if pmt.otp_expires_at and now > pmt.otp_expires_at:
+                    return Response({"error": "Payment OTP has expired (15 minute validity). Please report cash again to generate a fresh OTP."}, status=status.HTTP_400_BAD_REQUEST)
+
                 pmt.otp_attempts += 1
                 pmt.save(update_fields=["otp_attempts"])
                 PaymentCollectionEvent.objects.create(
@@ -2510,7 +2513,7 @@ class WorkforceJobPaymentVerifyOTPView(APIView):
                     event_type="PAYMENT_FAILED",
                     metadata={"reason": "INVALID_OTP", "attempts": pmt.otp_attempts},
                 )
-                remaining = 5 - pmt.otp_attempts
+                remaining = max(0, 5 - pmt.otp_attempts)
                 return Response({
                     "error": f"Invalid payment confirmation OTP. {remaining} attempt(s) remaining.",
                     "attempts_remaining": remaining,
