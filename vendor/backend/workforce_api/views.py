@@ -46,7 +46,7 @@ from datetime import timedelta
 import secrets
 from django.contrib.auth.hashers import make_password, check_password
 from accounts.permissions import is_admin_role
-from .permissions import IsWorkforceAdmin, IsWorkforceEmployee, IsApprovedTechnician
+from .permissions import IsWorkforceAdmin, IsWorkforceEmployee, IsApprovedTechnician, IsInternalWorkforceCaller
 from .serializers import (
     WorkforceSignupSerializer,
     ProviderSignupSerializer,
@@ -3628,6 +3628,58 @@ class WorkforceJobTechnicianCancelView(APIView):
                 "status": "CANCELLED_BY_TECHNICIAN",
             }, status=status.HTTP_200_OK)
 
+
+class WorkforceJobCustomerCancelSyncView(APIView):
+    """
+    Server-to-server endpoint: the Customer app calls this when a customer
+    cancels their booking, so this app can release the assigned technician
+    and close the job out. Authenticated by a shared secret
+    (IsInternalWorkforceCaller), not a user session -- there is no
+    vendor-side user acting here.
+
+    Bug found (BLOCKER): before this endpoint existed,
+    WorkforceIntegrationService.cancel_workforce_job() on the Customer app
+    called jobs/<pk>/cancel/ (WorkforceJobTechnicianCancelView above) --
+    that view requires IsApprovedTechnician and treats the caller as "the
+    assigned technician cancelling their own job within a 5-minute window",
+    entirely wrong semantics for "the customer cancelled the whole
+    booking". It also only ever accepted a technician's own session, never
+    a service-to-service call, so it 401'd every single time regardless.
+    Both failures were silently swallowed on the Customer side and
+    reported back as success, so the technician was never actually
+    released -- Employee.current_availability stayed "busy" forever,
+    excluded from all future dispatch, until they happened to manually
+    toggle their own status off and back on.
+
+    apply_transition(job, "cancelled") below already does everything this
+    needs -- validates the transition is legal from the job's current
+    state, closes any active JobTrackingSession, and reconciles the
+    assigned employee's availability back to free (see
+    service_requests/state_machine.py) -- so this view stays intentionally
+    thin rather than re-implementing any of that.
+    """
+    permission_classes = [IsInternalWorkforceCaller]
+
+    def post(self, request, pk):
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if job.status == "cancelled":
+            # apply_transition() already no-ops current==target, but short-
+            # circuit here too so a retried call doesn't even hit the DB.
+            return Response({"message": "Job already cancelled.", "status": job.status}, status=status.HTTP_200_OK)
+
+        try:
+            new_status = apply_transition(job, "cancelled", actor=None)
+        except ValidationError as e:
+            return Response({"error": str(e.detail if hasattr(e, "detail") else e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            "message": f"Job #{job.id} cancelled (customer-initiated) and technician released.",
+            "job_id": job.id,
+            "status": new_status,
+        }, status=status.HTTP_200_OK)
 
 
 class WorkforceJobRejectOfferView(APIView):
