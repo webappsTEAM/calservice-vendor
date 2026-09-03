@@ -16,6 +16,26 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
+
+class SettlementError(Exception):
+    """
+    Raised by settle_completed_job() for the three "expected" ways a
+    completed job can't be settled yet (no resolvable payee wallet, no
+    JobPayment record, zero gross amount).
+
+    Bug found: these three cases used to only log an error and return None
+    -- since that's a normal return, not an exception, the caller in
+    service_requests/state_machine.py (which only notifies on an *exception*
+    from this call) never found out, so a job could sit COMPLETED with an
+    uncredited wallet and nothing anywhere would say why. Raising here lets
+    that existing exception-handling/notification path (and the
+    retry_failed_settlements management command's own except-block
+    reporting) cover all three cases with the real reason, instead of only
+    covering genuine unexpected errors.
+    """
+    pass
+
+
 DISPUTE_HOLD_HOURS = int(getattr(settings, "SEVO_DISPUTE_HOLD_HOURS", 48))
 PROMO_PERIOD_DAYS = int(getattr(settings, "SEVO_PROMO_PERIOD_DAYS", 90))
 
@@ -119,23 +139,26 @@ def settle_completed_job(service_request):
 
     wallet, channel = resolve_payee_wallet(service_request)
     if not wallet:
-        logger.error(
+        msg = (
             f"[SETTLEMENT_NO_WALLET] Job #{service_request.id} completed but has no "
             f"resolvable payee wallet (assigned_employee={service_request.assigned_employee_id}). "
             "This job's earnings cannot be credited until the technician/provider has "
             "completed wallet onboarding."
         )
-        return None
+        logger.error(msg)
+        raise SettlementError(msg)
 
     payment = JobPayment.objects.filter(job=service_request).first()
     if not payment:
-        logger.error(f"[SETTLEMENT_NO_PAYMENT] Job #{service_request.id} completed but has no JobPayment record.")
-        return None
+        msg = f"[SETTLEMENT_NO_PAYMENT] Job #{service_request.id} completed but has no JobPayment record."
+        logger.error(msg)
+        raise SettlementError(msg)
 
     gross = payment.amount_due or payment.amount_paid or Decimal("0")
     if gross <= 0:
-        logger.warning(f"[SETTLEMENT_ZERO_AMOUNT] Job #{service_request.id} has gross amount {gross} -- skipping settlement.")
-        return None
+        msg = f"[SETTLEMENT_ZERO_AMOUNT] Job #{service_request.id} has gross amount {gross} -- skipping settlement."
+        logger.warning(msg)
+        raise SettlementError(msg)
 
     rate = commission_rate_for(wallet, channel)
     commission = (gross * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -183,6 +206,62 @@ def settle_completed_job(service_request):
         f"[SETTLEMENT_OK] Job #{service_request.id}: gross={gross} commission={commission} "
         f"net={net} -> wallet #{wallet.id} ({channel}), held until {hold_release_at.isoformat()}"
     )
+    # Mirror earning into vendor_wallet.EmployeeWallet so the technician wallet dashboard reflects earnings
+    if worker_performed is not None:
+        try:
+            from vendor_wallet.models import EmployeeWallet, EmployeeWalletTransaction
+            from vendor_wallet.constants import (
+                WALLET_ACTIVE, TXN_SERVICE_EARNING, DIRECTION_CREDIT,
+                TXN_STATUS_PENDING_SETTLEMENT, BALANCE_PENDING, REF_JOB_PAYMENT
+            )
+            from companies.models import Company
+
+            emp_wallet, _ = EmployeeWallet.objects.get_or_create(
+                employee=worker_performed,
+                defaults={
+                    "company": worker_performed.company or Company.objects.filter(id=1).first(),
+                    "currency": "INR",
+                    "status": WALLET_ACTIVE,
+                },
+            )
+
+            ref_id = str(payment.id)
+            if not EmployeeWalletTransaction.objects.filter(
+                wallet=emp_wallet, reference_type=REF_JOB_PAYMENT, reference_id=ref_id
+            ).exists():
+                emp_wallet.pending_balance = emp_wallet.pending_balance + net
+                emp_wallet.lifetime_earnings = emp_wallet.lifetime_earnings + net
+                emp_wallet.save(update_fields=["pending_balance", "lifetime_earnings", "updated_at"])
+
+                EmployeeWalletTransaction.objects.create(
+                    wallet=emp_wallet,
+                    reference_type=REF_JOB_PAYMENT,
+                    reference_id=ref_id,
+                    transaction_type=TXN_SERVICE_EARNING,
+                    direction=DIRECTION_CREDIT,
+                    status=TXN_STATUS_PENDING_SETTLEMENT,
+                    amount=net,
+                    gross_amount=gross,
+                    earn_rate_snapshot=Decimal("1.0") - rate,
+                    platform_deduction_amount=commission,
+                    balance_before=emp_wallet.pending_balance - net,
+                    balance_after=emp_wallet.pending_balance,
+                    balance_type=BALANCE_PENDING,
+                    settlement_release_at=hold_release_at,
+                    description=f"Service earning for Job #{service_request.id} ({service_request.issue_title or service_request.request_id})",
+                    service_request_id=service_request.id,
+                    job_payment_id=payment.id,
+                    metadata={
+                        "job_id": service_request.id,
+                        "request_id": service_request.request_id,
+                        "gross": str(gross),
+                        "net": str(net),
+                        "commission": str(commission),
+                    },
+                )
+        except Exception as ew_err:
+            logger.warning("Could not mirror earning into EmployeeWallet for Job #%s: %s", service_request.id, ew_err)
+
     if worker_performed is not None:
         try:
             from workforce_api.services.social_security import recompute_registration_status

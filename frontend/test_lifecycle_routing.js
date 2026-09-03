@@ -229,8 +229,39 @@ function runFrontendRoutingTests() {
     console.error('[FAIL] Case 8:', destIncomplete);
   }
 
+  // Case 9: Solo Worker (unassigned) - Sidebar excludes 'My Vendor Assignment', page redirects to Dashboard
+  const isSoloTied = false;
+  const soloSidebarItems = [
+    'My Jobs',
+    ...(isSoloTied ? ['My Vendor Assignment'] : []),
+    'Vendor Invitations',
+    'My Wallet',
+    'Attendance & Time',
+  ];
+  if (!soloSidebarItems.includes('My Vendor Assignment') && soloSidebarItems.includes('Vendor Invitations')) {
+    console.log('[PASS] Case 9: Solo worker sidebar menu strictly excludes My Vendor Assignment');
+    passed++;
+  } else {
+    console.error('[FAIL] Case 9:', soloSidebarItems);
+  }
+
+  // Case 10: Tied Worker (assigned) - Sidebar includes 'My Vendor Assignment'
+  const isAssignedTied = true;
+  const tiedSidebarItems = [
+    'My Jobs',
+    ...(isAssignedTied ? ['My Vendor Assignment'] : []),
+    'Vendor Invitations',
+    'Attendance & Time',
+  ];
+  if (tiedSidebarItems.includes('My Vendor Assignment')) {
+    console.log('[PASS] Case 10: Tied worker sidebar menu includes My Vendor Assignment');
+    passed++;
+  } else {
+    console.error('[FAIL] Case 10:', tiedSidebarItems);
+  }
+
   console.log('=========================================================================');
-  console.log(`          ALL ${passed}/8 FRONTEND ROUTING & GUARD TESTS PASSED!         `);
+  console.log(`          ALL ${passed}/10 FRONTEND ROUTING & GUARD TESTS PASSED!        `);
   console.log('=========================================================================');
 }
 

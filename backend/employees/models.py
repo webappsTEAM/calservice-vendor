@@ -29,7 +29,7 @@ class Employee(models.Model):
     hire_date = models.DateField(null=True, blank=True)
     date_of_birth = models.DateField(null=True, blank=True)
     assigned_job_site_id = models.IntegerField(null=True, blank=True, db_column="assigned_job_site_id")
-    company = models.ForeignKey('companies.Company', on_delete=models.CASCADE, related_name="employees")
+    company = models.ForeignKey('companies.Company', on_delete=models.CASCADE, related_name="employees", null=True, blank=True)
     country = models.CharField(max_length=2, blank=True, null=True)
     state = models.CharField(max_length=100, blank=True, null=True)
     department = models.CharField(max_length=100, blank=True, null=True)

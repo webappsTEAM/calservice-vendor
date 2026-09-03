@@ -925,13 +925,31 @@ class WorkforceCatalogListView(APIView):
 
 # ─── 6. Admin Verification Queue & Dossier Review ─────────────────────────────
 
+def is_platform_superadmin(user) -> bool:
+    """
+    Returns True if the actor is a Platform Super Admin / Platform Operator:
+    - Superuser
+    - Staff user belonging to Caldim Platform Tenant (company_id=1)
+    - Role is superadmin or platform_admin
+    - Role is admin or manager belonging to Caldim Platform Tenant (company_id=1)
+    """
+    if not user or not user.is_authenticated:
+        return False
+    return bool(
+        getattr(user, "is_superuser", False)
+        or (getattr(user, "is_staff", False) and getattr(user, "company_id", None) == 1)
+        or str(getattr(user, "role", "")).lower() in ("superadmin", "platform_admin")
+        or (str(getattr(user, "role", "")).lower() in ("admin", "manager") and getattr(user, "company_id", None) == 1)
+    )
+
+
 class WorkforceAdminApplicationsListView(APIView):
     permission_classes = [IsWorkforceAdmin]
 
     def get(self, request):
         status_filter = request.query_params.get("status", "").strip().lower()
         company = resolve_actor_company(request)
-        if getattr(request.user, "is_superuser", False):
+        if is_platform_superadmin(request.user):
             employees = Employee.objects.select_related("user", "company").order_by("-id")
         elif company:
             employees = Employee.objects.filter(company=company).select_related("user", "company").order_by("-id")
@@ -963,7 +981,7 @@ class WorkforceAdminApplicationDetailView(APIView):
             return Response({"error": "Candidate dossier not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Cross-company tenant isolation check
-        if not getattr(request.user, "is_superuser", False):
+        if not is_platform_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
@@ -983,7 +1001,7 @@ class WorkforceAdminDocumentVerifyView(APIView):
             return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Cross-company tenant isolation check
-        if not getattr(request.user, "is_superuser", False):
+        if not is_platform_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
@@ -1028,7 +1046,7 @@ class WorkforceAdminBulkDocumentVerifyView(APIView):
             return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Tenant isolation
-        if not getattr(request.user, "is_superuser", False):
+        if not is_platform_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
@@ -1036,7 +1054,7 @@ class WorkforceAdminBulkDocumentVerifyView(APIView):
                 return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         # Prevent employee from approving their own documents
-        if getattr(request.user, "employee_profile", None) and request.user.employee_profile.id == emp.id and not getattr(request.user, "is_superuser", False):
+        if getattr(request.user, "employee_profile", None) and request.user.employee_profile.id == emp.id and not is_platform_superadmin(request.user):
             return Response({"error": "Employees cannot approve or decide their own documents."}, status=status.HTTP_403_FORBIDDEN)
 
         action = request.data.get("action", "").lower()
@@ -1249,7 +1267,7 @@ class WorkforceAdminPendingServicesListView(APIView):
     permission_classes = [IsWorkforceAdmin]
 
     def get(self, request):
-        if getattr(request.user, "is_superuser", False):
+        if is_platform_superadmin(request.user):
             qs = Employee.objects.select_related("user", "company")
         else:
             company = resolve_actor_company(request)
@@ -1286,7 +1304,7 @@ class WorkforceAdminServiceDecideView(APIView):
             return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Tenant isolation
-        if not getattr(request.user, "is_superuser", False):
+        if not is_platform_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
@@ -1294,7 +1312,7 @@ class WorkforceAdminServiceDecideView(APIView):
                 return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         # Prevent employee from approving their own request
-        if getattr(request.user, "employee_profile", None) and request.user.employee_profile.id == emp.id and not getattr(request.user, "is_superuser", False):
+        if getattr(request.user, "employee_profile", None) and request.user.employee_profile.id == emp.id and not is_platform_superadmin(request.user):
             return Response({"error": "Employees cannot approve or decide their own service authorizations."}, status=status.HTTP_403_FORBIDDEN)
 
         action = request.data.get("action", "").lower()
@@ -1358,7 +1376,7 @@ class WorkforceAdminBulkServiceDecideView(APIView):
             return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Tenant isolation
-        if not getattr(request.user, "is_superuser", False):
+        if not is_platform_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
@@ -1366,7 +1384,7 @@ class WorkforceAdminBulkServiceDecideView(APIView):
                 return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         # Prevent employee from approving their own request
-        if getattr(request.user, "employee_profile", None) and request.user.employee_profile.id == emp.id and not getattr(request.user, "is_superuser", False):
+        if getattr(request.user, "employee_profile", None) and request.user.employee_profile.id == emp.id and not is_platform_superadmin(request.user):
             return Response({"error": "Employees cannot approve or decide their own service authorizations."}, status=status.HTTP_403_FORBIDDEN)
 
         action = request.data.get("action", "").lower()
@@ -1670,7 +1688,7 @@ class WorkforceAdminRequestCorrectionView(APIView):
             return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Cross-company tenant isolation check
-        if not getattr(request.user, "is_superuser", False):
+        if not is_platform_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
@@ -1706,7 +1724,7 @@ class WorkforceAdminApproveApplicationView(APIView):
             return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Cross-company tenant isolation check
-        if not getattr(request.user, "is_superuser", False):
+        if not is_platform_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
@@ -1766,7 +1784,7 @@ class WorkforceAdminRejectApplicationView(APIView):
             return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Cross-company tenant isolation check
-        if not getattr(request.user, "is_superuser", False):
+        if not is_platform_superadmin(request.user):
             user_company = resolve_actor_company(request)
             if not user_company:
                 return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
@@ -1871,6 +1889,22 @@ class WorkforcePresenceStatusView(APIView):
 
 
 # ─── 8. Field Jobs & State Machine Execution ─────────────────────────────────
+
+def is_employee_authorized_for_job(emp, job) -> bool:
+    """
+    Validates tenant compatibility between an employee and a job:
+    - Solo technician (emp.company_id is None) can handle platform jobs (job.company_id in (None, 1)).
+    - Platform technician (emp.company_id == 1) can handle platform jobs (job.company_id in (None, 1)).
+    - Vendor technician (emp.company_id > 1) can handle jobs belonging to their company (job.company_id == emp.company_id).
+    """
+    if not emp or not job:
+        return False
+    job_cid = getattr(job, "company_id", None)
+    emp_cid = getattr(emp, "company_id", None)
+    if emp_cid is None or emp_cid == 1:
+        return job_cid is None or job_cid == 1
+    return job_cid == emp_cid
+
 
 class WorkforceJobListView(APIView):
     permission_classes = [IsApprovedTechnician]
@@ -2049,7 +2083,7 @@ class WorkforceJobTransitionView(APIView):
                 has_emp_job = False
             if not emp or (job.assigned_employee != emp and not has_emp_job):
                 return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not emp.company_id or not job.company_id or emp.company_id != job.company_id:
+            if not is_employee_authorized_for_job(emp, job):
                 return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
         elif not getattr(request.user, "is_superuser", False):
             user_company = resolve_actor_company(request)
@@ -2090,7 +2124,7 @@ class WorkforceJobProofView(APIView):
         if not is_admin_role(request.user):
             if not emp or job.assigned_employee != emp:
                 return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not emp.company_id or not job.company_id or emp.company_id != job.company_id:
+            if not is_employee_authorized_for_job(emp, job):
                 return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
         elif not getattr(request.user, "is_superuser", False):
             user_company = resolve_actor_company(request)
@@ -2171,7 +2205,7 @@ class WorkforceJobPaymentDetailView(APIView):
         if not is_admin_role(request.user):
             if not emp or job.assigned_employee != emp:
                 return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not emp.company_id or not job.company_id or emp.company_id != job.company_id:
+            if not is_employee_authorized_for_job(emp, job):
                 return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
         elif not getattr(request.user, "is_superuser", False):
             user_company = resolve_actor_company(request)
@@ -2223,7 +2257,7 @@ class WorkforceJobCashCollectView(APIView):
         if not is_admin_role(request.user):
             if not emp or job.assigned_employee != emp:
                 return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not emp.company_id or not job.company_id or emp.company_id != job.company_id:
+            if not is_employee_authorized_for_job(emp, job):
                 return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
         elif not getattr(request.user, "is_superuser", False):
             user_company = resolve_actor_company(request)
@@ -2359,7 +2393,7 @@ class WorkforceJobPaymentVerifyOTPView(APIView):
         if not is_admin_role(request.user):
             if not emp or job.assigned_employee != emp:
                 return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not emp.company_id or not job.company_id or emp.company_id != job.company_id:
+            if not is_employee_authorized_for_job(emp, job):
                 return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
         elif not getattr(request.user, "is_superuser", False):
             user_company = resolve_actor_company(request)
@@ -2466,23 +2500,76 @@ class WorkforceJobPaymentVerifyOTPView(APIView):
                 logger.info(f"Could not notify Customer app of payment collection for Job #{job.id}: {webhook_err}")
 
             # Service completion gate: If service proof is submitted / completed, close the job
+            completion_blocked_reason = ""
             if job.status == "proof_submitted":
                 try:
                     apply_transition(job, "completed", actor=request.user)
                 except ValidationError as ve:
+                    # Fix: this used to only log a warning and return a plain
+                    # "payment verified" success response with no sign the
+                    # job silently failed to close -- since wallet crediting
+                    # (commission.settle_completed_job) only runs on the
+                    # COMPLETED transition, that meant a technician could see
+                    # "PAID" while their earnings were never credited, with
+                    # no visible reason why. Surface it instead: to the
+                    # response (so the app can show it) and to an admin
+                    # notification (so ops can act without digging through
+                    # logs), and try `complete_stuck_paid_jobs` once the
+                    # underlying block is cleared.
+                    completion_blocked_reason = str(ve)
                     logger.warning("Could not complete job #%s after payment OTP verification: %s", job.id, ve)
                     job.save(update_fields=["payment_status"])
+                    try:
+                        admin_user = None
+                        if job.company:
+                            admin_user = get_user_model().objects.filter(
+                                Q(role__in=["admin", "manager"]) | Q(is_staff=True),
+                                company=job.company,
+                            ).first()
+                        if admin_user:
+                            WorkforceNotification.objects.create(
+                                recipient=admin_user,
+                                title="Payment Confirmed but Job Did Not Close",
+                                message=(
+                                    f"Job #{job.id} ({job.request_id}) payment was verified PAID but the job could "
+                                    f"not be marked completed: {completion_blocked_reason} Wallet was NOT credited. "
+                                    f"Run `complete_stuck_paid_jobs --job {job.request_id}` once resolved."
+                                ),
+                                notification_type="JOB_COMPLETION_BLOCKED",
+                                company=job.company,
+                                related_object_id=str(job.id),
+                            )
+                    except Exception as notify_err:
+                        logger.warning(f"Could not notify admin of blocked completion for Job #{job.id}: {notify_err}")
                 except Exception as e:
+                    completion_blocked_reason = str(e)
                     logger.exception("Unexpected error completing job #%s after payment OTP verification: %s", job.id, e)
+                    job.save(update_fields=["payment_status"])
+                else:
+                    # Bug found: apply_transition() only persists the "status"
+                    # field (service_request.save(update_fields=["status"])) --
+                    # it never writes back payment_status, so the "paid"
+                    # assignment above was staying in memory only. The job
+                    # correctly flipped to COMPLETED, but the shared
+                    # payment_status column (read directly by the Customer
+                    # app -- same database, same row) stayed at whatever it
+                    # was before (e.g. "cash_pending"), which is exactly why
+                    # a technician could see the job as COMPLETED while the
+                    # customer's booking list still showed "Cash Collection
+                    # Pending". Persist it explicitly on the success path too.
                     job.save(update_fields=["payment_status"])
             else:
                 job.save(update_fields=["payment_status"])
 
-            return Response({
+            response_payload = {
                 "message": f"Payment of ₹{pmt.amount_due} successfully verified via Customer OTP and marked PAID.",
                 "payment_status": "PAID",
                 "job_status": job.status,
-            }, status=status.HTTP_200_OK)
+            }
+            if completion_blocked_reason:
+                response_payload["message"] += " NOTE: the job could not be closed yet -- see completion_blocked_reason."
+                response_payload["completion_blocked_reason"] = completion_blocked_reason
+            return Response(response_payload, status=status.HTTP_200_OK)
 
 
 class WorkforceCustomerJobPaymentView(APIView):
@@ -2621,14 +2708,50 @@ class WorkforceCustomerPaymentConfirmView(APIView):
 
                 job.payment_status = "paid"
 
+                # See the matching fix in WorkforceJobPaymentVerifyOTPView --
+                # a rejected completion here used to be silently swallowed
+                # too, so a customer could confirm payment and see success
+                # while the job never closed and the technician's wallet was
+                # never credited, with no visible reason why.
+                completion_blocked_reason = ""
                 if job.status == "proof_submitted":
                     try:
                         apply_transition(job, "completed", actor=request.user)
                     except ValidationError as ve:
+                        completion_blocked_reason = str(ve)
                         logger.warning("Could not complete job #%s after customer payment confirm: %s", job.id, ve)
                         job.save(update_fields=["payment_status"])
+                        try:
+                            admin_user = None
+                            if job.company:
+                                admin_user = get_user_model().objects.filter(
+                                    Q(role__in=["admin", "manager"]) | Q(is_staff=True),
+                                    company=job.company,
+                                ).first()
+                            if admin_user:
+                                WorkforceNotification.objects.create(
+                                    recipient=admin_user,
+                                    title="Payment Confirmed but Job Did Not Close",
+                                    message=(
+                                        f"Job #{job.id} ({job.request_id}) payment was confirmed PAID but the job "
+                                        f"could not be marked completed: {completion_blocked_reason} Wallet was NOT "
+                                        f"credited. Run `complete_stuck_paid_jobs --job {job.request_id}` once resolved."
+                                    ),
+                                    notification_type="JOB_COMPLETION_BLOCKED",
+                                    company=job.company,
+                                    related_object_id=str(job.id),
+                                )
+                        except Exception as notify_err:
+                            logger.warning(f"Could not notify admin of blocked completion for Job #{job.id}: {notify_err}")
                     except Exception as e:
+                        completion_blocked_reason = str(e)
                         logger.exception("Unexpected error completing job #%s after customer payment confirm: %s", job.id, e)
+                        job.save(update_fields=["payment_status"])
+                    else:
+                        # See the matching comment in WorkforceJobPaymentVerifyOTPView --
+                        # apply_transition() only persists "status", so without this the
+                        # payment_status column stays stale (e.g. "cash_pending") even
+                        # though the job just completed successfully.
                         job.save(update_fields=["payment_status"])
                 else:
                     job.save(update_fields=["payment_status"])
@@ -2643,11 +2766,15 @@ class WorkforceCustomerPaymentConfirmView(APIView):
                         related_object_id=str(job.id),
                     )
 
-                return Response({
+                response_payload = {
                     "message": f"Cash payment of ₹{pmt.amount_due} successfully confirmed.",
                     "payment_status": "PAID",
                     "job_status": job.status,
-                }, status=status.HTTP_200_OK)
+                }
+                if completion_blocked_reason:
+                    response_payload["message"] += " NOTE: the job could not be closed yet -- see completion_blocked_reason."
+                    response_payload["completion_blocked_reason"] = completion_blocked_reason
+                return Response(response_payload, status=status.HTTP_200_OK)
 
             elif action == "PROBLEM":
                 reason = str(request.data.get("reason", "Customer reported payment dispute")).strip()
@@ -2881,7 +3008,7 @@ class WorkforceJobAcceptOfferView(APIView):
             return Response({"error": "Employee profile not found.", "code": "PROFILE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
         # Cross-company tenant isolation check
-        if not emp.company_id or not job.company_id or emp.company_id != job.company_id:
+        if not is_employee_authorized_for_job(emp, job):
             return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         with transaction.atomic():
@@ -3138,7 +3265,7 @@ class WorkforceJobCancelAssignmentView(APIView):
             return Response({"error": "Employee profile not found.", "code": "PROFILE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
         # Cross-company tenant isolation check
-        if not emp.company_id or not job.company_id or emp.company_id != job.company_id:
+        if not is_employee_authorized_for_job(emp, job):
             return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         # Authorization: must be the currently assigned technician or active EmployeeJob
@@ -3487,7 +3614,7 @@ class WorkforceJobRejectOfferView(APIView):
         if not emp:
             return Response({"error": "Employee profile not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if not emp.company_id or not job.company_id or emp.company_id != job.company_id:
+        if not is_employee_authorized_for_job(emp, job):
             return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         reason = request.data.get("reason", "Technician declined offer.").strip()
@@ -3581,7 +3708,7 @@ class WorkforceJobExtensionView(APIView):
         if not is_admin_role(request.user):
             if not emp or job.assigned_employee != emp:
                 return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not emp.company_id or not job.company_id or emp.company_id != job.company_id:
+            if not is_employee_authorized_for_job(emp, job):
                 return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
         elif not getattr(request.user, "is_superuser", False):
             user_company = resolve_actor_company(request)
@@ -3603,7 +3730,7 @@ class WorkforceJobExtensionView(APIView):
         if not is_admin_role(request.user):
             if not emp or job.assigned_employee != emp:
                 return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not emp.company_id or not job.company_id or emp.company_id != job.company_id:
+            if not is_employee_authorized_for_job(emp, job):
                 return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
         elif not getattr(request.user, "is_superuser", False):
             user_company = resolve_actor_company(request)
@@ -5057,13 +5184,16 @@ class WorkforceLocationUpdateView(APIView):
 
         # Find active accepted / en-route jobs owned by this technician
         emp_job_sr_ids = list(EmployeeJob.objects.filter(employee=emp).values_list("service_request_id", flat=True))
-        active_jobs = ServiceRequest.objects.filter(
+        emp_company = getattr(emp, "company", None) if getattr(emp, "company_id", None) else None
+        active_jobs_qs = ServiceRequest.objects.filter(
             Q(assigned_employee=emp) | Q(id__in=emp_job_sr_ids),
-            company=emp.company,
             status__in=["accepted", "on_the_way", "en_route"],
             latitude__isnull=False,
             longitude__isnull=False,
         )
+        if emp_company:
+            active_jobs_qs = active_jobs_qs.filter(company=emp_company)
+        active_jobs = active_jobs_qs
 
         for job in active_jobs:
             try:
@@ -5075,8 +5205,10 @@ class WorkforceLocationUpdateView(APIView):
                 session, _ = JobTrackingSession.objects.get_or_create(
                     job=job,
                     employee=emp,
-                    company=emp.company,
-                    status=JobTrackingSession.SessionStatus.ACTIVE,
+                    defaults={
+                        "company": job.company or emp_company,
+                        "status": JobTrackingSession.SessionStatus.ACTIVE,
+                    },
                 )
 
                 # Update session latest telemetry
