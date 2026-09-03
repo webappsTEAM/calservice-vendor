@@ -157,6 +157,7 @@ export function EmployeeDashboardPage() {
     reconcileJobCompleted,
     reconcileOfferRemoved,
     liveLocation,
+    locationError,
     scanCurrentLocation,
     autoClockIn,
     getClockInReadiness,
@@ -1192,6 +1193,7 @@ export function EmployeeDashboardPage() {
             activeAssignedJob={activeAssignedJob}
             hasActiveJob={hasActiveJob}
             liveLocation={liveLocation}
+            locationError={locationError}
             actionLoading={actionLoading}
             handleAcceptOffer={handleAcceptOffer}
             handleRejectOffer={handleRejectOffer}
@@ -1355,6 +1357,346 @@ export function EmployeeDashboardPage() {
                     className="px-5 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold rounded-lg cursor-pointer transition-all shadow-sm"
                   >
                     {isCancellingJob ? 'Cancelling...' : 'Confirm Cancellation & Redispatch'}
+                  </button>
+                </div>
+              </form>
+            </Modal>
+          )}
+
+          {/* Modal: Proof of Work Completion */}
+          {proofModalJob && (
+            <Modal
+              isOpen={Boolean(proofModalJob)}
+              onClose={() => {
+                setProofModalJob(null);
+                setAfterFaceFile(null);
+                setBeforeFile(null);
+                setAfterFile(null);
+                if (afterFacePreviewUrl) URL.revokeObjectURL(afterFacePreviewUrl);
+                if (beforePreviewUrl) URL.revokeObjectURL(beforePreviewUrl);
+                if (afterPreviewUrl) URL.revokeObjectURL(afterPreviewUrl);
+                setAfterFacePreviewUrl(null);
+                setBeforePreviewUrl(null);
+                setAfterPreviewUrl(null);
+              }}
+              title={`Proof of Work Completion — Job #${proofModalJob.request_id || proofModalJob.id}`}
+            >
+              <form onSubmit={handleProofSubmit} className="space-y-4 text-xs font-sans">
+                {error && (
+                  <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 font-semibold text-xs flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                    <span>{error}</span>
+                  </div>
+                )}
+
+                {/* Mandatory Step 1: After Face Selfie */}
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">
+                    After Face Selfie (Technician Identity at Completion) <span className="text-rose-500">*</span>
+                  </label>
+                  {afterFaceFile ? (
+                    <div className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
+                      <div className="flex items-center gap-2.5">
+                        {afterFacePreviewUrl ? (
+                          <img
+                            src={afterFacePreviewUrl}
+                            alt="After Face"
+                            className="w-12 h-12 object-cover rounded-lg border border-slate-300 shadow-sm"
+                          />
+                        ) : (
+                          <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center text-blue-600">
+                            <Camera className="w-6 h-6" />
+                          </div>
+                        )}
+                        <div>
+                          <span className="font-bold text-xs text-slate-800 block truncate max-w-[180px]">
+                            {afterFaceFile.name || 'After Face Selfie Captured'}
+                          </span>
+                          <span className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3" /> Live selfie attached
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          openLiveCamera(
+                            'Capture After Face Selfie',
+                            'user',
+                            'after_face_selfie',
+                            (file, previewUrl) => {
+                              setAfterFaceFile(file);
+                              setAfterFacePreviewUrl(previewUrl);
+                            }
+                          )
+                        }
+                        className="px-2.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-bold rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
+                      >
+                        <RefreshCw className="w-3 h-3" /> Retake
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        openLiveCamera(
+                          'Capture After Face Selfie',
+                          'user',
+                          'after_face_selfie',
+                          (file, previewUrl) => {
+                            setAfterFaceFile(file);
+                            setAfterFacePreviewUrl(previewUrl);
+                          }
+                        )
+                      }
+                      className="w-full py-3 px-4 border-2 border-dashed border-blue-400 hover:border-blue-600 bg-blue-50/60 hover:bg-blue-50 text-blue-700 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all active:scale-[0.99] shadow-sm cursor-pointer"
+                    >
+                      <Camera className="w-4 h-4 text-blue-600" />
+                      <span>📸 Take Live Face Selfie (Required)</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Optional Step 2: After Product Photo */}
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">
+                    After Product Photo (Completed Result) <span className="text-slate-400 font-normal text-[11px]">(optional)</span>
+                  </label>
+                  {afterFile ? (
+                    <div className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
+                      <div className="flex items-center gap-2.5">
+                        {afterPreviewUrl ? (
+                          <img
+                            src={afterPreviewUrl}
+                            alt="After"
+                            className="w-12 h-12 object-cover rounded-lg border border-slate-300 shadow-sm"
+                          />
+                        ) : (
+                          <div className="w-12 h-12 bg-emerald-100 rounded-lg flex items-center justify-center text-emerald-600">
+                            <Camera className="w-6 h-6" />
+                          </div>
+                        )}
+                        <div>
+                          <span className="font-bold text-xs text-slate-800 block truncate max-w-[180px]">
+                            {afterFile.name || 'After Photo Captured'}
+                          </span>
+                          <span className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3" /> Live snapshot attached
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          openLiveCamera(
+                            'Capture After Photo',
+                            'environment',
+                            'after_work',
+                            (file, previewUrl) => {
+                              setAfterFile(file);
+                              setAfterPreviewUrl(previewUrl);
+                            }
+                          )
+                        }
+                        className="px-2.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-bold rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
+                      >
+                        <RefreshCw className="w-3 h-3" /> Retake
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        openLiveCamera(
+                          'Capture After Photo',
+                          'environment',
+                          'after_work',
+                          (file, previewUrl) => {
+                            setAfterFile(file);
+                            setAfterPreviewUrl(previewUrl);
+                          }
+                        )
+                      }
+                      className="w-full py-2.5 px-4 border border-dashed border-slate-300 hover:border-slate-400 bg-slate-50 hover:bg-slate-100/70 text-slate-700 rounded-xl font-semibold text-xs flex items-center justify-center gap-2 transition-all active:scale-[0.99] cursor-pointer"
+                    >
+                      <Camera className="w-4 h-4 text-slate-500" />
+                      <span>📸 Add After Product Photo (optional)</span>
+                    </button>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">
+                    Completion Notes <span className="text-slate-400 font-normal text-[11px]">(optional)</span>
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={workNotes}
+                    onChange={(e) => setWorkNotes(e.target.value)}
+                    placeholder="Details of service provided, parts replaced, or tests performed..."
+                    className="w-full border border-slate-300 rounded-lg p-2.5 text-xs text-slate-800 outline-none focus:border-slate-800"
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProofModalJob(null);
+                      setAfterFaceFile(null);
+                      setBeforeFile(null);
+                      setAfterFile(null);
+                      if (afterFacePreviewUrl) URL.revokeObjectURL(afterFacePreviewUrl);
+                      if (beforePreviewUrl) URL.revokeObjectURL(beforePreviewUrl);
+                      if (afterPreviewUrl) URL.revokeObjectURL(afterPreviewUrl);
+                      setAfterFacePreviewUrl(null);
+                      setBeforePreviewUrl(null);
+                      setAfterPreviewUrl(null);
+                    }}
+                    className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 font-bold hover:bg-slate-50 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isUploadingProof || !afterFaceFile}
+                    className="px-5 py-2 rounded-lg bg-emerald-600 disabled:opacity-50 text-white font-bold hover:bg-emerald-700 shadow-sm cursor-pointer"
+                  >
+                    {isUploadingProof ? 'Uploading...' : 'Complete Service'}
+                  </button>
+                </div>
+              </form>
+            </Modal>
+          )}
+
+          {/* Cash Collection Modal */}
+          {cashModalJob && (
+            <Modal
+              isOpen={Boolean(cashModalJob)}
+              onClose={() => setCashModalJob(null)}
+              title={`Collect Cash — Job #${cashModalJob.request_id || cashModalJob.id}`}
+            >
+              <form onSubmit={handleCashCollectSubmit} className="space-y-4 text-xs font-sans">
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-1">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-amber-800 font-semibold">Service:</span>
+                    <span className="font-bold text-amber-950">{cashModalJob.service_title || cashModalJob.issue_title || 'Service'}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-amber-800 font-semibold">Authoritative Amount Due:</span>
+                    <span className="font-mono font-bold text-base text-amber-950">
+                      ₹{cashModalJob.payment?.amount_due || cashModalJob.total_amount || 0}
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-slate-700 font-bold mb-1">
+                    Cash Amount Received (₹) <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    required
+                    value={cashAmountReceived}
+                    onChange={(e) => setCashAmountReceived(e.target.value)}
+                    placeholder="Enter cash collected from customer..."
+                    className="w-full border border-slate-300 rounded-lg p-2.5 font-mono text-sm font-bold text-slate-900 outline-none focus:border-slate-800"
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => setCashModalJob(null)}
+                    className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 font-bold hover:bg-slate-50 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isCollectingCash || !cashAmountReceived}
+                    className="px-5 py-2 rounded-lg bg-emerald-600 disabled:opacity-50 text-white font-bold hover:bg-emerald-700 shadow-sm cursor-pointer"
+                  >
+                    {isCollectingCash ? 'Confirming...' : 'Confirm Cash Received'}
+                  </button>
+                </div>
+              </form>
+            </Modal>
+          )}
+
+          {/* Request Scope / Extension Modal */}
+          {extensionModalJob && (
+            <Modal
+              isOpen={Boolean(extensionModalJob)}
+              onClose={() => setExtensionModalJob(null)}
+              title={`Request Scope Extension — Job #${extensionModalJob.request_id || extensionModalJob.id}`}
+            >
+              <form onSubmit={handleExtensionSubmit} className="space-y-4 text-xs font-sans">
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">Extension Title</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Additional Wiring / Deep Cleaning"
+                    value={extTitle}
+                    onChange={(e) => setExtTitle(e.target.value)}
+                    className="w-full border border-slate-300 rounded-lg p-2 text-slate-800"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-slate-700 font-semibold mb-1">Estimated Labor (₹)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      required
+                      placeholder="0.00"
+                      value={extLaborCost}
+                      onChange={(e) => setExtLaborCost(e.target.value)}
+                      className="w-full border border-slate-300 rounded-lg p-2 text-slate-800"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-700 font-semibold mb-1">Estimated Materials (₹)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      placeholder="0.00"
+                      value={extMaterialsCost}
+                      onChange={(e) => setExtMaterialsCost(e.target.value)}
+                      className="w-full border border-slate-300 rounded-lg p-2 text-slate-800"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">Reason / Justification</label>
+                  <textarea
+                    required
+                    rows={3}
+                    placeholder="Detailed reason for additional scope..."
+                    value={extReason}
+                    onChange={(e) => setExtReason(e.target.value)}
+                    className="w-full border border-slate-300 rounded-lg p-2 text-slate-800"
+                  />
+                </div>
+                <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => setExtensionModalJob(null)}
+                    className="px-4 py-2 border border-slate-300 text-slate-700 font-bold rounded-lg hover:bg-slate-50 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmittingExt}
+                    className="px-5 py-2 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 shadow-sm cursor-pointer"
+                  >
+                    {isSubmittingExt ? 'Submitting...' : 'Submit Extension'}
                   </button>
                 </div>
               </form>
