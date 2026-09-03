@@ -52,3 +52,19 @@ jobs:
           SECRET_KEY: ci-temporary-validation-secret-key-32-chars-minimum
           DEBUG: "False"
           DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1"
+
+      # Fixes gap: this workflow validated system checks and migration
+      # schema consistency but never actually ran the test suite -- a
+      # regression could pass CI and merge with zero tests executed.
+      # No DB_HOST/DB_NAME is set here, so settings.py's own USE_POSTGRES
+      # fallback (same trick the two steps above already rely on) puts
+      # this on SQLite, no separate database service needed.
+      - name: Run Test Suite
+        run: |
+          cd backend
+          python manage.py test
+        env:
+          DJANGO_SETTINGS_MODULE: workforce_core.settings
+          SECRET_KEY: ci-temporary-validation-secret-key-32-chars-minimum
+          DEBUG: "False"
+          DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1"
