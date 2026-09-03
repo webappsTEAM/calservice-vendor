@@ -83,6 +83,7 @@ export function PortalCockpitLayout({
   activeAssignedJob,
   hasActiveJob,
   liveLocation,
+  locationError,
   actionLoading,
   handleAcceptOffer,
   handleRejectOffer,
@@ -91,11 +92,16 @@ export function PortalCockpitLayout({
   handleDirectJobClockIn,
   onOpenCancelModal,
   onOpenProofModal,
+  onOpenCashModal,
   preServiceState = {},
   otpInput = '',
   setOtpInput,
   handleVerifyOtpSubmit,
   handleResendOtp,
+  paymentOtpInput = '',
+  setPaymentOtpInput,
+  isVerifyingPaymentOtp = false,
+  handleVerifyPaymentOtpSubmit,
   openLiveCamera,
   handlePhotoUploadSubmit,
   onRefreshData,
@@ -122,13 +128,21 @@ export function PortalCockpitLayout({
   const isEnRoute = status === 'EN_ROUTE' || status === 'ON_THE_WAY';
   const isArrived = status === 'ARRIVED';
   const isInProgress = status === 'IN_PROGRESS' || status === 'IN_SERVICE' || status === 'INSPECTION';
+  const isProofSubmitted = status === 'PROOF_SUBMITTED' || status === 'PENDING_APPROVAL' || status === 'WAITING_FOR_PAYMENT';
   const isCompleted = status === 'COMPLETED' || status === 'WORK_COMPLETED';
 
+  const isCashPending = (isProofSubmitted || isInProgress) && (
+    activeJob?.payment_status === 'cash_pending' ||
+    activeJob?.payment?.payment_status === 'CASH_PENDING' ||
+    activeJob?.payment_method === 'CASH_ON_SERVICE' ||
+    activeJob?.payment?.payment_method === 'CASH_ON_SERVICE'
+  );
+
   // Verification Gate Statuses (All 4 are strictly mandatory for assigned active job)
-  const isGeofencePassed = Boolean(preServiceState?.geofence_passed || isArrived || isInProgress || isCompleted);
-  const isOtpVerified = Boolean(preServiceState?.otp_verified || isInProgress || isCompleted);
-  const isPresencePhotoDone = Boolean(preServiceState?.presence_photo || isInProgress || isCompleted);
-  const isWorkAreaPhotoDone = Boolean(preServiceState?.work_area_photo || isInProgress || isCompleted);
+  const isGeofencePassed = Boolean(preServiceState?.geofence_passed || isArrived || isInProgress || isProofSubmitted || isCompleted);
+  const isOtpVerified = Boolean(preServiceState?.otp_verified || isInProgress || isProofSubmitted || isCompleted);
+  const isPresencePhotoDone = Boolean(preServiceState?.presence_photo || isInProgress || isProofSubmitted || isCompleted);
+  const isWorkAreaPhotoDone = Boolean(preServiceState?.work_area_photo || isInProgress || isProofSubmitted || isCompleted);
 
   // All 4 required gates must be satisfied to unlock work execution
   const isAllPrerequisitesDone = isGeofencePassed && isOtpVerified && isPresencePhotoDone && isWorkAreaPhotoDone;
@@ -161,11 +175,18 @@ export function PortalCockpitLayout({
   };
 
   // Horizontal Stepper Calculation
-  const currentStepNum = isCompleted ? 4 : isInProgress ? 4 : isArrived ? 3 : isEnRoute ? 2 : isAssigned ? 1 : 1;
+  const currentStepNum = isCompleted ? 4 : isProofSubmitted ? 4 : isInProgress ? 4 : isArrived ? 3 : isEnRoute ? 2 : isAssigned ? 1 : 1;
 
   // Real job metrics (without fake fallback constants)
+  const customerName = job?.customer_display_name || job?.customer_name || offer?.customer_display_name || offer?.customer_name || 'Customer';
   const customerPhone = job?.customer_phone || job?.phone || offer?.customer_phone;
-  const payoutAmount = job?.estimated_payout ?? job?.estimated_price ?? job?.price ?? offer?.estimated_payout ?? offer?.price ?? 0;
+  // Bug found: estimated_payout/estimated_price/price are not fields the
+  // vendor API returns (WorkforceJobSerializer sends total_amount and a
+  // computed payment{amount_due,...} object) -- every alternative here was
+  // undefined, so this always rendered a flat ₹0 "EST. PAYOUT" on the
+  // technician's home cockpit. Matches the correct pattern already used in
+  // EmployeeDashboardPage.jsx and EmployeeJobsPage.jsx.
+  const payoutAmount = job?.payment?.amount_due ?? job?.total_amount ?? offer?.payment?.amount_due ?? offer?.total_amount ?? 0;
   const distanceKm = job?.distance_km ?? offer?.distance_km ?? null;
 
   // Approved services from profile
@@ -174,6 +195,20 @@ export function PortalCockpitLayout({
 
   return (
     <div className="w-full h-full flex-1 flex flex-col font-sans bg-slate-100/90 text-slate-900 overflow-hidden p-3 sm:p-4 lg:p-4">
+      {/* Bug found: useGPSPosition/useLocationTracker already produce a
+          real, user-facing error message per GeolocationPositionError code
+          (permission denied, position unavailable, timeout), but
+          EmployeeRuntimeProvider only console.warn'd it and this cockpit
+          never rendered anything -- a technician whose browser denied
+          location access just saw the map/standby view sit there with no
+          explanation. Surfaced here, dismissible-by-nature (clears itself
+          the moment a position succeeds via locationError=null). */}
+      {locationError && (
+        <div className="mb-2 flex items-center gap-2 px-3 py-2 bg-red-50 border border-red-300 rounded-xl text-red-900 shrink-0">
+          <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+          <span className="text-xs font-semibold">{locationError}</span>
+        </div>
+      )}
       {/* ── MAIN 2-COLUMN SPLIT WORKSPACE (Elevated Card Layout, Clean Separation from Header) ── */}
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 min-h-0 bg-white rounded-2xl border border-slate-200/90 shadow-card overflow-hidden">
         {/* ── LEFT COLUMN: FIRST-PERSON DRIVING NAVIGATION / SITE MAP / STANDBY RADAR (7 Cols / 58%) ── */}
@@ -195,7 +230,17 @@ export function PortalCockpitLayout({
             {/* ── TOP SHIFT STATUS BADGE ── */}
             <div className="flex items-center justify-between gap-2 px-3 py-2 bg-slate-50 border border-slate-200/90 rounded-xl shadow-2xs">
               <div className="flex items-center gap-2">
-                {isOtpVerified || isClockedIn || isInProgress ? (
+                {isCompleted ? (
+                  <div className="flex items-center gap-1.5 text-xs font-black text-emerald-950 uppercase tracking-wider">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Job Completed</span>
+                  </div>
+                ) : isProofSubmitted ? (
+                  <div className="flex items-center gap-1.5 text-xs font-black text-amber-950 uppercase tracking-wider">
+                    <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
+                    <span>{isCashPending ? 'Cash Payment Pending' : 'Proof Submitted'}</span>
+                  </div>
+                ) : isOtpVerified || isClockedIn || isInProgress ? (
                   <>
                     <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
                     <span className="text-xs font-black text-emerald-950 uppercase tracking-wider flex items-center gap-1.5">
@@ -416,7 +461,7 @@ export function PortalCockpitLayout({
                   )}
 
                   {/* Active Accepted Job: Cancellation Button (Available before Customer OTP) */}
-                  {!isOffer && job && !isOtpVerified && !isInProgress && !isCompleted && (
+                  {!isOffer && job && !isOtpVerified && !isInProgress && !isProofSubmitted && !isCompleted && (
                     <div className="pt-2">
                       <button
                         type="button"
@@ -445,19 +490,84 @@ export function PortalCockpitLayout({
                       </div>
                       <div className="flex-1 h-0.5 bg-slate-200 mx-3" />
                       <div className="flex items-center gap-1.5">
-                        <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-black ${
-                          currentStepNum >= 3 ? 'bg-slate-950 text-white' : 'bg-slate-200 text-slate-500'
-                        }`}>
-                          3
-                        </div>
+                        {currentStepNum >= 3 ? (
+                          <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                        ) : (
+                          <div className="w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-black bg-slate-200 text-slate-500">
+                            3
+                          </div>
+                        )}
                         <span className={currentStepNum >= 3 ? 'text-slate-950 font-black' : 'text-slate-400'}>Arrived</span>
                       </div>
                     </div>
                   </div>
                 )}
 
-                {/* ── PRE-SERVICE VERIFICATION SECTION (Only for Active Assigned Job prior to completion) ── */}
-                {!isOffer && (
+                {/* ── CASH PAYMENT CONFIRMATION SECTION (When proof is submitted & cash is pending) ── */}
+                {isCashPending && (
+                  <div className="pt-2 space-y-3">
+                    <div className="p-4 rounded-xl border border-amber-300 bg-amber-50/90 shadow-xs space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <ShieldCheck className="w-5 h-5 text-amber-700" />
+                          <h2 className="text-sm font-black text-amber-950">
+                            Cash Payment Confirmation
+                          </h2>
+                        </div>
+                        <span className="text-[10px] font-black text-amber-900 bg-amber-200/80 px-2 py-0.5 rounded border border-amber-300 uppercase tracking-wider">
+                          OTP Required
+                        </span>
+                      </div>
+
+                      <div className="p-3 bg-white/95 border border-amber-200 rounded-lg space-y-1.5">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="text-slate-600 font-semibold">Cash Amount Collected:</span>
+                          <span className="font-mono text-base font-black text-emerald-700">₹{payoutAmount}</span>
+                        </div>
+                        <p className="text-[11px] text-amber-950 leading-relaxed pt-1 border-t border-amber-100">
+                          Ask customer <strong>{customerName || 'Customer'}</strong> for the <strong>6-digit Cash Payment Confirmation OTP</strong> displayed in their app to verify payment and complete this booking.
+                        </p>
+                      </div>
+
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          if (handleVerifyPaymentOtpSubmit && job) {
+                            handleVerifyPaymentOtpSubmit(job.id, paymentOtpInput);
+                          }
+                        }}
+                        className="space-y-2.5"
+                      >
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            maxLength={6}
+                            value={paymentOtpInput || ''}
+                            onChange={(e) => setPaymentOtpInput && setPaymentOtpInput(e.target.value)}
+                            placeholder="• • • • • •"
+                            className="flex-1 px-4 py-2.5 bg-white border border-amber-300 rounded-xl font-mono text-base font-black text-slate-900 tracking-[0.3em] text-center outline-none focus:border-amber-600 shadow-2xs"
+                            required
+                          />
+                          <button
+                            type="submit"
+                            disabled={isVerifyingPaymentOtp || !paymentOtpInput || paymentOtpInput.trim().length !== 6}
+                            className="px-5 py-2.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 shrink-0"
+                          >
+                            {isVerifyingPaymentOtp ? (
+                              <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                            )}
+                            <span>Verify &amp; Complete</span>
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── PRE-SERVICE VERIFICATION SECTION (Only for Active Assigned Job prior to start) ── */}
+                {!isOffer && !isInProgress && !isProofSubmitted && !isCompleted && (
                   <div className="pt-2 space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
@@ -612,10 +722,37 @@ export function PortalCockpitLayout({
             )}
           </div>
 
-          {/* ── BOTTOM ACTION BUTTON: Start Service Execution / Complete Service (Only when active job exists) ── */}
+          {/* ── BOTTOM ACTION BUTTON: Start Service Execution / Complete Service / Cash Confirmation ── */}
           {activeJob && !isOffer && (
             <div className="pt-2 border-t border-slate-100 space-y-1.5">
-              {isInProgress ? (
+              {isCompleted ? (
+                <div className="w-full py-3.5 rounded-xl font-bold text-xs bg-emerald-50 text-emerald-800 border border-emerald-200 flex items-center justify-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  <span>Job Completed &amp; Settled</span>
+                </div>
+              ) : isProofSubmitted ? (
+                isCashPending ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (paymentOtpInput && paymentOtpInput.trim().length === 6 && handleVerifyPaymentOtpSubmit) {
+                        handleVerifyPaymentOtpSubmit(activeJob.id, paymentOtpInput);
+                      } else if (onOpenCashModal) {
+                        onOpenCashModal(activeJob);
+                      }
+                    }}
+                    className="w-full py-3.5 rounded-xl font-black text-xs transition-all flex items-center justify-center gap-2 bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white shadow-md cursor-pointer"
+                  >
+                    <ShieldCheck className="w-4 h-4" />
+                    <span>Confirm Customer Cash Payment (₹{payoutAmount})</span>
+                  </button>
+                ) : (
+                  <div className="w-full py-3.5 rounded-xl font-bold text-xs bg-indigo-50 text-indigo-800 border border-indigo-200 flex items-center justify-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-indigo-600" />
+                    <span>Service Proof Submitted • Under Review</span>
+                  </div>
+                )
+              ) : isInProgress ? (
                 <button
                   type="button"
                   onClick={() => onOpenProofModal && onOpenProofModal(activeJob)}

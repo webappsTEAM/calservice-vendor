@@ -8,6 +8,7 @@ import {
   apiGetOnboardingProfile,
   apiUploadJobProof,
   apiCollectJobCash,
+  apiVerifyPaymentOTP,
   apiGetJobPayment,
   apiRequestWorkExtension,
   apiCustomerDecideExtension,
@@ -288,6 +289,33 @@ export function EmployeeDashboardPage() {
     is_complete: false,
   });
   const [otpInput, setOtpInput] = useState('');
+  const [paymentOtpInput, setPaymentOtpInput] = useState('');
+  const [isVerifyingPaymentOtp, setIsVerifyingPaymentOtp] = useState(false);
+
+  const handleVerifyPaymentOtpSubmit = async (jobId, otp) => {
+    const cleanOtp = String(otp || paymentOtpInput || '').trim();
+    if (!cleanOtp || cleanOtp.length !== 6) {
+      setError('Please enter the 6-digit Cash Payment Confirmation OTP from customer.');
+      return;
+    }
+    try {
+      setIsVerifyingPaymentOtp(true);
+      setError('');
+      const res = await apiVerifyPaymentOTP(jobId, cleanOtp);
+      setSuccessMsg(res.message || 'Payment confirmed and verified! Job is COMPLETED.');
+      setPaymentOtpInput('');
+      setCashModalJob(null);
+      if (typeof reconcileJobCompleted === 'function') {
+        reconcileJobCompleted(jobId, { status: 'completed', payment_status: 'PAID' });
+      }
+      await loadDashboard({ force: true });
+      setTimeout(() => setSuccessMsg(''), 5000);
+    } catch (err) {
+      setError(err.message || 'Invalid payment confirmation OTP. Ask customer for the 6-digit code displayed in their app.');
+    } finally {
+      setIsVerifyingPaymentOtp(false);
+    }
+  };
   const [isQuotationModalOpen, setIsQuotationModalOpen] = useState(false);
 
   // ── Automatic Geofence Arrival Event Listener (Telemetry handled by EmployeeRuntimeProvider) ──
@@ -1202,11 +1230,16 @@ export function EmployeeDashboardPage() {
             handleDirectJobClockIn={handleDirectJobClockIn}
             onOpenCancelModal={handleOpenCancelModal}
             onOpenProofModal={(j) => setProofModalJob(j || activeAssignedJob || selectedJob)}
+            onOpenCashModal={(j) => setCashModalJob(j || activeAssignedJob || selectedJob)}
             preServiceState={preServiceState}
             otpInput={otpInput}
             setOtpInput={setOtpInput}
             handleVerifyOtpSubmit={handleVerifyOtpSubmit}
             handleResendOtp={handleResendOtp}
+            paymentOtpInput={paymentOtpInput}
+            setPaymentOtpInput={setPaymentOtpInput}
+            isVerifyingPaymentOtp={isVerifyingPaymentOtp}
+            handleVerifyPaymentOtpSubmit={handleVerifyPaymentOtpSubmit}
             openLiveCamera={openLiveCamera}
             handlePhotoUploadSubmit={handlePhotoUploadSubmit}
             onRefreshData={loadDashboard}
@@ -1590,38 +1623,88 @@ export function EmployeeDashboardPage() {
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">
-                    Cash Amount Received (₹) <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    required
-                    value={cashAmountReceived}
-                    onChange={(e) => setCashAmountReceived(e.target.value)}
-                    placeholder="Enter cash collected from customer..."
-                    className="w-full border border-slate-300 rounded-lg p-2.5 font-mono text-sm font-bold text-slate-900 outline-none focus:border-slate-800"
-                  />
-                </div>
+                {(cashModalJob.payment?.payment_status === 'CASH_PENDING' || cashModalJob.payment_status === 'cash_pending') ? (
+                  <div className="space-y-3">
+                    <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-900 text-xs space-y-1">
+                      <p className="font-bold flex items-center gap-1.5">
+                        <ShieldCheck className="w-4 h-4 text-blue-700" />
+                        <span>Customer Confirmation Code Required</span>
+                      </p>
+                      <p className="text-[11px] text-blue-800 leading-relaxed">
+                        Cash collection was recorded. Ask customer for the <strong>6-digit Cash Payment Confirmation OTP</strong> displayed in their app to verify payment and complete the job.
+                      </p>
+                    </div>
 
-                <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
-                  <button
-                    type="button"
-                    onClick={() => setCashModalJob(null)}
-                    className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 font-bold hover:bg-slate-50 cursor-pointer"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isCollectingCash || !cashAmountReceived}
-                    className="px-5 py-2 rounded-lg bg-emerald-600 disabled:opacity-50 text-white font-bold hover:bg-emerald-700 shadow-sm cursor-pointer"
-                  >
-                    {isCollectingCash ? 'Confirming...' : 'Confirm Cash Received'}
-                  </button>
-                </div>
+                    <div>
+                      <label className="block text-slate-700 font-bold mb-1">
+                        Customer Cash OTP (6-digits) <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        maxLength={6}
+                        required
+                        value={paymentOtpInput}
+                        onChange={(e) => setPaymentOtpInput(e.target.value)}
+                        placeholder="• • • • • •"
+                        className="w-full border border-slate-300 rounded-lg p-2.5 font-mono text-base font-bold text-slate-900 tracking-[0.3em] text-center outline-none focus:border-slate-800"
+                      />
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
+                      <button
+                        type="button"
+                        onClick={() => setCashModalJob(null)}
+                        className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 font-bold hover:bg-slate-50 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleVerifyPaymentOtpSubmit(cashModalJob.id, paymentOtpInput)}
+                        disabled={isVerifyingPaymentOtp || !paymentOtpInput || paymentOtpInput.trim().length !== 6}
+                        className="px-5 py-2 rounded-lg bg-emerald-600 disabled:opacity-50 text-white font-bold hover:bg-emerald-700 shadow-sm cursor-pointer flex items-center gap-1.5"
+                      >
+                        {isVerifyingPaymentOtp ? <RotateCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                        <span>Verify OTP &amp; Complete</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <label className="block text-slate-700 font-bold mb-1">
+                        Cash Amount Received (₹) <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        required
+                        value={cashAmountReceived}
+                        onChange={(e) => setCashAmountReceived(e.target.value)}
+                        placeholder="Enter cash collected from customer..."
+                        className="w-full border border-slate-300 rounded-lg p-2.5 font-mono text-sm font-bold text-slate-900 outline-none focus:border-slate-800"
+                      />
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
+                      <button
+                        type="button"
+                        onClick={() => setCashModalJob(null)}
+                        className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 font-bold hover:bg-slate-50 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={isCollectingCash || !cashAmountReceived}
+                        className="px-5 py-2 rounded-lg bg-emerald-600 disabled:opacity-50 text-white font-bold hover:bg-emerald-700 shadow-sm cursor-pointer"
+                      >
+                        {isCollectingCash ? 'Confirming...' : 'Confirm Cash Received'}
+                      </button>
+                    </div>
+                  </>
+                )}
               </form>
             </Modal>
           )}
