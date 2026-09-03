@@ -3721,6 +3721,66 @@ class WorkforceJobCustomerCancelSyncView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+class WorkforceJobClawbackSyncView(APIView):
+    """
+    Server-to-server endpoint: the Customer app calls this when an admin
+    completes a refund for a booking, so this app can claw back the
+    technician's earnings for that job. Authenticated by a shared secret
+    (IsInternalWorkforceCaller), not a user session -- there is no
+    vendor-side user acting here, mirroring
+    WorkforceJobCustomerCancelSyncView above.
+
+    Bug found (gap, not a blocker): before this endpoint existed, a
+    completed refund on the Customer side never told this app anything --
+    admin_complete_refund() only ran the payment gateway refund and
+    flipped RefundRequest.status to COMPLETED. The technician's earnings
+    for that job (a JOB_CREDIT WalletLedgerEntry, HELD or already
+    RELEASED) were left untouched, so a fully refunded customer could
+    still result in a paid-out technician for the same job with no
+    reconciling entry anywhere. clawback_job() below already does
+    everything this needs -- idempotent, handles both the still-HELD case
+    (mark CLAWED_BACK in place) and the already-RELEASED case (an
+    offsetting CLAWBACK_DEBIT entry, since the immutable ledger is never
+    rewritten after release) -- so this view stays intentionally thin
+    rather than re-implementing any of that.
+    """
+    permission_classes = [IsInternalWorkforceCaller]
+
+    def post(self, request, pk):
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        reason = (request.data.get("reason") or "").strip() or "Customer refund completed."
+
+        from .models import WalletLedgerEntry
+        already = WalletLedgerEntry.objects.filter(
+            job=job,
+            entry_type__in=[WalletLedgerEntry.EntryType.JOB_CREDIT],
+            status=WalletLedgerEntry.EntryStatus.CLAWED_BACK,
+        ).exists()
+        already = already or WalletLedgerEntry.objects.filter(
+            job=job, entry_type=WalletLedgerEntry.EntryType.CLAWBACK_DEBIT,
+        ).exists()
+        if already:
+            # clawback_job() is itself idempotent, but short-circuit here
+            # too so a retried call from the Customer side doesn't even
+            # hit the DB for a lookup it already knows the answer to.
+            return Response({"message": "Job already clawed back.", "job_id": job.id}, status=status.HTTP_200_OK)
+
+        from .services import clawback_job
+        result = clawback_job(job, reason)
+        if not result:
+            return Response({"message": "No earnings entry found for this job -- nothing to claw back.", "job_id": job.id}, status=status.HTTP_200_OK)
+
+        return Response({
+            "message": f"Job #{job.id} earnings clawed back.",
+            "job_id": job.id,
+            "ledger_entry_id": result.id,
+            "status": result.status,
+        }, status=status.HTTP_200_OK)
+
+
 class WorkforceJobRejectOfferView(APIView):
     permission_classes = [IsApprovedTechnician]
 
