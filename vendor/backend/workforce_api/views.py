@@ -4427,6 +4427,24 @@ class WorkforceCreateSupplementalInvoiceView(APIView):
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        # Fixes IDOR: this endpoint used to only require IsAuthenticated with
+        # no ownership check at all, so any authenticated account on the
+        # platform could act on any other company's job just by guessing/
+        # incrementing pk. Mirrors the company-check pattern already used
+        # correctly on WorkforceJobExtensionView just above.
+        emp = getattr(request.user, "employee_profile", None)
+        if not is_admin_role(request.user):
+            if not emp or job.assigned_employee != emp:
+                return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
+            if not is_employee_authorized_for_job(emp, job):
+                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        elif not getattr(request.user, "is_superuser", False):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+            if not job.company_id or user_company.id != job.company_id:
+                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
         extension = WorkforceWorkExtension.objects.filter(pk=ext_id, job=job).first()
         if not extension:
             return Response({"error": "Work extension not found."}, status=status.HTTP_404_NOT_FOUND)
@@ -4549,6 +4567,24 @@ class WorkforceJobRescheduleView(APIView):
         job = ServiceRequest.objects.filter(pk=pk).first()
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Fixes IDOR: this endpoint used to only require IsAuthenticated with
+        # no ownership check at all, so any authenticated account on the
+        # platform could act on any other company's job just by guessing/
+        # incrementing pk. Mirrors the company-check pattern already used
+        # correctly on WorkforceJobExtensionView just above.
+        emp = getattr(request.user, "employee_profile", None)
+        if not is_admin_role(request.user):
+            if not emp or job.assigned_employee != emp:
+                return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
+            if not is_employee_authorized_for_job(emp, job):
+                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        elif not getattr(request.user, "is_superuser", False):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+            if not job.company_id or user_company.id != job.company_id:
+                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         new_date = request.data.get("rescheduled_date") or request.data.get("date")
         reason = str(request.data.get("reason", "")).strip()
