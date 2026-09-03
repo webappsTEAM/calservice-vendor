@@ -162,6 +162,40 @@ def _is_admin_authorized_for_company(request, company) -> bool:
     return bool(user_company and company_id and user_company.id == company_id)
 
 
+ALLOWED_PHOTO_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "heic", "heif"}
+ALLOWED_PHOTO_CONTENT_TYPES = {
+    "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif",
+}
+MAX_PHOTO_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+def _validate_photo_upload(f):
+    """
+    Fixes: proof/verification photo uploads (PreServiceVerification,
+    PostServiceProof) had zero server-side file-type or size validation
+    anywhere -- no extension check, no content-type check, no size cap.
+    Combined with the media location block's missing
+    X-Content-Type-Options: nosniff header (fixed separately in the nginx
+    config), that allowed a disguised .html/.svg "photo" to be uploaded and
+    served back from this app's own origin as executable content (stored
+    XSS). Returns an error string if the file should be rejected, or None
+    if it's acceptable.
+    """
+    if not f:
+        return None
+    name = (getattr(f, "name", "") or "").lower()
+    ext = name.rsplit(".", 1)[-1] if "." in name else ""
+    if ext not in ALLOWED_PHOTO_EXTENSIONS:
+        return f"Unsupported file type '.{ext}'. Allowed: {', '.join(sorted(ALLOWED_PHOTO_EXTENSIONS))}."
+    content_type = (getattr(f, "content_type", "") or "").lower()
+    if content_type and content_type not in ALLOWED_PHOTO_CONTENT_TYPES:
+        return f"Unsupported content type '{content_type}'."
+    size = getattr(f, "size", 0) or 0
+    if size > MAX_PHOTO_UPLOAD_BYTES:
+        return f"File too large ({size // (1024 * 1024)}MB). Maximum allowed is {MAX_PHOTO_UPLOAD_BYTES // (1024 * 1024)}MB."
+    return None
+
+
 def get_request_company(request):
     """
     Compatibility wrapper around resolve_actor_company.
@@ -2162,6 +2196,11 @@ class WorkforceJobProofView(APIView):
 
         if not after_presence and not after_appliance and not after_work_area:
             return Response({"error": "After-service completion requires After Face/Identity Selfie or service photo."}, status=status.HTTP_400_BAD_REQUEST)
+
+        for _f in (after_presence, after_appliance, after_work_area):
+            _photo_err = _validate_photo_upload(_f)
+            if _photo_err:
+                return Response({"error": _photo_err}, status=status.HTTP_400_BAD_REQUEST)
 
         proof, _ = PostServiceProof.objects.get_or_create(
             job=job,
@@ -7310,6 +7349,10 @@ class WorkforceJobPreServicePhotoView(APIView):
 
         if not photo_file:
             return Response({"error": "Photo file required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        _photo_err = _validate_photo_upload(photo_file)
+        if _photo_err:
+            return Response({"error": _photo_err}, status=status.HTTP_400_BAD_REQUEST)
 
         verification, _ = PreServiceVerification.objects.get_or_create(
             job=job,
