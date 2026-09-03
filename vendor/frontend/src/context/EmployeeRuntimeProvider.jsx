@@ -443,8 +443,8 @@ export function EmployeeRuntimeProvider({ children }) {
   }, [scheduleCoalescedRefresh, syncNotifications]);
 
   const handleRealtimeAuthFailure = useCallback(() => {
-    logout();
-  }, [logout]);
+    console.warn('[Realtime] Auth failure encountered on SSE channel. Realtime disconnected.');
+  }, []);
 
   const { connectionState: realtimeConnectionState } = useRealtimeStream({
     enabled: Boolean(isAuthenticated && isApprovedEmployee && isOnline),

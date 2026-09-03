@@ -319,6 +319,15 @@ export function EmployeeRuntimeProvider({ children }) {
 
   const isUpdatingLocationRef = useRef(false);
 
+  // Bug found: useLocationTracker's onError callback already carries a
+  // real, user-facing message per GeolocationPositionError code (see
+  // handleLocationError below and useGPSPosition.js's handleError), but
+  // nothing kept it -- it was only console.warn'd, so a technician whose
+  // browser denied location permission just saw the cockpit silently sit
+  // in ONLINE_LOCATION_PENDING forever with no indication why. Surfaced
+  // via context so PortalCockpitLayout can render it.
+  const [locationError, setLocationError] = useState(null);
+
   const handlePositionChange = useCallback(async (payload) => {
     const newLoc = {
       latitude: payload.latitude,
@@ -328,6 +337,7 @@ export function EmployeeRuntimeProvider({ children }) {
     };
     setLiveLocation(newLoc);
     setPresenceState('ONLINE_GPS_LIVE');
+    setLocationError(null);
 
     // Transmit authoritative telemetry to backend (with in-flight deduplication)
     if (isUpdatingLocationRef.current) return;
@@ -359,6 +369,7 @@ export function EmployeeRuntimeProvider({ children }) {
     console.warn('[EmployeeRuntime] Location tracker warning:', err);
     // If location fails, we remain online but location is pending
     setPresenceState((prev) => (prev === 'OFFLINE' ? 'OFFLINE' : 'ONLINE_LOCATION_PENDING'));
+    setLocationError(err?.message || 'Unable to access your location. Please check your device location settings.');
   }, []);
 
   // Mount single continuous GPS watcher for online authenticated technician
@@ -432,8 +443,8 @@ export function EmployeeRuntimeProvider({ children }) {
   }, [scheduleCoalescedRefresh, syncNotifications]);
 
   const handleRealtimeAuthFailure = useCallback(() => {
-    logout();
-  }, [logout]);
+    console.warn('[Realtime] Auth failure encountered on SSE channel. Realtime disconnected.');
+  }, []);
 
   const { connectionState: realtimeConnectionState } = useRealtimeStream({
     enabled: Boolean(isAuthenticated && isApprovedEmployee && isOnline),
@@ -499,6 +510,7 @@ export function EmployeeRuntimeProvider({ children }) {
       isLocationPending,
       liveLocation,
       locationState: isGpsLive ? 'live' : isLocationPending ? 'locating' : 'idle',
+      locationError,
       scanCurrentLocation,
       togglePresence: togglePresenceFast,
 
@@ -528,6 +540,7 @@ export function EmployeeRuntimeProvider({ children }) {
       isGpsLive,
       isLocationPending,
       liveLocation,
+      locationError,
       scanCurrentLocation,
       togglePresenceFast,
       notifications,

@@ -1908,8 +1908,9 @@ class WorkforcePresenceToggleView(APIView):
 
         if emp.is_online and emp.current_availability == "available":
             try:
+                import threading
                 from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
-                reconsider_jobs_for_employee(emp)
+                threading.Thread(target=reconsider_jobs_for_employee, args=(emp.id,), daemon=True).start()
             except Exception as e:
                 logger.debug(f"[PRESENCE_TOGGLE_DISPATCH_ERR] {e}")
 
@@ -2011,7 +2012,9 @@ class WorkforceJobListView(APIView):
                 # Reconsider pending customer bookings in Supabase for this available technician
                 if emp.is_active and emp.is_online and emp.current_availability == "available":
                     try:
-                        reconsider_jobs_for_employee(emp)
+                        import threading
+                        from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
+                        threading.Thread(target=reconsider_jobs_for_employee, args=(emp.id,), daemon=True).start()
                     except Exception as e:
                         logger.debug(f"[DISPATCH_RECONSIDER_ERROR] {e}")
 

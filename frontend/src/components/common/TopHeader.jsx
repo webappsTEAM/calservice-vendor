@@ -349,7 +349,11 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
     }
     try {
       setIsToggling(true);
-      await togglePresence();
+      if (employeeRuntime?.togglePresence) {
+        await employeeRuntime.togglePresence();
+      } else {
+        await togglePresence();
+      }
     } catch (err) {
       alert(err.message || 'Failed to toggle availability status');
     } finally {
@@ -365,7 +369,7 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
     }
   };
 
-  const isOnline = Boolean(user?.isOnline);
+  const isOnline = employeeRuntime ? employeeRuntime.isOnline : Boolean(user?.isOnline);
   const isBusy = user?.availability === 'busy';
 
   return (

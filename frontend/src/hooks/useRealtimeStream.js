@@ -188,7 +188,6 @@ export function useRealtimeStream({
 
               console.warn('[Realtime SESSION EXPIRED] Refresh token rejected (401). Stopping realtime.');
               setConnectionState(SSE_STATE.DISCONNECTED);
-              clearAuthTokens();
               isConnectingRef.current = false;
               if (onAuthFailureRef.current) onAuthFailureRef.current();
               return;
@@ -206,7 +205,6 @@ export function useRealtimeStream({
             }
             console.warn('[Realtime SESSION EXPIRED] Error refreshing token:', refErr);
             setConnectionState(SSE_STATE.DISCONNECTED);
-            clearAuthTokens();
             isConnectingRef.current = false;
             if (onAuthFailureRef.current) onAuthFailureRef.current();
             return;
@@ -322,7 +320,6 @@ export function useRealtimeStream({
 
               console.warn('[Realtime SESSION EXPIRED] Refresh token expired or rejected (401). Stopping retries.');
               setConnectionState(SSE_STATE.DISCONNECTED);
-              clearAuthTokens();
               if (onAuthFailureRef.current) onAuthFailureRef.current();
               return;
             }
@@ -338,7 +335,6 @@ export function useRealtimeStream({
             }
             console.warn('[Realtime SESSION EXPIRED] Exception during token refresh.');
             setConnectionState(SSE_STATE.DISCONNECTED);
-            clearAuthTokens();
             if (onAuthFailureRef.current) onAuthFailureRef.current();
             return;
           }
