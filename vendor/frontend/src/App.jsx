@@ -29,6 +29,7 @@ import { EmployeeSettingsPage } from './pages/employee/EmployeeSettingsPage.jsx'
 import { EmployeePerformancePage } from './pages/employee/EmployeePerformancePage.jsx';
 import { EmployeeEarningsPage } from './pages/employee/EmployeeEarningsPage.jsx';
 import { EmployeeLocationPage } from './pages/employee/EmployeeLocationPage.jsx';
+import EmployeeEstimatesPage from './pages/employee/estimates/EmployeeEstimatesPage.jsx';
 import { MyVendorNetworkPage } from './pages/employee/MyVendorNetworkPage.jsx';
 import { TechnicianInvitationsPage } from './pages/employee/TechnicianInvitationsPage.jsx';
 
@@ -175,17 +176,19 @@ export function App() {
           <Route path="/workforce/employee" element={<EmployeeWorkspaceLayout />}>
             <Route index element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="dashboard" element={<EmployeeDashboardPage />} />
-            <Route path="jobs" element={<EmployeeDashboardPage />} />
+            <Route path="jobs" element={<EmployeeJobsPage />} />
+            <Route path="estimates" element={<EmployeeEstimatesPage />} />
+            <Route path="estimates/:id" element={<EmployeeEstimatesPage />} />
             <Route path="schedule" element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="attendance" element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="leave" element={<Navigate to="/workforce/employee/dashboard" replace />} />
-            <Route path="earnings" element={<EmployeeEarningsPage />} />
+            <Route path="earnings" element={<EmployeeWalletDashboardPage />} />
             <Route path="wallet" element={<EmployeeWalletDashboardPage />} />
             <Route path="wallet/transactions" element={<EmployeeWalletTransactionsPage />} />
             <Route path="wallet/withdrawals" element={<EmployeeWalletWithdrawalsPage />} />
             <Route path="wallet/payout-accounts" element={<EmployeePayoutAccountsPage />} />
-            <Route path="documents" element={<EmployeeDashboardPage />} />
-            <Route path="services" element={<EmployeeDashboardPage />} />
+            <Route path="documents" element={<EmployeeDocumentsPage />} />
+            <Route path="services" element={<EmployeeServicesPage />} />
             <Route path="profile" element={<EmployeeProfilePage />} />
             <Route path="settings" element={<EmployeeSettingsPage />} />
             <Route path="performance" element={<EmployeePerformancePage />} />
