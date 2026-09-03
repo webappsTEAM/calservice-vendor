@@ -756,6 +756,10 @@ class WorkforceOnboardingMeView(APIView):
         if not emp:
             return Response({"error": "No employee profile found for user."}, status=status.HTTP_404_NOT_FOUND)
 
+        from workforce_api.services.workload import reconcile_employee_availability
+        reconcile_employee_availability(emp)
+        emp.refresh_from_db(fields=["current_availability", "is_online"])
+
         serializer = WorkforceEmployeeProfileSerializer(emp)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -1933,6 +1937,10 @@ class WorkforcePresenceStatusView(APIView):
         if not emp:
             return Response({"is_online": False, "availability": "offline"}, status=status.HTTP_200_OK)
 
+        from workforce_api.services.workload import reconcile_employee_availability
+        reconcile_employee_availability(emp)
+        emp.refresh_from_db(fields=["current_availability", "is_online"])
+
         return Response({
             "is_online": emp.is_online,
             "availability": emp.current_availability,
@@ -1987,6 +1995,10 @@ class WorkforceJobListView(APIView):
                 pass
 
             # 2. Hard Single Active Job Invariant: Check if technician already has an active assignment in queue
+            from workforce_api.services.workload import reconcile_employee_availability
+            reconcile_employee_availability(emp)
+            emp.refresh_from_db(fields=["current_availability", "is_online"])
+
             has_active_job = ServiceRequest.objects.filter(
                 assigned_employee=emp,
                 status__in=WORKLOAD_OCCUPIED_STATUSES
@@ -3708,8 +3720,11 @@ class WorkforceJobCustomerCancelSyncView(APIView):
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
         if job.status == "cancelled":
-            # apply_transition() already no-ops current==target, but short-
-            # circuit here too so a retried call doesn't even hit the DB.
+            if job.assigned_employee:
+                from workforce_api.services.workload import reconcile_employee_availability
+                from service_requests.models import EmployeeJob
+                EmployeeJob.objects.filter(service_request=job).update(status="CANCELLED")
+                reconcile_employee_availability(job.assigned_employee)
             return Response({"message": "Job already cancelled.", "status": job.status}, status=status.HTTP_200_OK)
 
         try:

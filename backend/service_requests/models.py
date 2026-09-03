@@ -332,6 +332,32 @@ class ServiceRequest(models.Model):
                 logging.getLogger("workforce.dispatch").exception(
                     f"[AUTO_DISPATCH_TRIGGER_FAILED] Failed to trigger automatic dispatch for Job #{self.id}: {e}"
                 )
+        elif self.status in ["cancelled", "completed", "unable_to_complete"]:
+            try:
+                from service_requests.models import EmployeeJob
+                from workforce_api.models import JobTrackingSession
+                from django.utils import timezone
+                EmployeeJob.objects.filter(service_request=self).exclude(
+                    status__in=["COMPLETED", "CANCELLED", "REJECTED"]
+                ).update(status=self.status.upper())
+
+                closing_session_status = (
+                    JobTrackingSession.SessionStatus.COMPLETED
+                    if self.status == "completed"
+                    else JobTrackingSession.SessionStatus.CANCELLED
+                )
+                JobTrackingSession.objects.filter(
+                    job=self, status=JobTrackingSession.SessionStatus.ACTIVE
+                ).update(status=closing_session_status, ended_at=timezone.now())
+
+                if self.assigned_employee:
+                    from workforce_api.services.workload import reconcile_employee_availability
+                    reconcile_employee_availability(self.assigned_employee)
+            except Exception as e:
+                import logging
+                logging.getLogger("workforce.cancel").warning(
+                    f"[TERMINAL_STATUS_CLEANUP_ERR] Failed cleanup for Job #{self.id}: {e}"
+                )
 
 
 

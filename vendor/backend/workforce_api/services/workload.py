@@ -107,6 +107,9 @@ def get_employee_active_job(employee_or_id, for_update: bool = False, statuses: 
                 sr = active_emp_job.service_request
                 if sr.status in target_statuses:
                     active_job = sr
+                elif sr.status in ["completed", "cancelled", "unable_to_complete"]:
+                    # Auto-heal orphaned EmployeeJob if parent ServiceRequest was completed or cancelled
+                    EmployeeJob.objects.filter(service_request=sr).update(status=sr.status.upper())
         except Exception as e:
             logger.debug(f"[WORKLOAD_FALLBACK_ERR] {e}")
 
