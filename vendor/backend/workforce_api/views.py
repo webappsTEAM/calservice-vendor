@@ -2274,7 +2274,17 @@ class WorkforceJobCashCollectView(APIView):
                     "employee": emp,
                     "payment_method": JobPayment.PaymentMethod.CASH_ON_SERVICE,
                     "payment_status": JobPayment.PaymentStatus.PENDING,
-                    "amount_due": job.total_amount or Decimal("450.00"),
+                    # Bug found: this used to fall back to a hardcoded Decimal("450.00")
+                    # if job.total_amount was ever falsy -- since get_or_create()
+                    # persists these defaults, that fake amount would be written
+                    # into the JobPayment row and become what the technician was
+                    # told to collect from the customer. Fall back to 0.00 instead:
+                    # a genuinely zero/missing total_amount is a real data problem
+                    # that should now surface loudly via settle_completed_job()'s
+                    # SettlementError (SETTLEMENT_ZERO_AMOUNT) and the admin
+                    # notification it triggers, not be silently papered over with
+                    # a plausible-looking wrong number.
+                    "amount_due": job.total_amount or Decimal("0.00"),
                     "reconciled": False,
                 }
             )

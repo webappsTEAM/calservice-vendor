@@ -665,9 +665,14 @@ export function EmployeeJobsPage() {
                           </span>
                         </div>
 
-                        {job.customer_phone ? (
+                        {/* Bug found: WorkforceJobSerializer sends "phone", never
+                            "customer_phone" -- so this Call button was always
+                            hidden, even for phone-booked jobs where a real
+                            number is on file. Read the real field, keep
+                            customer_phone as a harmless second fallback. */}
+                        {(job.phone || job.customer_phone) ? (
                           <a
-                            href={`tel:${job.customer_phone}`}
+                            href={`tel:${job.phone || job.customer_phone}`}
                             className="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg inline-flex items-center gap-1.5 shadow-2xs transition-all shrink-0 cursor-pointer"
                           >
                             <Phone className="w-3 h-3" />
@@ -820,9 +825,9 @@ export function EmployeeJobsPage() {
                   <span className="font-bold text-slate-900 text-sm">
                     {selectedJobForDetails.customer_display_name || 'Customer'}
                   </span>
-                  {selectedJobForDetails.customer_phone && (
+                  {(selectedJobForDetails.phone || selectedJobForDetails.customer_phone) && (
                     <a
-                      href={`tel:${selectedJobForDetails.customer_phone}`}
+                      href={`tel:${selectedJobForDetails.phone || selectedJobForDetails.customer_phone}`}
                       className="px-3 py-1 bg-emerald-600 text-white font-bold text-xs rounded-lg inline-flex items-center gap-1.5"
                     >
                       <Phone className="w-3 h-3" />

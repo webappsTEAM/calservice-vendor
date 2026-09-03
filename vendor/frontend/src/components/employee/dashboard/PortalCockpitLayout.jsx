@@ -165,7 +165,13 @@ export function PortalCockpitLayout({
 
   // Real job metrics (without fake fallback constants)
   const customerPhone = job?.customer_phone || job?.phone || offer?.customer_phone;
-  const payoutAmount = job?.estimated_payout ?? job?.estimated_price ?? job?.price ?? offer?.estimated_payout ?? offer?.price ?? 0;
+  // Bug found: estimated_payout/estimated_price/price are not fields the
+  // vendor API returns (WorkforceJobSerializer sends total_amount and a
+  // computed payment{amount_due,...} object) -- every alternative here was
+  // undefined, so this always rendered a flat ₹0 "EST. PAYOUT" on the
+  // technician's home cockpit. Matches the correct pattern already used in
+  // EmployeeDashboardPage.jsx and EmployeeJobsPage.jsx.
+  const payoutAmount = job?.payment?.amount_due ?? job?.total_amount ?? offer?.payment?.amount_due ?? offer?.total_amount ?? 0;
   const distanceKm = job?.distance_km ?? offer?.distance_km ?? null;
 
   // Approved services from profile
