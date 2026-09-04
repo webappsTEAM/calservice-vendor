@@ -533,13 +533,17 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
         """Cheap, best-effort: which wallet this job would settle into if
         completed right now. Never raises -- an unassigned job or one
         whose worker has no wallet yet simply has no channel to show."""
+        if hasattr(obj, "_cached_wallet_channel"):
+            return obj._cached_wallet_channel
         if not obj.assigned_employee_id:
+            obj._cached_wallet_channel = (None, None)
             return None, None
         try:
             from workforce_api.services import resolve_payee_wallet
             wallet, channel = resolve_payee_wallet(obj)
         except Exception:
-            return None, None
+            wallet, channel = None, None
+        obj._cached_wallet_channel = (wallet, channel)
         return wallet, channel
 
     def get_settlement_channel(self, obj):

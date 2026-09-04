@@ -2128,9 +2128,10 @@ class WorkforceJobListView(APIView):
             from workforce_api.services.workload import ACTIVE_QUEUE_STATUSES, WORKLOAD_OCCUPIED_STATUSES
             from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee, expire_and_reassign_offers
 
-            # 1. Sweep expired offers
+            # 1. Sweep expired offers asynchronously so response returns instantly
             try:
-                expire_and_reassign_offers()
+                import threading
+                threading.Thread(target=expire_and_reassign_offers, daemon=True).start()
             except Exception:
                 pass
 
