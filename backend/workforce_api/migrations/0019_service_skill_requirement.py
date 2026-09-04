@@ -27,7 +27,21 @@ class Migration(migrations.Migration):
             },
         ),
         migrations.RunSQL(
-            sql="CREATE UNIQUE INDEX IF NOT EXISTS unique_primary_employee_job_per_sr ON service_requests_employeejob (service_request_id) WHERE is_primary = true;",
-            reverse_sql="DROP INDEX IF EXISTS unique_primary_employee_job_per_sr;"
+            sql="""
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'service_requests_employeejob') THEN
+                    CREATE UNIQUE INDEX IF NOT EXISTS unique_primary_employee_job_per_sr ON service_requests_employeejob (service_request_id) WHERE is_primary = true;
+                END IF;
+            END $$;
+            """,
+            reverse_sql="""
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'unique_primary_employee_job_per_sr') THEN
+                    DROP INDEX IF EXISTS unique_primary_employee_job_per_sr;
+                END IF;
+            END $$;
+            """
         ),
     ]

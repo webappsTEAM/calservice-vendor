@@ -71,3 +71,9 @@ Thumbs.db
 
 *.apk
 
+
+# Temporary / scratch scripts
+tunnel_daemon.py
+check_job_otp.py
+caltrack_runbook_test_results.json
+runbook_full.txt

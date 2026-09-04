@@ -36,40 +36,75 @@ class Migration(migrations.Migration):
             new_name='workforce_w_wallet__124c9d_idx',
             old_name='workforce_w_wallet__7a6d5f_idx',
         ),
-        migrations.AddField(
-            model_name='jobtrackingsession',
-            name='geofence_status',
-            field=models.CharField(default='OUTSIDE', max_length=50),
-        ),
-        migrations.AddField(
-            model_name='jobtrackingsession',
-            name='last_event_emitted_at',
-            field=models.DateTimeField(blank=True, null=True),
-        ),
-        migrations.AddField(
-            model_name='jobtrackingsession',
-            name='last_event_state_key',
-            field=models.CharField(blank=True, default='', max_length=100),
-        ),
-        migrations.AddField(
-            model_name='jobtrackingsession',
-            name='movement_status',
-            field=models.CharField(default='UNKNOWN', max_length=50),
-        ),
-        migrations.AddField(
-            model_name='jobtrackingsession',
-            name='prev_captured_at',
-            field=models.DateTimeField(blank=True, null=True),
-        ),
-        migrations.AddField(
-            model_name='jobtrackingsession',
-            name='prev_latitude',
-            field=models.FloatField(blank=True, null=True),
-        ),
-        migrations.AddField(
-            model_name='jobtrackingsession',
-            name='prev_longitude',
-            field=models.FloatField(blank=True, null=True),
+        migrations.SeparateDatabaseAndState(
+            state_operations=[
+                migrations.AddField(
+                    model_name='jobtrackingsession',
+                    name='geofence_status',
+                    field=models.CharField(default='OUTSIDE', max_length=50),
+                ),
+                migrations.AddField(
+                    model_name='jobtrackingsession',
+                    name='last_event_emitted_at',
+                    field=models.DateTimeField(blank=True, null=True),
+                ),
+                migrations.AddField(
+                    model_name='jobtrackingsession',
+                    name='last_event_state_key',
+                    field=models.CharField(blank=True, default='', max_length=100),
+                ),
+                migrations.AddField(
+                    model_name='jobtrackingsession',
+                    name='movement_status',
+                    field=models.CharField(default='UNKNOWN', max_length=50),
+                ),
+                migrations.AddField(
+                    model_name='jobtrackingsession',
+                    name='prev_captured_at',
+                    field=models.DateTimeField(blank=True, null=True),
+                ),
+                migrations.AddField(
+                    model_name='jobtrackingsession',
+                    name='prev_latitude',
+                    field=models.FloatField(blank=True, null=True),
+                ),
+                migrations.AddField(
+                    model_name='jobtrackingsession',
+                    name='prev_longitude',
+                    field=models.FloatField(blank=True, null=True),
+                ),
+            ],
+            database_operations=[
+                migrations.RunSQL(
+                    sql="""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='workforce_job_tracking_session' AND column_name='geofence_status') THEN
+                            ALTER TABLE workforce_job_tracking_session ADD COLUMN geofence_status VARCHAR(50) DEFAULT 'OUTSIDE';
+                        END IF;
+                        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='workforce_job_tracking_session' AND column_name='last_event_emitted_at') THEN
+                            ALTER TABLE workforce_job_tracking_session ADD COLUMN last_event_emitted_at TIMESTAMP WITH TIME ZONE NULL;
+                        END IF;
+                        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='workforce_job_tracking_session' AND column_name='last_event_state_key') THEN
+                            ALTER TABLE workforce_job_tracking_session ADD COLUMN last_event_state_key VARCHAR(100) DEFAULT '';
+                        END IF;
+                        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='workforce_job_tracking_session' AND column_name='movement_status') THEN
+                            ALTER TABLE workforce_job_tracking_session ADD COLUMN movement_status VARCHAR(50) DEFAULT 'UNKNOWN';
+                        END IF;
+                        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='workforce_job_tracking_session' AND column_name='prev_captured_at') THEN
+                            ALTER TABLE workforce_job_tracking_session ADD COLUMN prev_captured_at TIMESTAMP WITH TIME ZONE NULL;
+                        END IF;
+                        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='workforce_job_tracking_session' AND column_name='prev_latitude') THEN
+                            ALTER TABLE workforce_job_tracking_session ADD COLUMN prev_latitude DOUBLE PRECISION NULL;
+                        END IF;
+                        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='workforce_job_tracking_session' AND column_name='prev_longitude') THEN
+                            ALTER TABLE workforce_job_tracking_session ADD COLUMN prev_longitude DOUBLE PRECISION NULL;
+                        END IF;
+                    END $$;
+                    """,
+                    reverse_sql=""
+                )
+            ]
         ),
         migrations.AddField(
             model_name='vendorinvitation',

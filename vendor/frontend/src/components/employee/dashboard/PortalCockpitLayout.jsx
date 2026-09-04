@@ -19,6 +19,7 @@ import {
   Radio,
   Briefcase,
   Wrench,
+  Banknote,
   X,
 } from 'lucide-react';
 import { TechnicianNavigationView } from '../navigation/TechnicianNavigationView.jsx';
@@ -133,11 +134,19 @@ export function PortalCockpitLayout({
   const isProofSubmitted = status === 'PROOF_SUBMITTED' || status === 'PENDING_APPROVAL' || status === 'WAITING_FOR_PAYMENT';
   const isCompleted = status === 'COMPLETED' || status === 'WORK_COMPLETED';
 
-  const isCashPending = (isProofSubmitted || isInProgress) && (
-    activeJob?.payment_status === 'cash_pending' ||
-    activeJob?.payment?.payment_status === 'CASH_PENDING' ||
+  const isCashJob = (
+    activeJob?.payment_method === 'COD' ||
     activeJob?.payment_method === 'CASH_ON_SERVICE' ||
     activeJob?.payment?.payment_method === 'CASH_ON_SERVICE'
+  );
+  const isPaid = (
+    activeJob?.payment_status === 'paid' ||
+    activeJob?.payment_status === 'collected' ||
+    activeJob?.payment?.payment_status === 'PAID'
+  );
+  const isCashPending = (
+    activeJob?.payment_status === 'cash_pending' ||
+    activeJob?.payment?.payment_status === 'CASH_PENDING'
   );
 
   // Verification Gate Statuses (All 4 are strictly mandatory for assigned active job)
@@ -747,6 +756,15 @@ export function PortalCockpitLayout({
                   >
                     <ShieldCheck className="w-4 h-4" />
                     <span>Confirm Customer Cash Payment (₹{payoutAmount})</span>
+                  </button>
+                ) : isCashJob && !isPaid ? (
+                  <button
+                    type="button"
+                    onClick={() => onOpenCashModal && onOpenCashModal(activeJob)}
+                    className="w-full py-3.5 rounded-xl font-black text-xs transition-all flex items-center justify-center gap-2 bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 text-white shadow-md cursor-pointer"
+                  >
+                    <Banknote className="w-4 h-4" />
+                    <span>Collect Cash Payment (₹{payoutAmount})</span>
                   </button>
                 ) : (
                   <div className="w-full py-3.5 rounded-xl font-bold text-xs bg-indigo-50 text-indigo-800 border border-indigo-200 flex items-center justify-center gap-2">

@@ -2936,7 +2936,10 @@ class WorkforceJobPaymentVerifyOTPView(APIView):
         with transaction.atomic():
             pmt = JobPayment.objects.select_for_update().filter(job=job).first()
             if not pmt:
-                return Response({"error": "No payment record found for this job."}, status=status.HTTP_404_NOT_FOUND)
+                return Response({
+                    "error": "No pending cash payment found for this job. Please submit proof of work and record cash collection first.",
+                    "code": "PAYMENT_RECORD_MISSING"
+                }, status=status.HTTP_400_BAD_REQUEST)
 
             if pmt.payment_status == JobPayment.PaymentStatus.PAID:
                 return Response({

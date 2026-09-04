@@ -167,6 +167,58 @@ ALLOWED_PHOTO_CONTENT_TYPES = {
     "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif",
 }
 MAX_PHOTO_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
+MIN_PHOTO_DIMENSION = 64          # px; anything smaller is not a real capture
+BLANK_PHOTO_LUMA_RANGE = 4        # max-min luma below this == a flat frame
+BLANK_PHOTO_MAX_LUMA = 16         # ...and this dark == no image at all
+
+
+def _validate_photo_content(f):
+    """
+    Fixes: proof photos were accepted on filename extension and Content-Type
+    alone, both of which the client fully controls. That let a blank capture
+    through, because a blank frame is a perfectly valid JPEG -- and in this
+    deployment every single stored pre- and post-service photo turned out to be
+    the same 6158-byte solid-black 1280x720 image. The technician app was
+    drawing frames from a <video> element before it had decoded one (fixed
+    separately in LiveCameraCaptureModal.jsx), and nothing on either side
+    noticed, so jobs were being completed with black squares as their evidence.
+
+    This checks that the bytes actually decode as an image and that the frame
+    carries some content. Fails open when Pillow is unavailable so a missing
+    optional dependency can never block a legitimate upload.
+    """
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+
+    try:
+        f.seek(0)
+        Image.open(f).verify()  # structural decode; leaves the object unusable
+        f.seek(0)
+        img = Image.open(f).convert("L")
+        width, height = img.size
+        if width < MIN_PHOTO_DIMENSION or height < MIN_PHOTO_DIMENSION:
+            return (
+                f"Image is too small ({width}x{height}px). "
+                f"Minimum is {MIN_PHOTO_DIMENSION}x{MIN_PHOTO_DIMENSION}px."
+            )
+        # Downscale first so this stays cheap on a full-resolution photo.
+        img.thumbnail((64, 64))
+        low, high = img.getextrema()
+        if (high - low) < BLANK_PHOTO_LUMA_RANGE and high < BLANK_PHOTO_MAX_LUMA:
+            return (
+                "This photo is blank -- the camera did not capture an image. "
+                "Wait for the camera preview to appear, then take the photo again."
+            )
+    except Exception:
+        return "This file is not a readable image. Please retake the photo."
+    finally:
+        try:
+            f.seek(0)
+        except Exception:
+            pass
+    return None
 
 
 def _validate_photo_upload(f):
@@ -193,7 +245,94 @@ def _validate_photo_upload(f):
     size = getattr(f, "size", 0) or 0
     if size > MAX_PHOTO_UPLOAD_BYTES:
         return f"File too large ({size // (1024 * 1024)}MB). Maximum allowed is {MAX_PHOTO_UPLOAD_BYTES // (1024 * 1024)}MB."
-    return None
+    return _validate_photo_content(f)
+
+
+def ensure_job_started(job, employee, actor, notes="Auto clock-in on pre-service completion"):
+    """
+    Idempotently clock a technician in for `job` and move it to in_progress.
+
+    Fixes: the only code that created a TimeLog lived inside
+    WorkforceJobVerifyOTPView as a nested closure, so it could only ever run on
+    one of the four pre-service gates -- the OTP one. Completing the gates in
+    the order the UI lists them (location, OTP, selfie, work-area photo) meant
+    the OTP call ran while the photos were still missing, the closure no-oped,
+    and nothing ever created the TimeLog. apply_transition() refuses
+    "in_progress" without an open TimeLog, so "Start Service Execution" then
+    failed for every technician who worked top to bottom, and the clock never
+    started. Hoisting this to module level lets every gate endpoint call it, so
+    whichever gate finishes last is the one that starts the job.
+
+    Returns (time_log, error_message); error_message is None on success.
+    """
+    from django.db import IntegrityError
+    from time_tracking.models import TimeLog
+    from service_requests.state_machine import apply_transition
+    from service_requests.models import EmployeeJob
+
+    if not employee:
+        return None, "No technician profile is attached to this account."
+
+    verification = PreServiceVerification.objects.filter(job=job).first()
+    if not verification:
+        return None, "Pre-service verification has not been started for this job."
+
+    # Recompute rather than trusting a possibly stale is_complete flag.
+    verification.check_completion()
+    verification.save(update_fields=["is_complete", "completed_at", "updated_at"])
+
+    if not verification.is_complete:
+        missing = []
+        if not verification.geofence_passed:
+            missing.append("location check-in")
+        if not verification.otp_verified:
+            missing.append("customer OTP")
+        if not verification.presence_photo:
+            missing.append("technician selfie")
+        if not verification.work_area_photo:
+            missing.append("work area photo")
+        return None, "Cannot start work yet. Still required: " + ", ".join(missing) + "."
+
+    now_ts = timezone.now()
+
+    # One open TimeLog per employee is enforced by a DB constraint; reuse an
+    # open one instead of racing it, so repeated clicks cannot double clock-in.
+    time_log = TimeLog.objects.filter(employee=employee, clock_out__isnull=True).first()
+    if not time_log:
+        company = employee.company or getattr(actor, "company", None) or job.company
+        try:
+            time_log = TimeLog.objects.create(
+                employee=employee,
+                company=company,
+                user=actor if getattr(actor, "pk", None) else None,
+                work_date=timezone.localdate(),
+                clock_in=now_ts,
+                clock_in_lat=job.latitude or 0.0,
+                clock_in_lon=job.longitude or 0.0,
+                clock_in_address=job.address or "",
+                clock_in_notes=notes,
+                distance_from_site_meters=0,
+                geofence_passed=True,
+                admin_override_used=False,
+                status="draft",
+            )
+        except IntegrityError:
+            # Lost a race with a concurrent request -- adopt the winner's log.
+            time_log = TimeLog.objects.filter(employee=employee, clock_out__isnull=True).first()
+
+    if job.status != "in_progress":
+        try:
+            apply_transition(job, "in_progress", actor=actor)
+        except Exception as exc:
+            logger.warning("Could not transition job %s to in_progress: %s", job.pk, exc)
+            return time_log, str(getattr(exc, "detail", exc))
+
+    try:
+        EmployeeJob.objects.filter(service_request=job, employee=employee).update(status="IN_PROGRESS")
+    except Exception:
+        pass
+
+    return time_log, None
 
 
 def get_request_company(request):
@@ -2160,6 +2299,27 @@ class WorkforceJobTransitionView(APIView):
                 return Response({"error": "Unauthorized: Job belongs to another vendor company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         try:
+            # "Start Service Execution" lands here. apply_transition() refuses
+            # in_progress unless an open TimeLog already exists, and no UI path
+            # created one, so the button failed with an error the technician had
+            # no way to act on. Route it through the shared starter, which clocks
+            # them in idempotently and then transitions.
+            if str(target_status).lower() == "in_progress" and emp:
+                time_log, start_err = ensure_job_started(
+                    job, emp, request.user,
+                    notes="Clock-in on Start Service Execution",
+                )
+                if start_err:
+                    return Response({"error": start_err}, status=status.HTTP_400_BAD_REQUEST)
+                job.refresh_from_db()
+                return Response({
+                    "message": "Job transitioned to IN_PROGRESS.",
+                    "job_id": job.id,
+                    "status": job.status,
+                    "clock_in": time_log.clock_in.isoformat() if time_log and time_log.clock_in else None,
+                    "time_log_id": time_log.id if time_log else None,
+                }, status=status.HTTP_200_OK)
+
             new_status = apply_transition(job, target_status, actor=request.user)
             try:
                 from service_requests.models import EmployeeJob
@@ -2174,6 +2334,295 @@ class WorkforceJobTransitionView(APIView):
             }, status=status.HTTP_200_OK)
         except ValidationError as e:
             return Response({"error": str(e.detail if hasattr(e, 'detail') else e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ─── 8b. Service Hold / Resume / Overtime ────────────────────────────────────
+# Built entirely on models that already exist: Break carries the hold window so
+# held time drops out of worked hours through the existing
+# break_seconds()/worked_seconds() maths, WorkforceEventLog carries the audit
+# trail, and WorkforceNotification carries the admin alert (and doubles as the
+# dedup ledger, so the same hold is never announced twice).
+
+DEFAULT_EXPECTED_JOB_MINUTES = 120
+
+
+def _open_hold_break(time_log):
+    """The currently-open job-hold Break on this shift, if any."""
+    if not time_log:
+        return None
+    return time_log.breaks.filter(break_type="job_hold", break_end__isnull=True).first()
+
+
+def _notify_company_admins(job, title, message, notification_type, dedup_key):
+    """
+    Alert this job's company admins once per distinct event.
+
+    Dedup is keyed on (notification_type, related_object_id): the notification
+    table itself is the record of what has already been announced, so a retried
+    request or a double-tap cannot spam admins about the same hold or the same
+    overtime breach.
+    """
+    from django.db.models import Q
+    from django.contrib.auth import get_user_model
+
+    if WorkforceNotification.objects.filter(
+        notification_type=notification_type, related_object_id=dedup_key
+    ).exists():
+        return 0
+
+    User = get_user_model()
+    try:
+        admins = User.objects.filter(is_active=True).filter(Q(is_superuser=True) | Q(is_staff=True))
+        if getattr(job, "company_id", None):
+            admins = admins.filter(Q(company_id=job.company_id) | Q(is_superuser=True))
+        admins = list(admins.distinct()[:20])
+    except Exception:
+        # Never let admin-alerting break the technician's action.
+        admins = list(User.objects.filter(is_active=True, is_superuser=True)[:20])
+
+    sent = 0
+    for admin in admins:
+        try:
+            create_notification(
+                recipient=admin,
+                title=title,
+                message=message,
+                notification_type=notification_type,
+                company=job.company,
+                related_object_id=dedup_key,
+            )
+            sent += 1
+        except Exception as notify_err:
+            logger.warning("Could not notify admin %s about job %s: %s", admin.pk, job.pk, notify_err)
+    return sent
+
+
+def _expected_job_minutes(job):
+    """
+    Expected on-site duration for this job.
+
+    Reuses WorkforceServiceCatalog.duration_minutes -- the only expected-duration
+    rule that exists in this codebase -- matched on the job's service category.
+    Falls back to a conservative default when the category has no catalog entry,
+    rather than inventing a per-job SLA the product does not have.
+    """
+    category = (getattr(job, "service_category", "") or "").strip()
+    if category:
+        entry = (
+            WorkforceServiceCatalog.objects
+            .filter(category__iexact=category, is_active=True)
+            .order_by("-duration_minutes")
+            .first()
+        )
+        if entry and entry.duration_minutes:
+            return int(entry.duration_minutes)
+    return DEFAULT_EXPECTED_JOB_MINUTES
+
+
+def check_job_overtime(job, time_log, actor=None):
+    """
+    Compare worked time against the expected duration and alert admins once.
+
+    Held time is excluded, so a job that sat on hold waiting for a part is not
+    reported as overrunning because of the wait.
+    """
+    if not time_log or not time_log.clock_in:
+        return None
+
+    expected_minutes = _expected_job_minutes(job)
+    elapsed_seconds = int((timezone.now() - time_log.clock_in).total_seconds())
+    try:
+        held_seconds = time_log.break_seconds()
+    except Exception:
+        held_seconds = 0
+    worked_minutes = max(0, (elapsed_seconds - held_seconds) // 60)
+
+    if worked_minutes <= expected_minutes:
+        return {"overtime": False, "worked_minutes": worked_minutes, "expected_minutes": expected_minutes}
+
+    over_by = worked_minutes - expected_minutes
+    _notify_company_admins(
+        job,
+        title="Job Running Over Expected Duration",
+        message=(
+            f"Job #{job.id} ({job.service_category or 'service'}) has been worked for "
+            f"{worked_minutes} min against an expected {expected_minutes} min "
+            f"({over_by} min over). Held time is excluded from this figure."
+        ),
+        notification_type="JOB_OVERTIME",
+        dedup_key=f"overtime:{job.id}",
+    )
+    try:
+        WorkforceEventLog.objects.create(
+            user=actor if getattr(actor, "pk", None) else None,
+            event_type="JOB_OVERTIME_DETECTED",
+            payload={
+                "job_id": job.id,
+                "worked_minutes": worked_minutes,
+                "expected_minutes": expected_minutes,
+                "over_by_minutes": over_by,
+            },
+        )
+    except Exception:
+        pass
+    return {
+        "overtime": True,
+        "worked_minutes": worked_minutes,
+        "expected_minutes": expected_minutes,
+        "over_by_minutes": over_by,
+    }
+
+
+class WorkforceJobHoldView(APIView):
+    """Technician puts an in-progress job on hold, with a reason."""
+    permission_classes = [IsApprovedTechnician]
+
+    def post(self, request, pk):
+        from time_tracking.models import TimeLog, Break
+        from service_requests.state_machine import apply_transition
+
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp or job.assigned_employee != emp:
+            return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
+
+        if job.status != "in_progress":
+            return Response(
+                {"error": f"Only a job that is currently in progress can be put on hold (this one is '{job.status}')."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        reason = str(request.data.get("reason") or "").strip()
+        if not reason:
+            return Response({"error": "A reason is required to put a job on hold."}, status=status.HTTP_400_BAD_REQUEST)
+
+        time_log = TimeLog.objects.filter(employee=emp, clock_out__isnull=True).first()
+        if not time_log:
+            return Response(
+                {"error": "No active shift found for this job, so it cannot be put on hold."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        existing = _open_hold_break(time_log)
+        if existing:
+            # Idempotent: a double-tap returns the hold already running rather
+            # than opening a second one and double-counting the pause.
+            return Response({
+                "message": "This job is already on hold.",
+                "job_id": job.id,
+                "status": job.status,
+                "hold_id": existing.id,
+                "hold_started_at": existing.break_start.isoformat(),
+            }, status=status.HTTP_200_OK)
+
+        now_ts = timezone.now()
+        with transaction.atomic():
+            hold = Break.objects.create(
+                time_log=time_log, break_start=now_ts, break_type="job_hold",
+            )
+            try:
+                apply_transition(job, "on_hold", actor=request.user)
+            except ValidationError as exc:
+                return Response(
+                    {"error": str(exc.detail if hasattr(exc, "detail") else exc)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            WorkforceEventLog.objects.create(
+                user=request.user,
+                event_type="JOB_HOLD_STARTED",
+                payload={
+                    "job_id": job.id, "employee_id": emp.id, "hold_id": hold.id,
+                    "reason": reason, "started_at": now_ts.isoformat(),
+                },
+            )
+
+        _notify_company_admins(
+            job,
+            title="Technician Put a Job On Hold",
+            message=(
+                f"{request.user.get_full_name() or request.user.username} placed Job #{job.id} "
+                f"({job.service_category or 'service'}) on hold. Reason: {reason}"
+            ),
+            notification_type="JOB_HOLD",
+            dedup_key=f"hold:{job.id}:{hold.id}",
+        )
+
+        return Response({
+            "message": "Job placed on hold. The working-hours clock is paused.",
+            "job_id": job.id,
+            "status": job.status,
+            "hold_id": hold.id,
+            "hold_started_at": now_ts.isoformat(),
+            "reason": reason,
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceJobResumeView(APIView):
+    """Technician resumes a held job; the pause stops counting against them."""
+    permission_classes = [IsApprovedTechnician]
+
+    def post(self, request, pk):
+        from time_tracking.models import TimeLog
+        from service_requests.state_machine import apply_transition
+
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp or job.assigned_employee != emp:
+            return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
+
+        if job.status != "on_hold":
+            return Response(
+                {"error": f"Only a job that is on hold can be resumed (this one is '{job.status}')."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        time_log = TimeLog.objects.filter(employee=emp, clock_out__isnull=True).first()
+        hold = _open_hold_break(time_log)
+        now_ts = timezone.now()
+
+        with transaction.atomic():
+            hold_minutes = 0
+            if hold:
+                hold.break_end = now_ts
+                hold.save()  # Break.save() computes duration_minutes itself
+                hold_minutes = hold.duration_minutes or 0
+
+            try:
+                apply_transition(job, "in_progress", actor=request.user)
+            except ValidationError as exc:
+                return Response(
+                    {"error": str(exc.detail if hasattr(exc, "detail") else exc)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            WorkforceEventLog.objects.create(
+                user=request.user,
+                event_type="JOB_HOLD_RESUMED",
+                payload={
+                    "job_id": job.id, "employee_id": emp.id,
+                    "hold_id": hold.id if hold else None,
+                    "resumed_at": now_ts.isoformat(),
+                    "hold_duration_minutes": hold_minutes,
+                },
+            )
+
+        overtime = check_job_overtime(job, time_log, actor=request.user)
+
+        return Response({
+            "message": "Job resumed. The working-hours clock is running again.",
+            "job_id": job.id,
+            "status": job.status,
+            "resumed_at": now_ts.isoformat(),
+            "hold_duration_minutes": hold_minutes,
+            "overtime": overtime,
+        }, status=status.HTTP_200_OK)
 
 
 # ─── 9. Proof of Work & Cash Collection (Phase 16) ───────────────────────────
@@ -2487,7 +2936,10 @@ class WorkforceJobPaymentVerifyOTPView(APIView):
         with transaction.atomic():
             pmt = JobPayment.objects.select_for_update().filter(job=job).first()
             if not pmt:
-                return Response({"error": "No payment record found for this job."}, status=status.HTTP_404_NOT_FOUND)
+                return Response({
+                    "error": "No pending cash payment found for this job. Please submit proof of work and record cash collection first.",
+                    "code": "PAYMENT_RECORD_MISSING"
+                }, status=status.HTTP_400_BAD_REQUEST)
 
             if pmt.payment_status == JobPayment.PaymentStatus.PAID:
                 return Response({
@@ -4836,6 +5288,28 @@ class WorkforceJobRescheduleView(APIView):
                     related_object_id=str(job.id),
                 )
 
+        # Tell the Customer app. Until now this endpoint recorded
+        # customer_notified=True and created a WorkforceNotification -- a row in
+        # this app's own table, which the customer's app never reads -- so the
+        # customer was never actually told their technician was running late.
+        try:
+            from workforce_api.services.customer_webhook import notify_customer_app
+            notify_customer_app(
+                "technician.delayed",
+                job,
+                message=msg,
+                reason=reason,
+                delay_type=delay_type,
+                delay_count=current_delay_count,
+                escalated=reschedule.escalated_to_support,
+                rescheduled_date=str(job.preferred_date) if job.preferred_date else None,
+            )
+        except Exception as delay_webhook_err:
+            logger.info(
+                "Could not notify Customer app of delay on Job #%s: %s",
+                job.id, delay_webhook_err,
+            )
+
         return Response({
             "message": msg,
             "reschedule": WorkforceJobRescheduleSerializer(reschedule).data,
@@ -5498,19 +5972,36 @@ class WorkforceLocationUpdateView(APIView):
                         sequence_number=seq_num,
                     )
 
-                    # Fixes X-01: piggyback on the same throttle (>=20m moved
-                    # or >=30s elapsed) already used for JobLocationPoint
-                    # persistence, so this fires at a sane cadence instead of
-                    # on every raw GPS ping.
-                    try:
-                        from workforce_api.services.customer_webhook import notify_customer_app
-                        notify_customer_app(
-                            "technician.location_updated",
-                            job,
-                            location={"latitude": lat_f, "longitude": lng_f},
-                        )
-                    except Exception as webhook_err:
-                        logger.info(f"Could not notify Customer app of location update for Job #{job.id}: {webhook_err}")
+                # Mirror the live position onto the shared ServiceRequest row on
+                # EVERY accepted fix. Both apps run against the same database, so
+                # this row is what the customer's tracking page reads back. It
+                # also means a dropped webhook now costs one poll of freshness
+                # instead of losing that position permanently -- notify_customer_app
+                # is fire-and-forget with no retry, so it was a single point of
+                # failure for the whole customer-facing tracking feature.
+                try:
+                    ServiceRequest.objects.filter(pk=job.pk).update(
+                        technician_latitude=round(lat_f, 6),
+                        technician_longitude=round(lng_f, 6),
+                    )
+                except Exception as mirror_err:
+                    logger.info("Could not mirror technician position onto job %s: %s", job.id, mirror_err)
+
+                # Push to the customer app on every accepted fix, rather than
+                # piggybacking on the 20m/30s JobLocationPoint throttle above.
+                # That throttle exists to cap stored telemetry rows; reusing it
+                # for delivery stacked a third delay on top of the technician
+                # client's reporting interval and the customer's poll interval,
+                # so a moving technician could be ~55s stale on the customer map.
+                try:
+                    from workforce_api.services.customer_webhook import notify_customer_app
+                    notify_customer_app(
+                        "technician.location_updated",
+                        job,
+                        location={"latitude": lat_f, "longitude": lng_f},
+                    )
+                except Exception as webhook_err:
+                    logger.info(f"Could not notify Customer app of location update for Job #{job.id}: {webhook_err}")
 
                 # ── Consecutive-Fix Automatic Arrival Evaluation ──
                 gps_age_s = (now - captured_dt).total_seconds()
@@ -7243,36 +7734,13 @@ class WorkforceJobVerifyOTPView(APIView):
             verification.save(update_fields=["otp_code", "updated_at"])
 
         def _ensure_job_started(job_obj, verification_obj):
-            if not verification_obj.is_complete:
-                return
-            if job_obj.status in ["accepted", "on_the_way", "en_route", "arrived"]:
-                from time_tracking.models import TimeLog
-                from service_requests.state_machine import apply_transition
-                from service_requests.models import EmployeeJob
-
-                time_log = TimeLog.objects.filter(employee=emp, clock_out__isnull=True).first()
-                if not time_log:
-                    company = emp.company or getattr(request.user, "company", None) or job_obj.company
-                    TimeLog.objects.create(
-                        employee=emp,
-                        company=company,
-                        user=request.user,
-                        work_date=timezone.localdate(),
-                        clock_in=now,
-                        clock_in_lat=job_obj.latitude or 0.0,
-                        clock_in_lon=job_obj.longitude or 0.0,
-                        clock_in_address=job_obj.address or "",
-                        clock_in_notes="Auto-clocked in upon Work Start OTP verification",
-                        distance_from_site_meters=0,
-                        geofence_passed=True,
-                        admin_override_used=False,
-                        status="draft",
-                    )
-                try:
-                    apply_transition(job_obj, "in_progress", actor=request.user)
-                    EmployeeJob.objects.filter(service_request=job_obj, employee=emp).update(status="IN_PROGRESS")
-                except Exception as ex:
-                    logger.warning(f"Failed to auto-transition job {job_obj.id} to IN_PROGRESS upon OTP verification: {ex}")
+            # Delegates to the shared module-level helper so that every
+            # pre-service gate endpoint starts the job by exactly the same
+            # path. See ensure_job_started() for why this was hoisted.
+            ensure_job_started(
+                job_obj, emp, request.user,
+                notes="Auto clock-in on Work Start OTP verification",
+            )
 
         if verification.otp_verified:
             _ensure_job_started(job, verification)
@@ -7487,10 +7955,22 @@ class WorkforceJobPreServicePhotoView(APIView):
         is_complete = verification.check_completion()
         verification.save()
 
+        # If this upload satisfied the last outstanding gate, start the job here.
+        # Only the OTP endpoint used to be able to do this, so finishing with a
+        # photo -- the order the UI lists the gates in -- left the job un-started.
+        job_started = False
+        if is_complete:
+            _time_log, _start_err = ensure_job_started(
+                job, emp, request.user,
+                notes="Auto clock-in on pre-service photo completion",
+            )
+            job_started = bool(_time_log and not _start_err)
+
         return Response({
             "message": f"Pre-service photo '{photo_type}' uploaded successfully.",
             "photo_type": photo_type,
             "is_complete": is_complete,
+            "job_started": job_started,
         }, status=status.HTTP_201_CREATED)
 
 

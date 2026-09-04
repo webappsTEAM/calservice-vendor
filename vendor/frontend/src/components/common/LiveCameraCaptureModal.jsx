@@ -74,19 +74,25 @@ export function LiveCameraCaptureModal({
     }
   }, []);
 
-  // Attach a stream to the <video> and only mark the camera usable once a real
-  // frame has been decoded. Previously the capture button was enabled as soon as
-  // getUserMedia() resolved, while videoWidth/videoHeight were still 0.
+  // Attach a stream to the <video> and mark usable once frame is playing
   const attachStream = useCallback((stream) => {
+    if (!stream) return;
+    streamRef.current = stream;
     const video = videoRef.current;
     if (!video) return;
 
-    video.srcObject = stream;
+    if (video.srcObject !== stream) {
+      video.srcObject = stream;
+    }
     video.muted = true;
     video.playsInline = true;
 
     const markReady = () => {
-      if (video.videoWidth > 0 && video.videoHeight > 0 && video.readyState >= 2) {
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        setIsStreamReady(true);
+        return true;
+      }
+      if (video.readyState >= 2) {
         setIsStreamReady(true);
         return true;
       }
@@ -94,12 +100,16 @@ export function LiveCameraCaptureModal({
     };
 
     video.onloadedmetadata = () => {
-      video.play().catch(() => {});
+      video.play().catch((err) => console.warn('[Camera] play onloadedmetadata:', err));
+      markReady();
     };
     video.onloadeddata = markReady;
     video.oncanplay = markReady;
+    video.onplaying = markReady;
 
-    // Safety net: some browsers report loadeddata before dimensions settle.
+    video.play().catch(() => {});
+
+    // Safety net poll for readiness
     if (readyPollRef.current) window.clearInterval(readyPollRef.current);
     let attempts = 0;
     readyPollRef.current = window.setInterval(() => {
@@ -141,16 +151,15 @@ export function LiveCameraCaptureModal({
 
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
-
-      attachStream(stream);
       setHasCameraPermission(true);
+      attachStream(stream);
     } catch (err) {
       console.warn('[Camera] Primary constraint failed, trying fallback:', err);
       try {
         const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
         streamRef.current = fallbackStream;
-        attachStream(fallbackStream);
         setHasCameraPermission(true);
+        attachStream(fallbackStream);
       } catch (fallbackErr) {
         console.error('[Camera] Access denied or unavailable:', fallbackErr);
         setHasCameraPermission(false);
@@ -182,6 +191,15 @@ export function LiveCameraCaptureModal({
       stopStream();
     };
   }, [isOpen, defaultFacingMode, startCamera, stopStream]);
+
+  // Keep videoRef and active stream attached whenever permissions or facing mode update
+  useEffect(() => {
+    if (hasCameraPermission && streamRef.current && videoRef.current) {
+      if (videoRef.current.srcObject !== streamRef.current) {
+        attachStream(streamRef.current);
+      }
+    }
+  }, [hasCameraPermission, attachStream]);
 
   // Toggle front/back camera
   const handleToggleFacingMode = () => {
@@ -341,8 +359,39 @@ export function LiveCameraCaptureModal({
                 <span>Photo Captured</span>
               </div>
             </div>
-          ) : hasCameraPermission === true ? (
-            /* Live Camera Video Feed */
+          ) : hasCameraPermission === false ? (
+            /* Permission Denied or Error State */
+            <div className="p-6 text-center max-w-sm">
+              <div className="w-12 h-12 rounded-full bg-red-500/20 text-red-400 mx-auto flex items-center justify-center mb-3">
+                <AlertCircle className="w-6 h-6" />
+              </div>
+              <h4 className="text-white font-bold text-sm mb-1">Camera Access Required</h4>
+              <p className="text-slate-400 text-xs mb-4">{errorMessage}</p>
+
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={() => startCamera(facingMode)}
+                  className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  Retry Camera
+                </button>
+
+                <label className="block w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-lg text-xs border border-slate-700 cursor-pointer transition-colors text-center">
+                  <span>Use Device Camera Direct</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture={facingMode}
+                    onChange={handleNativeFileChange}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+            </div>
+          ) : (
+            /* Live Camera Video Feed (always rendered while active) */
             <div className="relative w-full h-full flex items-center justify-center overflow-hidden">
               <video
                 ref={videoRef}
@@ -353,6 +402,14 @@ export function LiveCameraCaptureModal({
                   facingMode === 'user' ? 'scale-x-[-1]' : ''
                 }`}
               />
+
+              {/* Loading overlay while opening camera */}
+              {hasCameraPermission === null && (
+                <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center gap-3 text-slate-300 z-20">
+                  <RefreshCw className="w-8 h-8 text-blue-500 animate-spin" />
+                  <span className="text-xs font-medium">Opening live camera...</span>
+                </div>
+              )}
 
               {/* ── PROPER BIOMETRIC FACE OVAL GUIDE FOR SELFIES ── */}
               {isSelfie ? (
@@ -401,43 +458,6 @@ export function LiveCameraCaptureModal({
               <div className="absolute top-3 right-3 bg-slate-900/80 backdrop-blur text-slate-300 px-2.5 py-0.5 rounded-full text-[10px] font-semibold border border-slate-700">
                 {facingMode === 'user' ? 'Front Camera' : 'Rear Camera'}
               </div>
-            </div>
-          ) : hasCameraPermission === false ? (
-            /* Permission Denied or Error State */
-            <div className="p-6 text-center max-w-sm">
-              <div className="w-12 h-12 rounded-full bg-red-500/20 text-red-400 mx-auto flex items-center justify-center mb-3">
-                <AlertCircle className="w-6 h-6" />
-              </div>
-              <h4 className="text-white font-bold text-sm mb-1">Camera Access Required</h4>
-              <p className="text-slate-400 text-xs mb-4">{errorMessage}</p>
-
-              <div className="space-y-2">
-                <button
-                  type="button"
-                  onClick={() => startCamera(facingMode)}
-                  className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  Retry Camera
-                </button>
-
-                <label className="block w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-lg text-xs border border-slate-700 cursor-pointer transition-colors text-center">
-                  <span>Use Device Camera Direct</span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    capture={facingMode}
-                    onChange={handleNativeFileChange}
-                    className="hidden"
-                  />
-                </label>
-              </div>
-            </div>
-          ) : (
-            /* Loading / Starting Camera */
-            <div className="flex flex-col items-center justify-center gap-3 text-slate-400 p-8">
-              <RefreshCw className="w-8 h-8 text-blue-500 animate-spin" />
-              <span className="text-xs font-medium">Opening live camera...</span>
             </div>
           )}
         </div>
