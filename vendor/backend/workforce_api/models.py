@@ -536,10 +536,16 @@ class PreServiceVerification(models.Model):
         db_table = "workforce_pre_service_verification"
 
     def check_completion(self):
+        # work_area_photo is required here to match the four gates the
+        # technician UI actually enforces ("3. Pre-Service Diagnostic Photos
+        # 0/2"). Without it the backend considered the job ready one photo
+        # earlier than the UI did, so the two disagreed about whether work
+        # could start. appliance_photo stays optional, as in the UI.
         ready = bool(
             self.geofence_passed
             and self.otp_verified
             and self.presence_photo
+            and self.work_area_photo
         )
         self.is_complete = ready
         if ready and not self.completed_at:

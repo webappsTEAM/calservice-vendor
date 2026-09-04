@@ -12,20 +12,24 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useAuth } from './AuthProvider.jsx';
-import { EmployeeRuntimeContext, ACTIVE_QUEUE_STATUSES } from './EmployeeRuntimeContext.jsx';
+import {
+  useAuth } from './AuthProvider.jsx';
+import { EmployeeRuntimeContext,
+  ACTIVE_QUEUE_STATUSES } from './EmployeeRuntimeContext.jsx';
 import {
   apiGetWorkforceJobs,
   apiGetNotifications,
   apiMarkNotificationRead,
   apiClearNotifications,
   apiUpdateLocationFull,
+  apiTransitionJob,
+  apiGetPreServiceStatus,
 } from '../api/workforceService.js';
 import { useLocationTracker, getGPSPosition } from '../hooks/useGPSPosition.js';
 import { useRealtimeStream } from '../hooks/useRealtimeStream.js';
 
 export function EmployeeRuntimeProvider({ children }) {
-  const { user, isEmployee, registrationStatus, togglePresence: authTogglePresence, logout, isAuthenticated } = useAuth();
+  const { user, isEmployee, registrationStatus, togglePresence: authTogglePresence, logout, isAuthenticated, refreshProfile } = useAuth();
 
   const isApprovedEmployee = Boolean(user && isEmployee && registrationStatus === 'approved');
   const isOnlineAuth = Boolean(user?.isOnline);
@@ -40,7 +44,14 @@ export function EmployeeRuntimeProvider({ children }) {
   });
 
   const isOnline = presenceState !== 'OFFLINE' && presenceState !== 'CONNECTING';
+  // Mirrors of presence state for use inside async callbacks, where the closed-
+  // over value can be stale by the time a request resolves.
+  const presenceStateRef = useRef(presenceState);
+  const presenceTogglePendingRef = useRef(false);
   const isGpsLive = presenceState === 'ONLINE_GPS_LIVE';
+  useEffect(() => {
+    presenceStateRef.current = presenceState;
+  }, [presenceState]);
   const isLocationPending = presenceState === 'ONLINE_LOCATION_PENDING';
 
   useEffect(() => {
@@ -430,11 +441,18 @@ export function EmployeeRuntimeProvider({ children }) {
         ].includes(type)
       ) {
         scheduleCoalescedRefresh(300);
+        // A job ending flips the technician's availability back to available
+        // server-side, but that flag lives on the auth profile, which a jobs
+        // refresh never touches -- so the header stayed locked on
+        // "ON JOB (BUSY)" until the user did a full page reload.
+        if (['JOB_COMPLETED', 'STATUS_CHANGE', 'JOB_ASSIGNED'].includes(type) && typeof refreshProfile === 'function') {
+          refreshProfile().catch(() => {});
+        }
       } else if (type === 'NOTIFICATION_CREATED') {
         syncNotifications();
       }
     },
-    [triggerOfferBrowserNotification, scheduleCoalescedRefresh, syncNotifications]
+    [triggerOfferBrowserNotification, scheduleCoalescedRefresh, syncNotifications, refreshProfile]
   );
 
   const handleRealtimeReconcile = useCallback(() => {
@@ -456,8 +474,22 @@ export function EmployeeRuntimeProvider({ children }) {
   // ── 9. Fast Presence Toggle Controller (Correction 2) ──────────────────────
   const togglePresenceFast = useCallback(
     async (desiredState = null) => {
+      // Ignore repeat clicks while a toggle is already in flight, so rapid
+      // tapping cannot interleave two requests and land on the wrong state.
+      if (presenceTogglePendingRef.current) return null;
+      presenceTogglePendingRef.current = true;
+
+      const previousState = presenceStateRef.current;
+      const goingOnline = desiredState === null ? !isOnline : Boolean(desiredState);
+
+      // Show the intended state immediately. This used to sit in CONNECTING for
+      // the whole round trip, and isOnline treats CONNECTING as offline, so
+      // going online looked like the tap had done nothing until the server
+      // replied. On failure we roll straight back below, so the UI never claims
+      // a state the backend rejected.
+      setPresenceState(goingOnline ? 'ONLINE_LOCATION_PENDING' : 'OFFLINE');
+
       try {
-        setPresenceState('CONNECTING');
         const res = await authTogglePresence(desiredState);
         if (res.is_online) {
           setPresenceState('ONLINE_LOCATION_PENDING');
@@ -480,11 +512,41 @@ export function EmployeeRuntimeProvider({ children }) {
         }
         return res;
       } catch (err) {
-        setPresenceState(isOnlineAuth ? 'ONLINE_LOCATION_PENDING' : 'OFFLINE');
+        setPresenceState(previousState);
         throw err;
+      } finally {
+        presenceTogglePendingRef.current = false;
       }
     },
-    [authTogglePresence, isOnlineAuth, handlePositionChange, refreshActiveJobs]
+    [authTogglePresence, isOnline, handlePositionChange, refreshActiveJobs]
+  );
+
+  // ── 9b. Job Start / Clock-In Controller ────────────────────────────────────
+  // The dashboard has always called autoClockIn() / getClockInReadiness() once
+  // all four pre-service gates were satisfied, but neither was ever implemented
+  // on this context -- so every call threw "autoClockIn is not a function"
+  // before it reached the network, and the job silently never started. The
+  // backend now clocks the technician in and transitions the job atomically
+  // inside the IN_PROGRESS transition, so these stay thin wrappers over it
+  // rather than a second, competing clock-in implementation.
+  const getClockInReadiness = useCallback(async (jobId) => {
+    if (!jobId) return null;
+    try {
+      return await apiGetPreServiceStatus(jobId);
+    } catch (err) {
+      console.warn('[EmployeeRuntime] Pre-service readiness fetch failed:', err);
+      return null;
+    }
+  }, []);
+
+  const autoClockIn = useCallback(
+    async (jobId) => {
+      if (!jobId) throw new Error('No job selected to start.');
+      const res = await apiTransitionJob(jobId, 'IN_PROGRESS');
+      await refreshActiveJobs({ silent: true });
+      return res;
+    },
+    [refreshActiveJobs]
   );
 
   // ── 10. Context Value Assembly ─────────────────────────────────────────────
@@ -513,6 +575,10 @@ export function EmployeeRuntimeProvider({ children }) {
       locationError,
       scanCurrentLocation,
       togglePresence: togglePresenceFast,
+
+      // Job Start / Clock-In
+      autoClockIn,
+      getClockInReadiness,
 
       // Notifications
       notifications,
@@ -543,6 +609,8 @@ export function EmployeeRuntimeProvider({ children }) {
       locationError,
       scanCurrentLocation,
       togglePresenceFast,
+      autoClockIn,
+      getClockInReadiness,
       notifications,
       unreadCount,
       syncNotifications,

@@ -1,3 +1,8 @@
+// Last-resort ceiling on session restoration. Must stay comfortably longer
+// than the profile request's own timeout, otherwise a slow-but-successful
+// restore is mistaken for "not logged in".
+const AUTH_BOOTSTRAP_TIMEOUT_MS = 20000;
+
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { AuthContext } from './AuthContext.jsx';
 import {
@@ -246,13 +251,28 @@ export function AuthProvider({ children }) {
   }, []);
 
   useEffect(() => {
-    const timer = setTimeout(() => setIsReady(true), 4000);
+    // A hard 4s timer used to force isReady=true even while the profile fetch
+    // was still in flight. On a slow first paint (cold DB, slow network, or the
+    // two serial calls this bootstrap makes) that flipped the app to
+    // "ready, but no user", and the route guards then redirected to login --
+    // which is why a plain browser refresh logged people out while their tokens
+    // were valid the whole time. The safety net stays, so the app can never
+    // hang forever, but it now outlasts the request's own timeout instead of
+    // racing it, and a late-resolving bootstrap no longer loses the race.
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) setIsReady(true);
+    }, AUTH_BOOTSTRAP_TIMEOUT_MS);
+
     refreshProfile()
       .catch(() => {})
       .finally(() => {
+        settled = true;
         clearTimeout(timer);
         setIsReady(true);
       });
+
+    return () => clearTimeout(timer);
   }, [refreshProfile]);
 
   const value = useMemo(() => ({

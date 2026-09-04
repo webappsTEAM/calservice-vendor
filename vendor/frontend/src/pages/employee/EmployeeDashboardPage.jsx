@@ -856,7 +856,16 @@ export function EmployeeDashboardPage() {
       try {
         setActionLoading(jobId);
         setError('');
-        await apiTransitionJob(jobId, targetStatus);
+        const res = await apiTransitionJob(jobId, targetStatus);
+        // Starting a job also clocks the technician in server-side, so pull the
+        // authoritative TimeLog immediately: the shift timer derives its start
+        // from that server timestamp, never from a local counter, so it stays
+        // correct across a refresh.
+        if (String(targetStatus).toUpperCase() === 'IN_PROGRESS') {
+          const timeData = await apiGetTimeTracking().catch(() => null);
+          if (timeData) setTimeTracking(timeData);
+          if (res?.message) setSuccessMsg(res.message);
+        }
         await loadDashboard();
       } catch (err) {
         setError(err.message || 'Status transition failed.');

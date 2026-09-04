@@ -21,11 +21,17 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { getAccessToken } from '../utils/authTokens.js';
 
 // Minimum distance (metres) that must be exceeded before a new position is reported
-const MOVEMENT_THRESHOLD_METRES = 10;
-// Maximum age of a cached position to accept (milliseconds)
-const MAX_POSITION_AGE_MS = 30_000; // 30 seconds
-// Interval between automatic periodic telemetry heartbeats (ms)
-const POLL_INTERVAL_MS = 25_000; // 25 seconds automatic background heartbeat
+const MOVEMENT_THRESHOLD_METRES = 8;
+// Maximum age of a cached position to accept (milliseconds).
+// This was 30s, which let the browser hand back a half-minute-old fix and call
+// it current -- staleness introduced before the position even left the device.
+const MAX_POSITION_AGE_MS = 5_000;
+// Interval between automatic periodic telemetry heartbeats (ms).
+// Was 25s. Because handlePosition() also uses this value as its reporting gate,
+// a technician driving steadily could hold a fresh position for a full 25s
+// before sending it -- the first of three throttles that stacked up between the
+// technician's GPS and the customer's map.
+const POLL_INTERVAL_MS = 5_000;
 
 /**
  * Haversine distance in metres between two lat/lng points.

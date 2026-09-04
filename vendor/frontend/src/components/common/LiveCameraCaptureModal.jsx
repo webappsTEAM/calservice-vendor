@@ -12,6 +12,28 @@ import { Camera, RefreshCw, Check, X, AlertCircle, SwitchCamera, Sparkles, User,
  *  - Instant Front/Rear camera switching.
  *  - Flash snapshot animation upon capture.
  */
+// Sample a captured canvas and report whether it carries no image at all --
+// i.e. every sampled pixel is effectively the same near-black value. This is the
+// signature of a frame drawn from a <video> that had not decoded anything yet,
+// which is how every stored proof photo ended up as an identical black JPEG.
+function isFrameBlank(ctx, width, height) {
+  try {
+    const data = ctx.getImageData(0, 0, width, height).data;
+    const stride = Math.max(4, Math.floor(data.length / 4 / 2000) * 4);
+    let min = 255;
+    let max = 0;
+    for (let i = 0; i + 2 < data.length; i += stride) {
+      const lum = (data[i] + data[i + 1] + data[i + 2]) / 3;
+      if (lum < min) min = lum;
+      if (lum > max) max = lum;
+    }
+    return max - min < 4 && max < 16;
+  } catch (_) {
+    // Never block a legitimate capture because the check itself failed.
+    return false;
+  }
+}
+
 export function LiveCameraCaptureModal({
   isOpen,
   onClose,
@@ -23,6 +45,7 @@ export function LiveCameraCaptureModal({
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
+  const readyPollRef = useRef(null);
 
   const isSelfie = defaultFacingMode === 'user' || fileNamePrefix.includes('selfie') || fileNamePrefix.includes('presence') || fileNamePrefix.includes('face');
   const [facingMode, setFacingMode] = useState(defaultFacingMode);
@@ -32,9 +55,16 @@ export function LiveCameraCaptureModal({
   const [isCapturing, setIsCapturing] = useState(false);
   const [cameraDevices, setCameraDevices] = useState([]);
   const [isFlashing, setIsFlashing] = useState(false);
+  // True only once the <video> has actually decoded a frame we can draw.
+  const [isStreamReady, setIsStreamReady] = useState(false);
 
   // Stop camera tracks cleanly
   const stopStream = useCallback(() => {
+    setIsStreamReady(false);
+    if (readyPollRef.current) {
+      window.clearInterval(readyPollRef.current);
+      readyPollRef.current = null;
+    }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
@@ -42,6 +72,43 @@ export function LiveCameraCaptureModal({
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
+  }, []);
+
+  // Attach a stream to the <video> and only mark the camera usable once a real
+  // frame has been decoded. Previously the capture button was enabled as soon as
+  // getUserMedia() resolved, while videoWidth/videoHeight were still 0.
+  const attachStream = useCallback((stream) => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    video.srcObject = stream;
+    video.muted = true;
+    video.playsInline = true;
+
+    const markReady = () => {
+      if (video.videoWidth > 0 && video.videoHeight > 0 && video.readyState >= 2) {
+        setIsStreamReady(true);
+        return true;
+      }
+      return false;
+    };
+
+    video.onloadedmetadata = () => {
+      video.play().catch(() => {});
+    };
+    video.onloadeddata = markReady;
+    video.oncanplay = markReady;
+
+    // Safety net: some browsers report loadeddata before dimensions settle.
+    if (readyPollRef.current) window.clearInterval(readyPollRef.current);
+    let attempts = 0;
+    readyPollRef.current = window.setInterval(() => {
+      attempts += 1;
+      if (markReady() || attempts > 50) {
+        window.clearInterval(readyPollRef.current);
+        readyPollRef.current = null;
+      }
+    }, 100);
   }, []);
 
   // Initialize camera stream
@@ -75,24 +142,14 @@ export function LiveCameraCaptureModal({
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
 
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.onloadedmetadata = () => {
-          videoRef.current?.play().catch(() => {});
-        };
-      }
+      attachStream(stream);
       setHasCameraPermission(true);
     } catch (err) {
       console.warn('[Camera] Primary constraint failed, trying fallback:', err);
       try {
         const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
         streamRef.current = fallbackStream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = fallbackStream;
-          videoRef.current.onloadedmetadata = () => {
-            videoRef.current?.play().catch(() => {});
-          };
-        }
+        attachStream(fallbackStream);
         setHasCameraPermission(true);
       } catch (fallbackErr) {
         console.error('[Camera] Access denied or unavailable:', fallbackErr);
@@ -106,7 +163,7 @@ export function LiveCameraCaptureModal({
         }
       }
     }
-  }, [stopStream]);
+  }, [stopStream, attachStream]);
 
   // Start camera when modal opens
   useEffect(() => {
@@ -143,8 +200,17 @@ export function LiveCameraCaptureModal({
     try {
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      const width = video.videoWidth || 1280;
-      const height = video.videoHeight || 720;
+      const width = video.videoWidth;
+      const height = video.videoHeight;
+
+      // Never fall back to a hardcoded size. If the element has no decoded frame,
+      // drawImage() paints nothing and we would store a blank photo as evidence.
+      if (!width || !height || video.readyState < 2) {
+        setIsStreamReady(false);
+        setErrorMessage('Camera is still warming up. Wait a moment, then tap capture again.');
+        setIsCapturing(false);
+        return;
+      }
 
       canvas.width = width;
       canvas.height = height;
@@ -157,6 +223,12 @@ export function LiveCameraCaptureModal({
       }
 
       ctx.drawImage(video, 0, 0, width, height);
+
+      if (isFrameBlank(ctx, width, height)) {
+        setErrorMessage('The camera returned a blank frame. Check nothing is covering the lens, then capture again.');
+        setIsCapturing(false);
+        return;
+      }
 
       canvas.toBlob(
         (blob) => {
@@ -404,13 +476,13 @@ export function LiveCameraCaptureModal({
               <button
                 type="button"
                 onClick={handleTakeSnapshot}
-                disabled={!hasCameraPermission || isCapturing}
+                disabled={!hasCameraPermission || !isStreamReady || isCapturing}
                 className="flex-1 py-3 px-5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 text-white font-bold text-xs shadow-lg shadow-blue-900/40 flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
               >
                 <div className="w-4 h-4 rounded-full border-2 border-white flex items-center justify-center">
                   <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
                 </div>
-                <span>{isCapturing ? 'Capturing...' : isSelfie ? 'Capture Face Selfie' : 'Capture Photo'}</span>
+                <span>{isCapturing ? 'Capturing...' : !isStreamReady ? 'Starting camera...' : isSelfie ? 'Capture Face Selfie' : 'Capture Photo'}</span>
               </button>
 
               <button

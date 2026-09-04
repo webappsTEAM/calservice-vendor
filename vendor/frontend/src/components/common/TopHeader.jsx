@@ -370,7 +370,12 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
   };
 
   const isOnline = employeeRuntime ? employeeRuntime.isOnline : Boolean(user?.isOnline);
-  const isBusy = user?.availability === 'busy';
+  // Also consult the live job queue: availability lives on the auth profile, so
+  // it can lag a job that has just ended. Trusting that flag alone is what left
+  // this button stuck on "ON JOB (BUSY)" after a job completed or was cancelled.
+  const isBusy = Boolean(
+    user?.availability === 'busy' && (employeeRuntime ? employeeRuntime.hasActiveJob : true)
+  );
 
   return (
     <>
