@@ -1435,9 +1435,12 @@ class WorkforceJobListView(APIView):
                 else:
                     qs = ServiceRequest.objects.select_related("assigned_employee", "assigned_employee__user").order_by("-created_at")
             elif company:
-                qs = ServiceRequest.objects.filter(company=company).select_related("assigned_employee", "assigned_employee__user").order_by("-created_at")
+                qs = ServiceRequest.objects.filter(
+                    Q(company=company) |
+                    (Q(company__isnull=True) & (Q(vendor_id=str(company.id)) | Q(vendor_id="") | Q(vendor_id__isnull=True)))
+                ).select_related("assigned_employee", "assigned_employee__user").order_by("-created_at")
             else:
-                qs = ServiceRequest.objects.none()
+                qs = ServiceRequest.objects.select_related("assigned_employee", "assigned_employee__user").order_by("-created_at")
 
             if status_filter and status_filter != "all":
                 if status_filter == "active":
@@ -1445,7 +1448,7 @@ class WorkforceJobListView(APIView):
                 else:
                     qs = qs.filter(status=status_filter)
 
-            jobs = qs[:50]
+            jobs = qs[:100]
             serializer = WorkforceJobListSerializer(jobs, many=True)
             return Response(serializer.data, status=status.HTTP_200_OK)
         elif emp:
@@ -1482,13 +1485,13 @@ class WorkforceJobListView(APIView):
             # Canonical query definitions: EXCLUSIVELY authoritative explicit employee relationships
             # 1. Explicitly assigned to current employee with active queue status
             assigned_active_qs = Q(
-                assigned_employee=emp,
                 status__in=ACTIVE_QUEUE_STATUSES
+            ) & (
+                Q(assigned_employee=emp) | Q(technician_id=user.id)
             )
             # 2. Explicitly completed by current employee
-            completed_qs = Q(
-                assigned_employee=emp,
-                status="completed"
+            completed_qs = (
+                (Q(assigned_employee=emp) | Q(technician_id=user.id)) & Q(status="completed")
             ) | (
                 Q(id__in=completed_emp_job_sr_ids) & Q(status="completed")
             )
@@ -1499,7 +1502,7 @@ class WorkforceJobListView(APIView):
             )
             # 4. Explicit active EmployeeJob belonging to current employee (must not be assigned to another tech)
             employee_job_active_qs = (
-                Q(id__in=emp_job_sr_ids) & Q(status__in=ACTIVE_QUEUE_STATUSES) & (Q(assigned_employee=emp) | Q(assigned_employee__isnull=True))
+                Q(id__in=emp_job_sr_ids) & Q(status__in=ACTIVE_QUEUE_STATUSES) & (Q(assigned_employee=emp) | Q(assigned_employee__isnull=True) | Q(technician_id=user.id))
             )
 
             status_filter = str(request.query_params.get("status", "active")).lower().strip()
@@ -1510,7 +1513,7 @@ class WorkforceJobListView(APIView):
                 qs = ServiceRequest.objects.filter(
                     assigned_active_qs | completed_qs | offered_qs | employee_job_active_qs
                 ).exclude(
-                    ~Q(assigned_employee=emp) & Q(assigned_employee__isnull=False) & ~Q(id__in=completed_emp_job_sr_ids)
+                    ~Q(assigned_employee=emp) & ~Q(technician_id=user.id) & Q(assigned_employee__isnull=False) & ~Q(id__in=completed_emp_job_sr_ids)
                 )
             else: # "active" default
                 qs = ServiceRequest.objects.filter(

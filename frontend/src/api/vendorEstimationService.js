@@ -203,3 +203,12 @@ export async function apiCustomerDecide(id, data) {
 export async function apiGetVendorTechnicians() {
   return apiRequest('/api/vendor/technicians/', { method: 'GET' });
 }
+
+/**
+ * Fetch authoritative DB invoice for an estimation (either converted job or cancelled with fee collected).
+ * @param {number|string} id - ServiceRequest ID or Estimation ID
+ */
+export async function apiGetEstimationInvoice(id) {
+  return apiRequest(`/api/vendor/estimations/${id}/invoice/`, { method: 'GET' });
+}
+

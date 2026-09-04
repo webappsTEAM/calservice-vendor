@@ -598,6 +598,9 @@ class WorkforceJobListSerializer(serializers.ModelSerializer):
     reducing per-job payload from ~4 KB to ~400 bytes.
     """
     assigned_employee_name = serializers.SerializerMethodField()
+    customer_display_name = serializers.SerializerMethodField()
+    service_title = serializers.SerializerMethodField()
+    job_type = serializers.CharField(read_only=True)
 
     class Meta:
         model = ServiceRequest
@@ -605,10 +608,13 @@ class WorkforceJobListSerializer(serializers.ModelSerializer):
             "id",
             "request_id",
             "customer_name",
+            "customer_display_name",
             "phone",
             "email",
             "service_category",
+            "service_title",
             "issue_title",
+            "job_type",
             "status",
             "priority",
             "address",
@@ -617,6 +623,7 @@ class WorkforceJobListSerializer(serializers.ModelSerializer):
             "total_amount",
             "payment_status",
             "payment_method",
+            "invoice_id",
             "assigned_employee_name",
             "technician_id",
             "technician_name",
@@ -634,6 +641,17 @@ class WorkforceJobListSerializer(serializers.ModelSerializer):
         if emp and hasattr(emp, "user"):
             return emp.user.get_full_name() or emp.user.username
         return None
+
+    def get_customer_display_name(self, obj):
+        if obj.customer_name:
+            return obj.customer_name
+        if obj.customer:
+            return obj.customer.get_full_name() or obj.customer.username
+        return "Customer"
+
+    def get_service_title(self, obj):
+        return obj.issue_title or obj.service_category or "Service Request"
+
 
 
 class WorkforceJobSerializer(serializers.ModelSerializer):

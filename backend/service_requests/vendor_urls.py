@@ -22,6 +22,7 @@ from .vendor_views import (
     VendorEstimationFeeCollectView,
     VendorEstimationFeeWaiveView,
     VendorEstimationCustomerDecideView,
+    VendorEstimationInvoiceView,
     VendorTechniciansListView,
 )
 
@@ -53,6 +54,10 @@ urlpatterns = [
 
     # Customer Decision Simulator / Receiver
     path("estimations/<int:pk>/customer-decide/", VendorEstimationCustomerDecideView.as_view(), name="vendor-estimation-customer-decide"),
+
+    # Authoritative Invoice Data & Download for Customer
+    path("estimations/<int:pk>/invoice/", VendorEstimationInvoiceView.as_view(), name="vendor-estimation-invoice"),
+    path("estimations/<int:pk>/invoice/pdf/", VendorEstimationInvoiceView.as_view(), name="vendor-estimation-invoice-pdf"),
 
     # Technicians Directory
     path("technicians/", VendorTechniciansListView.as_view(), name="vendor-technicians-list"),

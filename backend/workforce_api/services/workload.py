@@ -28,6 +28,14 @@ ACTIVE_QUEUE_STATUSES: List[str] = [
     "in_progress",
     "proof_submitted",
     "follow_up_required",
+    # AC Estimation workflow lifecycle statuses
+    "technician_assigned",
+    "technician_on_the_way",
+    "technician_arrived",
+    "inspection_in_progress",
+    "inspection_completed",
+    "quotation_sent",
+    "customer_approved",
 ]
 
 # Authoritative definition of all statuses where an employee is actively executing work

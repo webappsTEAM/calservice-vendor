@@ -834,11 +834,80 @@ class EstimationQuotationItem(models.Model):
     line_total = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
     sort_order = models.PositiveSmallIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
+    class Meta:
         managed = False
         db_table = "service_requests_estimationquotationitem"
         ordering = ["sort_order", "id"]
 
     def __str__(self):
         return f"{self.service_name} x {self.quantity} = ₹{self.line_total}"
+
+
+class ServiceRequestPayment(models.Model):
+    """
+    Marketplace & Workforce Payment Record (service_requests_payment).
+    """
+    customer_id_snapshot = models.CharField(max_length=50, blank=True, default="")
+    service_request_id_snapshot = models.CharField(max_length=50, blank=True, default="")
+    razorpay_order_id = models.CharField(max_length=100, blank=True, default="")
+    razorpay_payment_id = models.CharField(max_length=100, blank=True, default="")
+    razorpay_signature = models.CharField(max_length=255, blank=True, default="")
+    amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    currency = models.CharField(max_length=10, default="INR")
+    status = models.CharField(max_length=30, default="pending")
+    method = models.CharField(max_length=50, default="ONLINE")
+    gateway = models.CharField(max_length=50, default="razorpay")
+    error_code = models.CharField(max_length=100, blank=True, default="")
+    error_description = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    customer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="sr_payments",
+        db_column="customer_id",
+    )
+    service_request = models.ForeignKey(
+        ServiceRequest,
+        on_delete=models.CASCADE,
+        related_name="payments",
+        db_column="service_request_id",
+    )
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_payment"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Payment #{self.id} for SR #{self.service_request_id} - ₹{self.amount} ({self.status})"
+
+
+class SettingsHubInvoice(models.Model):
+    """
+    Invoice entity stored in settings_hub_invoice for customer download reference.
+    """
+    invoice_number = models.CharField(max_length=100, unique=True)
+    amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    currency = models.CharField(max_length=10, default="INR")
+    status = models.CharField(max_length=30, default="PAID")
+    billing_date = models.DateField(null=True, blank=True)
+    due_date = models.DateField(null=True, blank=True)
+    pdf_url = models.CharField(max_length=500, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="invoices",
+        db_column="company_id",
+    )
+
+    class Meta:
+        managed = False
+        db_table = "settings_hub_invoice"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Invoice {self.invoice_number} - ₹{self.amount} ({self.status})"
