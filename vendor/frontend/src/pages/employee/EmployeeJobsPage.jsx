@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthProvider.jsx';
+import { useEmployeeRuntime } from '../../context/EmployeeRuntimeContext.jsx';
 import {
   apiGetWorkforceJobs,
   apiTransitionJob,
@@ -206,14 +207,35 @@ function getStatusTag(status = '') {
 export function EmployeeJobsPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [jobs, setJobs] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const {
+    activeJobs = [],
+    completedJobs = [],
+  } = useEmployeeRuntime();
+
+  // Instant render cache: combine active and completed jobs from runtime context
+  const cachedJobs = useMemo(() => {
+    const map = new Map();
+    activeJobs.forEach((j) => map.set(j.id, j));
+    completedJobs.forEach((j) => map.set(j.id, j));
+    return Array.from(map.values());
+  }, [activeJobs, completedJobs]);
+
+  const [jobs, setJobs] = useState(cachedJobs);
+  const [isLoading, setIsLoading] = useState(cachedJobs.length === 0);
   const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [activeTab, setActiveTab] = useState('ALL'); // 'ALL' | 'OFFERS' | 'ACTIVE' | 'COMPLETED'
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [actionLoadingId, setActionLoadingId] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
+
+  // Sync state if runtime cached jobs update before loadJobs completes
+  useEffect(() => {
+    if (cachedJobs.length > 0 && jobs.length === 0) {
+      setJobs(cachedJobs);
+      setIsLoading(false);
+    }
+  }, [cachedJobs]);
 
   // Job Details Modal
   const [selectedJobForDetails, setSelectedJobForDetails] = useState(null);
@@ -226,14 +248,16 @@ export function EmployeeJobsPage() {
 
   const loadJobs = async () => {
     try {
-      setIsLoading(true);
+      if (jobs.length === 0) setIsLoading(true);
       setError('');
       // Request all relevant workforce jobs for the authenticated user
       const data = await apiGetWorkforceJobs('all');
       const jobsList = Array.isArray(data) ? data : (data?.results || []);
       setJobs(jobsList);
     } catch (err) {
-      setError(err.message || 'Failed to load your field jobs.');
+      if (jobs.length === 0) {
+        setError(err.message || 'Failed to load your field jobs.');
+      }
     } finally {
       setIsLoading(false);
     }
