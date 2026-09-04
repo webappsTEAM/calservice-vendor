@@ -495,3 +495,86 @@ class BookingMessage(models.Model):
 
     def __str__(self):
         return f"{self.sender_persona}: {self.body[:40]}"
+
+
+class TripStop(models.Model):
+    """
+    GT-D-01/GT-D-02: unmanaged mirror of the Customer app's
+    service_requests.TripStop (same shared table,
+    service_requests_trip_stop). Read by the driver app so a technician can
+    see the actual stop list on a multi-stop trip, and written by it to
+    record per-stop arrival/completion.
+
+    Until this existed the vendor side had ZERO references to TripStop
+    anywhere -- multi-stop routes were customer-side-only data that
+    nothing on the driver side could see or advance, which is why "which
+    stop is the driver at" did not exist as a concept in the platform.
+    """
+    class StopType(models.TextChoices):
+        PICKUP   = "PICKUP",   "Pickup"
+        WAYPOINT = "WAYPOINT", "Intermediate Stop"
+        DROP     = "DROP",     "Drop"
+
+    booking       = models.ForeignKey(ServiceRequest, on_delete=models.CASCADE, related_name="trip_stops")
+    sequence      = models.PositiveSmallIntegerField()
+    stop_type     = models.CharField(max_length=10, choices=StopType.choices, default=StopType.WAYPOINT)
+    address       = models.TextField()
+    contact_name  = models.CharField(max_length=200, blank=True, default="")
+    contact_phone = models.CharField(max_length=20, blank=True, default="")
+    latitude      = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    longitude     = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    notes         = models.CharField(max_length=500, blank=True, default="")
+    created_at    = models.DateTimeField(auto_now_add=True)
+    arrived_at    = models.DateTimeField(null=True, blank=True)
+    completed_at  = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_trip_stop"
+        ordering = ["booking", "sequence"]
+
+    def __str__(self):
+        return f"Stop {self.sequence} ({self.stop_type}) for booking #{self.booking_id}"
+
+
+class DeliveryProof(models.Model):
+    """
+    GT-D-01: unmanaged mirror of the Customer app's
+    service_requests.DeliveryProof (same shared table,
+    service_requests_delivery_proof).
+
+    The driver app does not write here directly -- proof capture goes
+    through the Customer app's webhook receiver so that one code path owns
+    validation, stop resolution and the "never raise into the webhook"
+    guarantee. This mirror exists so the vendor side can READ back what
+    was recorded (a technician reviewing their own completed job, an admin
+    investigating a delivery dispute) without a cross-service call.
+    """
+    class ProofType(models.TextChoices):
+        PHOTO          = "PHOTO",          "Photo of delivered goods"
+        SIGNATURE      = "SIGNATURE",      "Recipient signature"
+        RECIPIENT_NAME = "RECIPIENT_NAME", "Recipient name captured"
+        OTP            = "OTP",            "Delivery OTP verified"
+        NOTE           = "NOTE",           "Driver note"
+
+    booking     = models.ForeignKey(ServiceRequest, on_delete=models.CASCADE, related_name="delivery_proofs")
+    stop        = models.ForeignKey(TripStop, on_delete=models.SET_NULL, null=True, blank=True, related_name="delivery_proofs")
+    proof_type  = models.CharField(max_length=20, choices=ProofType.choices)
+    image       = models.CharField(max_length=255, blank=True, default="")
+    recipient_name  = models.CharField(max_length=200, blank=True, default="")
+    recipient_phone = models.CharField(max_length=30, blank=True, default="")
+    notes       = models.TextField(blank=True, default="")
+    captured_by_name = models.CharField(max_length=200, blank=True, default="")
+    captured_by_workforce_id = models.CharField(max_length=64, blank=True, default="")
+    latitude    = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    longitude   = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    captured_at = models.DateTimeField()
+    created_at  = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_delivery_proof"
+        ordering = ["booking", "captured_at", "id"]
+
+    def __str__(self):
+        return f"{self.get_proof_type_display()} for booking #{self.booking_id}"

@@ -2701,6 +2701,54 @@ class WorkforceJobProofView(APIView):
         else:
             msg = "After-service proof submitted! Service completed. Payment collection/confirmation required before closing job."
 
+        # GT-D-01: tell the Customer app what was actually captured. This
+        # event previously carried only free-text remarks, so the receiver
+        # could do nothing with it but append them to the booking
+        # description -- no photo, no signature, no recipient, no stop.
+        # Fire-and-forget, after the state change is already persisted, so a
+        # webhook problem can never undo a submitted proof.
+        try:
+            from workforce_api.services.logistics_events import (
+                absolute_media_url, emit_completion_proof, set_logistics_leg,
+            )
+            from workforce_api.services.automatic_dispatch import LOGISTICS_SERVICE_CATEGORIES
+
+            _service_name = (job.service_category or "").strip().lower()
+            if _service_name in LOGISTICS_SERVICE_CATEGORIES:
+                _stop = None
+                _stop_ref = request.data.get("stop_id") or request.data.get("stop_sequence")
+                if _stop_ref:
+                    from service_requests.models import TripStop
+                    _stop = (
+                        TripStop.objects.filter(booking=job, id=_stop_ref).first()
+                        or TripStop.objects.filter(booking=job, sequence=_stop_ref).first()
+                    )
+                _lat = request.data.get("latitude")
+                _lng = request.data.get("longitude")
+                emit_completion_proof(
+                    job,
+                    notes=completion_notes,
+                    photo_url=absolute_media_url(request, proof.after_appliance_photo)
+                              or absolute_media_url(request, proof.after_work_area_photo),
+                    signature_url=absolute_media_url(request, getattr(proof, "signature_photo", None)),
+                    recipient_name=(request.data.get("recipient_name") or "").strip(),
+                    recipient_phone=(request.data.get("recipient_phone") or "").strip(),
+                    stop=_stop,
+                    otp_verified=bool(pmt and pmt.payment_status == JobPayment.PaymentStatus.PAID),
+                    technician_name=(emp.user.get_full_name() if getattr(emp, "user", None) else "") or "",
+                    workforce_employee_id=getattr(emp, "id", "") or "",
+                    location={"latitude": _lat, "longitude": _lng} if _lat and _lng else None,
+                )
+                # Proof of delivery is the last thing that happens on a
+                # trip, so this is the moment the trip is DELIVERED. Set it
+                # here rather than relying on the driver app to send one
+                # more request it might never send.
+                set_logistics_leg(job, "DELIVERED", actor=request.user)
+        except Exception as proof_evt_err:
+            logger.info(
+                "Could not emit completion proof event for Job #%s: %s", job.id, proof_evt_err
+            )
+
         return Response({
             "message": msg,
             "job_id": job.id,
@@ -9504,18 +9552,121 @@ class WorkforceJobLogisticsLegView(APIView):
                 "error": f"Invalid leg. Choose one of: {valid_legs}"
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        now = timezone.now()
-        job.logistics_leg = leg
-        job.logistics_leg_updated_at = now
-        history = job.logistics_leg_history or []
-        history.append({"leg": leg, "at": now.isoformat(), "by": request.user.id})
-        job.logistics_leg_history = history
-        job.save(update_fields=["logistics_leg", "logistics_leg_updated_at", "logistics_leg_history", "updated_at"])
+        # Delegates to services/logistics_events.set_logistics_leg, which
+        # adds three things this endpoint previously lacked: forward-only
+        # ordering (a trip cannot move backwards from DELIVERED to
+        # EN_ROUTE_PICKUP and corrupt the customer's tracking view),
+        # idempotency on a retried request (no duplicate history entry, no
+        # moved timestamp), and emission of `logistics.leg_changed` so a
+        # customer watching the map sees the change immediately instead of
+        # on their next poll.
+        from workforce_api.services.logistics_events import set_logistics_leg
+
+        changed, error = set_logistics_leg(job, leg, actor=request.user)
+        if error:
+            return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({
             "logistics_leg": job.logistics_leg,
             "logistics_leg_updated_at": job.logistics_leg_updated_at,
             "logistics_leg_history": job.logistics_leg_history,
+            "changed": changed,
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceJobTripStopsView(APIView):
+    """
+    GT-D-01: the driver's view of a multi-stop trip, and how they advance
+    it.
+
+    Until now the vendor side had zero references to TripStop anywhere:
+    multi-stop routes were customer-side-only data that no technician could
+    see and nothing on this side could advance. A driver had no way to say
+    "I have reached stop 2" and the customer had no way to find out.
+
+    GET  /workforce/jobs/<pk>/stops/                     -- the stop list
+    POST /workforce/jobs/<pk>/stops/  {"stop_id"|"stop_sequence", "completed"}
+         -- mark a stop arrived, and completed when the driver is done there
+    """
+    permission_classes = [IsApprovedTechnician]
+
+    _TERMINAL_STATUSES = {"completed", "cancelled", "unable_to_complete"}
+
+    def _resolve_job(self, request, pk):
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return None, Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp or job.assigned_employee != emp:
+            return None, Response(
+                {"error": "Unauthorized: Job is not assigned to you."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return job, None
+
+    def get(self, request, pk):
+        from service_requests.models import TripStop
+
+        job, err = self._resolve_job(request, pk)
+        if err:
+            return err
+        stops = TripStop.objects.filter(booking=job).order_by("sequence")
+        return Response({
+            "logistics_leg": job.logistics_leg,
+            "results": [
+                {
+                    "id": s.id,
+                    "sequence": s.sequence,
+                    "stop_type": s.stop_type,
+                    "address": s.address,
+                    "contact_name": s.contact_name,
+                    "contact_phone": s.contact_phone,
+                    "latitude": float(s.latitude) if s.latitude is not None else None,
+                    "longitude": float(s.longitude) if s.longitude is not None else None,
+                    "notes": s.notes,
+                    "arrived_at": s.arrived_at,
+                    "completed_at": s.completed_at,
+                }
+                for s in stops
+            ],
+        }, status=status.HTTP_200_OK)
+
+    def post(self, request, pk):
+        from service_requests.models import TripStop
+        from workforce_api.services.logistics_events import record_stop_progress
+
+        job, err = self._resolve_job(request, pk)
+        if err:
+            return err
+
+        if job.status in self._TERMINAL_STATUSES:
+            return Response(
+                {"error": f"Job #{job.id} is already '{job.status}' -- stops cannot be updated."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        stop_id = request.data.get("stop_id")
+        stop_sequence = request.data.get("stop_sequence") or request.data.get("sequence")
+        stop = None
+        if stop_id is not None:
+            stop = TripStop.objects.filter(booking=job, id=stop_id).first()
+        elif stop_sequence is not None:
+            stop = TripStop.objects.filter(booking=job, sequence=stop_sequence).first()
+        if stop is None:
+            return Response(
+                {"error": "Stop not found on this job. Provide a valid stop_id or stop_sequence."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        completed = str(request.data.get("completed", "")).strip().lower() in ("1", "true", "yes")
+        changed = record_stop_progress(job, stop, completed, actor=request.user)
+
+        return Response({
+            "stop_id": stop.id,
+            "sequence": stop.sequence,
+            "arrived_at": stop.arrived_at,
+            "completed_at": stop.completed_at,
+            "changed": changed,
         }, status=status.HTTP_200_OK)
 
 class WorkforceJobMessagesView(APIView):
