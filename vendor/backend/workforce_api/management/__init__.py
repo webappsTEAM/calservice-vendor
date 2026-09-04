@@ -1,1 +1,0 @@
-"""Workforce management commands package."""

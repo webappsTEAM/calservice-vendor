@@ -1,3 +1,0 @@
-"""
-time_tracking migrations
-"""
