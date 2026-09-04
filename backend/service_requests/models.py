@@ -2,6 +2,7 @@
 workforce-app/backend/service_requests/models.py
 ServiceRequest model pointing to shared Supabase table service_requests_servicerequest (managed=False).
 """
+from decimal import Decimal
 import threading
 import uuid
 from django.conf import settings
@@ -210,6 +211,10 @@ class ServiceRequest(models.Model):
         default=RequestKind.DIRECT,
         db_index=True,
     )
+    job_type = models.CharField(max_length=50, default="SERVICE", blank=True)
+    vendor_id = models.CharField(max_length=100, blank=True, default="")
+    vendor_name = models.CharField(max_length=200, blank=True, default="")
+    vendor_confirmed_at = models.DateTimeField(null=True, blank=True)
     parent_request_id = models.BigIntegerField(null=True, blank=True)
     quote_number = models.CharField(max_length=50, null=True, blank=True)
 
@@ -282,6 +287,7 @@ class ServiceRequest(models.Model):
     otp_verified = models.BooleanField(default=False)
     otp_attempt_count = models.IntegerField(default=0, blank=True)
     otp_hash = models.CharField(max_length=255, blank=True, default="")
+    otp_verified_at = models.DateTimeField(null=True, blank=True)
     payment_collected_by_name = models.CharField(max_length=200, blank=True, default="")
     collection_method = models.CharField(max_length=50, blank=True, default="")
     collection_reference = models.CharField(max_length=100, blank=True, default="")
@@ -513,4 +519,326 @@ class EmployeeJob(models.Model):
 RequestKind = ServiceRequest.RequestKind
 
 
+class Estimation(models.Model):
+    """
+    AC Specification & Workflow Detail (service_requests_estimation).
+    Linked 1:1 with service_requests_servicerequest.
+    """
+    class ACType(models.TextChoices):
+        SPLIT = "SPLIT", "Split AC"
+        WINDOW = "WINDOW", "Window AC"
+        CASSETTE = "CASSETTE", "Cassette AC"
+        TOWER = "TOWER", "Tower AC"
+        OTHER = "OTHER", "Other"
 
+    class ACCapacity(models.TextChoices):
+        ONE_TON = "1_TON", "1 Ton"
+        ONE_POINT_FIVE_TON = "1.5_TON", "1.5 Ton"
+        TWO_TON = "2_TON", "2 Ton"
+        OTHER = "OTHER", "Other"
+
+    class Status(models.TextChoices):
+        REQUESTED = "REQUESTED", "Requested"
+        VENDOR_CONFIRMED = "VENDOR_CONFIRMED", "Vendor Confirmed"
+        TECHNICIAN_ASSIGNED = "TECHNICIAN_ASSIGNED", "Technician Assigned"
+        TECHNICIAN_ON_THE_WAY = "TECHNICIAN_ON_THE_WAY", "Technician On The Way"
+        TECHNICIAN_ARRIVED = "TECHNICIAN_ARRIVED", "Technician Arrived"
+        INSPECTION_IN_PROGRESS = "INSPECTION_IN_PROGRESS", "Inspection In Progress"
+        INSPECTION_COMPLETED = "INSPECTION_COMPLETED", "Inspection Completed"
+        QUOTATION_SENT = "QUOTATION_SENT", "Quotation Sent"
+        CUSTOMER_APPROVED = "CUSTOMER_APPROVED", "Customer Approved"
+        CUSTOMER_REJECTED = "CUSTOMER_REJECTED", "Customer Rejected"
+        CONVERTED_TO_SERVICE = "CONVERTED_TO_SERVICE", "Converted To Service"
+        CLOSED = "CLOSED", "Closed"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    service_request = models.ForeignKey(
+        ServiceRequest,
+        on_delete=models.CASCADE,
+        related_name="estimation_details",
+        db_column="service_request_id",
+    )
+    ac_type = models.CharField(max_length=50, choices=ACType.choices, default=ACType.SPLIT)
+    ac_brand = models.CharField(max_length=100, default="")
+    ac_capacity = models.CharField(max_length=50, choices=ACCapacity.choices, default=ACCapacity.ONE_POINT_FIVE_TON)
+    ac_quantity = models.PositiveSmallIntegerField(default=1)
+    customer_symptom = models.TextField(blank=True, default="")
+    customer_notes = models.TextField(blank=True, default="")
+    status = models.CharField(max_length=50, choices=Status.choices, default=Status.REQUESTED)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_estimation"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Estimation #{self.id} for SR #{self.service_request_id} ({self.status})"
+
+
+class EstimationFee(models.Model):
+    """
+    Inspection Visit Fee for AC Estimation (service_requests_estimationfee).
+    """
+    class FeeStatus(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        COLLECTED = "COLLECTED", "Collected"
+        WAIVED = "WAIVED", "Waived"
+        FAILED = "FAILED", "Failed"
+        REFUNDED = "REFUNDED", "Refunded"
+
+    estimation = models.ForeignKey(
+        Estimation,
+        on_delete=models.CASCADE,
+        related_name="fees",
+        db_column="estimation_id",
+    )
+    amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("199.00"))
+    currency = models.CharField(max_length=10, default="INR")
+    status = models.CharField(max_length=30, choices=FeeStatus.choices, default=FeeStatus.PENDING)
+    payment_reference = models.CharField(max_length=255, blank=True, default="")
+    payment_method = models.CharField(max_length=50, blank=True, default="")
+    collected_at = models.DateTimeField(null=True, blank=True)
+    waived_at = models.DateTimeField(null=True, blank=True)
+    waived_reason = models.TextField(blank=True, default="")
+    waived_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="waived_estimation_fees",
+        db_column="waived_by_id",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_estimationfee"
+
+    def __str__(self):
+        return f"Fee #{self.id} (Est #{self.estimation_id}): ₹{self.amount} ({self.status})"
+
+
+class Inspection(models.Model):
+    """
+    On-site Technician Diagnosis & Job Inspection (service_requests_inspection).
+    """
+    class InspectionStatus(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        IN_PROGRESS = "IN_PROGRESS", "In Progress"
+        COMPLETED = "COMPLETED", "Completed"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    estimation = models.ForeignKey(
+        Estimation,
+        on_delete=models.CASCADE,
+        related_name="inspections",
+        db_column="estimation_id",
+    )
+    technician = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="technician_inspections",
+        db_column="technician_id",
+    )
+    technician_external_id = models.CharField(max_length=100, blank=True, default="")
+    technician_name = models.CharField(max_length=200, blank=True, default="")
+    technician_phone = models.CharField(max_length=50, blank=True, default="")
+    status = models.CharField(max_length=30, choices=InspectionStatus.choices, default=InspectionStatus.PENDING)
+    diagnosis = models.TextField(blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_inspection"
+
+    def __str__(self):
+        return f"Inspection #{self.id} for Est #{self.estimation_id} ({self.status})"
+
+
+class InspectionFinding(models.Model):
+    """
+    Structured defect findings discovered during inspection (service_requests_inspectionfinding).
+    """
+    class FindingType(models.TextChoices):
+        GAS_LEAKAGE = "Gas Leakage", "Gas Leakage"
+        COIL_CLEANING = "Coil Cleaning", "Coil Cleaning"
+        COMPRESSOR = "Compressor", "Compressor"
+        ELECTRICAL = "Electrical", "Electrical"
+        CAPACITOR = "Capacitor", "Capacitor"
+        FAN_MOTOR = "Fan Motor", "Fan Motor"
+        DRAINAGE = "Drainage", "Drainage"
+        OTHER = "Other", "Other"
+
+    class Severity(models.TextChoices):
+        LOW = "LOW", "Low"
+        MEDIUM = "MEDIUM", "Medium"
+        HIGH = "HIGH", "High"
+        CRITICAL = "CRITICAL", "Critical"
+
+    inspection = models.ForeignKey(
+        Inspection,
+        on_delete=models.CASCADE,
+        related_name="findings",
+        db_column="inspection_id",
+    )
+    service = models.ForeignKey(
+        Service,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="inspection_findings",
+        db_column="service_id",
+    )
+    finding_type = models.CharField(max_length=100, default=FindingType.OTHER)
+    title = models.CharField(max_length=255)
+    diagnosis = models.TextField(blank=True, default="")
+    severity = models.CharField(max_length=30, choices=Severity.choices, default=Severity.MEDIUM)
+    description = models.TextField(blank=True, default="")
+    recommended_action = models.TextField(blank=True, default="")
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("1.00"))
+    unit = models.CharField(max_length=50, default="unit")
+    sort_order = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_inspectionfinding"
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return f"Finding #{self.id} ({self.finding_type}): {self.title}"
+
+
+class InspectionPhoto(models.Model):
+    """
+    Evidence photo linked to an inspection and optional finding (service_requests_inspectionphoto).
+    """
+    inspection = models.ForeignKey(
+        Inspection,
+        on_delete=models.CASCADE,
+        related_name="photos",
+        db_column="inspection_id",
+    )
+    finding = models.ForeignKey(
+        InspectionFinding,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="photos",
+        db_column="finding_id",
+    )
+    photo = models.CharField(max_length=500)
+    caption = models.CharField(max_length=255, blank=True, default="")
+    uploaded_by = models.CharField(max_length=100, default="technician")
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_inspectionphoto"
+
+    def __str__(self):
+        return f"Photo #{self.id} for Inspection #{self.inspection_id}"
+
+
+class EstimationQuotation(models.Model):
+    """
+    Formal, versioned commercial Quotation (service_requests_estimationquotation).
+    """
+    class QuoteStatus(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
+        SENT = "SENT", "Sent to Customer"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+        SUPERSEDED = "SUPERSEDED", "Superseded"
+        EXPIRED = "EXPIRED", "Expired"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    class RejectionReason(models.TextChoices):
+        PRICE_TOO_HIGH = "PRICE_TOO_HIGH", "Price Too High"
+        WILL_DO_LATER = "WILL_DO_LATER", "Will Do Later"
+        FOUND_ALTERNATIVE = "FOUND_ALTERNATIVE", "Found Alternative"
+        OTHER = "OTHER", "Other"
+
+    estimation = models.ForeignKey(
+        Estimation,
+        on_delete=models.CASCADE,
+        related_name="quotations",
+        db_column="estimation_id",
+    )
+    version = models.PositiveSmallIntegerField(default=1)
+    quote_ref = models.CharField(max_length=100, unique=True)
+    status = models.CharField(max_length=30, choices=QuoteStatus.choices, default=QuoteStatus.DRAFT)
+    vendor_id = models.CharField(max_length=100, blank=True, default="")
+    technician_id = models.CharField(max_length=100, blank=True, default="")
+    subtotal = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    tax_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    total_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    currency = models.CharField(max_length=10, default="INR")
+    notes = models.TextField(blank=True, default="")
+    valid_until = models.DateField(null=True, blank=True)
+    customer_approved_at = models.DateTimeField(null=True, blank=True)
+    customer_rejected_at = models.DateTimeField(null=True, blank=True)
+    rejection_reason = models.CharField(max_length=100, blank=True, default="")
+    rejection_note = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_estimationquotation"
+        ordering = ["-version", "-created_at"]
+
+    def __str__(self):
+        return f"Quote {self.quote_ref} (v{self.version}): ₹{self.total_amount} [{self.status}]"
+
+
+class EstimationQuotationItem(models.Model):
+    """
+    Quotation line item (service_requests_estimationquotationitem).
+    """
+    class ItemType(models.TextChoices):
+        LABOR = "LABOR", "Labor"
+        PART = "PART", "Spare Part"
+        GAS = "GAS", "Refrigerant Gas"
+        OTHER = "OTHER", "Other"
+
+    quotation = models.ForeignKey(
+        EstimationQuotation,
+        on_delete=models.CASCADE,
+        related_name="items",
+        db_column="quotation_id",
+    )
+    service = models.ForeignKey(
+        Service,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="quotation_items",
+        db_column="service_id",
+    )
+    catalog_service_id = models.CharField(max_length=100, blank=True, default="")
+    service_name = models.CharField(max_length=255)
+    description = models.TextField(blank=True, default="")
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("1.00"))
+    unit = models.CharField(max_length=50, default="unit")
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
+    tax_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    line_total = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    sort_order = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_estimationquotationitem"
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return f"{self.service_name} x {self.quantity} = ₹{self.line_total}"

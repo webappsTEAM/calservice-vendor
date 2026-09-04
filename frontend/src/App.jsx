@@ -50,6 +50,7 @@ import { AdminDatabaseMonitoringPage } from './pages/admin/AdminDatabaseMonitori
 import { AdminServiceProvidersPage } from './pages/admin/AdminServiceProvidersPage.jsx';
 import { ProviderProfilePage } from './pages/admin/ProviderProfilePage.jsx';
 import { CustomerTrackingPage } from './pages/customer/CustomerTrackingPage.jsx';
+import VendorEstimationsPage from './pages/vendor/estimations/VendorEstimationsPage.jsx';
 
 // Employee Wallet Pages
 import { EmployeeWalletDashboardPage } from './pages/employee/wallet/EmployeeWalletDashboardPage.jsx';
@@ -110,6 +111,7 @@ export function App() {
             {/* Direct Role Route Aliases */}
             <Route path="/admin" element={<Navigate to="/workforce/admin" replace />} />
             <Route path="/admin/*" element={<Navigate to="/workforce/admin" replace />} />
+            <Route path="/vendor/estimations" element={<Navigate to="/workforce/admin/estimations" replace />} />
             <Route path="/employee" element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="/employee/*" element={<Navigate to="/workforce/employee/dashboard" replace />} />
 
@@ -247,6 +249,22 @@ export function App() {
               element={
                 <AdminRoute>
                   <AdminJobsPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/estimations"
+              element={
+                <AdminRoute>
+                  <VendorEstimationsPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/vendor/estimations"
+              element={
+                <AdminRoute>
+                  <VendorEstimationsPage />
                 </AdminRoute>
               }
             />
