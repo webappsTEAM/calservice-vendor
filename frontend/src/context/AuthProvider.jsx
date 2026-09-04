@@ -4,19 +4,16 @@ import {
   apiFetchMe,
   apiWorkforceLogin,
   apiWorkforceSignup,
-  apiServiceProviderSignup,
+  apiProviderSignup,
   apiWorkforceLogout,
+  apiGetOnboardingProfile,
   apiTogglePresence,
 } from '../api/workforceService.js';
-
 import {
   getAccessToken,
-  getRefreshToken,
-  isTokenExpired,
   setAuthTokens,
   clearAuthTokens,
 } from '../utils/authTokens.js';
-import { apiRefreshToken } from '../api/client.js';
 
 export function AuthProvider({ children }) {
   const [isReady, setIsReady] = useState(false);
@@ -31,38 +28,36 @@ export function AuthProvider({ children }) {
 
     inFlightRefreshRef.current = (async () => {
       try {
-        let token = getAccessToken();
-        const refreshToken = getRefreshToken();
-
-        if (!token && !refreshToken) {
-          setUser(null);
-          setEmployee(null);
-          return null;
-        }
-
-        // Avoid calling /auth/me/ with an already expired access token when a refresh token is available
-        if (refreshToken && (!token || isTokenExpired(token))) {
-          const refreshedToken = await apiRefreshToken();
-          if (refreshedToken) {
-            token = refreshedToken;
-          }
-        }
-
+        const token = getAccessToken();
         if (!token) {
           setUser(null);
           setEmployee(null);
           return null;
         }
 
-        // Single API call: /auth/me/ now returns presence, availability, and
-        // last_known_location inline — no separate sequential onboarding profile call needed.
         const me = await apiFetchMe();
 
         if (me && me.username) {
-          const isSuper = Boolean(me.is_superadmin || me.is_superuser || ['superadmin', 'super_admin'].includes((me.role || '').toLowerCase()));
-          const isProviderAdmin = Boolean(me.is_provider_admin || (['service_provider_admin', 'admin', 'manager'].includes((me.role || '').toLowerCase()) && !isSuper));
-          const isAdmin = isSuper || isProviderAdmin;
-          const isEmployee = !isAdmin;
+          const isPlatformAdmin = Boolean(me.is_superuser || me.is_platform_admin);
+          const isVendorAdmin = Boolean(
+            me.is_vendor_admin ||
+            (!isPlatformAdmin && ['admin', 'manager'].includes((me.role || '').toLowerCase()))
+          );
+          const isAdmin = isPlatformAdmin || isVendorAdmin;
+          let empData = null;
+
+          if (!isAdmin) {
+            try {
+              empData = await apiGetOnboardingProfile();
+            } catch (_) {
+              // Non-admin user without onboarding record
+            }
+          }
+
+          const isEmployee = Boolean(empData) || (!isAdmin && (me.role || '').toLowerCase() === 'employee');
+          const isTiedWorker = isEmployee && Boolean(me.is_tied_worker || empData?.is_tied || empData?.workforce_type === 'TIED');
+          const isSoloWorker = isEmployee && (!isTiedWorker || Boolean(me.is_solo_worker) || empData?.workforce_type === 'SOLO' || !me.company);
+          const computedRole = isPlatformAdmin ? 'platform_admin' : (isVendorAdmin ? 'vendor_admin' : 'employee');
 
           const u = {
             id: me.id,
@@ -70,40 +65,32 @@ export function AuthProvider({ children }) {
             email: me.email || '',
             firstName: me.first_name || '',
             lastName: me.last_name || '',
-            role: me.role || (isSuper ? 'superadmin' : isProviderAdmin ? 'service_provider_admin' : 'employee'),
-            companyId: me.company || me.provider_id || null,
-            companyName: me.company_name || me.provider_name || '',
-            providerId: me.provider_id || me.company || null,
-            providerName: me.provider_name || me.company_name || '',
+            role: computedRole,
+            companyId: me.company,
+            companyName: me.company_name || '',
             isAdmin: isAdmin,
-            isSuperadmin: isSuper,
-            isServiceProviderAdmin: isProviderAdmin,
+            isPlatformAdmin: isPlatformAdmin,
+            isVendorAdmin: isVendorAdmin,
             isEmployee: isEmployee,
-            employee_id: me.employee_id || null,
-            employeeId: me.employee_id || null,
-            registrationStatus: me.registration_status || (isAdmin ? 'approved' : 'not_started'),
-            isOnline: Boolean(me.is_online),
-            is_online: Boolean(me.is_online),
-            availability: me.live_availability || me.availability || 'offline',
-            live_availability: me.live_availability || me.availability || 'offline',
-            last_known_location: me.last_known_location || null,
+            isTiedWorker: isTiedWorker,
+            isSoloWorker: isSoloWorker,
+            registrationStatus: empData?.registration_status || me.registration_status || (isAdmin ? 'approved' : 'not_started'),
+            isOnline: empData ? Boolean(empData.is_online) : false,
+            availability: empData ? (empData.live_availability || 'offline') : 'offline',
           };
 
           setUser(u);
-          // Keep employee state for pages that still read it directly
-          setEmployee(me.employee_id ? { id: me.employee_id, is_online: me.is_online, live_availability: me.live_availability } : null);
+          setEmployee(empData);
           return u;
         } else {
-          if (!getRefreshToken()) {
-            clearAuthTokens();
-          }
+          clearAuthTokens();
           setUser(null);
           setEmployee(null);
           return null;
         }
       } catch (e) {
-        // Only wipe auth tokens if server explicitly rejected with 401 AND no refresh token exists
-        if (e && e.status === 401 && !getRefreshToken()) {
+        // Only wipe auth tokens if server explicitly rejected with 401
+        if (e && e.status === 401) {
           clearAuthTokens();
           setUser(null);
           setEmployee(null);
@@ -129,40 +116,36 @@ export function AuthProvider({ children }) {
       setAuthTokens(token, refresh);
     }
 
-    // Await full authoritative profile refresh to eliminate provisional race condition
-    const fullyResolvedUser = await refreshProfile(true);
-    if (fullyResolvedUser) {
-      return fullyResolvedUser;
-    }
-
     if (res.user) {
-      const isSuper = Boolean(res.user.is_superadmin || res.user.is_superuser || ['superadmin', 'super_admin'].includes((res.user.role || '').toLowerCase()));
-      const isProviderAdmin = Boolean(res.user.is_provider_admin || (['service_provider_admin', 'admin', 'manager'].includes((res.user.role || '').toLowerCase()) && !isSuper));
-      const isAdmin = isSuper || isProviderAdmin;
-      const fallbackUser = {
+      const isAdmin = ['admin', 'manager'].includes((res.user.role || '').toLowerCase()) || Boolean(res.user.is_superuser);
+      const isTied = Boolean(res.user.is_tied_worker);
+      const isSolo = Boolean(res.user.is_solo_worker) || (!isTied && !isAdmin);
+      const regStatus = res.user.registration_status || (isAdmin ? 'approved' : 'not_started');
+      const initialUser = {
         id: res.user.id,
         username: res.user.username,
         email: res.user.email || '',
         firstName: res.user.first_name || '',
         lastName: res.user.last_name || '',
-        role: res.user.role || (isSuper ? 'superadmin' : isProviderAdmin ? 'service_provider_admin' : 'employee'),
-        companyId: res.user.company || res.user.provider_id || null,
-        companyName: res.user.company_name || res.user.provider_name || '',
-        providerId: res.user.provider_id || res.user.company || null,
-        providerName: res.user.provider_name || res.user.company_name || '',
+        role: res.user.role || 'employee',
+        companyId: res.user.company,
+        companyName: res.user.company_name || '',
         isAdmin: isAdmin,
-        isSuperadmin: isSuper,
-        isServiceProviderAdmin: isProviderAdmin,
         isEmployee: !isAdmin,
-        registrationStatus: res.user.registration_status || (isAdmin ? 'approved' : 'not_started'),
+        isTiedWorker: isTied,
+        isSoloWorker: isSolo,
+        registrationStatus: regStatus,
         isOnline: false,
         availability: 'offline',
       };
-      setUser(fallbackUser);
-      return fallbackUser;
+      setUser(initialUser);
+
+      // Trigger background profile refresh for non-blocking extended details
+      refreshProfile(true).catch(() => {});
+      return initialUser;
     }
 
-    return null;
+    return await refreshProfile(true);
   }, [refreshProfile]);
 
   const signup = useCallback(async (payload) => {
@@ -176,8 +159,11 @@ export function AuthProvider({ children }) {
     return res;
   }, [refreshProfile]);
 
-  const signupServiceProvider = useCallback(async (payload) => {
-    const res = await apiServiceProviderSignup(payload);
+  // SEVO business plan Section 2: a service-provider business registering
+  // itself (separate flow/endpoint from an individual technician signup --
+  // see ProviderSignupPage.jsx).
+  const providerSignup = useCallback(async (payload) => {
+    const res = await apiProviderSignup(payload);
     if (res) {
       const token = res.access_token || res.token;
       const refresh = res.refresh_token;
@@ -187,40 +173,7 @@ export function AuthProvider({ children }) {
     return res;
   }, [refreshProfile]);
 
-
-  const logout = useCallback(async (options = {}) => {
-    // High-priority check: An employee cannot sign out while ONLINE
-    if (!options?.skipOnlineCheck && user?.isEmployee && (user?.isOnline || employee?.is_online)) {
-      const err = new Error('You are currently ONLINE. Please switch your status to OFFLINE before signing out.');
-      err.code = 'CANNOT_LOGOUT_WHILE_ONLINE';
-      err.status = 400;
-      throw err;
-    }
-
-    // 1. Send authenticated logout request to backend
-    try {
-      await apiWorkforceLogout();
-    } catch (err) {
-      if (err?.code === 'CANNOT_LOGOUT_WHILE_ONLINE' || err?.data?.code === 'CANNOT_LOGOUT_WHILE_ONLINE' || err?.status === 400) {
-        const errorMsg = err?.data?.error || err?.message || 'You are currently ONLINE. Please switch your status to OFFLINE before signing out.';
-        const blockErr = new Error(errorMsg);
-        blockErr.code = 'CANNOT_LOGOUT_WHILE_ONLINE';
-        blockErr.status = 400;
-        throw blockErr;
-      }
-    }
-
-    // 2. Set flash logout notification in sessionStorage for display on the login page
-    try {
-      if (typeof sessionStorage !== 'undefined') {
-        sessionStorage.setItem('wf_logout_notification', JSON.stringify({
-          message: 'Signed out successfully. Technician presence is OFFLINE.',
-          timestamp: Date.now(),
-        }));
-      }
-    } catch (_) {}
-
-    // 3. Clear auth tokens and state
+  const logout = useCallback(async () => {
     clearAuthTokens();
     if (typeof BroadcastChannel !== 'undefined') {
       try {
@@ -229,38 +182,35 @@ export function AuthProvider({ children }) {
         channel.close();
       } catch (_) {}
     }
+    try {
+      await apiWorkforceLogout();
+    } catch (_) {}
     setUser(null);
     setEmployee(null);
-  }, [user, employee]);
+  }, []);
 
   const togglePresence = useCallback(async (desiredOnlineState = null) => {
     try {
       const res = await apiTogglePresence(desiredOnlineState);
-      setUser(prev => {
-        if (!prev) return prev;
-        return {
+      if (user) {
+        setUser(prev => ({
           ...prev,
-          isOnline: Boolean(res.is_online),
-          is_online: Boolean(res.is_online),
+          isOnline: res.is_online,
           availability: res.availability,
-          live_availability: res.availability,
-        };
-      });
-      setEmployee(prev => {
-        if (!prev) return prev;
-        return {
+        }));
+      }
+      if (employee) {
+        setEmployee(prev => ({
           ...prev,
-          isOnline: Boolean(res.is_online),
-          is_online: Boolean(res.is_online),
-          availability: res.availability,
+          is_online: res.is_online,
           live_availability: res.availability,
-        };
-      });
+        }));
+      }
       return res;
     } catch (e) {
       throw e;
     }
-  }, []);
+  }, [user, employee]);
 
   // Cross-tab Session Sync using BroadcastChannel
   useEffect(() => {
@@ -311,21 +261,19 @@ export function AuthProvider({ children }) {
     employee,
     login,
     signup,
-    signupServiceProvider,
+    providerSignup,
     logout,
     refreshProfile,
     togglePresence,
     isAuthenticated: Boolean(user),
     isAdmin: user?.isAdmin || false,
-    isSuperadmin: user?.isSuperadmin || false,
-    isServiceProviderAdmin: user?.isServiceProviderAdmin || false,
+    isPlatformAdmin: user?.isPlatformAdmin || false,
+    isVendorAdmin: user?.isVendorAdmin || false,
     isEmployee: user?.isEmployee || false,
-    providerId: user?.providerId || null,
-    providerName: user?.providerName || '',
-    isIndependent: Boolean(user?.isEmployee && !user?.providerId),
+    isTiedWorker: user?.isTiedWorker || false,
+    isSoloWorker: user?.isSoloWorker || false,
     registrationStatus: user?.registrationStatus || 'not_started',
-  }), [isReady, user, employee, login, signup, signupServiceProvider, logout, refreshProfile, togglePresence]);
-
+  }), [isReady, user, employee, login, signup, providerSignup, logout, refreshProfile, togglePresence]);
 
   return (
     <AuthContext.Provider value={value}>

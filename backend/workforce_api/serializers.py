@@ -2,15 +2,13 @@
 workforce-app/backend/workforce_api/serializers.py
 DRF serializers for Workforce Signup, Onboarding Wizard, Verification Dossier, and Jobs.
 """
+from decimal import Decimal
+
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 from employees.models import Employee
 from service_requests.models import ServiceRequest
-from workforce_api.services.registration import (
-    get_employee_registration_status,
-    get_employee_onboarding_dict,
-    REGISTRATION_STATUS_NOT_STARTED,
-)
+from .models import WalletAccount
 
 User = get_user_model()
 
@@ -21,11 +19,6 @@ class WorkforceSignupSerializer(serializers.Serializer):
     mobile_number = serializers.CharField(max_length=20)
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True, min_length=6)
-    account_type = serializers.CharField(required=False, default="independent")
-    provider_id = serializers.IntegerField(required=False, allow_null=True)
-    provider_slug = serializers.CharField(required=False, allow_null=True, allow_blank=True)
-    company_id = serializers.IntegerField(required=False, allow_null=True)
-    company_slug = serializers.CharField(required=False, allow_null=True, allow_blank=True)
 
     def validate_email(self, value):
         if User.objects.filter(email__iexact=value).exists():
@@ -38,162 +31,10 @@ class WorkforceSignupSerializer(serializers.Serializer):
             raise serializers.ValidationError("An account with this mobile number already exists.")
         return cleaned
 
-    def validate(self, attrs):
-        account_type = str(attrs.get("account_type") or "independent").strip().lower()
-        if account_type in ["provider_technician", "provider"]:
-            provider_id = attrs.get("provider_id") or attrs.get("company_id")
-            provider_slug = attrs.get("provider_slug") or attrs.get("company_slug")
-            if not provider_id and not provider_slug:
-                raise serializers.ValidationError({
-                    "provider_id": "Provider selection is mandatory when joining a Service Provider."
-                })
-        elif account_type in ["service_provider", "organization"]:
-            raise serializers.ValidationError({
-                "account_type": "To register as a Service Provider, please use the Service Provider registration endpoint."
-            })
-        return attrs
-
-
-
-class PublicServiceProviderListSerializer(serializers.ModelSerializer):
-    """
-    Public-facing serializer for active Service Providers available for technician signup.
-    Excludes internal administration, financial, employee, or sensitive credentials.
-    """
-    class Meta:
-        from companies.models import Company
-        model = Company
-        fields = [
-            "id",
-            "company_name",
-            "display_id",
-            "slug",
-            "industry",
-            "primary_country",
-        ]
-
-
-class WorkforceProviderJoinRequestSerializer(serializers.ModelSerializer):
-    technician_id = serializers.IntegerField(source="technician.id", read_only=True)
-    technician_name = serializers.SerializerMethodField()
-    technician_email = serializers.CharField(source="technician.user.email", read_only=True)
-    technician_phone = serializers.CharField(source="technician.user.mobile_number", read_only=True)
-    provider_id = serializers.IntegerField(source="provider.id", read_only=True)
-    provider_name = serializers.CharField(source="provider.company_name", read_only=True)
-    provider_display_id = serializers.CharField(source="provider.display_id", read_only=True)
-    decided_by_username = serializers.CharField(source="decided_by.username", read_only=True)
-
-    class Meta:
-        from .models import WorkforceProviderJoinRequest
-        model = WorkforceProviderJoinRequest
-        fields = [
-            "id",
-            "technician_id",
-            "technician_name",
-            "technician_email",
-            "technician_phone",
-            "provider_id",
-            "provider_name",
-            "provider_display_id",
-            "status",
-            "requested_at",
-            "decided_at",
-            "decided_by_username",
-            "rejection_reason",
-            "notes",
-        ]
-
-    def get_technician_name(self, obj):
-        if obj.technician and obj.technician.user:
-            return f"{obj.technician.user.first_name} {obj.technician.user.last_name}".strip() or obj.technician.user.username
-        return "Unknown Technician"
-
 
 class WorkforceOnboardingDraftSerializer(serializers.Serializer):
     step = serializers.IntegerField(min_value=1, max_value=7, required=False)
     draft_data = serializers.DictField(required=True)
-
-
-class WorkforceEmployeeProfileListSerializer(serializers.ModelSerializer):
-    """
-    Lightweight list serializer for the applications list endpoint.
-    Reads only JSONB bank_details (in-memory) — zero extra DB queries per row.
-    Per-row WorkforceEmployeeDocument queries are deliberately excluded here;
-    they are available on the detail endpoint via WorkforceEmployeeProfileSerializer.
-    """
-    user_id = serializers.IntegerField(source="user.id", read_only=True)
-    username = serializers.CharField(source="user.username", read_only=True)
-    first_name = serializers.CharField(source="user.first_name", read_only=True)
-    last_name = serializers.CharField(source="user.last_name", read_only=True)
-    email = serializers.CharField(source="user.email", read_only=True)
-    mobile_number = serializers.CharField(source="user.mobile_number", read_only=True)
-    phone = serializers.CharField(source="user.phone", read_only=True)
-    company_id = serializers.IntegerField(source="company.id", read_only=True)
-    company_name = serializers.CharField(source="company.company_name", read_only=True)
-    registration_status = serializers.SerializerMethodField()
-    all_requested_services = serializers.SerializerMethodField()
-    documents_status = serializers.SerializerMethodField()
-    join_request = serializers.SerializerMethodField()
-    association_status = serializers.SerializerMethodField()
-    is_independent = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Employee
-        fields = [
-            "id",
-            "user_id",
-            "employee_id",
-            "username",
-            "first_name",
-            "last_name",
-            "email",
-            "mobile_number",
-            "phone",
-            "company_id",
-            "company_name",
-            "is_active",
-            "registration_status",
-            "all_requested_services",
-            "documents_status",
-            "join_request",
-            "association_status",
-            "is_independent",
-            "created_at",
-        ]
-
-    def get_registration_status(self, obj):
-        ob = (obj.bank_details or {}).get("onboarding", {})
-        raw = str(ob.get("status", "not_started")).strip().lower()
-        from workforce_api.services.registration import VALID_REGISTRATION_STATUSES, REGISTRATION_STATUS_NOT_STARTED
-        return raw if raw in VALID_REGISTRATION_STATUSES else REGISTRATION_STATUS_NOT_STARTED
-
-    def get_all_requested_services(self, obj):
-        ob = (obj.bank_details or {}).get("onboarding", {})
-        return ob.get("services", [])
-
-    def get_documents_status(self, obj):
-        """
-        Returns only the JSONB-stored document map — no DB query.
-        Document records from WorkforceEmployeeDocument are available on the detail endpoint.
-        """
-        ob = (obj.bank_details or {}).get("onboarding", {})
-        return dict(ob.get("documents", {}))
-
-    def get_join_request(self, obj):
-        ob = (obj.bank_details or {}).get("onboarding", {})
-        return ob.get("join_request", None)
-
-    def get_association_status(self, obj):
-        if obj.company_id:
-            return "APPROVED"
-        ob = (obj.bank_details or {}).get("onboarding", {})
-        jr = ob.get("join_request")
-        if jr and isinstance(jr, dict):
-            return jr.get("status", "PENDING")
-        return "INDEPENDENT"
-
-    def get_is_independent(self, obj):
-        return obj.company_id is None
 
 
 class WorkforceEmployeeProfileSerializer(serializers.ModelSerializer):
@@ -218,9 +59,9 @@ class WorkforceEmployeeProfileSerializer(serializers.ModelSerializer):
     all_requested_services = serializers.SerializerMethodField()
     documents_status = serializers.SerializerMethodField()
     controlled_fields = serializers.SerializerMethodField()
-    join_request = serializers.SerializerMethodField()
-    association_status = serializers.SerializerMethodField()
-    is_independent = serializers.SerializerMethodField()
+    is_tied = serializers.SerializerMethodField()
+    is_solo = serializers.SerializerMethodField()
+    tied_vendor = serializers.SerializerMethodField()
 
     class Meta:
         model = Employee
@@ -256,12 +97,11 @@ class WorkforceEmployeeProfileSerializer(serializers.ModelSerializer):
             "all_requested_services",
             "documents_status",
             "controlled_fields",
-            "join_request",
-            "association_status",
-            "is_independent",
+            "is_tied",
+            "is_solo",
+            "tied_vendor",
             "is_active",
         ]
-
 
     def get_avatar(self, obj):
         if obj.user and obj.user.avatar:
@@ -272,18 +112,27 @@ class WorkforceEmployeeProfileSerializer(serializers.ModelSerializer):
         return ""
 
     def get_onboarding_data(self, obj):
-        return get_employee_onboarding_dict(obj)
+        return (obj.bank_details or {}).get("onboarding", {
+            "status": "not_started",
+            "step": 1,
+            "draft": {},
+            "services": [],
+            "documents": {},
+            "correction_notes": "",
+            "rejection_reason": "",
+        })
 
     def get_registration_status(self, obj):
-        return get_employee_registration_status(obj)
+        ob = (obj.bank_details or {}).get("onboarding", {})
+        return ob.get("status", "not_started")
 
     def get_approved_services(self, obj):
-        ob = get_employee_onboarding_dict(obj)
+        ob = (obj.bank_details or {}).get("onboarding", {})
         services = ob.get("services", [])
         return [s for s in services if s.get("status") == "approved"]
 
     def get_all_requested_services(self, obj):
-        ob = get_employee_onboarding_dict(obj)
+        ob = (obj.bank_details or {}).get("onboarding", {})
         return ob.get("services", [])
 
     def get_documents_status(self, obj):
@@ -334,21 +183,41 @@ class WorkforceEmployeeProfileSerializer(serializers.ModelSerializer):
             ] if is_locked else [],
         }
 
-    def get_join_request(self, obj):
-        ob = (obj.bank_details or {}).get("onboarding", {})
-        return ob.get("join_request", None)
+    def get_is_tied(self, obj):
+        from workforce_api.models import VendorTechnicianRelationship
+        has_active_rel = VendorTechnicianRelationship.objects.filter(
+            technician=obj,
+            status__in=[
+                VendorTechnicianRelationship.Status.ACTIVE,
+                VendorTechnicianRelationship.Status.RESIGNATION_REQUESTED,
+            ],
+        ).exists()
+        return bool(has_active_rel)
 
-    def get_association_status(self, obj):
-        if obj.company_id:
-            return "APPROVED"
-        ob = (obj.bank_details or {}).get("onboarding", {})
-        jr = ob.get("join_request")
-        if jr and isinstance(jr, dict):
-            return jr.get("status", "PENDING")
-        return "INDEPENDENT"
+    def get_is_solo(self, obj):
+        return not self.get_is_tied(obj)
 
-    def get_is_independent(self, obj):
-        return obj.company_id is None
+    def get_tied_vendor(self, obj):
+        from workforce_api.models import VendorTechnicianRelationship
+        active_rel = VendorTechnicianRelationship.objects.filter(
+            technician=obj,
+            status=VendorTechnicianRelationship.Status.ACTIVE,
+        ).select_related("vendor").first()
+        if active_rel and active_rel.vendor:
+            return {
+                "id": active_rel.vendor.id,
+                "company_name": getattr(active_rel.vendor, "company_name", getattr(active_rel.vendor, "name", "Vendor")),
+                "engagement_type": active_rel.engagement_type,
+                "started_at": active_rel.started_at,
+            }
+        elif getattr(obj, "company_id", None) and getattr(obj, "company", None):
+            return {
+                "id": obj.company.id,
+                "company_name": getattr(obj.company, "company_name", getattr(obj.company, "name", "Vendor")),
+                "engagement_type": "EMPLOYEE",
+                "started_at": obj.hire_date,
+            }
+        return None
 
 
 
@@ -577,65 +446,6 @@ class PaymentCollectionEventSerializer(serializers.ModelSerializer):
         return "System"
 
 
-class WorkforceJobListSerializer(serializers.ModelSerializer):
-    """
-    Lightweight read-only DTO for admin job list pages.
-
-    Returns only what a job row card needs:
-      - identity (id, request_id, status, priority)
-      - customer display (customer_name, phone)
-      - service info (service_category, issue_title)
-      - location (address)
-      - scheduling (preferred_date, preferred_time)
-      - financials (total_amount, payment_status, payment_method)
-      - assignment (assigned_employee_name)
-      - timestamps (created_at, updated_at)
-
-    Does NOT include: cart_data, description, extensions, payments,
-    offer details, wave details, proofs, lifecycle events.
-
-    This replaces the full WorkforceJobSerializer in the admin list path,
-    reducing per-job payload from ~4 KB to ~400 bytes.
-    """
-    assigned_employee_name = serializers.SerializerMethodField()
-
-    class Meta:
-        model = ServiceRequest
-        fields = [
-            "id",
-            "request_id",
-            "customer_name",
-            "phone",
-            "email",
-            "service_category",
-            "issue_title",
-            "status",
-            "priority",
-            "address",
-            "preferred_date",
-            "preferred_time",
-            "total_amount",
-            "payment_status",
-            "payment_method",
-            "assigned_employee_name",
-            "technician_id",
-            "technician_name",
-            "technician_phone",
-            "accepted_at",
-            "completed_at",
-            "created_at",
-            "updated_at",
-        ]
-
-    def get_assigned_employee_name(self, obj):
-        if getattr(obj, "technician_name", None):
-            return obj.technician_name
-        emp = obj.assigned_employee
-        if emp and hasattr(emp, "user"):
-            return emp.user.get_full_name() or emp.user.username
-        return None
-
-
 class WorkforceJobSerializer(serializers.ModelSerializer):
     customer_display_name = serializers.SerializerMethodField()
     service_title = serializers.SerializerMethodField()
@@ -653,40 +463,14 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
     accepted_at = serializers.SerializerMethodField()
     cancellation_deadline = serializers.SerializerMethodField()
     offer_expires_at = serializers.SerializerMethodField()
-    server_time = serializers.SerializerMethodField()
-    offer_id = serializers.SerializerMethodField()
-    offered_at = serializers.SerializerMethodField()
-    wave_id = serializers.SerializerMethodField()
-    wave_number = serializers.SerializerMethodField()
-    can_cancel = serializers.SerializerMethodField()
-    completed_at = serializers.SerializerMethodField()
-
-    request_kind = serializers.CharField(read_only=True)
-    parent_request_id = serializers.IntegerField(read_only=True)
-    quote_number = serializers.CharField(read_only=True)
-    is_estimation = serializers.SerializerMethodField()
-    is_work_job = serializers.SerializerMethodField()
-    pricing_mode = serializers.SerializerMethodField()
-    can_create_quote = serializers.SerializerMethodField()
-    active_quote_id = serializers.SerializerMethodField()
-    active_quote_number = serializers.SerializerMethodField()
-    active_quote_status = serializers.SerializerMethodField()
+    settlement_channel = serializers.SerializerMethodField()
+    earnings_wallet_owner = serializers.SerializerMethodField()
 
     class Meta:
         model = ServiceRequest
         fields = [
             "id",
             "request_id",
-            "request_kind",
-            "parent_request_id",
-            "quote_number",
-            "is_estimation",
-            "is_work_job",
-            "pricing_mode",
-            "can_create_quote",
-            "active_quote_id",
-            "active_quote_number",
-            "active_quote_status",
             "customer_name",
             "phone",
             "email",
@@ -723,57 +507,12 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             "accepted_at",
             "cancellation_deadline",
             "offer_expires_at",
-            "server_time",
-            "offer_id",
-            "offered_at",
-            "wave_id",
-            "wave_number",
-            "can_cancel",
-            "completed_at",
-            "started_at",
-            "technician_id",
-            "technician_name",
-            "technician_phone",
-            "technician_photo",
-            "technician_rating",
-            "tracking_token",
+            # SEVO Section 6: per-job attribution -- which wallet this job's
+            # earnings settle into, independent of which employee physically
+            # performed the job (see WalletLedgerEntry.worker_performed).
+            "settlement_channel",
+            "earnings_wallet_owner",
         ]
-
-    def get_completed_at(self, obj):
-        # 0. Authoritative persisted completed_at on ServiceRequest
-        if getattr(obj, "completed_at", None):
-            return obj.completed_at.isoformat()
-
-        # 1. EmployeeJob.completed_date
-        from service_requests.models import EmployeeJob
-        emp_job = getattr(obj, "employee_jobs", None)
-        if emp_job is not None:
-            ej = emp_job.filter(completed_date__isnull=False).order_by("-completed_date").first()
-            if ej and ej.completed_date:
-                return ej.completed_date.isoformat()
-        else:
-            ej = EmployeeJob.objects.filter(service_request=obj, completed_date__isnull=False).order_by("-completed_date").first()
-            if ej and ej.completed_date:
-                return ej.completed_date.isoformat()
-
-        # 2. PostServiceProof.submitted_at
-        from workforce_api.models import PostServiceProof
-        proof = getattr(obj, "post_service_proof", None)
-        if not proof:
-            proof = PostServiceProof.objects.filter(job=obj, submitted_at__isnull=False).first()
-        if proof and proof.submitted_at:
-            return proof.submitted_at.isoformat()
-
-        # 3. JobPayment.cash_collected_at
-        pmt = getattr(obj, "payment", None)
-        if pmt and getattr(pmt, "cash_collected_at", None):
-            return pmt.cash_collected_at.isoformat()
-        from workforce_api.models import JobPayment
-        jp = JobPayment.objects.filter(job=obj, cash_collected_at__isnull=False).first()
-        if jp and jp.cash_collected_at:
-            return jp.cash_collected_at.isoformat()
-
-        return None
 
     def _get_context_emp(self):
         request = self.context.get("request")
@@ -789,6 +528,32 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             return emp_offers_map.get(obj.id)
         from .models import WorkforceJobOffer
         return WorkforceJobOffer.objects.filter(job=obj, employee=emp).order_by("-offered_at").first()
+
+    def _resolve_wallet_channel(self, obj):
+        """Cheap, best-effort: which wallet this job would settle into if
+        completed right now. Never raises -- an unassigned job or one
+        whose worker has no wallet yet simply has no channel to show."""
+        if not obj.assigned_employee_id:
+            return None, None
+        try:
+            from workforce_api.services import resolve_payee_wallet
+            wallet, channel = resolve_payee_wallet(obj)
+        except Exception:
+            return None, None
+        return wallet, channel
+
+    def get_settlement_channel(self, obj):
+        _wallet, channel = self._resolve_wallet_channel(obj)
+        return channel
+
+    def get_earnings_wallet_owner(self, obj):
+        wallet, _channel = self._resolve_wallet_channel(obj)
+        if not wallet:
+            return None
+        if wallet.company_id:
+            return wallet.company.company_name
+        emp = wallet.employee
+        return emp.user.get_full_name() if emp and emp.user_id else None
 
     def get_job_status(self, obj):
         return obj.status
@@ -847,8 +612,6 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
     def get_accepted_at(self, obj):
         if not self.get_is_accepted_by_current_employee(obj):
             return None
-        if getattr(obj, "accepted_at", None):
-            return obj.accepted_at.isoformat()
         emp = self._get_context_emp()
         lifecycle_events_map = self.context.get("lifecycle_events_map")
         if lifecycle_events_map is not None:
@@ -865,6 +628,30 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
         return (obj.updated_at or obj.created_at).isoformat() if (obj.updated_at or obj.created_at) else None
 
     def get_cancellation_deadline(self, obj):
+        if not self.get_is_accepted_by_current_employee(obj):
+            return None
+        if obj.status not in ["accepted", "on_the_way"]:
+            return None
+        emp = self._get_context_emp()
+        lifecycle_events_map = self.context.get("lifecycle_events_map")
+        if lifecycle_events_map is not None:
+            accept_event = lifecycle_events_map.get(obj.id)
+        else:
+            from .models import WorkforceJobLifecycleEvent
+            accept_event = WorkforceJobLifecycleEvent.objects.filter(
+                job=obj,
+                employee=emp,
+                event_type=WorkforceJobLifecycleEvent.EventType.EMPLOYEE_JOB_ACCEPTED,
+            ).order_by("-created_at").first()
+        if accept_event and accept_event.cancellation_deadline:
+            return accept_event.cancellation_deadline.isoformat()
+        from datetime import timedelta
+        from django.utils import timezone
+        accepted_at = accept_event.accepted_at if accept_event else (obj.updated_at or obj.created_at)
+        if accepted_at:
+            deadline = accepted_at + timedelta(minutes=5)
+            if deadline > timezone.now():
+                return deadline.isoformat()
         return None
 
     def get_distance_km(self, obj):
@@ -877,8 +664,9 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
         if emp_lat is None or emp_lon is None or obj.latitude is None or obj.longitude is None:
             return None
         try:
-            from workforce_api.services.geo_spatial import calculate_distance_km
-            return calculate_distance_km(float(emp_lat), float(emp_lon), float(obj.latitude), float(obj.longitude))
+            from time_tracking.geo import haversine_distance
+            dist_m = haversine_distance(float(emp_lat), float(emp_lon), float(obj.latitude), float(obj.longitude))
+            return round(dist_m / 1000.0, 2)
         except Exception:
             return None
 
@@ -889,91 +677,8 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             return f"{obj.customer.first_name} {obj.customer.last_name}".strip() or obj.customer.username
         return "Valued Customer"
 
-    def get_is_estimation(self, obj):
-        return bool(getattr(obj, "is_estimation", False))
-
-    def get_is_work_job(self, obj):
-        return bool(getattr(obj, "is_work_job", False))
-
-    def get_pricing_mode(self, obj):
-        return getattr(obj, "pricing_mode", "FIXED")
-
-    def get_can_create_quote(self, obj):
-        if not getattr(obj, "is_estimation", False):
-            return False
-        from workforce_api.services.quotation_service import can_create_quote
-        allowed, _ = can_create_quote(obj)
-        return allowed
-
-    def get_active_quote_id(self, obj):
-        quote_rel = getattr(obj, "quotes", None)
-        if quote_rel:
-            q = quote_rel.order_by("-id").first()
-            return q.id if q else None
-        return None
-
-    def get_active_quote_number(self, obj):
-        quote_rel = getattr(obj, "quotes", None)
-        if quote_rel:
-            q = quote_rel.order_by("-id").first()
-            return q.quote_number if q else None
-        return getattr(obj, "quote_number", None)
-
-    def get_active_quote_status(self, obj):
-        quote_rel = getattr(obj, "quotes", None)
-        if quote_rel:
-            q = quote_rel.order_by("-id").first()
-            return q.status if q else None
-        return None
-
     def get_service_title(self, obj):
         return obj.issue_title or obj.service_category
-
-    def get_server_time(self, obj):
-        from django.utils import timezone
-        return timezone.now().isoformat()
-
-    def get_offer_id(self, obj):
-        emp = self._get_context_emp()
-        if not emp:
-            return None
-        offer = self._get_emp_offer(obj, emp)
-        return offer.id if offer else None
-
-    def get_wave_id(self, obj):
-        emp = self._get_context_emp()
-        if not emp:
-            return None
-        offer = self._get_emp_offer(obj, emp)
-        return str(offer.wave_id) if (offer and getattr(offer, "wave_id", None)) else None
-
-    def get_wave_number(self, obj):
-        emp = self._get_context_emp()
-        if not emp:
-            return None
-        offer = self._get_emp_offer(obj, emp)
-        return getattr(offer, "wave_number", None) if offer else None
-
-    def get_offered_at(self, obj):
-        emp = self._get_context_emp()
-        if not emp:
-            return None
-        offer = self._get_emp_offer(obj, emp)
-        return offer.offered_at.isoformat() if offer and offer.offered_at else None
-
-    def get_can_cancel(self, obj):
-        emp = self._get_context_emp()
-        if not emp or obj.assigned_employee_id != emp.id:
-            return False
-        if obj.status not in ["accepted", "on_the_way", "en_route", "arrived"]:
-            return False
-        from .models import PreServiceVerification
-        verification = getattr(obj, "pre_service_verification", None)
-        if not verification:
-            verification = PreServiceVerification.objects.filter(job=obj).first()
-        if verification and verification.otp_verified:
-            return False
-        return True
 
     def get_active_offer(self, obj):
         if self.get_is_accepted_by_current_employee(obj):
@@ -992,17 +697,11 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
                 offer = None
         if not offer:
             return None
-        from django.utils import timezone
         return {
             "id": offer.id,
-            "job_id": offer.job_id,
-            "employee_id": offer.employee_id,
             "status": "OFFERED",
-            "wave_id": str(offer.wave_id) if getattr(offer, "wave_id", None) else "",
-            "wave_number": getattr(offer, "wave_number", 1),
-            "offered_at": offer.offered_at.isoformat() if offer.offered_at else "",
-            "expires_at": offer.expires_at.isoformat() if offer.expires_at else "",
-            "server_time": timezone.now().isoformat(),
+            "offered_at": offer.offered_at.isoformat(),
+            "expires_at": offer.expires_at.isoformat(),
             "is_expired": False,
         }
 
@@ -1104,34 +803,32 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
         if not emp or obj.assigned_employee_id != emp.id:
             return None
 
-        # Cancellation allowed in accepted, on_the_way, en_route, arrived states BEFORE customer OTP verification
-        if obj.status not in ["accepted", "on_the_way", "en_route", "arrived"]:
+        if obj.status not in ["accepted", "on_the_way", "en_route"]:
             return {
                 "can_cancel": False,
-                "cancellation_available": False,
                 "reason": "Not in cancellable state",
-            }
-
-        # Check if customer OTP is already verified
-        from workforce_api.models import PreServiceVerification
-        verification = PreServiceVerification.objects.filter(job=obj).first()
-        if verification and verification.otp_verified:
-            return {
-                "can_cancel": False,
-                "cancellation_available": False,
-                "reason": "Cancellation locked after customer OTP verification",
+                "remaining_seconds": 0,
             }
 
         from service_requests.models import EmployeeJob
+        from django.utils import timezone
+        from datetime import timedelta
+
         emp_job = EmployeeJob.objects.filter(service_request=obj, employee=emp).first()
         accepted_at = (emp_job.accepted_date if emp_job and emp_job.accepted_date else None) or obj.updated_at
+        if not accepted_at:
+            return None
+
+        deadline = accepted_at + timedelta(minutes=5)
+        now = timezone.now()
+        remaining_seconds = max(0, int((deadline - now).total_seconds()))
+        can_cancel = remaining_seconds > 0
 
         return {
-            "can_cancel": True,
-            "cancellation_available": True,
-            "accepted_at": accepted_at.isoformat() if accepted_at else None,
-            "cancellation_deadline": None,
-            "remaining_seconds": None,
+            "can_cancel": can_cancel,
+            "accepted_at": accepted_at.isoformat(),
+            "cancellation_deadline": deadline.isoformat(),
+            "remaining_seconds": remaining_seconds,
         }
 
 
@@ -1292,787 +989,114 @@ class EmployeeSavedLocationSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
-# ─── Estimation & Quotation Serializers ───────────────────────────────────────
-
-class WorkforceRateCardSerializer(serializers.ModelSerializer):
-    class Meta:
-        from .models import WorkforceRateCard
-        model = WorkforceRateCard
-        fields = [
-            "id",
-            "service_id",
-            "service_category",
-            "service_name",
-            "section",
-            "item_name",
-            "description",
-            "unit",
-            "default_rate",
-            "default_cost",
-            "tax_rate",
-            "max_discount_percent",
-            "is_active",
-            "sort_order",
-        ]
-
-
-class WorkforceQuoteItemSerializer(serializers.ModelSerializer):
-    class Meta:
-        from .models import WorkforceQuoteItem
-        model = WorkforceQuoteItem
-        fields = [
-            "id",
-            "quote",
-            "section",
-            "name",
-            "description",
-            "item_type",
-            "quantity",
-            "unit",
-            "unit_price",
-            "tax_rate",
-            "discount_amount",
-            "total_amount",
-            "material_source",
-            "is_customer_supplied",
-            "warranty_applicable",
-            "notes",
-            "sort_order",
-            "created_at",
-            "updated_at",
-        ]
-        read_only_fields = ["id", "created_at", "updated_at"]
-
-
-class WorkforceQuoteMeasurementSerializer(serializers.ModelSerializer):
-    class Meta:
-        from .models import WorkforceQuoteMeasurement
-        model = WorkforceQuoteMeasurement
-        fields = [
-            "id",
-            "quote",
-            "name",
-            "measurement_type",
-            "length",
-            "width",
-            "height",
-            "area",
-            "quantity",
-            "unit",
-            "notes",
-            "created_at",
-            "updated_at",
-        ]
-        read_only_fields = ["id", "created_at", "updated_at"]
-
-
-class WorkforceQuotePhotoSerializer(serializers.ModelSerializer):
-    class Meta:
-        from .models import WorkforceQuotePhoto
-        model = WorkforceQuotePhoto
-        fields = [
-            "id",
-            "quote",
-            "photo_url",
-            "photo_type",
-            "caption",
-            "sort_order",
-            "created_at",
-        ]
-        read_only_fields = ["id", "created_at"]
-
-
-class WorkforcePaintingQuoteSerializer(serializers.ModelSerializer):
-    class Meta:
-        from .models import WorkforcePaintingQuote
-        model = WorkforcePaintingQuote
-        fields = [
-            "id",
-            "property_type",
-            "rooms_detail",
-            "area_sqft",
-            "surface_condition",
-            "existing_paint_condition",
-            "paint_type",
-            "brand_grade",
-            "number_of_coats",
-            "requires_putty",
-            "requires_priming",
-            "crack_treatment",
-            "waterproofing_needed",
-            "scaffolding_required",
-            "color_code",
-            "notes",
-            "created_at",
-            "updated_at",
-        ]
-        read_only_fields = ["id", "created_at", "updated_at"]
-
-
-class WorkforceMasonQuoteSerializer(serializers.ModelSerializer):
-    class Meta:
-        from .models import WorkforceMasonQuote
-        model = WorkforceMasonQuote
-        fields = [
-            "id",
-            "work_type",
-            "length",
-            "width",
-            "height",
-            "area_sqft",
-            "estimated_duration_days",
-            "requires_demolition",
-            "debris_disposal_included",
-            "structural_impact",
-            "access_difficulty",
-            "labour_count",
-            "materials_needed",
-            "notes",
-            "created_at",
-            "updated_at",
-        ]
-        read_only_fields = ["id", "created_at", "updated_at"]
-
-
-class WorkforceQuoteListSerializer(serializers.ModelSerializer):
-    """Lightweight list serializer for Estimates page."""
-    customer_name = serializers.SerializerMethodField()
-    technician_name = serializers.SerializerMethodField()
-    items_count = serializers.SerializerMethodField()
-    is_structurally_cleared = serializers.BooleanField(read_only=True)
-
-    class Meta:
-        from .models import WorkforceQuote
-        model = WorkforceQuote
-        fields = [
-            "id",
-            "quote_number",
-            "quote_version",
-            "job_id",
-            "work_job_id",
-            "title",
-            "description",
-            "service_category",
-            "service_name",
-            "customer_name",
-            "technician_name",
-            "status",
-            "subtotal_amount",
-            "discount_amount",
-            "tax_amount",
-            "total_amount",
-            "net_payable",
-            "inspection_fee",
-            "inspection_fee_adjusted",
-            "items_count",
-            "structural_impact",
-            "is_structurally_cleared",
-            "valid_until",
-            "sent_at",
-            "created_at",
-            "updated_at",
-        ]
-
-    def get_customer_name(self, obj):
-        if obj.job and obj.job.customer_name:
-            return obj.job.customer_name
-        if obj.customer:
-            return f"{obj.customer.first_name} {obj.customer.last_name}".strip() or obj.customer.username
-        return "Customer"
-
-    def get_technician_name(self, obj):
-        if obj.technician:
-            if obj.technician.user:
-                return obj.technician.user.get_full_name() or obj.technician.user.username
-            return obj.technician.employee_id or "Technician"
-        return ""
-
-    def get_items_count(self, obj):
-        return obj.items.count()
-
-
-class WorkforceQuoteDetailSerializer(serializers.ModelSerializer):
-    """Comprehensive detail serializer for quotation builder, editing drafts, and review."""
-    items = WorkforceQuoteItemSerializer(many=True, read_only=True)
-    measurements = WorkforceQuoteMeasurementSerializer(many=True, read_only=True)
-    photos = WorkforceQuotePhotoSerializer(many=True, read_only=True)
-    painting_details = WorkforcePaintingQuoteSerializer(read_only=True)
-    mason_details = WorkforceMasonQuoteSerializer(read_only=True)
-    customer_name = serializers.SerializerMethodField()
-    technician_name = serializers.SerializerMethodField()
-    is_structurally_cleared = serializers.BooleanField(read_only=True)
-    job_details = serializers.SerializerMethodField()
-
-    class Meta:
-        from .models import WorkforceQuote
-        model = WorkforceQuote
-        fields = [
-            "id",
-            "quote_number",
-            "quote_version",
-            "job_id",
-            "work_job_id",
-            "job_details",
-            "title",
-            "description",
-            "service_category",
-            "service_name",
-            "customer_name",
-            "technician_name",
-            "status",
-            "estimated_labor_cost",
-            "estimated_materials_cost",
-            "subtotal_amount",
-            "discount_amount",
-            "tax_amount",
-            "total_amount",
-            "inspection_fee",
-            "inspection_fee_adjusted",
-            "net_payable",
-            "valid_until",
-            "decision_token",
-            "customer_decision",
-            "customer_decided_at",
-            "customer_decline_reason",
-            "customer_notes",
-            "structural_impact",
-            "is_structurally_cleared",
-            "admin_cleared_at",
-            "admin_clearance_notes",
-            "sent_at",
-            "items",
-            "measurements",
-            "photos",
-            "painting_details",
-            "mason_details",
-            "created_at",
-            "updated_at",
-        ]
-
-    def get_customer_name(self, obj):
-        if obj.job and obj.job.customer_name:
-            return obj.job.customer_name
-        if obj.customer:
-            return f"{obj.customer.first_name} {obj.customer.last_name}".strip() or obj.customer.username
-        return "Customer"
-
-    def get_technician_name(self, obj):
-        if obj.technician:
-            if obj.technician.user:
-                return obj.technician.user.get_full_name() or obj.technician.user.username
-            return obj.technician.employee_id or "Technician"
-        return ""
-
-    def get_job_details(self, obj):
-        if not obj.job:
-            return None
-        return {
-            "id": obj.job.id,
-            "request_id": obj.job.request_id,
-            "address": obj.job.address,
-            "preferred_date": str(obj.job.preferred_date) if obj.job.preferred_date else None,
-            "preferred_time": obj.job.preferred_time,
-            "issue_title": obj.job.issue_title,
-        }
-
-
-class WorkforceCustomerQuoteSerializer(serializers.ModelSerializer):
-    """Sanitized customer view of a quotation."""
-    items = WorkforceQuoteItemSerializer(many=True, read_only=True)
-    measurements = WorkforceQuoteMeasurementSerializer(many=True, read_only=True)
-    photos = WorkforceQuotePhotoSerializer(many=True, read_only=True)
-    painting_details = WorkforcePaintingQuoteSerializer(read_only=True)
-    mason_details = WorkforceMasonQuoteSerializer(read_only=True)
-    technician_name = serializers.SerializerMethodField()
-
-    class Meta:
-        from .models import WorkforceQuote
-        model = WorkforceQuote
-        fields = [
-            "quote_number",
-            "quote_version",
-            "title",
-            "description",
-            "service_category",
-            "service_name",
-            "technician_name",
-            "status",
-            "subtotal_amount",
-            "discount_amount",
-            "tax_amount",
-            "total_amount",
-            "inspection_fee",
-            "inspection_fee_adjusted",
-            "net_payable",
-            "valid_until",
-            "decision_token",
-            "customer_decision",
-            "customer_decided_at",
-            "items",
-            "measurements",
-            "photos",
-            "painting_details",
-            "mason_details",
-            "created_at",
-        ]
-
-    def get_technician_name(self, obj):
-        if obj.technician:
-            if obj.technician.user:
-                return obj.technician.user.get_full_name() or "Assigned Expert"
-            return "Assigned Expert"
-        return "CalTrack Specialist"
-
-
-# ── Phase 2A: Service Provider & Provider Admin Serializers ───────────────────
-
-class ServiceProviderCreateSerializer(serializers.Serializer):
+class ProviderSignupSerializer(serializers.Serializer):
     """
-    Serializer for Superadmin creating a Service Provider (Company) and its
-    primary Service Provider Admin user atomically.
+    SEVO business plan Section 2, "Existing Service Provider Model": a
+    service-provider business (plumbing outfit, electrical contractor, etc)
+    self-registers, gets its own Company row and PROVIDER_HEAD wallet, and
+    can then invite its own workers to join that company (see
+    WorkforceSignupSerializer, which already supports joining a specific
+    company via company_id/company_slug).
     """
-    company_name = serializers.CharField(max_length=255, required=True)
-    display_id = serializers.CharField(max_length=50, required=False, allow_blank=True)
-    address = serializers.CharField(required=False, allow_blank=True)
-    industry = serializers.CharField(max_length=100, required=False, allow_blank=True)
-    website = serializers.URLField(max_length=255, required=False, allow_blank=True)
-    primary_country = serializers.CharField(max_length=2, required=False, default="US")
-
-    admin_username = serializers.CharField(max_length=150, required=True)
-    admin_email = serializers.EmailField(required=True)
-    admin_password = serializers.CharField(write_only=True, min_length=6, required=True)
-    admin_first_name = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
-    admin_last_name = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
-    admin_phone = serializers.CharField(max_length=30, required=False, allow_blank=True, default="")
-
-    def validate_company_name(self, value):
-        name = value.strip()
-        if not name:
-            raise serializers.ValidationError("Company name cannot be blank.")
-        return name
-
-    def validate_admin_username(self, value):
-        uname = value.strip()
-        if not uname:
-            raise serializers.ValidationError("Admin username cannot be blank.")
-        if User.objects.filter(username__iexact=uname).exists():
-            raise serializers.ValidationError(f"Username '{uname}' is already taken.")
-        return uname
-
-    def validate_admin_email(self, value):
-        email = value.strip().lower()
-        if not email:
-            raise serializers.ValidationError("Admin email cannot be blank.")
-        if User.objects.filter(email__iexact=email).exists():
-            raise serializers.ValidationError(f"An account with email '{email}' already exists.")
-        return email
-
-    def validate_admin_phone(self, value):
-        phone = value.strip() if value else ""
-        if phone and User.objects.filter(phone=phone).exists():
-            raise serializers.ValidationError(f"Phone number '{phone}' is already registered to an existing account.")
-        return phone
-
-    def validate_display_id(self, value):
-        if not value:
-            return ""
-        did = value.strip().upper()
-        from companies.models import Company
-        if Company.objects.filter(display_id__iexact=did).exists():
-            raise serializers.ValidationError(f"Display ID '{did}' is already in use.")
-        return did
-
-
-class ServiceProviderSelfSignupSerializer(serializers.Serializer):
-    """
-    Public-facing serializer for a new organization self-registering as a Service Provider.
-    Atomically creates Company + primary Service Provider Admin user.
-    """
-    company_name = serializers.CharField(max_length=255, required=True)
-    industry = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
-    phone = serializers.CharField(max_length=30, required=False, allow_blank=True, default="")
-    email = serializers.EmailField(required=False, allow_blank=True, default="")
+    business_name = serializers.CharField(max_length=255)
+    contact_first_name = serializers.CharField(max_length=150)
+    contact_last_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    mobile_number = serializers.CharField(max_length=20)
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True, min_length=6)
     address = serializers.CharField(required=False, allow_blank=True, default="")
-    city = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
-    state = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
-    country = serializers.CharField(max_length=100, required=False, allow_blank=True, default="US")
-    website = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
-
-    first_name = serializers.CharField(max_length=150, required=True)
-    last_name = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
-    admin_email = serializers.EmailField(required=False, allow_blank=True, default="")
-    admin_phone = serializers.CharField(max_length=30, required=False, allow_blank=True, default="")
-    username = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
-    password = serializers.CharField(write_only=True, min_length=6, required=True)
-    confirm_password = serializers.CharField(write_only=True, min_length=6, required=False, allow_blank=True, default="")
-
-    company_id = serializers.IntegerField(required=False, allow_null=True)
-    provider_id = serializers.IntegerField(required=False, allow_null=True)
-
-    def validate_company_name(self, value):
-        name = value.strip()
-        if not name:
-            raise serializers.ValidationError("Service Provider Name cannot be blank.")
-        return name
-
-    def validate_website(self, value):
-        val = (value or "").strip()
-        if not val:
-            return ""
-        if not val.startswith("http://") and not val.startswith("https://"):
-            val = "https://" + val
-        from django.core.validators import URLValidator
-        validator = URLValidator()
-        try:
-            validator(val)
-        except Exception:
-            raise serializers.ValidationError("Enter a valid URL (e.g. https://example.com or example.com).")
-        return val
-
-    def validate(self, attrs):
-        if attrs.get("company_id") or attrs.get("provider_id"):
-            raise serializers.ValidationError("Cannot supply an existing company ID during new provider registration.")
-
-        p = attrs.get("password")
-        cp = attrs.get("confirm_password")
-        if cp and p != cp:
-            raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
-
-        admin_email = attrs.get("admin_email") or attrs.get("email")
-        if not admin_email:
-            raise serializers.ValidationError({"admin_email": "Administrator email is required."})
-        admin_email = admin_email.strip().lower()
-        if User.objects.filter(email__iexact=admin_email).exists():
-            raise serializers.ValidationError({"admin_email": f"An account with email '{admin_email}' already exists. Please sign in or use a different email."})
-        attrs["admin_email"] = admin_email
-
-        admin_phone = (attrs.get("admin_phone") or attrs.get("phone") or "").strip()
-        if admin_phone:
-            import re
-            clean_phone = re.sub(r"[^\d+]", "", admin_phone)
-            if User.objects.filter(phone=clean_phone).exists() or User.objects.filter(mobile_number=clean_phone).exists():
-                raise serializers.ValidationError({"phone": f"Phone number '{clean_phone}' is already registered with another account."})
-            attrs["admin_phone"] = clean_phone
-
-        uname = attrs.get("username", "").strip()
-        if not uname:
-            base_uname = admin_email.split("@")[0].lower()
-            candidate = base_uname
-            c = 1
-            while User.objects.filter(username__iexact=candidate).exists():
-                candidate = f"{base_uname}_{c}"
-                c += 1
-            attrs["username"] = candidate
-        else:
-            if User.objects.filter(username__iexact=uname).exists():
-                raise serializers.ValidationError({"username": f"Username '{uname}' is already taken."})
-
-        return attrs
-
-
-
-class ServiceProviderListSerializer(serializers.ModelSerializer):
-
-    """
-    Serializer for Superadmin listing all Service Providers (Companies).
-    """
-    primary_admin = serializers.SerializerMethodField()
-    employee_count = serializers.SerializerMethodField()
-
-    class Meta:
-        from companies.models import Company
-        model = Company
-        fields = [
-            "id",
-            "company_name",
-            "display_id",
-            "slug",
-            "is_active",
-            "address",
-            "industry",
-            "website",
-            "primary_country",
-            "created_at",
-            "employee_count",
-            "primary_admin",
-        ]
-
-    def get_primary_admin(self, obj):
-        admin = User.objects.filter(
-            company=obj,
-            role__in=["service_provider_admin", "admin", "manager"]
-        ).order_by("id").first()
-        if not admin:
-            return None
-        return {
-            "id": admin.id,
-            "username": admin.username,
-            "email": admin.email or "",
-            "first_name": admin.first_name or "",
-            "last_name": admin.last_name or "",
-            "full_name": admin.get_full_name(),
-            "phone": admin.phone or "",
-            "role": admin.role,
-        }
-
-    def get_employee_count(self, obj):
-        if hasattr(obj, "emp_count"):
-            return obj.emp_count
-        return obj.employees.filter(is_active=True).count()
-
-
-class ServiceProviderDetailSerializer(serializers.ModelSerializer):
-    """
-    Detailed serializer for Superadmin viewing a specific Service Provider.
-    """
-    primary_admin = serializers.SerializerMethodField()
-    employee_count = serializers.SerializerMethodField()
-    admins = serializers.SerializerMethodField()
-
-    class Meta:
-        from companies.models import Company
-        model = Company
-        fields = [
-            "id",
-            "company_name",
-            "display_id",
-            "slug",
-            "is_active",
-            "address",
-            "industry",
-            "website",
-            "primary_country",
-            "timezone",
-            "created_at",
-            "updated_at",
-            "employee_count",
-            "primary_admin",
-            "admins",
-        ]
-
-    def get_primary_admin(self, obj):
-        admin = User.objects.filter(
-            company=obj,
-            role__in=["service_provider_admin", "admin", "manager"]
-        ).order_by("id").first()
-        if not admin:
-            return None
-        return {
-            "id": admin.id,
-            "username": admin.username,
-            "email": admin.email or "",
-            "first_name": admin.first_name or "",
-            "last_name": admin.last_name or "",
-            "full_name": admin.get_full_name(),
-            "phone": admin.phone or "",
-            "role": admin.role,
-        }
-
-    def get_admins(self, obj):
-        admins = User.objects.filter(
-            company=obj,
-            role__in=["service_provider_admin", "admin", "manager"]
-        ).order_by("id")[:10]
-        return [
-            {
-                "id": a.id,
-                "username": a.username,
-                "email": a.email or "",
-                "first_name": a.first_name or "",
-                "last_name": a.last_name or "",
-                "full_name": a.get_full_name(),
-                "role": a.role,
-            }
-            for a in admins
-        ]
-
-    def get_employee_count(self, obj):
-        return obj.employees.filter(is_active=True).count()
-
-
-class ProviderProfileSerializer(serializers.ModelSerializer):
-    """
-    Serializer for authenticated Provider Admin querying their own provider identity.
-    """
-    primary_admin = serializers.SerializerMethodField()
-    employee_count = serializers.SerializerMethodField()
-
-    class Meta:
-        from companies.models import Company
-        model = Company
-        fields = [
-            "id",
-            "company_name",
-            "display_id",
-            "slug",
-            "is_active",
-            "address",
-            "industry",
-            "website",
-            "primary_country",
-            "timezone",
-            "created_at",
-            "employee_count",
-            "primary_admin",
-        ]
-
-    def get_primary_admin(self, obj):
-        admin = User.objects.filter(
-            company=obj,
-            role__in=["service_provider_admin", "admin", "manager"]
-        ).order_by("id").first()
-        if not admin:
-            return None
-        return {
-            "id": admin.id,
-            "username": admin.username,
-            "email": admin.email or "",
-            "first_name": admin.first_name or "",
-            "last_name": admin.last_name or "",
-            "full_name": admin.get_full_name(),
-            "phone": admin.phone or "",
-            "role": admin.role,
-        }
-
-    def get_employee_count(self, obj):
-        return obj.employees.filter(is_active=True).count()
-
-
-# ── Phase 2B: Technician Management & Provisioning Serializers ───────────────
-
-class TechnicianCreateSerializer(serializers.Serializer):
-    first_name = serializers.CharField(max_length=150, required=True)
-    last_name = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
-    email = serializers.EmailField(required=True)
-    phone = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
-    mobile_number = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
-    username = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
-    password = serializers.CharField(max_length=128, required=False, allow_blank=True, default="")
-    services = serializers.ListField(child=serializers.CharField(), required=False, default=list)
-    skills = serializers.ListField(child=serializers.CharField(), required=False, default=list)
-    company_id = serializers.IntegerField(required=False, allow_null=True, default=None)
+    city = serializers.CharField(required=False, allow_blank=True, default="Hosur")
 
     def validate_email(self, value):
-        normalized = value.strip().lower()
-        if User.objects.filter(email__iexact=normalized).exists():
-            raise serializers.ValidationError("An account with this email address already exists.")
-        return normalized
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("An account with this email already exists.")
+        return value.lower()
 
-    def validate_username(self, value):
-        if value:
-            normalized = value.strip().lower()
-            if User.objects.filter(username__iexact=normalized).exists():
-                raise serializers.ValidationError("This username is already taken.")
-            return normalized
+    def validate_mobile_number(self, value):
+        cleaned = value.strip().replace(" ", "").replace("-", "")
+        if User.objects.filter(mobile_number=cleaned).exists():
+            raise serializers.ValidationError("An account with this mobile number already exists.")
+        return cleaned
+
+    def validate_business_name(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Business name is required.")
         return value
 
 
-class TechnicianListSerializer(serializers.ModelSerializer):
-    first_name = serializers.CharField(source="user.first_name", read_only=True)
-    last_name = serializers.CharField(source="user.last_name", read_only=True)
-    full_name = serializers.SerializerMethodField()
-    email = serializers.CharField(source="user.email", read_only=True)
-    username = serializers.CharField(source="user.username", read_only=True)
-    phone = serializers.SerializerMethodField()
-    mobile_number = serializers.SerializerMethodField()
-    company_id = serializers.IntegerField(source="company.id", read_only=True, allow_null=True)
-    company_name = serializers.CharField(source="company.company_name", read_only=True, default=None)
-    is_independent = serializers.SerializerMethodField()
-    role = serializers.CharField(source="user.role", read_only=True, default="employee")
-    registration_status = serializers.SerializerMethodField()
-    approved_services = serializers.SerializerMethodField()
-    skills = serializers.SerializerMethodField()
+class WalletAccountSerializer(serializers.ModelSerializer):
+    """Read/write surface for a wallet owner's own onboarding + payout
+    status. Balance and withdrawal_limit are computed, never stored."""
+    balance = serializers.SerializerMethodField()
+    withdrawal_limit = serializers.SerializerMethodField()
+    owner_role = serializers.SerializerMethodField()
+    owner_name = serializers.SerializerMethodField()
 
     class Meta:
-        model = Employee
+        model = WalletAccount
         fields = [
             "id",
-            "employee_id",
-            "first_name",
-            "last_name",
-            "full_name",
-            "email",
-            "username",
-            "phone",
-            "mobile_number",
-            "company_id",
-            "company_name",
-            "is_independent",
-            "role",
-            "registration_status",
-            "is_active",
-            "is_online",
-            "current_availability",
-            "approved_services",
-            "skills",
-            "created_at",
+            "account_type",
+            "kyc_tier",
+            "kyc_tier_updated_at",
+            "payout_bank_account_name",
+            "payout_bank_account_number_masked",
+            "payout_ifsc",
+            "payout_upi_id",
+            "auto_withdrawal_enabled",
+            "auto_withdrawal_frequency",
+            "auto_withdrawal_day_of_week",
+            "minimum_balance_alert_threshold",
+            "balance",
+            "withdrawal_limit",
+            "owner_role",
+            "owner_name",
         ]
+        read_only_fields = ["id", "account_type", "kyc_tier", "kyc_tier_updated_at"]
 
-    def get_full_name(self, obj):
-        if obj.user:
-            return obj.user.get_full_name() or f"{obj.user.first_name} {obj.user.last_name}".strip() or obj.user.username
-        return ""
+    def get_balance(self, obj):
+        return obj.current_balance()
 
-    def get_phone(self, obj):
-        if obj.user:
-            return getattr(obj.user, "phone", None) or getattr(obj.user, "mobile_number", "")
-        return ""
+    def get_withdrawal_limit(self, obj):
+        return obj.withdrawal_limit_for_tier()
 
-    def get_mobile_number(self, obj):
-        if obj.user:
-            return getattr(obj.user, "mobile_number", None) or getattr(obj.user, "phone", "")
-        return ""
+    def get_owner_role(self, obj):
+        return self.context.get("owner_role", "")
 
-    def get_is_independent(self, obj):
-        return obj.company_id is None
-
-    def get_registration_status(self, obj):
-        from .services.registration import get_employee_registration_status
-        return get_employee_registration_status(obj)
-
-    def get_approved_services(self, obj):
-        bank_details = obj.bank_details or {}
-        onboarding = bank_details.get("onboarding", {})
-        services = onboarding.get("services", [])
-        return [s for s in services if s.get("status") == "approved"]
-
-    def get_skills(self, obj):
-        try:
-            return list(
-                obj.skills.filter(is_verified=True).values("id", "skill__name", "proficiency_level")
-            )
-        except Exception:
-            return []
+    def get_owner_name(self, obj):
+        if obj.company_id:
+            return obj.company.company_name
+        emp = obj.employee
+        return emp.user.get_full_name() if emp and emp.user_id else ""
 
 
-class TechnicianDetailSerializer(TechnicianListSerializer):
-    onboarding_data = serializers.SerializerMethodField()
-    documents = serializers.SerializerMethodField()
-    all_services = serializers.SerializerMethodField()
-
-    class Meta(TechnicianListSerializer.Meta):
-        fields = TechnicianListSerializer.Meta.fields + [
-            "onboarding_data",
-            "documents",
-            "all_services",
-        ]
-
-    def get_onboarding_data(self, obj):
-        bank_details = obj.bank_details or {}
-        return bank_details.get("onboarding", {})
-
-    def get_documents(self, obj):
-        bank_details = obj.bank_details or {}
-        onboarding = bank_details.get("onboarding", {})
-        return onboarding.get("documents", {})
-
-    def get_all_services(self, obj):
-        bank_details = obj.bank_details or {}
-        onboarding = bank_details.get("onboarding", {})
-        return onboarding.get("services", [])
+class WalletPayoutDetailsSerializer(serializers.Serializer):
+    """Input serializer for setting/updating payout destination -- either a
+    UPI ID, or a full bank account. Validation (at least one, valid IFSC
+    shape) is delegated to services.wallet_onboarding.set_payout_details so
+    there's exactly one place that decides what a "valid" payout
+    destination looks like."""
+    bank_account_name = serializers.CharField(required=False, allow_blank=True, default="")
+    bank_account_number = serializers.CharField(required=False, allow_blank=True, default="")
+    ifsc = serializers.CharField(required=False, allow_blank=True, default="")
+    upi_id = serializers.CharField(required=False, allow_blank=True, default="")
 
 
+class WalletWithdrawSerializer(serializers.Serializer):
+    """Input serializer for an on-demand self-service withdrawal request."""
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0.01"))
 
 
-
-
+class WalletAutoWithdrawalSettingsSerializer(serializers.Serializer):
+    """Input serializer for the head-wallet standing auto-payout rule and
+    minimum-balance alert floor (SEVO Section 1, head-wallet specific
+    features). All fields optional so a caller can update just one."""
+    auto_withdrawal_enabled = serializers.BooleanField(required=False)
+    auto_withdrawal_frequency = serializers.ChoiceField(
+        choices=[("DAILY", "Daily"), ("WEEKLY", "Weekly"), ("", "")], required=False, allow_blank=True,
+    )
+    auto_withdrawal_day_of_week = serializers.IntegerField(required=False, allow_null=True, min_value=0, max_value=6)
+    minimum_balance_alert_threshold = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=False, allow_null=True, min_value=Decimal("0"),
+    )

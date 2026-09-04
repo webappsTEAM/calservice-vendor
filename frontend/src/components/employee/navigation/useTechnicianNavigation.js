@@ -26,9 +26,7 @@ import {
   findActiveStepIndex,
   computeDistanceToNextManeuver,
   getUpcomingManeuverPreview,
-  computeRemainingRoadDistanceMeters,
 } from './maneuverUtils.js';
-import { deriveSpeedFromFixes } from './speedAndCompassUtils.js';
 import { loadMapsApi } from '../../../utils/loadGoogleMaps.js';
 
 const MIN_ROUTING_INTERVAL_MS = 30_000; // 30 seconds minimum between Directions requests
@@ -40,17 +38,8 @@ export function useTechnicianNavigation({
   initialTechnicianLocation,
   onLocationReport,
 }) {
-  const custLat = job?.latitude != null
-    ? parseFloat(job.latitude)
-    : (job?.customer_latitude != null
-      ? parseFloat(job.customer_latitude)
-      : (job?.lat != null ? parseFloat(job.lat) : null));
-
-  const custLon = job?.longitude != null
-    ? parseFloat(job.longitude)
-    : (job?.customer_longitude != null
-      ? parseFloat(job.customer_longitude)
-      : (job?.lon != null ? parseFloat(job.lon) : (job?.lng != null ? parseFloat(job.lng) : null)));
+  const custLat = job?.latitude != null ? parseFloat(job.latitude) : null;
+  const custLon = job?.longitude != null ? parseFloat(job.longitude) : null;
 
   // Real technician live coordinates
   const [technicianLocation, setTechnicianLocation] = useState(
@@ -60,7 +49,6 @@ export function useTechnicianNavigation({
           longitude: parseFloat(initialTechnicianLocation.longitude),
           accuracy: initialTechnicianLocation.accuracy ?? null,
           speed: initialTechnicianLocation.speed ?? null,
-          derived_speed: null,
           heading: initialTechnicianLocation.heading ?? null,
           captured_at: initialTechnicianLocation.captured_at || initialTechnicianLocation.updated_at || new Date().toISOString(),
         }
@@ -76,17 +64,12 @@ export function useTechnicianNavigation({
   const [directionsFailed, setDirectionsFailed] = useState(false);
   const [lastUpdateSecondsAgo, setLastUpdateSecondsAgo] = useState(0);
 
-  // Performance, concurrency and throttling refs
+  // Performance and throttling refs
   const lastCapturedAtRef = useRef(technicianLocation?.captured_at ? new Date(technicianLocation.captured_at).getTime() : 0);
   const lastRoutingTimeRef = useRef(0);
   const lastRoutedCoordsRef = useRef({ lat: null, lng: null });
   const prevPositionRef = useRef(technicianLocation ? { lat: technicianLocation.latitude, lng: technicianLocation.longitude } : null);
-  const prevFixWithTimestampRef = useRef(technicianLocation ? { latitude: technicianLocation.latitude, longitude: technicianLocation.longitude, timestamp: Date.now() } : null);
-  const stableHeadingRef = useRef(heading || 0);
   const directionsServiceRef = useRef(null);
-  const routeRequestIdRef = useRef(0);
-  const inFlightRoutingRef = useRef(false);
-  const pendingRouteCoordsRef = useRef(null);
 
   // Synchronize initial technician location prop
   useEffect(() => {
@@ -106,14 +89,13 @@ export function useTechnicianNavigation({
         };
         setTechnicianLocation(newCoords);
         if (newCoords.heading != null && !isNaN(newCoords.heading)) {
-          stableHeadingRef.current = newCoords.heading;
           setHeading(newCoords.heading);
         }
       }
     }
   }, [initialTechnicianLocation]);
 
-  // Request authoritative route from Google Directions Service (Throttled + In-flight Coalesced + Generation Protected)
+  // Request authoritative route from Google Directions Service (Throttled)
   const requestRoadRoute = useCallback(
     (originLat, originLng, destLat, destLng, force = false) => {
       if (originLat == null || destLat == null) return;
@@ -142,12 +124,6 @@ export function useTechnicianNavigation({
         return;
       }
 
-      // If a route request is currently in-flight, coalesce by queueing the latest desired coordinates
-      if (inFlightRoutingRef.current) {
-        pendingRouteCoordsRef.current = { originLat, originLng, destLat, destLng, force };
-        return;
-      }
-
       const now = Date.now();
 
       // Check time throttle (unless forced)
@@ -172,8 +148,6 @@ export function useTechnicianNavigation({
         directionsServiceRef.current = new window.google.maps.DirectionsService();
       }
 
-      const currentRequestId = ++routeRequestIdRef.current;
-      inFlightRoutingRef.current = true;
       lastRoutingTimeRef.current = now;
       lastRoutedCoordsRef.current = { lat: originLat, lng: originLng };
       setIsRecalculating(true);
@@ -185,15 +159,7 @@ export function useTechnicianNavigation({
           travelMode: window.google.maps.TravelMode.DRIVING,
         },
         (result, status) => {
-          inFlightRoutingRef.current = false;
           setIsRecalculating(false);
-
-          // Discard stale out-of-order responses
-          if (currentRequestId !== routeRequestIdRef.current) {
-            console.info(`[useTechnicianNavigation] Discarded stale route response #${currentRequestId} (latest: #${routeRequestIdRef.current})`);
-            return;
-          }
-
           if (status === window.google.maps.DirectionsStatus.OK && result?.routes?.[0]?.legs?.[0]) {
             setDirectionsResult(result);
             setDirectionsFailed(false);
@@ -207,13 +173,6 @@ export function useTechnicianNavigation({
           } else {
             console.warn('[NAVIGATION_DIRECTIONS_STATUS]', status);
             setDirectionsFailed(true);
-          }
-
-          // Process queued pending route request if any
-          if (pendingRouteCoordsRef.current) {
-            const pending = pendingRouteCoordsRef.current;
-            pendingRouteCoordsRef.current = null;
-            requestRoadRoute(pending.originLat, pending.originLng, pending.destLat, pending.destLng, pending.force);
           }
         }
       );
@@ -238,50 +197,18 @@ export function useTechnicianNavigation({
 
       const lat = parseFloat(detail.latitude);
       const lng = parseFloat(detail.longitude);
-      const rawSpeed = detail.speed != null ? parseFloat(detail.speed) : null;
 
-      // Compute derived speed from displacement if rawSpeed is unavailable
-      let derivedSpeed = null;
-      if (prevFixWithTimestampRef.current) {
-        derivedSpeed = deriveSpeedFromFixes(prevFixWithTimestampRef.current, {
-          latitude: lat,
-          longitude: lng,
-          timestamp: incomingCapturedAt,
-        });
-      }
-      prevFixWithTimestampRef.current = {
-        latitude: lat,
-        longitude: lng,
-        timestamp: incomingCapturedAt,
-      };
-
-      const effectiveSpeed = (rawSpeed != null && rawSpeed >= 0) ? rawSpeed : (derivedSpeed ?? null);
-
-      // Dynamic heading stabilization:
-      // When moving (speed >= 1.0 m/s or moved >= 3.5m): update heading from GPS or forward azimuth
-      // When stationary (speed < 0.4 m/s and moved < 3m): freeze heading to eliminate marker jitter
-      let currentHeading = stableHeadingRef.current;
-      let movedMeters = 0;
-
-      if (prevPositionRef.current) {
-        movedMeters = calculateDistanceMeters(prevPositionRef.current.lat, prevPositionRef.current.lng, lat, lng) || 0;
-      }
-
-      const isMoving = (effectiveSpeed != null && effectiveSpeed >= 1.0) || movedMeters >= 3.5;
-      const isStationary = (effectiveSpeed != null && effectiveSpeed < 0.4) && movedMeters < 3.0;
-
-      if (isMoving) {
-        if (detail.heading != null && !isNaN(detail.heading)) {
-          currentHeading = detail.heading;
-        } else if (prevPositionRef.current && movedMeters >= 3.0) {
-          currentHeading = calculateBearing(prevPositionRef.current.lat, prevPositionRef.current.lng, lat, lng);
+      // Compute dynamic bearing if device heading is not provided
+      let calculatedBearing = detail.heading;
+      if (calculatedBearing == null && prevPositionRef.current) {
+        const moved = calculateDistanceMeters(prevPositionRef.current.lat, prevPositionRef.current.lng, lat, lng);
+        if (moved != null && moved >= 3) {
+          calculatedBearing = calculateBearing(prevPositionRef.current.lat, prevPositionRef.current.lng, lat, lng);
         }
-        stableHeadingRef.current = currentHeading;
-        setHeading(currentHeading);
-      } else if (!isStationary && detail.heading != null && !isNaN(detail.heading)) {
-        currentHeading = detail.heading;
-        stableHeadingRef.current = currentHeading;
-        setHeading(currentHeading);
+      }
+
+      if (calculatedBearing != null && !isNaN(calculatedBearing)) {
+        setHeading(calculatedBearing);
       }
 
       prevPositionRef.current = { lat, lng };
@@ -290,9 +217,8 @@ export function useTechnicianNavigation({
         latitude: lat,
         longitude: lng,
         accuracy: detail.accuracy ?? null,
-        speed: effectiveSpeed,
-        derived_speed: derivedSpeed,
-        heading: currentHeading,
+        speed: detail.speed ?? null,
+        heading: calculatedBearing ?? null,
         captured_at: new Date(incomingCapturedAt).toISOString(),
       };
 
@@ -382,71 +308,27 @@ export function useTechnicianNavigation({
     return computeDistanceToNextManeuver(activeStep, technicianLocation.latitude, technicianLocation.longitude);
   }, [activeStep, technicianLocation]);
 
-  // Explicit Separation of Distance Types:
-  // 1. Straight-Line Haversine GPS Distance
-  const gpsDistanceMeters = useMemo(() => {
-    return calculateDistanceMeters(
-      technicianLocation?.latitude,
-      technicianLocation?.longitude,
-      custLat,
-      custLon
-    );
-  }, [technicianLocation?.latitude, technicianLocation?.longitude, custLat, custLon]);
-
-  // 2. Dynamic Remaining Road Route Distance along upcoming route steps
+  // Total route metrics
   const totalLeg = directionsResult?.routes?.[0]?.legs?.[0];
-  const originalLegDistance = totalLeg?.distance?.value ?? null;
-  const originalLegDuration = totalLeg?.duration?.value ?? null;
+  const totalDistanceMeters = totalLeg?.distance?.value ?? calculateDistanceMeters(
+    technicianLocation?.latitude,
+    technicianLocation?.longitude,
+    custLat,
+    custLon
+  );
+  const totalDurationSeconds = totalLeg?.duration?.value ?? (totalDistanceMeters ? Math.round((totalDistanceMeters / 1000) * 180) : null);
 
-  const dynamicRemainingRoadMeters = useMemo(() => {
-    if (routeSteps && routeSteps.length > 0) {
-      return computeRemainingRoadDistanceMeters(routeSteps, activeStepIndex, distanceToNextManeuverMeters);
-    }
-    return originalLegDistance;
-  }, [routeSteps, activeStepIndex, distanceToNextManeuverMeters, originalLegDistance]);
+  const displayDistanceText = !directionsFailed && totalLeg?.distance?.text
+    ? totalLeg.distance.text
+    : formatDistance(totalDistanceMeters);
 
-  const roadDistanceMeters = dynamicRemainingRoadMeters ?? originalLegDistance ?? gpsDistanceMeters;
-
-  // 3. Dynamic ETA based on route velocity or urban transit baseline (~25 km/h)
-  const effectiveSpeedMps = useMemo(() => {
-    if (originalLegDistance && originalLegDuration && originalLegDuration > 0) {
-      return Math.max(3.0, originalLegDistance / originalLegDuration);
-    }
-    return 7.0; // ~25.2 km/h default
-  }, [originalLegDistance, originalLegDuration]);
-
-  const dynamicRoadDurationSeconds = useMemo(() => {
-    if (roadDistanceMeters != null && roadDistanceMeters > 0) {
-      return Math.max(15, Math.round(roadDistanceMeters / effectiveSpeedMps));
-    }
-    if (gpsDistanceMeters != null && gpsDistanceMeters > 0) {
-      return Math.max(15, Math.round((gpsDistanceMeters / 1000) * 180));
-    }
-    return null;
-  }, [roadDistanceMeters, effectiveSpeedMps, gpsDistanceMeters]);
-
-  const displayDistanceText = roadDistanceMeters != null
-    ? formatDistance(roadDistanceMeters)
-    : (gpsDistanceMeters != null ? formatDistance(gpsDistanceMeters) : '--');
-
-  const displayEtaText = dynamicRoadDurationSeconds != null
-    ? formatEtaMinutes(dynamicRoadDurationSeconds)
-    : '--';
+  const displayEtaText = !directionsFailed && totalLeg?.duration?.text
+    ? totalLeg.duration.text
+    : formatEtaMinutes(totalDurationSeconds);
 
   const arrivalClockText = useMemo(() => {
-    return computeArrivalTimeClock(dynamicRoadDurationSeconds);
-  }, [dynamicRoadDurationSeconds]);
-
-  // Explicit Navigation State Machine
-  const navigationState = useMemo(() => {
-    if (!technicianLocation?.latitude) return 'GPS_UNAVAILABLE';
-    if (gpsDistanceMeters != null && gpsDistanceMeters <= 250) return 'ARRIVED';
-    if (gpsDistanceMeters != null && gpsDistanceMeters <= 500) return 'ARRIVING';
-    if (isRecalculating) return 'REROUTING';
-    if (directionsResult) return 'NAVIGATING';
-    if (directionsFailed) return 'NAVIGATING'; // Fallback to direct GPS navigation
-    return 'CALCULATING';
-  }, [technicianLocation, gpsDistanceMeters, isRecalculating, directionsResult, directionsFailed]);
+    return computeArrivalTimeClock(totalDurationSeconds);
+  }, [totalDurationSeconds]);
 
   // Telemetry status badge
   const telemetryStatus = useMemo(() => {
@@ -474,14 +356,10 @@ export function useTechnicianNavigation({
     upcomingPreview,
     distanceToNextManeuverMeters,
     distanceToNextManeuverText: formatDistance(distanceToNextManeuverMeters),
-    gpsDistanceMeters,
-    roadDistanceMeters,
-    totalDistanceMeters: roadDistanceMeters ?? gpsDistanceMeters,
-    roadDurationSeconds: dynamicRoadDurationSeconds,
+    totalDistanceMeters,
     displayDistanceText,
     displayEtaText,
     arrivalClockText,
-    navigationState,
     isFollowMode,
     setIsFollowMode,
     handleResumeNavigation,

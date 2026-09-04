@@ -3,10 +3,11 @@ import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom
 import { AuthProvider, useAuth } from './context/AuthProvider.jsx';
 import { ThemeProvider } from './context/ThemeContext.jsx';
 import { EmployeeRuntimeProvider } from './context/EmployeeRuntimeProvider.jsx';
-import { AdminRoute, EmployeeRoute, AuthenticatedRoute, SuperadminRoute } from './components/common/ProtectedRoute.jsx';
+import { AdminRoute, EmployeeRoute, PlatformAdminRoute, AuthenticatedRoute } from './components/common/ProtectedRoute.jsx';
 
 import { LoginPage } from './pages/auth/LoginPage.jsx';
 import { SignupPage } from './pages/auth/SignupPage.jsx';
+import { ProviderSignupPage } from './pages/auth/ProviderSignupPage.jsx';
 
 import { TermsAndConditionsPage } from './pages/public/TermsAndConditionsPage.jsx';
 import { PrivacyPolicyPage } from './pages/public/PrivacyPolicyPage.jsx';
@@ -26,7 +27,40 @@ import { EmployeeDocumentsPage } from './pages/employee/EmployeeDocumentsPage.js
 import { EmployeeServicesPage } from './pages/employee/EmployeeServicesPage.jsx';
 import { EmployeeSettingsPage } from './pages/employee/EmployeeSettingsPage.jsx';
 import { EmployeePerformancePage } from './pages/employee/EmployeePerformancePage.jsx';
+import { EmployeeEarningsPage } from './pages/employee/EmployeeEarningsPage.jsx';
 import { EmployeeLocationPage } from './pages/employee/EmployeeLocationPage.jsx';
+import EmployeeEstimatesPage from './pages/employee/estimates/EmployeeEstimatesPage.jsx';
+import { MyVendorNetworkPage } from './pages/employee/MyVendorNetworkPage.jsx';
+import { TechnicianInvitationsPage } from './pages/employee/TechnicianInvitationsPage.jsx';
+
+import { AdminDashboardPage } from './pages/admin/AdminDashboardPage.jsx';
+import { AdminApplicationsPage } from './pages/admin/AdminApplicationsPage.jsx';
+import { AdminApplicationDetailPage } from './pages/admin/AdminApplicationDetailPage.jsx';
+import { AdminEmployeesPage } from './pages/admin/AdminEmployeesPage.jsx';
+import { AdminJobsPage } from './pages/admin/AdminJobsPage.jsx';
+import { AdminOperationsPage } from './pages/admin/AdminOperationsPage.jsx';
+import { AdminWalletPage } from './pages/admin/AdminWalletPage.jsx';
+import { AdminScorecardsPage } from './pages/admin/AdminScorecardsPage.jsx';
+import { AdminSocialSecurityPage } from './pages/admin/AdminSocialSecurityPage.jsx';
+import { AdminReportsPage } from './pages/admin/AdminReportsPage.jsx';
+import { AdminSkillsPage } from './pages/admin/AdminSkillsPage.jsx';
+import { AdminServiceProvidersPage } from './pages/admin/AdminServiceProvidersPage.jsx';
+import { ProviderProfilePage } from './pages/admin/ProviderProfilePage.jsx';
+import { VendorTechnicianNetworkPage } from './pages/admin/VendorTechnicianNetworkPage.jsx';
+import { VendorInvitationsPage } from './pages/admin/VendorInvitationsPage.jsx';
+import { PlatformVendorsPage } from './pages/platform/PlatformVendorsPage.jsx';
+import { PlatformWorkforcePage } from './pages/platform/PlatformWorkforcePage.jsx';
+import { CustomerTrackingPage } from './pages/customer/CustomerTrackingPage.jsx';
+import { SuperadminRoute } from './components/common/SuperadminRoute.jsx';
+import { WalletDashboardPage } from './pages/admin/wallet/WalletDashboardPage.jsx';
+import { WalletPayoutAccountsPage } from './pages/admin/wallet/WalletPayoutAccountsPage.jsx';
+import { WalletTransactionsPage } from './pages/admin/wallet/WalletTransactionsPage.jsx';
+import { WalletWithdrawalsPage } from './pages/admin/wallet/WalletWithdrawalsPage.jsx';
+import { EmployeeWalletDashboardPage } from './pages/employee/wallet/EmployeeWalletDashboardPage.jsx';
+import { EmployeeWalletTransactionsPage } from './pages/employee/wallet/EmployeeWalletTransactionsPage.jsx';
+import { EmployeeWalletWithdrawalsPage } from './pages/employee/wallet/EmployeeWalletWithdrawalsPage.jsx';
+import { EmployeePayoutAccountsPage } from './pages/employee/wallet/EmployeePayoutAccountsPage.jsx';
+
 
 function EmployeeWorkspaceLayout() {
   return (
@@ -37,34 +71,6 @@ function EmployeeWorkspaceLayout() {
     </EmployeeRoute>
   );
 }
-
-import { AdminDashboardPage } from './pages/admin/AdminDashboardPage.jsx';
-import { AdminApplicationsPage } from './pages/admin/AdminApplicationsPage.jsx';
-import { AdminApplicationDetailPage } from './pages/admin/AdminApplicationDetailPage.jsx';
-import { AdminEmployeesPage } from './pages/admin/AdminEmployeesPage.jsx';
-import { AdminJobsPage } from './pages/admin/AdminJobsPage.jsx';
-import { AdminOperationsPage } from './pages/admin/AdminOperationsPage.jsx';
-import { AdminReportsPage } from './pages/admin/AdminReportsPage.jsx';
-import { AdminSkillsPage } from './pages/admin/AdminSkillsPage.jsx';
-import { AdminDatabaseMonitoringPage } from './pages/admin/AdminDatabaseMonitoringPage.jsx';
-import { AdminServiceProvidersPage } from './pages/admin/AdminServiceProvidersPage.jsx';
-import { ProviderProfilePage } from './pages/admin/ProviderProfilePage.jsx';
-import { CustomerTrackingPage } from './pages/customer/CustomerTrackingPage.jsx';
-
-// Employee Wallet Pages
-import { EmployeeWalletDashboardPage } from './pages/employee/wallet/EmployeeWalletDashboardPage.jsx';
-import { EmployeeWalletTransactionsPage } from './pages/employee/wallet/EmployeeWalletTransactionsPage.jsx';
-import { EmployeeWalletWithdrawalsPage } from './pages/employee/wallet/EmployeeWalletWithdrawalsPage.jsx';
-import { EmployeePayoutAccountsPage } from './pages/employee/wallet/EmployeePayoutAccountsPage.jsx';
-
-// Employee Estimates & Quotations
-import EmployeeEstimatesPage from './pages/employee/estimates/EmployeeEstimatesPage.jsx';
-
-// Admin Wallet Pages
-import { WalletDashboardPage } from './pages/admin/wallet/WalletDashboardPage.jsx';
-import { WalletTransactionsPage } from './pages/admin/wallet/WalletTransactionsPage.jsx';
-import { WalletWithdrawalsPage } from './pages/admin/wallet/WalletWithdrawalsPage.jsx';
-import { WalletPayoutAccountsPage } from './pages/admin/wallet/WalletPayoutAccountsPage.jsx';
 
 function RootRedirect() {
   const { isReady, isAuthenticated, isAdmin, registrationStatus } = useAuth();
@@ -110,12 +116,14 @@ export function App() {
             {/* Direct Role Route Aliases */}
             <Route path="/admin" element={<Navigate to="/workforce/admin" replace />} />
             <Route path="/admin/*" element={<Navigate to="/workforce/admin" replace />} />
+            <Route path="/vendor/estimations" element={<Navigate to="/workforce/admin/estimations" replace />} />
             <Route path="/employee" element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="/employee/*" element={<Navigate to="/workforce/employee/dashboard" replace />} />
 
-            {/* Public Auth */}
-            <Route path="/workforce/login" element={<LoginPage />} />
-            <Route path="/workforce/signup" element={<SignupPage />} />
+          {/* Public Auth */}
+          <Route path="/workforce/login" element={<LoginPage />} />
+          <Route path="/workforce/signup" element={<SignupPage />} />
+          <Route path="/workforce/provider-signup" element={<ProviderSignupPage />} />
 
             {/* Public Legal, Compliance & Support Hub */}
             <Route path="/terms" element={<TermsAndConditionsPage />} />
@@ -165,29 +173,31 @@ export function App() {
               }
             />
 
-            {/* Approved Technician Workspace with Persistent Session Runtime */}
-            <Route path="/workforce/employee" element={<EmployeeWorkspaceLayout />}>
-              <Route index element={<Navigate to="/workforce/employee/dashboard" replace />} />
-              <Route path="dashboard" element={<EmployeeDashboardPage />} />
-              <Route path="jobs" element={<EmployeeJobsPage />} />
-              <Route path="estimates" element={<EmployeeEstimatesPage />} />
-              <Route path="estimates/:id" element={<EmployeeEstimatesPage />} />
-              <Route path="schedule" element={<Navigate to="/workforce/employee/dashboard" replace />} />
-              <Route path="attendance" element={<Navigate to="/workforce/employee/dashboard" replace />} />
-              <Route path="leave" element={<Navigate to="/workforce/employee/dashboard" replace />} />
-              <Route path="earnings" element={<EmployeeWalletDashboardPage />} />
-              <Route path="wallet" element={<EmployeeWalletDashboardPage />} />
-              <Route path="wallet/transactions" element={<EmployeeWalletTransactionsPage />} />
-              <Route path="wallet/withdrawals" element={<EmployeeWalletWithdrawalsPage />} />
-              <Route path="wallet/payout-accounts" element={<EmployeePayoutAccountsPage />} />
-              <Route path="documents" element={<EmployeeDocumentsPage />} />
-              <Route path="services" element={<EmployeeServicesPage />} />
-              <Route path="profile" element={<EmployeeProfilePage />} />
-              <Route path="settings" element={<EmployeeSettingsPage />} />
-              <Route path="performance" element={<EmployeePerformancePage />} />
-              <Route path="feedback" element={<EmployeePerformancePage />} />
-              <Route path="location" element={<EmployeeLocationPage />} />
-            </Route>
+          {/* Approved Technician Workspace with Persistent Session Runtime */}
+          <Route path="/workforce/employee" element={<EmployeeWorkspaceLayout />}>
+            <Route index element={<Navigate to="/workforce/employee/dashboard" replace />} />
+            <Route path="dashboard" element={<EmployeeDashboardPage />} />
+            <Route path="jobs" element={<EmployeeJobsPage />} />
+            <Route path="estimates" element={<EmployeeEstimatesPage />} />
+            <Route path="estimates/:id" element={<EmployeeEstimatesPage />} />
+            <Route path="schedule" element={<Navigate to="/workforce/employee/dashboard" replace />} />
+            <Route path="attendance" element={<Navigate to="/workforce/employee/dashboard" replace />} />
+            <Route path="leave" element={<Navigate to="/workforce/employee/dashboard" replace />} />
+            <Route path="earnings" element={<EmployeeWalletDashboardPage />} />
+            <Route path="wallet" element={<EmployeeWalletDashboardPage />} />
+            <Route path="wallet/transactions" element={<EmployeeWalletTransactionsPage />} />
+            <Route path="wallet/withdrawals" element={<EmployeeWalletWithdrawalsPage />} />
+            <Route path="wallet/payout-accounts" element={<EmployeePayoutAccountsPage />} />
+            <Route path="documents" element={<EmployeeDocumentsPage />} />
+            <Route path="services" element={<EmployeeServicesPage />} />
+            <Route path="profile" element={<EmployeeProfilePage />} />
+            <Route path="settings" element={<EmployeeSettingsPage />} />
+            <Route path="performance" element={<EmployeePerformancePage />} />
+            <Route path="feedback" element={<EmployeePerformancePage />} />
+            <Route path="location" element={<EmployeeLocationPage />} />
+            <Route path="vendor-network" element={<MyVendorNetworkPage />} />
+            <Route path="invitations" element={<TechnicianInvitationsPage />} />
+          </Route>
 
             {/* Workforce Admin Operations Workspace */}
             <Route
@@ -251,6 +261,22 @@ export function App() {
               }
             />
             <Route
+              path="/workforce/admin/estimations"
+              element={
+                <AdminRoute>
+                  <VendorEstimationsPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/vendor/estimations"
+              element={
+                <AdminRoute>
+                  <VendorEstimationsPage />
+                </AdminRoute>
+              }
+            />
+            <Route
               path="/workforce/admin/dispatch"
               element={
                 <AdminRoute>
@@ -283,39 +309,114 @@ export function App() {
               }
             />
 
-            {/* Admin Reports & Monitoring */}
-            <Route
-              path="/workforce/admin/reports"
-              element={
-                <AdminRoute>
-                  <AdminReportsPage />
-                </AdminRoute>
-              }
-            />
-            <Route
-              path="/workforce/admin/monitoring/database-egress"
-              element={
-                <AdminRoute>
-                  <AdminDatabaseMonitoringPage />
-                </AdminRoute>
-              }
-            />
-            <Route
-              path="/workforce/admin/database-monitoring"
-              element={
-                <AdminRoute>
-                  <AdminDatabaseMonitoringPage />
-                </AdminRoute>
-              }
-            />
-            <Route
-              path="/workforce/admin/settings"
-              element={
-                <AdminRoute>
-                  <AdminDashboardPage />
-                </AdminRoute>
-              }
-            />
+          {/* Workforce Admin Operations Workspace */}
+          <Route
+            path="/workforce/admin"
+            element={
+              <AdminRoute>
+                <AdminDashboardPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/applications"
+            element={
+              <AdminRoute>
+                <AdminApplicationsPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/applications/:id"
+            element={
+              <AdminRoute>
+                <AdminApplicationDetailPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/employees"
+            element={
+              <AdminRoute>
+                <AdminEmployeesPage />
+              </AdminRoute>
+            }
+          />
+          {/* SEVO Platform Admin Routes */}
+          <Route
+            path="/workforce/platform/vendors"
+            element={
+              <PlatformAdminRoute>
+                <PlatformVendorsPage />
+              </PlatformAdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/platform/workforce"
+            element={
+              <PlatformAdminRoute>
+                <PlatformWorkforcePage />
+              </PlatformAdminRoute>
+            }
+          />
+
+          {/* Vendor Admin & Operations Routes */}
+          <Route
+            path="/workforce/admin/technician-network"
+            element={
+              <AdminRoute>
+                <VendorTechnicianNetworkPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/vendor-invitations"
+            element={
+              <AdminRoute>
+                <VendorInvitationsPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/jobs"
+            element={
+              <AdminRoute>
+                <AdminJobsPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/dispatch"
+            element={
+              <AdminRoute>
+                <AdminOperationsPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/operations"
+            element={
+              <AdminRoute>
+                <AdminOperationsPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/services"
+            element={
+              <AdminRoute>
+                <AdminApplicationsPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/skills"
+            element={
+              <AdminRoute>
+                <AdminSkillsPage />
+              </AdminRoute>
+            }
+          />
 
             {/* Admin Wallet Governance */}
             <Route
@@ -351,15 +452,56 @@ export function App() {
               }
             />
 
-            {/* Customer Live Tracking Routes */}
-            <Route path="/track/:jobId" element={<CustomerTrackingPage />} />
-            <Route path="/customer/track/:jobId" element={<CustomerTrackingPage />} />
+          <Route
+            path="/workforce/admin/wallet"
+            element={
+              <AdminRoute>
+                <AdminWalletPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/scorecards"
+            element={
+              <AdminRoute>
+                <AdminScorecardsPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/social-security"
+            element={
+              <AdminRoute>
+                <AdminSocialSecurityPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/reports"
+            element={
+              <AdminRoute>
+                <AdminReportsPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/settings"
+            element={
+              <AdminRoute>
+                <AdminDashboardPage />
+              </AdminRoute>
+            }
+          />
 
-            {/* Fallback */}
-            <Route path="*" element={<Navigate to="/workforce/login" replace />} />
-          </Routes>
-        </BrowserRouter>
-      </AuthProvider>
+          {/* Customer Live Tracking Routes */}
+          <Route path="/track/:jobId" element={<CustomerTrackingPage />} />
+          <Route path="/customer/track/:jobId" element={<CustomerTrackingPage />} />
+
+          {/* Fallback */}
+          <Route path="*" element={<Navigate to="/workforce/login" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
     </ThemeProvider>
   );
 }

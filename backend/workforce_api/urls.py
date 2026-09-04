@@ -4,7 +4,16 @@ Route registrations for Workforce API (/api/workforce/*).
 """
 from django.urls import include, path
 from .views import (
+    WorkforceDispatchHealthView,
     WorkforceSignupView,
+    ProviderSignupView,
+    WalletMeView,
+    WalletPayoutDetailsView,
+    WalletWithdrawView,
+    WalletAutoWithdrawalSettingsView,
+    WalletEarningsStatementView,
+    WalletLedgerExportView,
+    RazorpayXPayoutWebhookView,
     WorkforceOnboardingMeView,
     WorkforceOnboardingDraftView,
     WorkforceOnboardingDocumentUploadView,
@@ -20,6 +29,12 @@ from .views import (
     WorkforceEmployeeServiceRemoveView,
     WorkforceAdminPendingServicesListView,
     WorkforceAdminRequestCorrectionView,
+    WorkforceAdminHeldEarningsListView,
+    WorkforceAdminWalletClawbackView,
+    WorkforceAdminScorecardsListView,
+    WorkforceAdminReconciliationView,
+    WorkforceAdminSocialSecurityListView,
+    WorkforceAdminSocialSecurityMarkRegisteredView,
     WorkforceAdminApproveApplicationView,
     WorkforceAdminRejectApplicationView,
     WorkforcePresenceToggleView,
@@ -58,7 +73,6 @@ from .views import (
     WorkforceNotificationListView,
     WorkforceNotificationMarkReadView,
     WorkforceNotificationClearView,
-    WorkforceDispatchRadiusConfigView,
     WorkforceScheduleManageView,
     WorkforceMyScheduleView,
     WorkforceSkillManageView,
@@ -76,6 +90,8 @@ from .views import (
     WorkforceJobTechnicianCancelView,
     WorkforceAutoDispatchTriggerView,
     WorkforceJobArriveView,
+    WorkforceJobLogisticsLegView,
+    WorkforceJobMessagesView,
     WorkforceJobVerifyOTPView,
     WorkforceJobResendOTPView,
     WorkforceCustomerJobOTPView,
@@ -84,7 +100,6 @@ from .views import (
     WorkforceJobLiveTrackingView,
     WorkforceJobTimelineView,
     WorkforceReportsView,
-    WorkforceDatabaseTelemetryView,
     WorkforceLatencyAuditView,
     WorkforceVerificationSuiteView,
     WorkforceEmployeeProfileMeView,
@@ -97,6 +112,7 @@ from .views import (
     WorkforceTwoFactorView,
     WorkforceActiveSessionsView,
     WorkforceLoginHistoryView,
+    AdminCashOutstandingView, AdminCashSettlementView,
     WorkforceUserPreferenceView,
     WorkforceNotificationPreferenceView,
     WorkforcePrivacyExportView,
@@ -108,65 +124,53 @@ from .views import (
     WorkforceEmployeeSavedLocationDetailView,
     WorkforceAdminLocationToggleView,
     WorkforceAdminLocationAssignEmployeeView,
-    WorkforcePublicSupportInquiryView,
-    WorkforceEstimationGateView,
-    WorkforceRateCardListView,
-    WorkforceQuoteListView,
-    WorkforceQuoteDetailView,
-    WorkforceQuoteItemBulkView,
-    WorkforceQuoteMeasurementsBulkView,
-    WorkforceQuoteInspectionView,
-    WorkforceQuoteSendView,
-    WorkforceQuoteReviseView,
-    WorkforceCustomerQuoteDetailView,
-    WorkforceCustomerQuoteDecideView,
-    WorkforceAdminQuoteClearanceView,
-    WorkforceAdminQuoteMetricsView,
-    WorkforceAdminQuoteRetryConversionView,
-    WorkforceSuperadminServiceProviderListView,
-    WorkforceSuperadminServiceProviderDetailView,
-    WorkforceProviderProfileView,
-    WorkforceAdminTechnicianListView,
-    WorkforceAdminTechnicianDetailView,
-    WorkforceAdminTechnicianToggleActiveView,
-    WorkforcePublicServiceProviderListView,
-    WorkforceServiceProviderSignupView,
-    WorkforceAdminJoinRequestDecideView,
+    # Technician-Vendor Network
+    VendorNetworkTechniciansView,
+    VendorNetworkDetailView,
+    VendorNetworkStatusUpdateView,
+    VendorInvitationsView,
+    VendorInvitationCancelView,
+    VendorDiscoverySearchView,
+    VendorCriteriaListView,
+    VendorCriteriaDetailView,
+    TechnicianVendorNetworkView,
+    TechnicianInvitationsView,
+    TechnicianInvitationRespondView,
+    TechnicianLeaveVendorView,
+    PublicInvitationVerifyView,
+    # Platform oversight & Tie/Untie
+    PlatformVendorsListView,
+    PlatformWorkforceListView,
+    PlatformTieTechnicianView,
+    PlatformUntieTechnicianView,
+    # Resignation & Relieving Lifecycle
+    TechnicianSubmitResignationView,
+    TechnicianRelievingStatusView,
+    VendorRelievingRequestsView,
+    VendorApproveRelievingView,
+    PlatformRelievingRequestsView,
+    PlatformApproveRelievingView,
+    RelievingLegalSignoffView,
 )
 
 
+
 urlpatterns = [
-    # Public: Service Providers List (Phase 2C) & Self-Service Registration (Phase 2D)
-    path("service-providers/public/", WorkforcePublicServiceProviderListView.as_view(), name="workforce-public-service-providers"),
-    path("service-providers/signup/", WorkforceServiceProviderSignupView.as_view(), name="workforce-service-provider-signup"),
-
-
-    # Superadmin: Service Provider Management (Phase 2A)
-    path("superadmin/service-providers/", WorkforceSuperadminServiceProviderListView.as_view(), name="workforce-superadmin-service-providers"),
-    path("superadmin/service-providers/<int:pk>/", WorkforceSuperadminServiceProviderDetailView.as_view(), name="workforce-superadmin-service-provider-detail"),
-
-    # Provider Admin: Provider Profile & Technician Management (Phase 2A & 2B)
-    path("provider/profile/", WorkforceProviderProfileView.as_view(), name="workforce-provider-profile"),
-    path("provider/technicians/", WorkforceAdminTechnicianListView.as_view(), name="workforce-provider-technicians"),
-    path("admin/technicians/", WorkforceAdminTechnicianListView.as_view(), name="workforce-admin-technicians"),
-    path("admin/technicians/<int:pk>/", WorkforceAdminTechnicianDetailView.as_view(), name="workforce-admin-technician-detail"),
-    path("admin/technicians/<int:pk>/toggle-active/", WorkforceAdminTechnicianToggleActiveView.as_view(), name="workforce-admin-technician-toggle-active"),
-
-    # Join Request Decisions (Phase 2C)
-    path("admin/join-requests/<int:pk>/decide/", WorkforceAdminJoinRequestDecideView.as_view(), name="workforce-admin-join-request-decide"),
-    path("admin/applications/<int:pk>/join-request/decide/", WorkforceAdminJoinRequestDecideView.as_view(), name="workforce-admin-application-join-request-decide"),
-
-    # Public Operations & Support Inquiries
-    path("support/inquiry/", WorkforcePublicSupportInquiryView.as_view(), name="workforce-support-inquiry"),
-
     # Technician Auth & Onboarding Lifecycle (Phases 4–8)
     path("signup/", WorkforceSignupView.as_view(), name="workforce-signup"),
+    path("provider/signup/", ProviderSignupView.as_view(), name="provider-signup"),
+    path("wallet/me/", WalletMeView.as_view(), name="wallet-me"),
+    path("wallet/payout-details/", WalletPayoutDetailsView.as_view(), name="wallet-payout-details"),
+    path("wallet/withdraw/", WalletWithdrawView.as_view(), name="wallet-withdraw"),
+    path("wallet/auto-withdrawal/", WalletAutoWithdrawalSettingsView.as_view(), name="wallet-auto-withdrawal"),
+    path("wallet/statement/", WalletEarningsStatementView.as_view(), name="wallet-statement"),
+    path("wallet/ledger/export/", WalletLedgerExportView.as_view(), name="wallet-ledger-export"),
+    path("wallet/payout-webhook/", RazorpayXPayoutWebhookView.as_view(), name="wallet-payout-webhook"),
     path("onboarding/me/", WorkforceOnboardingMeView.as_view(), name="workforce-onboarding-me"),
     path("onboarding/draft/", WorkforceOnboardingDraftView.as_view(), name="workforce-onboarding-draft"),
     path("onboarding/documents/", WorkforceOnboardingDocumentUploadView.as_view(), name="workforce-onboarding-documents"),
     path("onboarding/submit/", WorkforceOnboardingSubmitView.as_view(), name="workforce-onboarding-submit"),
     path("catalog/", WorkforceCatalogListView.as_view(), name="workforce-catalog"),
-
 
     # Employee Services Self-Service Request & Removal
     path("services/request/", WorkforceEmployeeServiceRequestView.as_view(), name="workforce-service-request"),
@@ -181,6 +185,12 @@ urlpatterns = [
     path("admin/applications/<int:pk>/services/bulk-decide/", WorkforceAdminBulkServiceDecideView.as_view(), name="workforce-admin-services-bulk-decide"),
     path("admin/services/pending-requests/", WorkforceAdminPendingServicesListView.as_view(), name="workforce-admin-pending-services"),
     path("admin/applications/<int:pk>/request-correction/", WorkforceAdminRequestCorrectionView.as_view(), name="workforce-admin-request-correction"),
+    path("admin/wallet/held-earnings/", WorkforceAdminHeldEarningsListView.as_view(), name="workforce-admin-wallet-held-earnings"),
+    path("admin/wallet/clawback/", WorkforceAdminWalletClawbackView.as_view(), name="workforce-admin-wallet-clawback"),
+    path("admin/scorecards/", WorkforceAdminScorecardsListView.as_view(), name="workforce-admin-scorecards"),
+    path("admin/reconciliation/", WorkforceAdminReconciliationView.as_view(), name="workforce-admin-reconciliation"),
+    path("admin/social-security/", WorkforceAdminSocialSecurityListView.as_view(), name="workforce-admin-social-security"),
+    path("admin/social-security/mark-registered/", WorkforceAdminSocialSecurityMarkRegisteredView.as_view(), name="workforce-admin-social-security-mark-registered"),
     path("admin/applications/<int:pk>/approve/", WorkforceAdminApproveApplicationView.as_view(), name="workforce-admin-approve"),
     path("admin/applications/<int:pk>/reject/", WorkforceAdminRejectApplicationView.as_view(), name="workforce-admin-reject"),
 
@@ -208,6 +218,8 @@ urlpatterns = [
     path("jobs/<int:pk>/reject-offer/", WorkforceJobRejectOfferView.as_view(), name="workforce-job-reject-offer"),
     path("jobs/<int:pk>/cancel/", WorkforceJobTechnicianCancelView.as_view(), name="workforce-job-technician-cancel"),
     path("jobs/<int:pk>/arrive/", WorkforceJobArriveView.as_view(), name="workforce-job-arrive"),
+    path("jobs/<int:pk>/logistics-leg/", WorkforceJobLogisticsLegView.as_view(), name="workforce-job-logistics-leg"),
+    path("jobs/<int:pk>/messages/", WorkforceJobMessagesView.as_view(), name="workforce-job-messages"),
     path("jobs/<int:pk>/verify-otp/", WorkforceJobVerifyOTPView.as_view(), name="workforce-job-verify-otp"),
     path("jobs/<int:pk>/resend-otp/", WorkforceJobResendOTPView.as_view(), name="workforce-job-resend-otp"),
     path("jobs/<int:pk>/customer-otp/", WorkforceCustomerJobOTPView.as_view(), name="workforce-job-customer-otp"),
@@ -291,8 +303,7 @@ urlpatterns = [
     # Reports Engine (Phase 27)
     path("reports/", WorkforceReportsView.as_view(), name="workforce-reports"),
 
-    # Performance & Database Telemetry Audit
-    path("admin/database-telemetry/", WorkforceDatabaseTelemetryView.as_view(), name="workforce-admin-database-telemetry"),
+    # Performance & Latency Audit
     path("audit-latency/", WorkforceLatencyAuditView.as_view(), name="workforce-audit-latency"),
 
     # Automated Test Verification Suite
@@ -313,6 +324,8 @@ urlpatterns = [
     path("security/2fa/toggle/", WorkforceTwoFactorView.as_view(), name="workforce-security-2fa-toggle"),
     path("security/sessions/", WorkforceActiveSessionsView.as_view(), name="workforce-security-sessions"),
     path("security/login-history/", WorkforceLoginHistoryView.as_view(), name="workforce-security-login-history"),
+    path("admin/cash/outstanding/<int:employee_id>/", AdminCashOutstandingView.as_view(), name="admin-cash-outstanding"),
+    path("admin/cash/settlements/", AdminCashSettlementView.as_view(), name="admin-cash-settlements"),
 
     # Appearance & Preferences
     path("preferences/", WorkforceUserPreferenceView.as_view(), name="workforce-preferences"),
@@ -340,26 +353,43 @@ urlpatterns = [
     path("admin/locations/<int:pk>/toggle/", WorkforceAdminLocationToggleView.as_view(), name="workforce-admin-location-toggle"),
     path("admin/locations/<int:pk>/assign/", WorkforceAdminLocationAssignEmployeeView.as_view(), name="workforce-admin-location-assign"),
 
-    # ── Estimation & Commercial Quotation Engine ──────────────────────────────
-    path("jobs/<int:pk>/estimation-gate/", WorkforceEstimationGateView.as_view(), name="workforce-job-estimation-gate"),
-    path("rate-cards/", WorkforceRateCardListView.as_view(), name="workforce-rate-cards"),
-    path("quotes/", WorkforceQuoteListView.as_view(), name="workforce-quotes"),
-    path("quotes/<int:pk>/", WorkforceQuoteDetailView.as_view(), name="workforce-quote-detail"),
-    path("quotes/<int:pk>/items/bulk/", WorkforceQuoteItemBulkView.as_view(), name="workforce-quote-items-bulk"),
-    path("quotes/<int:pk>/measurements/bulk/", WorkforceQuoteMeasurementsBulkView.as_view(), name="workforce-quote-measurements-bulk"),
-    path("quotes/<int:pk>/inspection/", WorkforceQuoteInspectionView.as_view(), name="workforce-quote-inspection"),
-    path("quotes/<int:pk>/send/", WorkforceQuoteSendView.as_view(), name="workforce-quote-send"),
-    path("quotes/<int:pk>/revise/", WorkforceQuoteReviseView.as_view(), name="workforce-quote-revise"),
-    path("customer/quote-token/<str:token>/", WorkforceCustomerQuoteDetailView.as_view(), name="workforce-customer-quote-token"),
-    path("customer/quote-token/<str:token>/decide/", WorkforceCustomerQuoteDecideView.as_view(), name="workforce-customer-quote-token-decide"),
-    path("customer/quotes/<int:pk>/", WorkforceCustomerQuoteDetailView.as_view(), name="workforce-customer-quote-detail"),
-    path("customer/quotes/<int:pk>/decide/", WorkforceCustomerQuoteDecideView.as_view(), name="workforce-customer-quote-decide"),
-    path("admin/quotes/metrics/", WorkforceAdminQuoteMetricsView.as_view(), name="workforce-admin-quote-metrics"),
-    path("admin/quotes/<int:pk>/clear-structural/", WorkforceAdminQuoteClearanceView.as_view(), name="workforce-admin-quote-clear-structural"),
-    path("admin/quotes/<int:pk>/retry-conversion/", WorkforceAdminQuoteRetryConversionView.as_view(), name="workforce-admin-quote-retry-conversion"),
+    # Dispatch engine health check (X-11)
+    path("dispatch/health/", WorkforceDispatchHealthView.as_view(), name="workforce-dispatch-health"),
 
-    # Global Dispatch Configuration
-    path("admin/settings/dispatch-radius/", WorkforceDispatchRadiusConfigView.as_view(), name="workforce-admin-dispatch-radius"),
+    # ── Technician-Vendor Network Routes ─────────────────────────────────────
+    # Vendor Admin endpoints
+    path("vendor/network/", VendorNetworkTechniciansView.as_view(), name="vendor-network-technicians"),
+    path("vendor/network/<int:pk>/", VendorNetworkDetailView.as_view(), name="vendor-network-detail"),
+    path("vendor/network/<int:pk>/status/", VendorNetworkStatusUpdateView.as_view(), name="vendor-network-status"),
+    path("vendor/invitations/", VendorInvitationsView.as_view(), name="vendor-invitations"),
+    path("vendor/invitations/<int:pk>/cancel/", VendorInvitationCancelView.as_view(), name="vendor-invitation-cancel"),
+    path("vendor/criteria/", VendorCriteriaListView.as_view(), name="vendor-criteria-list"),
+    path("vendor/criteria/<int:pk>/", VendorCriteriaDetailView.as_view(), name="vendor-criteria-detail"),
+    path("vendor/discover/", VendorDiscoverySearchView.as_view(), name="vendor-discover-technicians"),
+
+    # Technician endpoints
+    path("technician/network/", TechnicianVendorNetworkView.as_view(), name="technician-vendor-network"),
+    path("technician/network/<int:pk>/leave/", TechnicianLeaveVendorView.as_view(), name="technician-leave-vendor"),
+    path("technician/invitations/", TechnicianInvitationsView.as_view(), name="technician-invitations"),
+    path("technician/invitations/<int:pk>/respond/", TechnicianInvitationRespondView.as_view(), name="technician-invitation-respond"),
+
+    # Public verification
+    path("invitations/verify-token/", PublicInvitationVerifyView.as_view(), name="public-invitation-verify"),
+
+    # ── SEVO Platform Superadmin Routes ──────────────────────────────────────
+    path("platform/vendors/", PlatformVendorsListView.as_view(), name="platform-vendors"),
+    path("platform/workforce/", PlatformWorkforceListView.as_view(), name="platform-workforce"),
+    path("platform/workforce/<int:pk>/tie-vendor/", PlatformTieTechnicianView.as_view(), name="platform-tie-technician"),
+    path("platform/workforce/<int:pk>/untie-vendor/", PlatformUntieTechnicianView.as_view(), name="platform-untie-technician"),
+
+    # ── Resignation & Relieving Lifecycle Routes ──────────────────────────────
+    path("technician/relieve/request/", TechnicianSubmitResignationView.as_view(), name="technician-submit-resignation"),
+    path("technician/relieve/status/", TechnicianRelievingStatusView.as_view(), name="technician-relieving-status"),
+    path("vendor/relieving-requests/", VendorRelievingRequestsView.as_view(), name="vendor-relieving-requests"),
+    path("vendor/relieving-requests/<int:pk>/approve/", VendorApproveRelievingView.as_view(), name="vendor-approve-relieving"),
+    path("platform/relieving-requests/", PlatformRelievingRequestsView.as_view(), name="platform-relieving-requests"),
+    path("platform/relieving-requests/<int:pk>/approve/", PlatformApproveRelievingView.as_view(), name="platform-approve-relieving"),
+    path("relieving-requests/<int:pk>/signoff/", RelievingLegalSignoffView.as_view(), name="relieving-legal-signoff"),
 ]
 
 

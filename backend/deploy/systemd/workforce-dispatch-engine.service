@@ -1,0 +1,52 @@
+# X-11: "automatic dispatch as a supervised service"
+#
+# workforce_api/management/commands/dispatch_pending_workforce_jobs.py already
+# implements the reconciliation loop itself (--loop --interval N) and writes a
+# heartbeat row (WorkforceEventLog event_type="dispatch_engine_heartbeat", read
+# by the admin-facing endpoint in workforce_api/views.py) so external tooling
+# can tell whether it is alive. Its own docstring says restart-on-crash needs
+# "a process supervisor (systemd/supervisord/Docker restart policy) at the
+# deployment layer -- that is outside what a Python management command can
+# guarantee for itself." This unit is that missing piece: it makes the loop a
+# supervised, auto-restarting, boot-persistent OS service instead of something
+# that only runs for as long as someone's terminal session happens to.
+#
+# This file is a template, not wired into any deployment automatically -- it
+# does not change any Python runtime behavior. A human must install and start
+# it deliberately, after filling in the placeholders below for the actual
+# target host (paths, user, environment file). Copy it to
+# /etc/systemd/system/workforce-dispatch-engine.service and see
+# deploy/systemd/README.md for the exact install/verify steps.
+
+[Unit]
+Description=CalServices Workforce Automatic Dispatch Reconciliation Engine (X-11)
+After=network-online.target postgresql.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# CHANGE ME: the OS user this should run as (should NOT be root).
+User=REPLACE_WITH_DEPLOY_USER
+# CHANGE ME: absolute path to this repo's vendor/backend directory.
+WorkingDirectory=REPLACE_WITH_ABSOLUTE_PATH/vendor/backend
+# CHANGE ME: absolute path to the virtualenv's python for this project.
+ExecStart=REPLACE_WITH_ABSOLUTE_PATH/venv/bin/python manage.py dispatch_pending_workforce_jobs --loop --interval 5
+# CHANGE ME (optional): if secrets/DB config live in a separate env file
+# rather than being exported by the shell already.
+# EnvironmentFile=REPLACE_WITH_ABSOLUTE_PATH/vendor/backend/.env
+
+# This is the actual fix for X-11: if the loop process dies for any reason
+# (exception outside the loop's own try/except, OOM kill, host reboot),
+# systemd restarts it automatically instead of dispatch silently stopping
+# until a human notices and restarts it by hand.
+Restart=always
+RestartSec=5
+
+# Keep failure noise visible without spamming production logs.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=workforce-dispatch-engine
+
+[Install]
+WantedBy=multi-user.target

@@ -8,6 +8,7 @@ import {
   apiGetOnboardingProfile,
   apiUploadJobProof,
   apiCollectJobCash,
+  apiVerifyPaymentOTP,
   apiGetJobPayment,
   apiRequestWorkExtension,
   apiCustomerDecideExtension,
@@ -157,6 +158,7 @@ export function EmployeeDashboardPage() {
     reconcileJobCompleted,
     reconcileOfferRemoved,
     liveLocation,
+    locationError,
     scanCurrentLocation,
     autoClockIn,
     getClockInReadiness,
@@ -287,6 +289,33 @@ export function EmployeeDashboardPage() {
     is_complete: false,
   });
   const [otpInput, setOtpInput] = useState('');
+  const [paymentOtpInput, setPaymentOtpInput] = useState('');
+  const [isVerifyingPaymentOtp, setIsVerifyingPaymentOtp] = useState(false);
+
+  const handleVerifyPaymentOtpSubmit = async (jobId, otp) => {
+    const cleanOtp = String(otp || paymentOtpInput || '').trim();
+    if (!cleanOtp || cleanOtp.length !== 6) {
+      setError('Please enter the 6-digit Cash Payment Confirmation OTP from customer.');
+      return;
+    }
+    try {
+      setIsVerifyingPaymentOtp(true);
+      setError('');
+      const res = await apiVerifyPaymentOTP(jobId, cleanOtp);
+      setSuccessMsg(res.message || 'Payment confirmed and verified! Job is COMPLETED.');
+      setPaymentOtpInput('');
+      setCashModalJob(null);
+      if (typeof reconcileJobCompleted === 'function') {
+        reconcileJobCompleted(jobId, { status: 'completed', payment_status: 'PAID' });
+      }
+      await loadDashboard({ force: true });
+      setTimeout(() => setSuccessMsg(''), 5000);
+    } catch (err) {
+      setError(err.message || 'Invalid payment confirmation OTP. Ask customer for the 6-digit code displayed in their app.');
+    } finally {
+      setIsVerifyingPaymentOtp(false);
+    }
+  };
   const [isQuotationModalOpen, setIsQuotationModalOpen] = useState(false);
 
   // ── Automatic Geofence Arrival Event Listener (Telemetry handled by EmployeeRuntimeProvider) ──
@@ -1029,6 +1058,7 @@ export function EmployeeDashboardPage() {
     };
 
     const handleOpenCancelModal = (job) => {
+      setError('');
       setCancelModalJob(job || selectedJob);
       setSelectedCancelReason('VEHICLE_ISSUE');
       setCustomCancelReason('');
@@ -1052,8 +1082,8 @@ export function EmployeeDashboardPage() {
         await apiCancelJobAssignment(cancellingId, selectedCancelReason, reasonText);
         setCancelModalJob(null);
         setSuccessMsg('Job assignment cancelled. You are now AVAILABLE for new requests.');
-        if (typeof reconcileJobCompleted === 'function') {
-          reconcileJobCompleted(cancellingId, { id: cancellingId, status: 'unassigned' });
+        if (typeof reconcileOfferRemoved === 'function') {
+          reconcileOfferRemoved(cancellingId);
         }
         setSelectedJob(null);
         if (typeof refreshActiveJobs === 'function') {
@@ -1077,6 +1107,7 @@ export function EmployeeDashboardPage() {
         setActionLoading(null);
       }
     };
+    const handleConfirmCancelJob = handleConfirmCancelAssignment;
 
     const handleExtensionSubmit = async (e) => {
       e.preventDefault();
@@ -1190,6 +1221,7 @@ export function EmployeeDashboardPage() {
             activeAssignedJob={activeAssignedJob}
             hasActiveJob={hasActiveJob}
             liveLocation={liveLocation}
+            locationError={locationError}
             actionLoading={actionLoading}
             handleAcceptOffer={handleAcceptOffer}
             handleRejectOffer={handleRejectOffer}
@@ -1197,11 +1229,17 @@ export function EmployeeDashboardPage() {
             handleManualVerifyArrival={handleManualVerifyArrival}
             handleDirectJobClockIn={handleDirectJobClockIn}
             onOpenCancelModal={handleOpenCancelModal}
+            onOpenProofModal={(j) => setProofModalJob(j || activeAssignedJob || selectedJob)}
+            onOpenCashModal={(j) => setCashModalJob(j || activeAssignedJob || selectedJob)}
             preServiceState={preServiceState}
             otpInput={otpInput}
             setOtpInput={setOtpInput}
             handleVerifyOtpSubmit={handleVerifyOtpSubmit}
             handleResendOtp={handleResendOtp}
+            paymentOtpInput={paymentOtpInput}
+            setPaymentOtpInput={setPaymentOtpInput}
+            isVerifyingPaymentOtp={isVerifyingPaymentOtp}
+            handleVerifyPaymentOtpSubmit={handleVerifyPaymentOtpSubmit}
             openLiveCamera={openLiveCamera}
             handlePhotoUploadSubmit={handlePhotoUploadSubmit}
             onRefreshData={loadDashboard}
@@ -1282,46 +1320,63 @@ export function EmployeeDashboardPage() {
           )}
 
           {/* Cancel Assignment Modal */}
-          {/* Cancel Assignment Modal */}
           {cancelModalJob && (
             <Modal
               isOpen={Boolean(cancelModalJob)}
               onClose={() => setCancelModalJob(null)}
-              title="Cancel Job Assignment"
+              title={`Cancel Assignment — Job #${cancelModalJob.request_id || cancelModalJob.id}`}
             >
-              <div className="space-y-4 text-xs font-sans">
-                <p className="text-slate-600">
-                  Select a reason for cancelling assignment <strong>#{cancelModalJob.request_id || cancelModalJob.id}</strong> (Available before Customer OTP):
-                </p>
-                <select
-                  value={selectedCancelReason}
-                  onChange={(e) => setSelectedCancelReason(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-medium outline-none focus:bg-white focus:border-rose-500"
-                >
-                  <option value="VEHICLE_ISSUE">Vehicle Breakdown / Transit Issue</option>
-                  <option value="PERSONAL_EMERGENCY">Personal Emergency</option>
-                  <option value="TRAFFIC_ROUTE_ISSUE">Extreme Traffic / Road Closed</option>
-                  <option value="CUSTOMER_LOCATION_ISSUE">Customer Location Unreachable</option>
-                  <option value="TOO_FAR">Location Too Far / Out of Reach</option>
-                  <option value="SERVICE_MISMATCH">Skill / Tooling Mismatch</option>
-                  <option value="SAFETY_CONCERN">Safety Concern at Site</option>
-                  <option value="OTHER">Other Reason</option>
-                </select>
+              <form onSubmit={handleConfirmCancelAssignment} className="space-y-4 text-xs font-sans">
+                {error && (
+                  <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 font-semibold text-xs flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                    <span>{error}</span>
+                  </div>
+                )}
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 space-y-1">
+                  <p className="font-bold flex items-center gap-1.5 text-xs text-amber-950">
+                    <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
+                    <span>Cancellation Notice (Before Customer OTP)</span>
+                  </p>
+                  <p className="text-[11px] text-amber-800">
+                    Cancelling will immediately release this assignment, preserve the customer booking, and start automated redispatch for the next eligible technician.
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-slate-700 font-bold mb-1.5">
+                    Select Reason for Cancellation <span className="text-rose-500">*</span>
+                  </label>
+                  <select
+                    value={selectedCancelReason}
+                    onChange={(e) => setSelectedCancelReason(e.target.value)}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-medium outline-none focus:bg-white focus:border-rose-500"
+                  >
+                    <option value="VEHICLE_ISSUE">Vehicle Breakdown / Transit Issue</option>
+                    <option value="PERSONAL_EMERGENCY">Personal Emergency</option>
+                    <option value="TRAFFIC_ROUTE_ISSUE">Extreme Traffic / Road Closed</option>
+                    <option value="CUSTOMER_LOCATION_ISSUE">Customer Location Unreachable</option>
+                    <option value="TOO_FAR">Location Too Far / Out of Reach</option>
+                    <option value="SERVICE_MISMATCH">Skill / Tooling Mismatch</option>
+                    <option value="SAFETY_CONCERN">Safety Concern at Site</option>
+                    <option value="OTHER">Other Reason</option>
+                  </select>
+                </div>
 
                 <div>
                   <label className="text-[11px] font-bold text-slate-700 block mb-1">
-                    Additional Notes / Explanation {selectedCancelReason === 'OTHER' ? '*' : '(Optional)'}
+                    Additional Notes / Explanation {selectedCancelReason === 'OTHER' ? <span className="text-rose-500">*</span> : '(Optional)'}
                   </label>
                   <textarea
                     rows={2}
                     value={customCancelReason}
                     onChange={(e) => setCustomCancelReason(e.target.value)}
                     placeholder="Provide details about the cancellation reason..."
+                    required={selectedCancelReason === 'OTHER'}
                     className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-sans outline-none focus:bg-white focus:border-rose-500"
                   />
                 </div>
 
-                <div className="flex justify-end gap-2 pt-2">
+                <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
                   <button
                     type="button"
                     onClick={() => setCancelModalJob(null)}
@@ -1330,15 +1385,404 @@ export function EmployeeDashboardPage() {
                     Keep Assignment
                   </button>
                   <button
-                    type="button"
-                    onClick={handleConfirmCancelAssignment}
-                    disabled={isCancellingJob}
-                    className="px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg cursor-pointer transition-all shadow-sm"
+                    type="submit"
+                    disabled={isCancellingJob || (selectedCancelReason === 'OTHER' && !customCancelReason.trim())}
+                    className="px-5 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold rounded-lg cursor-pointer transition-all shadow-sm"
                   >
-                    {isCancellingJob ? 'Cancelling...' : 'Confirm Cancellation'}
+                    {isCancellingJob ? 'Cancelling...' : 'Confirm Cancellation & Redispatch'}
                   </button>
                 </div>
-              </div>
+              </form>
+            </Modal>
+          )}
+
+          {/* Modal: Proof of Work Completion */}
+          {proofModalJob && (
+            <Modal
+              isOpen={Boolean(proofModalJob)}
+              onClose={() => {
+                setProofModalJob(null);
+                setAfterFaceFile(null);
+                setBeforeFile(null);
+                setAfterFile(null);
+                if (afterFacePreviewUrl) URL.revokeObjectURL(afterFacePreviewUrl);
+                if (beforePreviewUrl) URL.revokeObjectURL(beforePreviewUrl);
+                if (afterPreviewUrl) URL.revokeObjectURL(afterPreviewUrl);
+                setAfterFacePreviewUrl(null);
+                setBeforePreviewUrl(null);
+                setAfterPreviewUrl(null);
+              }}
+              title={`Proof of Work Completion — Job #${proofModalJob.request_id || proofModalJob.id}`}
+            >
+              <form onSubmit={handleProofSubmit} className="space-y-4 text-xs font-sans">
+                {error && (
+                  <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 font-semibold text-xs flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                    <span>{error}</span>
+                  </div>
+                )}
+
+                {/* Mandatory Step 1: After Face Selfie */}
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">
+                    After Face Selfie (Technician Identity at Completion) <span className="text-rose-500">*</span>
+                  </label>
+                  {afterFaceFile ? (
+                    <div className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
+                      <div className="flex items-center gap-2.5">
+                        {afterFacePreviewUrl ? (
+                          <img
+                            src={afterFacePreviewUrl}
+                            alt="After Face"
+                            className="w-12 h-12 object-cover rounded-lg border border-slate-300 shadow-sm"
+                          />
+                        ) : (
+                          <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center text-blue-600">
+                            <Camera className="w-6 h-6" />
+                          </div>
+                        )}
+                        <div>
+                          <span className="font-bold text-xs text-slate-800 block truncate max-w-[180px]">
+                            {afterFaceFile.name || 'After Face Selfie Captured'}
+                          </span>
+                          <span className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3" /> Live selfie attached
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          openLiveCamera(
+                            'Capture After Face Selfie',
+                            'user',
+                            'after_face_selfie',
+                            (file, previewUrl) => {
+                              setAfterFaceFile(file);
+                              setAfterFacePreviewUrl(previewUrl);
+                            }
+                          )
+                        }
+                        className="px-2.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-bold rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
+                      >
+                        <RefreshCw className="w-3 h-3" /> Retake
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        openLiveCamera(
+                          'Capture After Face Selfie',
+                          'user',
+                          'after_face_selfie',
+                          (file, previewUrl) => {
+                            setAfterFaceFile(file);
+                            setAfterFacePreviewUrl(previewUrl);
+                          }
+                        )
+                      }
+                      className="w-full py-3 px-4 border-2 border-dashed border-blue-400 hover:border-blue-600 bg-blue-50/60 hover:bg-blue-50 text-blue-700 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all active:scale-[0.99] shadow-sm cursor-pointer"
+                    >
+                      <Camera className="w-4 h-4 text-blue-600" />
+                      <span>📸 Take Live Face Selfie (Required)</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Optional Step 2: After Product Photo */}
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">
+                    After Product Photo (Completed Result) <span className="text-slate-400 font-normal text-[11px]">(optional)</span>
+                  </label>
+                  {afterFile ? (
+                    <div className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
+                      <div className="flex items-center gap-2.5">
+                        {afterPreviewUrl ? (
+                          <img
+                            src={afterPreviewUrl}
+                            alt="After"
+                            className="w-12 h-12 object-cover rounded-lg border border-slate-300 shadow-sm"
+                          />
+                        ) : (
+                          <div className="w-12 h-12 bg-emerald-100 rounded-lg flex items-center justify-center text-emerald-600">
+                            <Camera className="w-6 h-6" />
+                          </div>
+                        )}
+                        <div>
+                          <span className="font-bold text-xs text-slate-800 block truncate max-w-[180px]">
+                            {afterFile.name || 'After Photo Captured'}
+                          </span>
+                          <span className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3" /> Live snapshot attached
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          openLiveCamera(
+                            'Capture After Photo',
+                            'environment',
+                            'after_work',
+                            (file, previewUrl) => {
+                              setAfterFile(file);
+                              setAfterPreviewUrl(previewUrl);
+                            }
+                          )
+                        }
+                        className="px-2.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-bold rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
+                      >
+                        <RefreshCw className="w-3 h-3" /> Retake
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        openLiveCamera(
+                          'Capture After Photo',
+                          'environment',
+                          'after_work',
+                          (file, previewUrl) => {
+                            setAfterFile(file);
+                            setAfterPreviewUrl(previewUrl);
+                          }
+                        )
+                      }
+                      className="w-full py-2.5 px-4 border border-dashed border-slate-300 hover:border-slate-400 bg-slate-50 hover:bg-slate-100/70 text-slate-700 rounded-xl font-semibold text-xs flex items-center justify-center gap-2 transition-all active:scale-[0.99] cursor-pointer"
+                    >
+                      <Camera className="w-4 h-4 text-slate-500" />
+                      <span>📸 Add After Product Photo (optional)</span>
+                    </button>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">
+                    Completion Notes <span className="text-slate-400 font-normal text-[11px]">(optional)</span>
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={workNotes}
+                    onChange={(e) => setWorkNotes(e.target.value)}
+                    placeholder="Details of service provided, parts replaced, or tests performed..."
+                    className="w-full border border-slate-300 rounded-lg p-2.5 text-xs text-slate-800 outline-none focus:border-slate-800"
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProofModalJob(null);
+                      setAfterFaceFile(null);
+                      setBeforeFile(null);
+                      setAfterFile(null);
+                      if (afterFacePreviewUrl) URL.revokeObjectURL(afterFacePreviewUrl);
+                      if (beforePreviewUrl) URL.revokeObjectURL(beforePreviewUrl);
+                      if (afterPreviewUrl) URL.revokeObjectURL(afterPreviewUrl);
+                      setAfterFacePreviewUrl(null);
+                      setBeforePreviewUrl(null);
+                      setAfterPreviewUrl(null);
+                    }}
+                    className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 font-bold hover:bg-slate-50 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isUploadingProof || !afterFaceFile}
+                    className="px-5 py-2 rounded-lg bg-emerald-600 disabled:opacity-50 text-white font-bold hover:bg-emerald-700 shadow-sm cursor-pointer"
+                  >
+                    {isUploadingProof ? 'Uploading...' : 'Complete Service'}
+                  </button>
+                </div>
+              </form>
+            </Modal>
+          )}
+
+          {/* Cash Collection Modal */}
+          {cashModalJob && (
+            <Modal
+              isOpen={Boolean(cashModalJob)}
+              onClose={() => setCashModalJob(null)}
+              title={`Collect Cash — Job #${cashModalJob.request_id || cashModalJob.id}`}
+            >
+              <form onSubmit={handleCashCollectSubmit} className="space-y-4 text-xs font-sans">
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-1">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-amber-800 font-semibold">Service:</span>
+                    <span className="font-bold text-amber-950">{cashModalJob.service_title || cashModalJob.issue_title || 'Service'}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-amber-800 font-semibold">Authoritative Amount Due:</span>
+                    <span className="font-mono font-bold text-base text-amber-950">
+                      ₹{cashModalJob.payment?.amount_due || cashModalJob.total_amount || 0}
+                    </span>
+                  </div>
+                </div>
+
+                {(cashModalJob.payment?.payment_status === 'CASH_PENDING' || cashModalJob.payment_status === 'cash_pending') ? (
+                  <div className="space-y-3">
+                    <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-900 text-xs space-y-1">
+                      <p className="font-bold flex items-center gap-1.5">
+                        <ShieldCheck className="w-4 h-4 text-blue-700" />
+                        <span>Customer Confirmation Code Required</span>
+                      </p>
+                      <p className="text-[11px] text-blue-800 leading-relaxed">
+                        Cash collection was recorded. Ask customer for the <strong>6-digit Cash Payment Confirmation OTP</strong> displayed in their app to verify payment and complete the job.
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-700 font-bold mb-1">
+                        Customer Cash OTP (6-digits) <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        maxLength={6}
+                        required
+                        value={paymentOtpInput}
+                        onChange={(e) => setPaymentOtpInput(e.target.value)}
+                        placeholder="• • • • • •"
+                        className="w-full border border-slate-300 rounded-lg p-2.5 font-mono text-base font-bold text-slate-900 tracking-[0.3em] text-center outline-none focus:border-slate-800"
+                      />
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
+                      <button
+                        type="button"
+                        onClick={() => setCashModalJob(null)}
+                        className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 font-bold hover:bg-slate-50 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleVerifyPaymentOtpSubmit(cashModalJob.id, paymentOtpInput)}
+                        disabled={isVerifyingPaymentOtp || !paymentOtpInput || paymentOtpInput.trim().length !== 6}
+                        className="px-5 py-2 rounded-lg bg-emerald-600 disabled:opacity-50 text-white font-bold hover:bg-emerald-700 shadow-sm cursor-pointer flex items-center gap-1.5"
+                      >
+                        {isVerifyingPaymentOtp ? <RotateCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                        <span>Verify OTP &amp; Complete</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <label className="block text-slate-700 font-bold mb-1">
+                        Cash Amount Received (₹) <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        required
+                        value={cashAmountReceived}
+                        onChange={(e) => setCashAmountReceived(e.target.value)}
+                        placeholder="Enter cash collected from customer..."
+                        className="w-full border border-slate-300 rounded-lg p-2.5 font-mono text-sm font-bold text-slate-900 outline-none focus:border-slate-800"
+                      />
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
+                      <button
+                        type="button"
+                        onClick={() => setCashModalJob(null)}
+                        className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 font-bold hover:bg-slate-50 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={isCollectingCash || !cashAmountReceived}
+                        className="px-5 py-2 rounded-lg bg-emerald-600 disabled:opacity-50 text-white font-bold hover:bg-emerald-700 shadow-sm cursor-pointer"
+                      >
+                        {isCollectingCash ? 'Confirming...' : 'Confirm Cash Received'}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </form>
+            </Modal>
+          )}
+
+          {/* Request Scope / Extension Modal */}
+          {extensionModalJob && (
+            <Modal
+              isOpen={Boolean(extensionModalJob)}
+              onClose={() => setExtensionModalJob(null)}
+              title={`Request Scope Extension — Job #${extensionModalJob.request_id || extensionModalJob.id}`}
+            >
+              <form onSubmit={handleExtensionSubmit} className="space-y-4 text-xs font-sans">
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">Extension Title</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Additional Wiring / Deep Cleaning"
+                    value={extTitle}
+                    onChange={(e) => setExtTitle(e.target.value)}
+                    className="w-full border border-slate-300 rounded-lg p-2 text-slate-800"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-slate-700 font-semibold mb-1">Estimated Labor (₹)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      required
+                      placeholder="0.00"
+                      value={extLaborCost}
+                      onChange={(e) => setExtLaborCost(e.target.value)}
+                      className="w-full border border-slate-300 rounded-lg p-2 text-slate-800"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-700 font-semibold mb-1">Estimated Materials (₹)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      placeholder="0.00"
+                      value={extMaterialsCost}
+                      onChange={(e) => setExtMaterialsCost(e.target.value)}
+                      className="w-full border border-slate-300 rounded-lg p-2 text-slate-800"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">Reason / Justification</label>
+                  <textarea
+                    required
+                    rows={3}
+                    placeholder="Detailed reason for additional scope..."
+                    value={extReason}
+                    onChange={(e) => setExtReason(e.target.value)}
+                    className="w-full border border-slate-300 rounded-lg p-2 text-slate-800"
+                  />
+                </div>
+                <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => setExtensionModalJob(null)}
+                    className="px-4 py-2 border border-slate-300 text-slate-700 font-bold rounded-lg hover:bg-slate-50 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmittingExt}
+                    className="px-5 py-2 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 shadow-sm cursor-pointer"
+                  >
+                    {isSubmittingExt ? 'Submitting...' : 'Submit Extension'}
+                  </button>
+                </div>
+              </form>
             </Modal>
           )}
         </AppShell>
@@ -3570,17 +4014,23 @@ export function EmployeeDashboardPage() {
           </form>
         </Modal>
 
-        {/* Modal: Structured 5-Minute Technician Cancellation Modal */}
+        {/* Modal: Structured Technician Cancellation Modal */}
         <Modal
           isOpen={Boolean(cancelModalJob)}
           onClose={() => setCancelModalJob(null)}
           title={`Cancel Assignment — Job #${cancelModalJob?.request_id || cancelModalJob?.id}`}
         >
-          <form onSubmit={handleConfirmCancelJob} className="space-y-4 text-xs">
+          <form onSubmit={handleConfirmCancelAssignment} className="space-y-4 text-xs">
+            {error && (
+              <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 font-semibold text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
             <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 space-y-1">
               <p className="font-bold flex items-center gap-1.5 text-xs text-amber-950">
                 <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
-                <span>Cancellation Notice (5-Minute Window)</span>
+                <span>Cancellation Notice (Before Customer OTP)</span>
               </p>
               <p className="text-[11px] text-amber-800">
                 Cancelling will immediately release this job, preserve the customer booking, and start automated redispatch for the next eligible technician.
@@ -3593,13 +4043,13 @@ export function EmployeeDashboardPage() {
               </label>
               <div className="space-y-2 bg-slate-50 p-3 rounded-lg border border-slate-200 max-h-56 overflow-y-auto">
                 {[
-                  { code: 'VEHICLE_ISSUE', label: 'Vehicle issue / Breakdown' },
-                  { code: 'TRAFFIC_ROUTE_ISSUE', label: 'Heavy traffic / Road blockage' },
-                  { code: 'TOO_FAR', label: 'Distance too far / Unreachable in time' },
-                  { code: 'SERVICE_MISMATCH', label: 'Service requires different tools / equipment' },
-                  { code: 'CUSTOMER_LOCATION_ISSUE', label: 'Customer site unreachable / unsafe access' },
-                  { code: 'SAFETY_CONCERN', label: 'Safety concern / Hazardous conditions' },
-                  { code: 'PERSONAL_EMERGENCY', label: 'Personal emergency' },
+                  { code: 'VEHICLE_ISSUE', label: 'Vehicle Breakdown / Transit Issue' },
+                  { code: 'PERSONAL_EMERGENCY', label: 'Personal Emergency' },
+                  { code: 'TRAFFIC_ROUTE_ISSUE', label: 'Extreme Traffic / Road Closed' },
+                  { code: 'CUSTOMER_LOCATION_ISSUE', label: 'Customer Location Unreachable' },
+                  { code: 'TOO_FAR', label: 'Location Too Far / Out of Reach' },
+                  { code: 'SERVICE_MISMATCH', label: 'Skill / Tooling Mismatch' },
+                  { code: 'SAFETY_CONCERN', label: 'Safety Concern at Site' },
                   { code: 'OTHER', label: 'Other reason (explanation required)' },
                 ].map((r) => (
                   <label key={r.code} className="flex items-center gap-2.5 cursor-pointer text-slate-800 font-medium hover:bg-slate-100/70 p-1 rounded">

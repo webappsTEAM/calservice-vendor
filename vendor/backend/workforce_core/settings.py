@@ -1,0 +1,325 @@
+"""
+workforce_core/settings.py
+Django settings for the dedicated Workforce Backend (Port 8001).
+Shared database with primary backend, zero duplicated tables (managed=False).
+"""
+
+
+import os
+from datetime import timedelta
+from pathlib import Path
+from dotenv import load_dotenv
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load .env file with override=True to guarantee local .env takes precedence over inherited shell env vars
+load_dotenv(BASE_DIR / ".env", override=True)
+
+_raw_secret = os.getenv("SECRET_KEY") or os.getenv("DJANGO_SECRET_KEY")
+DEBUG = (os.getenv("DEBUG") or os.getenv("DJANGO_DEBUG") or "True").lower() in ("true", "1", "t")
+
+if not _raw_secret:
+    if DEBUG:
+        SECRET_KEY = "dev-insecure-workforce-secret-key-caltrack-local-testing-only"
+    else:
+        raise ValueError("CRITICAL SECURITY ERROR: SECRET_KEY environment variable is mandatory in production (DEBUG=False).")
+else:
+    SECRET_KEY = _raw_secret
+
+_allowed_hosts_env = os.getenv("ALLOWED_HOSTS")
+if _allowed_hosts_env:
+    ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
+else:
+    ALLOWED_HOSTS = ["*"] if DEBUG else ["localhost", "127.0.0.1"]
+
+# Application definition
+INSTALLED_APPS = [
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
+
+    # Third-party apps
+    "rest_framework",
+    "rest_framework_simplejwt",
+    "corsheaders",
+
+    # Workforce core unmanaged domain apps
+    "common",
+    "companies",
+    "accounts",
+    "employees",
+    "service_requests",
+    "workforce_api",
+    "time_tracking",
+    "vendor_wallet",
+]
+
+MIDDLEWARE = [
+    "corsheaders.middleware.CorsMiddleware",
+    "django.middleware.security.SecurityMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+    "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "companies.middleware.CompanyMiddleware",
+]
+
+ROOT_URLCONF = "workforce_core.urls"
+APPEND_SLASH = False
+
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
+            ],
+        },
+    },
+]
+
+WSGI_APPLICATION = "workforce_core.wsgi.application"
+ASGI_APPLICATION = "workforce_core.asgi.application"
+
+# ─── Database Configuration (Shared Supabase PostgreSQL) ──────────────────────
+
+USE_POSTGRES = os.getenv("DB_NAME") or os.getenv("DB_HOST")
+
+if USE_POSTGRES:
+    _db_options = {
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 5,
+    }
+    _sslmode = os.getenv("DB_SSLMODE", "")
+    if _sslmode:
+        _db_options["sslmode"] = _sslmode
+
+    _connection_opts = [f'-c search_path={os.getenv("DB_SCHEMA", "public")}']
+    _stmt_timeout = os.getenv("DB_STATEMENT_TIMEOUT", "")
+    if _stmt_timeout:
+        _connection_opts.append(f"-c statement_timeout={_stmt_timeout}")
+    _db_options["options"] = " ".join(_connection_opts)
+
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.getenv("DB_NAME", "postgres"),
+            "USER": os.getenv("DB_USER", "postgres"),
+            "PASSWORD": os.getenv("DB_PASSWORD", ""),
+            "HOST": os.getenv("DB_HOST", "localhost"),
+            "PORT": os.getenv("DB_PORT", "6543"),
+            "OPTIONS": _db_options,
+            "CONN_MAX_AGE": int(os.getenv("DB_CONN_MAX_AGE", "0")),
+            "CONN_HEALTH_CHECKS": True,
+            "DISABLE_SERVER_SIDE_CURSORS": True,
+        }
+    }
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
+
+AUTH_USER_MODEL = "accounts.User"
+
+AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
+
+LANGUAGE_CODE = "en-us"
+TIME_ZONE = os.getenv("DJANGO_TIME_ZONE", "UTC")
+USE_I18N = True
+USE_TZ = True
+
+STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+
+MEDIA_URL = os.getenv("MEDIA_URL", "/media/")
+MEDIA_ROOT = BASE_DIR / "media"
+
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# ─── REST Framework & JWT Auth ────────────────────────────────────────────────
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "accounts.authentication.CookieJWTAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
+    ),
+    "DEFAULT_PERMISSION_CLASSES": (
+        "rest_framework.permissions.IsAuthenticated",
+    ),
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "PAGE_SIZE": 25,
+    # Fixes EC-06: this app previously configured no throttling at all (the
+    # Customer app at least had a blanket anon/user rate). Baseline rates
+    # only for now, matching the Customer app's convention — individual
+    # views (signup, OTP verify, dispatch-sensitive endpoints) should get
+    # their own ScopedRateThrottle scopes as a follow-up.
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": os.getenv("THROTTLE_ANON", "60/minute"),
+        "user": os.getenv("THROTTLE_USER", "300/minute"),
+        # EC-06 (vendor half): the blanket anon/user rates above were the only
+        # protection every endpoint had. Mirrors the scoped-throttle pattern
+        # already applied on the Customer app's settings for the same finding.
+        # Opt-in per view via ScopedRateThrottle + throttle_scope.
+        "workforce_signup": os.getenv("THROTTLE_WF_SIGNUP", "10/hour"),
+        "workforce_otp": os.getenv("THROTTLE_WF_OTP", "15/minute"),
+        "workforce_cash_collect": os.getenv("THROTTLE_WF_CASH", "20/minute"),
+    },
+}
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=int(os.getenv("JWT_ACCESS_MINUTES", "480"))),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=int(os.getenv("JWT_REFRESH_DAYS", "7"))),
+    "AUTH_HEADER_TYPES": ("Bearer",),
+}
+
+AUTH_COOKIE = "qt_access"
+AUTH_COOKIE_REFRESH = "qt_refresh"
+AUTH_COOKIE_SECURE = not DEBUG
+AUTH_COOKIE_SAMESITE = os.getenv("AUTH_COOKIE_SAMESITE", "Lax" if DEBUG else "Strict")
+AUTH_COOKIE_DOMAIN = os.getenv("AUTH_COOKIE_DOMAIN", None)
+
+# ─── CORS ─────────────────────────────────────────────────────────────────────
+
+CORS_ALLOW_ALL_ORIGINS = DEBUG
+_cors_env = os.getenv("CORS_ALLOWED_ORIGINS")
+if _cors_env:
+    CORS_ALLOWED_ORIGINS = [origin.strip() for origin in _cors_env.split(",") if origin.strip()]
+else:
+    CORS_ALLOWED_ORIGINS = [
+        # Workforce Frontend
+        "http://localhost:5176",
+        "http://127.0.0.1:5176",
+        "http://localhost:5177",
+        "http://127.0.0.1:5177",
+        # Customer Frontend
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        # Platform Admin Frontend
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+    ]
+
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_METHODS = [
+    "DELETE",
+    "GET",
+    "OPTIONS",
+    "PATCH",
+    "POST",
+    "PUT",
+]
+CORS_ALLOW_HEADERS = [
+    "accept",
+    "accept-encoding",
+    "authorization",
+    "content-type",
+    "dnt",
+    "origin",
+    "user-agent",
+    "x-csrftoken",
+    "x-requested-with",
+]
+
+_csrf_env = os.getenv("CSRF_TRUSTED_ORIGINS")
+if _csrf_env:
+    CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in _csrf_env.split(",") if origin.strip()]
+else:
+    CSRF_TRUSTED_ORIGINS = [
+        "http://localhost:5176",
+        "http://127.0.0.1:5176",
+        "http://localhost:8001",
+        "http://127.0.0.1:8001",
+    ]
+
+# ── Customer-app webhook integration (fixes X-01) ─────────────────────────────
+# This app previously never notified the Customer app of technician
+# assignment/acceptance/en-route/arrival/completion/location/payment events,
+# even though the Customer app has a fully-built idempotent webhook receiver
+# (workforce_integration/views.py) waiting for exactly this. See
+# workforce_api/services/customer_webhook.py for the sender.
+CUSTOMER_APP_BASE_URL = os.getenv("CUSTOMER_APP_BASE_URL", "http://localhost:8000").rstrip("/")
+# Must match the Customer app's WORKFORCE_WEBHOOK_SECRET env var exactly --
+# it authenticates the webhook calls this app sends to the Customer app's
+# receiver (workforce_integration/views.py, _verify_webhook_signature).
+# Fixed: this used to silently fall back to the well-known literal
+# "wf_webhook_secret_default" whenever the env var was unset -- and that's
+# confirmed to be exactly what's deployed today (unset on both apps' live
+# .env files), meaning the current webhook auth is effectively a
+# publicly-known skeleton key. (The customer-side bug this comment used to
+# describe -- unconditionally accepting that literal even when a real
+# secret was set -- was already fixed separately; see that file.) Mirrors
+# the SECRET_KEY pattern above: usable in local DEBUG dev without extra
+# setup, but fails closed in production so a real secret must be set on
+# BOTH apps before going live.
+_raw_webhook_secret = os.getenv("WORKFORCE_WEBHOOK_SECRET")
+if not _raw_webhook_secret:
+    if DEBUG:
+        WORKFORCE_WEBHOOK_SECRET = "dev-insecure-workforce-webhook-secret-local-testing-only"
+    else:
+        raise ValueError("CRITICAL SECURITY ERROR: WORKFORCE_WEBHOOK_SECRET environment variable is mandatory in production (DEBUG=False) -- it authenticates cross-app webhook calls with the Customer app.")
+else:
+    WORKFORCE_WEBHOOK_SECRET = _raw_webhook_secret
+
+# ----------------------------------------------------------------------------
+# SEVO business plan (Section 1): RazorpayX Payouts for wallet withdrawals.
+# This is a SEPARATE product/account from plain Razorpay Payments (used for
+# customer checkout) -- it requires its own RazorpayX current account and
+# its own API keys. Deliberately optional at import time: every wallet
+# feature (ledger, balance, withdrawal *requests*) works with these unset;
+# only the final "money actually leaves for the bank" step is gated on them.
+# See workforce_api/services/payouts.py for how these are used, and
+# SEVO_Business_Operational_Plan.docx Section 1 for why this is architected
+# as a payout adapter rather than a self-issued wallet.
+RAZORPAYX_KEY_ID = os.getenv("RAZORPAYX_KEY_ID", "")
+RAZORPAYX_KEY_SECRET = os.getenv("RAZORPAYX_KEY_SECRET", "")
+RAZORPAYX_ACCOUNT_NUMBER = os.getenv("RAZORPAYX_ACCOUNT_NUMBER", "")
+RAZORPAYX_WEBHOOK_SECRET = os.getenv("RAZORPAYX_WEBHOOK_SECRET", "")
+
+# Local-testing-only bypass: when true (and only when DEBUG is also
+# true -- see is_mock_mode() in services/payouts.py, which hard-ANDs
+# this with settings.DEBUG so it can never activate in production
+# regardless of what this env var is set to), a withdrawal simulates a
+# successful RazorpayX payout locally instead of calling the real API.
+# Lets the whole wallet flow be exercised end-to-end before a real
+# RazorpayX current account is activated. NEVER enable outside local/
+# staging testing -- it fabricates a successful payout.
+RAZORPAYX_MOCK_MODE = (os.getenv("RAZORPAYX_MOCK_MODE", "0") or "0").lower() in ("true", "1", "t")
+
+# ----------------------------------------------------------------------------
+# SEVO business plan (Section 3): differentiated commission rates and the
+# post-completion dispute-hold window (Section 4). See
+# workforce_api/services/commission.py for how these are used.
+# Provider-dispatched jobs get a lower rate (provider already bears team
+# cost, dispatch and QC); individual-worker jobs a standard rate (SEVO
+# bears full acquisition/verification/dispatch/insurance cost directly).
+# *_PROMO_RATE applies for SEVO_PROMO_PERIOD_DAYS from wallet creation to
+# give a new provider/worker a real reason to route jobs through SEVO
+# before being asked to pay the standard rate.
+SEVO_PROVIDER_COMMISSION_RATE = os.getenv("SEVO_PROVIDER_COMMISSION_RATE", "0.10")
+SEVO_PROVIDER_PROMO_RATE = os.getenv("SEVO_PROVIDER_PROMO_RATE", "0.00")
+SEVO_INDIVIDUAL_COMMISSION_RATE = os.getenv("SEVO_INDIVIDUAL_COMMISSION_RATE", "0.18")
+SEVO_INDIVIDUAL_PROMO_RATE = os.getenv("SEVO_INDIVIDUAL_PROMO_RATE", "0.08")
+SEVO_PROMO_PERIOD_DAYS = os.getenv("SEVO_PROMO_PERIOD_DAYS", "90")
+SEVO_DISPUTE_HOLD_HOURS = os.getenv("SEVO_DISPUTE_HOLD_HOURS", "48")

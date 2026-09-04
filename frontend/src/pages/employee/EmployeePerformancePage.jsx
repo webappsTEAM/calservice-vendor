@@ -62,8 +62,17 @@ export function EmployeePerformancePage() {
   };
 
   const distribution = data?.rating_distribution || { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+  const scorecard = data?.scorecard || { tier: 'UNRATED', sla_score: 0, average_rating: 0, rating_count: 0 };
   const feedbacks = data?.feedbacks || [];
   const totalFeedbackCount = metrics.feedback_submissions_count || 0;
+
+  const tierStyles = {
+    GOLD: { label: 'Gold', className: 'bg-amber-50 border-amber-300 text-amber-800' },
+    SILVER: { label: 'Silver', className: 'bg-slate-100 border-slate-300 text-slate-700' },
+    BRONZE: { label: 'Bronze', className: 'bg-orange-50 border-orange-300 text-orange-800' },
+    UNRATED: { label: 'Unrated', className: 'bg-slate-50 border-slate-200 text-slate-500' },
+  };
+  const tierStyle = tierStyles[scorecard.tier] || tierStyles.UNRATED;
 
   const metricCards = [
     {
@@ -125,6 +134,27 @@ export function EmployeePerformancePage() {
               </div>
             );
           })}
+        </div>
+
+        {/* SEVO Section 4: persisted rating + SLA scorecard tier -- the
+            same signal that feeds the dispatch-ranking bonus, so a worker
+            can see it directly rather than it being used silently. */}
+        <div className={`border rounded p-3.5 shadow-sm flex items-center justify-between gap-3 ${tierStyle.className}`}>
+          <div className="flex items-center gap-2.5">
+            <Sparkles className="w-4 h-4" />
+            <div>
+              <p className="text-xs font-bold">{tierStyle.label} Tier Scorecard</p>
+              <p className="text-[11px] opacity-80">
+                {scorecard.rating_count > 0
+                  ? `${scorecard.rating_count} rated job${scorecard.rating_count === 1 ? "" : "s"} · SLA score ${scorecard.sla_score}%`
+                  : "Complete and get rated on 3+ jobs to unlock a tier."}
+              </p>
+            </div>
+          </div>
+          <div className="text-right">
+            <p className="text-lg font-bold font-mono">{scorecard.average_rating > 0 ? scorecard.average_rating.toFixed(1) : '—'}</p>
+            <p className="text-[10px] opacity-70">avg. rating</p>
+          </div>
         </div>
 
         {/* Rating Breakdown & CSAT Overview */}

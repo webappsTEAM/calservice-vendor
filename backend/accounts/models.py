@@ -26,7 +26,7 @@ class UserManager(BaseUserManager):
     def create_superuser(self, username, email=None, password=None, **extra_fields):
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
-        extra_fields.setdefault("role", "superadmin")
+        extra_fields.setdefault("role", "admin")
         return self._create_user(username, email, password, **extra_fields)
 
 
@@ -48,16 +48,13 @@ class User(AbstractBaseUser):
     date_joined = models.DateTimeField(default=timezone.now)
 
     class Role(models.TextChoices):
-        SUPERADMIN = "superadmin", "Superadmin"
-        SERVICE_PROVIDER_ADMIN = "service_provider_admin", "Service Provider Admin"
-        EMPLOYEE = "employee", "Employee"
-        # Backwards-compatible legacy roles
         ADMIN = "admin", "Admin"
         MANAGER = "manager", "Manager"
+        EMPLOYEE = "employee", "Employee"
         KIOSK = "kiosk", "Kiosk"
         CUSTOMER = "customer", "Customer"
 
-    role = models.CharField(max_length=30, choices=Role.choices, default=Role.EMPLOYEE)
+    role = models.CharField(max_length=20, choices=Role.choices, default=Role.EMPLOYEE)
     bio = models.TextField(blank=True, default="")
     phone = models.CharField(max_length=30, unique=True, null=True, blank=True)
     mobile_number = models.CharField(max_length=15, unique=True, null=True, blank=True, db_index=True)
@@ -104,36 +101,3 @@ class User(AbstractBaseUser):
 
     def has_module_perms(self, app_label):
         return self.is_superuser
-
-    @property
-    def provider(self):
-        """Semantic alias: user.provider -> user.company"""
-        return self.company
-
-    @provider.setter
-    def provider(self, value):
-        self.company = value
-
-    @property
-    def is_superadmin_user(self):
-        return bool(self.is_superuser or str(getattr(self, "role", "")).lower() in ["superadmin", "super_admin"])
-
-    @property
-    def is_service_provider_admin_user(self):
-        role = str(getattr(self, "role", "")).lower()
-        return (role in ["service_provider_admin", "admin", "manager"]) and not self.is_superadmin_user
-
-    @property
-    def is_employee_user(self):
-        return bool(str(getattr(self, "role", "")).lower() in ["employee", "technician"])
-
-    def validate_provider_admin(self):
-        """
-        Enforce that a SERVICE_PROVIDER_ADMIN must belong to exactly one provider.
-        Does NOT run inside generic User.save() (per Phase 1 rule), but is called
-        when creating/updating or validating a Service Provider Admin.
-        """
-        from django.core.exceptions import ValidationError
-        if self.is_service_provider_admin_user and not self.company_id:
-            raise ValidationError("SERVICE_PROVIDER_ADMIN must belong to exactly one Service Provider.")
-

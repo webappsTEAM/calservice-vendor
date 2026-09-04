@@ -12,6 +12,28 @@ import { Camera, RefreshCw, Check, X, AlertCircle, SwitchCamera, Sparkles, User,
  *  - Instant Front/Rear camera switching.
  *  - Flash snapshot animation upon capture.
  */
+// Sample a captured canvas and report whether it carries no image at all --
+// i.e. every sampled pixel is effectively the same near-black value. This is the
+// signature of a frame drawn from a <video> that had not decoded anything yet,
+// which is how every stored proof photo ended up as an identical black JPEG.
+function isFrameBlank(ctx, width, height) {
+  try {
+    const data = ctx.getImageData(0, 0, width, height).data;
+    const stride = Math.max(4, Math.floor(data.length / 4 / 2000) * 4);
+    let min = 255;
+    let max = 0;
+    for (let i = 0; i + 2 < data.length; i += stride) {
+      const lum = (data[i] + data[i + 1] + data[i + 2]) / 3;
+      if (lum < min) min = lum;
+      if (lum > max) max = lum;
+    }
+    return max - min < 4 && max < 16;
+  } catch (_) {
+    // Never block a legitimate capture because the check itself failed.
+    return false;
+  }
+}
+
 export function LiveCameraCaptureModal({
   isOpen,
   onClose,
@@ -23,6 +45,7 @@ export function LiveCameraCaptureModal({
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
+  const readyPollRef = useRef(null);
 
   const isSelfie = defaultFacingMode === 'user' || fileNamePrefix.includes('selfie') || fileNamePrefix.includes('presence') || fileNamePrefix.includes('face');
   const [facingMode, setFacingMode] = useState(defaultFacingMode);
@@ -32,9 +55,16 @@ export function LiveCameraCaptureModal({
   const [isCapturing, setIsCapturing] = useState(false);
   const [cameraDevices, setCameraDevices] = useState([]);
   const [isFlashing, setIsFlashing] = useState(false);
+  // True only once the <video> has actually decoded a frame we can draw.
+  const [isStreamReady, setIsStreamReady] = useState(false);
 
   // Stop camera tracks cleanly
   const stopStream = useCallback(() => {
+    setIsStreamReady(false);
+    if (readyPollRef.current) {
+      window.clearInterval(readyPollRef.current);
+      readyPollRef.current = null;
+    }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
@@ -42,6 +72,53 @@ export function LiveCameraCaptureModal({
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
+  }, []);
+
+  // Attach a stream to the <video> and mark usable once frame is playing
+  const attachStream = useCallback((stream) => {
+    if (!stream) return;
+    streamRef.current = stream;
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (video.srcObject !== stream) {
+      video.srcObject = stream;
+    }
+    video.muted = true;
+    video.playsInline = true;
+
+    const markReady = () => {
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        setIsStreamReady(true);
+        return true;
+      }
+      if (video.readyState >= 2) {
+        setIsStreamReady(true);
+        return true;
+      }
+      return false;
+    };
+
+    video.onloadedmetadata = () => {
+      video.play().catch((err) => console.warn('[Camera] play onloadedmetadata:', err));
+      markReady();
+    };
+    video.onloadeddata = markReady;
+    video.oncanplay = markReady;
+    video.onplaying = markReady;
+
+    video.play().catch(() => {});
+
+    // Safety net poll for readiness
+    if (readyPollRef.current) window.clearInterval(readyPollRef.current);
+    let attempts = 0;
+    readyPollRef.current = window.setInterval(() => {
+      attempts += 1;
+      if (markReady() || attempts > 50) {
+        window.clearInterval(readyPollRef.current);
+        readyPollRef.current = null;
+      }
+    }, 100);
   }, []);
 
   // Initialize camera stream
@@ -74,26 +151,15 @@ export function LiveCameraCaptureModal({
 
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.onloadedmetadata = () => {
-          videoRef.current?.play().catch(() => {});
-        };
-      }
       setHasCameraPermission(true);
+      attachStream(stream);
     } catch (err) {
       console.warn('[Camera] Primary constraint failed, trying fallback:', err);
       try {
         const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
         streamRef.current = fallbackStream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = fallbackStream;
-          videoRef.current.onloadedmetadata = () => {
-            videoRef.current?.play().catch(() => {});
-          };
-        }
         setHasCameraPermission(true);
+        attachStream(fallbackStream);
       } catch (fallbackErr) {
         console.error('[Camera] Access denied or unavailable:', fallbackErr);
         setHasCameraPermission(false);
@@ -106,28 +172,18 @@ export function LiveCameraCaptureModal({
         }
       }
     }
-  }, [stopStream]);
-
-  const isConfirmedRef = useRef(false);
-  const capturedImageRef = useRef(null);
-
-  useEffect(() => {
-    capturedImageRef.current = capturedImage;
-  }, [capturedImage]);
+  }, [stopStream, attachStream]);
 
   // Start camera when modal opens
   useEffect(() => {
     if (isOpen) {
-      isConfirmedRef.current = false;
       setCapturedImage(null);
       setFacingMode(defaultFacingMode);
       startCamera(defaultFacingMode);
     } else {
       stopStream();
-      // Only revoke unconfirmed snapshots discarded on close
-      // Confirmed capture preview URLs are strictly owned by the parent
-      if (capturedImageRef.current?.previewUrl && !isConfirmedRef.current) {
-        URL.revokeObjectURL(capturedImageRef.current.previewUrl);
+      if (capturedImage?.previewUrl) {
+        URL.revokeObjectURL(capturedImage.previewUrl);
       }
       setCapturedImage(null);
     }
@@ -135,6 +191,15 @@ export function LiveCameraCaptureModal({
       stopStream();
     };
   }, [isOpen, defaultFacingMode, startCamera, stopStream]);
+
+  // Keep videoRef and active stream attached whenever permissions or facing mode update
+  useEffect(() => {
+    if (hasCameraPermission && streamRef.current && videoRef.current) {
+      if (videoRef.current.srcObject !== streamRef.current) {
+        attachStream(streamRef.current);
+      }
+    }
+  }, [hasCameraPermission, attachStream]);
 
   // Toggle front/back camera
   const handleToggleFacingMode = () => {
@@ -153,8 +218,17 @@ export function LiveCameraCaptureModal({
     try {
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      const width = video.videoWidth || 1280;
-      const height = video.videoHeight || 720;
+      const width = video.videoWidth;
+      const height = video.videoHeight;
+
+      // Never fall back to a hardcoded size. If the element has no decoded frame,
+      // drawImage() paints nothing and we would store a blank photo as evidence.
+      if (!width || !height || video.readyState < 2) {
+        setIsStreamReady(false);
+        setErrorMessage('Camera is still warming up. Wait a moment, then tap capture again.');
+        setIsCapturing(false);
+        return;
+      }
 
       canvas.width = width;
       canvas.height = height;
@@ -167,6 +241,12 @@ export function LiveCameraCaptureModal({
       }
 
       ctx.drawImage(video, 0, 0, width, height);
+
+      if (isFrameBlank(ctx, width, height)) {
+        setErrorMessage('The camera returned a blank frame. Check nothing is covering the lens, then capture again.');
+        setIsCapturing(false);
+        return;
+      }
 
       canvas.toBlob(
         (blob) => {
@@ -206,7 +286,6 @@ export function LiveCameraCaptureModal({
   // Confirm and return photo
   const handleConfirm = () => {
     if (!capturedImage) return;
-    isConfirmedRef.current = true;
     onCapture(capturedImage.file, capturedImage.previewUrl);
     onClose();
   };
@@ -215,7 +294,6 @@ export function LiveCameraCaptureModal({
   const handleNativeFileChange = (e) => {
     const file = e.target.files?.[0];
     if (file) {
-      isConfirmedRef.current = true;
       const previewUrl = URL.createObjectURL(file);
       onCapture(file, previewUrl);
       onClose();
@@ -281,8 +359,39 @@ export function LiveCameraCaptureModal({
                 <span>Photo Captured</span>
               </div>
             </div>
-          ) : hasCameraPermission === true ? (
-            /* Live Camera Video Feed */
+          ) : hasCameraPermission === false ? (
+            /* Permission Denied or Error State */
+            <div className="p-6 text-center max-w-sm">
+              <div className="w-12 h-12 rounded-full bg-red-500/20 text-red-400 mx-auto flex items-center justify-center mb-3">
+                <AlertCircle className="w-6 h-6" />
+              </div>
+              <h4 className="text-white font-bold text-sm mb-1">Camera Access Required</h4>
+              <p className="text-slate-400 text-xs mb-4">{errorMessage}</p>
+
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={() => startCamera(facingMode)}
+                  className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  Retry Camera
+                </button>
+
+                <label className="block w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-lg text-xs border border-slate-700 cursor-pointer transition-colors text-center">
+                  <span>Use Device Camera Direct</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture={facingMode}
+                    onChange={handleNativeFileChange}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+            </div>
+          ) : (
+            /* Live Camera Video Feed (always rendered while active) */
             <div className="relative w-full h-full flex items-center justify-center overflow-hidden">
               <video
                 ref={videoRef}
@@ -293,6 +402,14 @@ export function LiveCameraCaptureModal({
                   facingMode === 'user' ? 'scale-x-[-1]' : ''
                 }`}
               />
+
+              {/* Loading overlay while opening camera */}
+              {hasCameraPermission === null && (
+                <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center gap-3 text-slate-300 z-20">
+                  <RefreshCw className="w-8 h-8 text-blue-500 animate-spin" />
+                  <span className="text-xs font-medium">Opening live camera...</span>
+                </div>
+              )}
 
               {/* ── PROPER BIOMETRIC FACE OVAL GUIDE FOR SELFIES ── */}
               {isSelfie ? (
@@ -342,43 +459,6 @@ export function LiveCameraCaptureModal({
                 {facingMode === 'user' ? 'Front Camera' : 'Rear Camera'}
               </div>
             </div>
-          ) : hasCameraPermission === false ? (
-            /* Permission Denied or Error State */
-            <div className="p-6 text-center max-w-sm">
-              <div className="w-12 h-12 rounded-full bg-red-500/20 text-red-400 mx-auto flex items-center justify-center mb-3">
-                <AlertCircle className="w-6 h-6" />
-              </div>
-              <h4 className="text-white font-bold text-sm mb-1">Camera Access Required</h4>
-              <p className="text-slate-400 text-xs mb-4">{errorMessage}</p>
-
-              <div className="space-y-2">
-                <button
-                  type="button"
-                  onClick={() => startCamera(facingMode)}
-                  className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  Retry Camera
-                </button>
-
-                <label className="block w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-lg text-xs border border-slate-700 cursor-pointer transition-colors text-center">
-                  <span>Use Device Camera Direct</span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    capture={facingMode}
-                    onChange={handleNativeFileChange}
-                    className="hidden"
-                  />
-                </label>
-              </div>
-            </div>
-          ) : (
-            /* Loading / Starting Camera */
-            <div className="flex flex-col items-center justify-center gap-3 text-slate-400 p-8">
-              <RefreshCw className="w-8 h-8 text-blue-500 animate-spin" />
-              <span className="text-xs font-medium">Opening live camera...</span>
-            </div>
           )}
         </div>
 
@@ -416,13 +496,13 @@ export function LiveCameraCaptureModal({
               <button
                 type="button"
                 onClick={handleTakeSnapshot}
-                disabled={!hasCameraPermission || isCapturing}
+                disabled={!hasCameraPermission || !isStreamReady || isCapturing}
                 className="flex-1 py-3 px-5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 text-white font-bold text-xs shadow-lg shadow-blue-900/40 flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
               >
                 <div className="w-4 h-4 rounded-full border-2 border-white flex items-center justify-center">
                   <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
                 </div>
-                <span>{isCapturing ? 'Capturing...' : isSelfie ? 'Capture Face Selfie' : 'Capture Photo'}</span>
+                <span>{isCapturing ? 'Capturing...' : !isStreamReady ? 'Starting camera...' : isSelfie ? 'Capture Face Selfie' : 'Capture Photo'}</span>
               </button>
 
               <button

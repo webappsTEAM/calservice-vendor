@@ -1,0 +1,1710 @@
+<title>SEVO Marketplace Gap Analysis</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;600&display=swap">
+
+<style>
+/* ─────────────────────────────────────────────────────────────
+   Tokens — complete light palette on bare :root
+   Slate-biased neutrals, cobalt accent, separate semantic scale
+   ───────────────────────────────────────────────────────────── */
+:root{
+  --ground:      #F2F5F6;
+  --surface:     #FFFFFF;
+  --surface-2:   #E9EEF0;
+  --surface-sunk:#DDE5E8;
+  --ink:         #16212B;
+  --ink-2:       #566874;
+  --ink-3:       #7E8E99;
+  --rule:        #D4DEE2;
+  --rule-2:      #BFCCD2;
+  --accent:      #1B5C9E;
+  --accent-soft: #E2ECF6;
+  --accent-ink:  #10406F;
+
+  --p0:          #A32A2A;
+  --p0-soft:     #F7E4E4;
+  --p1:          #9A6410;
+  --p1-soft:     #F8EEDC;
+  --p2:          #2F6B54;
+  --p2-soft:     #E1EFE9;
+
+  --cust:        #1B5C9E;
+  --cust-soft:   #E2ECF6;
+  --vend:        #6B3F8C;
+  --vend-soft:   #EEE6F4;
+  --both:        #2F6B54;
+  --both-soft:   #E1EFE9;
+
+  --shadow:      0 1px 2px rgba(22,33,43,.05), 0 8px 24px -18px rgba(22,33,43,.35);
+
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:      #10171D;
+    --surface:     #18222B;
+    --surface-2:   #1F2B35;
+    --surface-sunk:#131C24;
+    --ink:         #E6EDF1;
+    --ink-2:       #9DAEB9;
+    --ink-3:       #74868F;
+    --rule:        #2A3945;
+    --rule-2:      #3A4C5A;
+    --accent:      #6BA6E4;
+    --accent-soft: #1B2B3B;
+    --accent-ink:  #A9CCF0;
+
+    --p0:          #E97A7A;
+    --p0-soft:     #38201F;
+    --p1:          #DBAB55;
+    --p1-soft:     #33291A;
+    --p2:          #6FBE9B;
+    --p2-soft:     #172C25;
+
+    --cust:        #6BA6E4;
+    --cust-soft:   #1B2B3B;
+    --vend:        #B692D6;
+    --vend-soft:   #271E33;
+    --both:        #6FBE9B;
+    --both-soft:   #172C25;
+
+    --shadow:      0 1px 2px rgba(0,0,0,.4), 0 10px 30px -20px rgba(0,0,0,.9);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:      #10171D;
+  --surface:     #18222B;
+  --surface-2:   #1F2B35;
+  --surface-sunk:#131C24;
+  --ink:         #E6EDF1;
+  --ink-2:       #9DAEB9;
+  --ink-3:       #74868F;
+  --rule:        #2A3945;
+  --rule-2:      #3A4C5A;
+  --accent:      #6BA6E4;
+  --accent-soft: #1B2B3B;
+  --accent-ink:  #A9CCF0;
+
+  --p0:          #E97A7A;
+  --p0-soft:     #38201F;
+  --p1:          #DBAB55;
+  --p1-soft:     #33291A;
+  --p2:          #6FBE9B;
+  --p2-soft:     #172C25;
+
+  --cust:        #6BA6E4;
+  --cust-soft:   #1B2B3B;
+  --vend:        #B692D6;
+  --vend-soft:   #271E33;
+  --both:        #6FBE9B;
+  --both-soft:   #172C25;
+
+  --shadow:      0 1px 2px rgba(0,0,0,.4), 0 10px 30px -20px rgba(0,0,0,.9);
+}
+
+*{ box-sizing: border-box; }
+
+body{
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--body);
+  font-size: 16.5px;
+  line-height: 1.62;
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Shell ───────────────────────────────────────────────── */
+.shell{
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 0 24px 96px;
+  display: grid;
+  grid-template-columns: 244px minmax(0,1fr);
+  gap: 48px;
+  align-items: start;
+}
+@media (max-width: 940px){
+  .shell{ grid-template-columns: minmax(0,1fr); gap: 0; }
+}
+
+/* ── Masthead ────────────────────────────────────────────── */
+.masthead{
+  grid-column: 1 / -1;
+  border-bottom: 2px solid var(--ink);
+  padding: 56px 0 26px;
+  margin-bottom: 40px;
+}
+.eyebrow{
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 14px;
+}
+.masthead h1{
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: clamp(34px, 5.2vw, 56px);
+  line-height: 1.04;
+  letter-spacing: -.025em;
+  margin: 0 0 18px;
+  text-wrap: balance;
+  max-width: 20ch;
+}
+.standfirst{
+  font-size: 19px;
+  color: var(--ink-2);
+  max-width: 66ch;
+  margin: 0 0 26px;
+}
+.standfirst strong{ color: var(--ink); font-weight: 600; }
+.meta-strip{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-3);
+  letter-spacing: .04em;
+}
+.meta-strip b{ color: var(--ink-2); font-weight: 600; }
+
+/* ── Sidebar nav ─────────────────────────────────────────── */
+.rail{
+  position: sticky;
+  top: 24px;
+  align-self: start;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  padding-right: 8px;
+}
+@media (max-width: 940px){
+  .rail{
+    position: static;
+    max-height: none;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: var(--surface);
+    padding: 20px 22px;
+    margin-bottom: 40px;
+  }
+}
+.rail h2{
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 12px;
+}
+.rail ol{ list-style: none; margin: 0 0 26px; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.rail a{
+  display: block;
+  font-family: var(--display);
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--ink-2);
+  text-decoration: none;
+  padding: 5px 10px 5px 12px;
+  border-left: 2px solid var(--rule);
+  line-height: 1.35;
+}
+.rail a:hover{ color: var(--accent); border-left-color: var(--accent); background: var(--accent-soft); }
+.rail a:focus-visible{ outline: 2px solid var(--accent); outline-offset: 1px; }
+.rail .sub a{ padding-left: 24px; font-size: 12.5px; font-weight: 400; }
+.rail .count{
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  float: right;
+}
+
+/* ── Main column ─────────────────────────────────────────── */
+main{ min-width: 0; }
+main > section{ margin-bottom: 68px; scroll-margin-top: 20px; }
+
+h2.part{
+  font-family: var(--display);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 6px;
+}
+h3.section-title{
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: clamp(25px, 3.4vw, 34px);
+  letter-spacing: -.02em;
+  line-height: 1.12;
+  margin: 0 0 14px;
+  text-wrap: balance;
+}
+h4.wf{
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 20px;
+  letter-spacing: -.01em;
+  margin: 46px 0 6px;
+  padding-top: 22px;
+  border-top: 1px solid var(--rule);
+  scroll-margin-top: 20px;
+}
+h4.wf:first-of-type{ border-top: none; padding-top: 0; }
+.wf-note{
+  color: var(--ink-2);
+  font-size: 15.5px;
+  margin: 0 0 22px;
+  max-width: 72ch;
+}
+p{ max-width: 72ch; }
+.lede{ font-size: 17.5px; color: var(--ink-2); max-width: 70ch; margin: 0 0 26px; }
+.lede strong{ color: var(--ink); font-weight: 600; }
+
+a{ color: var(--accent); }
+code{
+  font-family: var(--mono);
+  font-size: .845em;
+  background: var(--surface-2);
+  color: var(--ink);
+  padding: .12em .38em;
+  border-radius: 3px;
+  border: 1px solid var(--rule);
+  word-break: break-word;
+}
+
+/* ── Audience legend ─────────────────────────────────────── */
+.legend{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 0 0 40px;
+}
+.legend div{ background: var(--surface); padding: 18px 20px; }
+.legend h5{
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 7px;
+}
+.legend p{ margin: 0; font-size: 14.5px; color: var(--ink-2); line-height: 1.5; }
+
+/* ── Stat tiles ──────────────────────────────────────────── */
+.tiles{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 14px;
+  margin: 0 0 34px;
+}
+.tile{
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 16px 18px;
+  box-shadow: var(--shadow);
+}
+.tile .n{
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 34px;
+  line-height: 1;
+  letter-spacing: -.03em;
+  font-variant-numeric: tabular-nums;
+  display: block;
+  margin-bottom: 5px;
+}
+.tile .l{
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.tile.t-p0 .n{ color: var(--p0); }
+.tile.t-p1 .n{ color: var(--p1); }
+.tile.t-p2 .n{ color: var(--p2); }
+
+/* ── Gap card ────────────────────────────────────────────── */
+.gap{
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--rule-2);
+  border-radius: 4px;
+  padding: 20px 22px 18px;
+  margin: 0 0 16px;
+  box-shadow: var(--shadow);
+}
+.gap.p0{ border-left-color: var(--p0); }
+.gap.p1{ border-left-color: var(--p1); }
+.gap.p2{ border-left-color: var(--p2); }
+
+.gap-head{
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.gid{
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  color: var(--ink-3);
+  background: var(--surface-sunk);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+.gap-head h5{
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 17.5px;
+  letter-spacing: -.012em;
+  line-height: 1.28;
+  margin: 0;
+  flex: 1 1 260px;
+  text-wrap: balance;
+}
+.sev{
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .09em;
+  padding: 3px 8px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.sev-p0{ background: var(--p0-soft); color: var(--p0); }
+.sev-p1{ background: var(--p1-soft); color: var(--p1); }
+.sev-p2{ background: var(--p2-soft); color: var(--p2); }
+
+.band{ margin-bottom: 11px; }
+.band:last-of-type{ margin-bottom: 0; }
+.band-label{
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  display: block;
+  margin-bottom: 3px;
+}
+.band p{ margin: 0; font-size: 15.5px; line-height: 1.56; max-width: 74ch; }
+.band.ref p{ color: var(--ink-2); }
+
+.band-fix{
+  background: var(--surface-sunk);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 13px 15px 12px;
+  margin-top: 14px;
+}
+.band-fix ul{ margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.band-fix li{ font-size: 14.5px; line-height: 1.5; }
+.app{
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 3px;
+  margin-right: 5px;
+  vertical-align: 1.5px;
+  white-space: nowrap;
+}
+.app-c{ background: var(--cust-soft); color: var(--cust); }
+.app-v{ background: var(--vend-soft); color: var(--vend); }
+.app-b{ background: var(--both-soft); color: var(--both); }
+
+.evidence{
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  margin: 13px 0 0;
+  padding-top: 10px;
+  border-top: 1px dashed var(--rule);
+  line-height: 1.6;
+  max-width: none;
+}
+.evidence code{ background: none; border: none; padding: 0; color: var(--ink-2); font-size: 11px; }
+
+/* ── Callout ─────────────────────────────────────────────── */
+.callout{
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 4px;
+  padding: 16px 20px;
+  margin: 0 0 30px;
+}
+.callout h5{
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
+  margin: 0 0 7px;
+}
+.callout p{ margin: 0 0 8px; font-size: 15.5px; color: var(--ink); }
+.callout p:last-child{ margin-bottom: 0; }
+
+/* ── Tables ──────────────────────────────────────────────── */
+.tbl-wrap{ overflow-x: auto; margin: 0 0 30px; border: 1px solid var(--rule); border-radius: 4px; background: var(--surface); }
+table{ border-collapse: collapse; width: 100%; min-width: 620px; font-size: 14.5px; }
+th, td{ text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+thead th{
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  background: var(--surface-sunk);
+  white-space: nowrap;
+}
+tbody tr:last-child td{ border-bottom: none; }
+td code{ font-size: 12px; }
+.num{ font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* ── Prose lists ─────────────────────────────────────────── */
+ul.prose{ max-width: 72ch; padding-left: 1.15em; }
+ul.prose li{ margin-bottom: 7px; }
+
+/* ── Footer ──────────────────────────────────────────────── */
+.colophon{
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--rule);
+  padding-top: 22px;
+  margin-top: 20px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-3);
+  line-height: 1.8;
+}
+
+@media (prefers-reduced-motion: reduce){
+  *{ animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+html{ scroll-behavior: smooth; }
+</style>
+
+<div class="shell">
+
+<header class="masthead">
+  <p class="eyebrow">Gap Analysis · SEVO / CalServices · Customer + Vendor</p>
+  <h1>What separates SEVO from NoBroker and Porter</h1>
+  <p class="standfirst">A file-level audit of the two shipped codebases against the workflows that mature home-services and on-demand-logistics marketplaces actually run. <strong>The engineering already built is substantial</strong> — a 9-gate dispatch engine, a geofenced arrival check, a COD-with-OTP payment state machine, a work-extension approval loop. <strong>The gaps are mostly at the seams</strong>: the two applications share a database but not a contract, and the parts that would make a customer trust the platform — real payments, real notifications, real tracking — are stubbed.</p>
+  <div class="meta-strip">
+    <span><b>Scope</b> Customer app (Django + React + Flutter shell) &amp; Vendor app (Django + React)</span>
+    <span><b>References</b> NoBroker Home Services · Porter Goods &amp; Transport</span>
+    <span><b>Findings</b> 71 across 11 workflows</span>
+  </div>
+</header>
+
+<nav class="rail" aria-label="Contents">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#how-to-read">How to read this</a></li>
+    <li><a href="#as-built">The system as built</a></li>
+    <li><a href="#platform">1 · Platform seams<span class="count">11</span></a></li>
+    <li><a href="#home">2 · Home Services<span class="count">34</span></a></li>
+    <li class="sub"><a href="#hs-a">Registration &amp; auth</a></li>
+    <li class="sub"><a href="#hs-b">Booking &amp; scheduling</a></li>
+    <li class="sub"><a href="#hs-c">Payment</a></li>
+    <li class="sub"><a href="#hs-d">Tracking &amp; notifications</a></li>
+    <li class="sub"><a href="#hs-e">Ratings &amp; vendor management</a></li>
+    <li><a href="#goods">3 · Goods &amp; Transport<span class="count">17</span></a></li>
+    <li class="sub"><a href="#gt-diff">How this category differs</a></li>
+    <li class="sub"><a href="#gt-a">Registration &amp; auth</a></li>
+    <li class="sub"><a href="#gt-b">Booking &amp; matching</a></li>
+    <li class="sub"><a href="#gt-c">Payment</a></li>
+    <li class="sub"><a href="#gt-d">Tracking &amp; notifications</a></li>
+    <li class="sub"><a href="#gt-e">Ratings &amp; partner management</a></li>
+    <li><a href="#edges">4 · Edge cases &amp; errors<span class="count">9</span></a></li>
+    <li><a href="#roadmap">5 · Rebuild sequence</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<!-- ══════════════════════ HOW TO READ ══════════════════════ -->
+<section id="how-to-read">
+  <h2 class="part">Orientation</h2>
+  <h3 class="section-title">How to read this document</h3>
+  <p class="lede">Every gap is one card with the same four bands, so each audience can take the slice it needs and skip the rest.</p>
+
+  <div class="legend">
+    <div>
+      <h5>Product &amp; business</h5>
+      <p>Read the <b>What's missing</b> and <b>Why it matters</b> bands, plus the severity chip. Skip the grey block at the bottom of each card.</p>
+    </div>
+    <div>
+      <h5>Junior developers</h5>
+      <p>Read <b>How mature platforms do it</b> — that band is the workflow you are being asked to build, described independently of our code.</p>
+    </div>
+    <div>
+      <h5>Senior / architects</h5>
+      <p>Read <b>What to change</b> and the <b>Evidence</b> line. Evidence points at the exact file and line that establishes the gap.</p>
+    </div>
+  </div>
+
+  <div class="tiles">
+    <div class="tile t-p0"><span class="n">30</span><span class="l">P0 · blocks launch</span></div>
+    <div class="tile t-p1"><span class="n">33</span><span class="l">P1 · blocks parity</span></div>
+    <div class="tile t-p2"><span class="n">8</span><span class="l">P2 · maturity</span></div>
+    <div class="tile"><span class="n">71</span><span class="l">Total findings</span></div>
+  </div>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Label</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><span class="sev sev-p0">P0</span></td><td>The workflow is broken, insecure, or silently does nothing. A real customer or a real technician would hit this on day one.</td></tr>
+        <tr><td><span class="sev sev-p1">P1</span></td><td>The workflow runs but is materially below the reference platform. Users notice and churn; ops absorbs the difference manually.</td></tr>
+        <tr><td><span class="sev sev-p2">P2</span></td><td>Maturity and scale. Not felt at low volume; becomes structural debt at a few thousand jobs a month.</td></tr>
+        <tr><td><span class="app app-c">Customer</span></td><td>Change lands in the customer application (<code>Customer/backend</code>, <code>Customer/frontend</code>, mobile shell).</td></tr>
+        <tr><td><span class="app app-v">Vendor</span></td><td>Change lands in the vendor / technician application (<code>vendor/backend</code>, <code>vendor/frontend</code>).</td></tr>
+        <tr><td><span class="app app-b">Both</span></td><td>Contract change — must land in both applications together or neither.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <h5>A note on method</h5>
+    <p>No screenshots or documentation for NoBroker or Porter were available. The reference behaviour in each card is inferred from first principles — what a two-sided marketplace in that category must do for the money, the trust, and the physical logistics to work — not copied from a specific screen. Where the inference is category-defining rather than cosmetic, it is stated as such.</p>
+    <p>Every "missing" claim below was checked against the code rather than assumed. Where something exists but is inert or unreachable, the card says so explicitly, because deleting and rebuilding working code is more expensive than wiring it up.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════ AS BUILT ══════════════════════ -->
+<section id="as-built">
+  <h2 class="part">Baseline</h2>
+  <h3 class="section-title">The system as built</h3>
+  <p class="lede">Before the gaps, the shape of what exists — because several gaps are only legible once you know the two applications are <strong>two Django projects pointed at one Postgres database</strong>, not one system.</p>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Layer</th><th>Customer application</th><th>Vendor application</th></tr></thead>
+      <tbody>
+        <tr><td>Backend</td><td>Django 6 + DRF, project <code>quicktims</code>, ~20 apps (<code>service_requests</code>, <code>accounts</code>, <code>logistics</code>, <code>customer_care</code>, <code>customer_analytics</code>, <code>platform_control</code>…)</td><td>Django + DRF, project <code>workforce_core</code>, 7 apps. <code>workforce_api/views.py</code> is a single 7,600-line module.</td></tr>
+        <tr><td>Web frontend</td><td>React 19 + Vite + Redux Toolkit, Leaflet/OSRM maps. Admin console and the public booking site live in the same SPA.</td><td>React 18 + Vite, Context API, Google Maps JS. Technician workspace + workforce admin console.</td></tr>
+        <tr><td>Mobile</td><td><code>SEVO.apk</code> — a Flutter <b>WebView wrapper</b> around <code>customer.caldimservices.online</code>. An earlier native Dart client exists in git history but is not what ships.</td><td>None. Technicians work from a mobile browser.</td></tr>
+        <tr><td>Database</td><td colspan="2">One shared Postgres/Supabase instance. Customer app owns the migrations; vendor app declares <code>managed = False</code> models over the same tables (<code>service_requests_servicerequest</code>, <code>employees_employee</code>, <code>accounts_user</code>) plus 25 tables of its own.</td></tr>
+        <tr><td>Realtime</td><td>Django Channels + Redis. <code>/ws/tracking/&lt;id&gt;/</code> pushes tracking payloads.</td><td>Server-Sent Events (<code>/workforce/realtime/stream/</code>). Channels is <b>not installed</b>.</td></tr>
+        <tr><td>Async</td><td>Celery + django-celery-beat installed.</td><td>Dispatch runs as a management command polling loop (<code>--loop --interval 5</code>).</td></tr>
+        <tr><td>Integration</td><td><code>workforce_integration</code>: a complete inbound webhook receiver (15 event types, idempotency, sequence numbers) and an outbound HTTP client.</td><td>Zero outbound HTTP. Never calls the customer app. Never receives the customer app's calls.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <h5>The single most important structural fact</h5>
+    <p>The two applications are joined only by <b>shared database tables and a 5-second polling loop</b>. The HTTP integration that both sides appear to implement does not connect: the customer app calls endpoints the vendor app does not route, using an authentication scheme the vendor app does not accept, and the vendor app never calls the customer app's webhook receiver at all.</p>
+    <p>Almost every "real-time" gap in Parts 2 and 3 is a downstream symptom of this one fact.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════ PART 1 ══════════════════════ -->
+<section id="platform">
+  <h2 class="part">Part 1</h2>
+  <h3 class="section-title">Platform seams</h3>
+  <p class="lede">Eleven gaps that are not specific to either service category. They sit between the two applications, and they cap how good either category can get. <strong>Fixing these first makes every later fix cheaper</strong>; fixing them later means re-doing work.</p>
+
+  <article class="gap p0" id="x-01">
+    <div class="gap-head"><span class="gid">X-01</span><h5>The vendor app never tells the customer app anything</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The customer app has a fully built webhook receiver that understands fifteen events — technician assigned, accepted, on the way, arrived, service started, completed, location updated, payment collected, extension requested, proof submitted, rescheduled and more. It has signature verification, replay protection and an idempotency table. The vendor app emits none of them. It contains no outbound HTTP calls whatsoever.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Everything the technician does is invisible to the customer except what can be inferred from a shared status column. No "your technician has accepted", no live position, no arrival alert, no payment confirmation. From the customer's seat the booking goes quiet after confirmation and reappears when someone knocks on the door.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>The partner app is the source of truth for field events and publishes each one exactly once to the consumer platform — typically an event bus, or an outbound webhook with retry and an idempotency key. The consumer app never polls for state it should have been told about.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-v">Vendor</span> Add <code>vendor/backend/workforce_api/services/marketplace_events.py</code> — an emitter that POSTs to <code>{CUSTOMER_API}/api/workforce-integration/webhook/</code> with the HMAC header the receiver already expects, an incrementing <code>sequence</code>, and a persisted outbox row for retry.</li>
+      <li><span class="app app-v">Vendor</span> Call it from every state-changing view in <code>workforce_api/views.py</code> (offer accepted, arrive, OTP verified, proof, cash collect) and from <code>services/automatic_dispatch.py</code> after <code>WorkforceJobOffer</code> creation and acceptance.</li>
+      <li><span class="app app-v">Vendor</span> Emit <code>technician.location_updated</code> from <code>WorkforceLocationUpdateView</code>, throttled to one event per 10–15 s per active job.</li>
+      <li><span class="app app-c">Customer</span> No change — the receiver in <code>workforce_integration/views.py</code> already handles all fifteen types.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/workforce_integration/views.py:154–397</code> (handlers) · <code>vendor/backend/</code> contains no <code>requests.post</code> to any marketplace host.</p>
+  </article>
+
+  <article class="gap p0" id="x-02">
+    <div class="gap-head"><span class="gid">X-02</span><h5>The customer app's outbound integration client calls endpoints that do not exist</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>WorkforceIntegrationService</code> calls <code>/jobs/dispatch/</code>, <code>/technicians/&lt;id&gt;/feedback/</code>, <code>/customer/quote-token/&lt;token&gt;/</code> and <code>/tracking/&lt;id&gt;/</code>. None of these are routed by the vendor app. The two that are close to real (<code>/jobs/&lt;pk&gt;/live-tracking/</code>) are called with a string request ID like <code>AC0012</code> against an <code>&lt;int:pk&gt;</code> route, and authenticated with a static bearer key while the vendor app's default permission class is <code>IsAuthenticated</code> over JWT. Every call fails.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Two consequences. First, every feature built on this client silently degrades to a fallback: the customer quote page can never load, feedback never reaches a technician's profile, live telemetry never enriches the tracking payload. Second — and this one costs money — <code>dispatch_job()</code> runs <b>synchronously inside the booking POST</b> with a 5-second timeout, so every single booking request blocks for up to five seconds waiting for a 404.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A cross-service call in the request path is either removed or made asynchronous. Booking creation returns as soon as the order is durable; matching happens on a queue. Service-to-service auth is a real machine credential the callee actually validates.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-b">Both</span> Write the integration contract down once (OpenAPI or a shared markdown spec) and generate both sides from it. Today each side implements a different imagined contract.</li>
+      <li><span class="app app-c">Customer</span> <code>service_requests/views.py:409</code> — move <code>WorkforceIntegrationService.dispatch_job(sr.id)</code> out of <code>BookingCreateView</code> into a Celery task. Celery is already installed and configured.</li>
+      <li><span class="app app-v">Vendor</span> Add a service-account authentication class in <code>vendor/backend/accounts/authentication.py</code> that accepts the shared <code>WORKFORCE_API_KEY</code>, and route the four missing endpoints in <code>workforce_api/urls.py</code>.</li>
+      <li><span class="app app-c">Customer</span> Remove the silent <code>except Exception → fallback: True</code> swallowing in <code>workforce_integration/services.py</code>; a failed integration call must be visible in monitoring, not reported as success.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/workforce_integration/services.py:95, 217–219, 283, 298</code> vs <code>vendor/backend/workforce_api/urls.py</code> · <code>vendor/backend/workforce_core/settings.py:158–165</code>.</p>
+  </article>
+
+  <article class="gap p0" id="x-03">
+    <div class="gap-head"><span class="gid">X-03</span><h5>Two different state machines write to the same status column</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>Both applications define a <code>ServiceRequest.Status</code> enum and an <code>ALLOWED_TRANSITIONS</code> map over the same <code>status</code> column — and they disagree. The vendor app writes <code>offering</code>, <code>dispatching</code>, <code>redispatching</code>, <code>reassigned</code>, <code>en_route</code> and <code>service_started</code>, none of which exist in the customer app's enum. The customer app writes <code>waiting_for_payment</code>, <code>reviewed</code>, <code>awaiting_verification</code>, <code>verified</code>, <code>feedback_pending</code>, <code>feedback_received</code>, <code>closed</code>, <code>rejected</code>, <code>rescheduled</code> and <code>rework_requested</code>, none of which exist in the vendor's transition map.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>A booking the vendor app has moved to <code>offering</code> renders in the customer UI as an unrecognised status; the customer's own state machine will refuse the next legal transition because the current state isn't a key in its map. A booking the customer app has moved to <code>rework_requested</code> disappears from the vendor's dispatchable set. This is the class of bug that produces "stuck bookings" that only an engineer with database access can clear.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>One order lifecycle, owned by one service, with a single enum published as a shared artifact. Other services propose transitions through an API; they do not write the column directly. Anything that needs a private sub-state keeps it in its own table.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-b">Both</span> Publish one canonical status enum and transition graph as a shared module vendored into both repos. The union of both current maps is the starting point.</li>
+      <li><span class="app app-v">Vendor</span> Move dispatch-internal states (<code>offering</code>, <code>dispatching</code>, <code>redispatching</code>) off <code>ServiceRequest.status</code> and onto <code>WorkforceJobOffer.status</code>, where they belong — the offer table already models exactly this.</li>
+      <li><span class="app app-b">Both</span> Add a CI check that fails the build if the two enums diverge.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/state_machine.py:16–44</code> vs <code>vendor/backend/service_requests/state_machine.py:11–33</code>.</p>
+  </article>
+
+  <article class="gap p0" id="x-04">
+    <div class="gap-head"><span class="gid">X-04</span><h5>The shared table's schema has drifted between the two ORM definitions</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The customer app owns the migrations for <code>service_requests_servicerequest</code>. Migration <code>0038</code> <b>dropped the <code>assigned_employee</code> foreign key</b>. The vendor app's unmanaged model still declares it and its entire dispatch engine filters on it (<code>assigned_employee__isnull=True</code>, <code>assigned_employee=emp</code>). Separately, <code>latitude</code>/<code>longitude</code> are <code>DecimalField(9,6)</code> on the customer side and <code>FloatField</code> on the vendor side; and the vendor model has no <code>tracking_token</code>, <code>otp_expires_at</code>, <code>coupon</code>, <code>subtotal_amount</code>, <code>discount_amount</code>, <code>final_amount</code>, <code>logistics_tier</code> or <code>logistics_lane</code>.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>If the customer app's migrations have been applied to the production database, every dispatch query in the vendor app raises <code>ProgrammingError: column does not exist</code> — the dispatch engine is dead. If they have not been applied, the customer app is running against a schema its own migration history says it doesn't have. Either way this is a live production hazard, and the type mismatch on coordinates means rounding differences in distance maths between the two apps.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A table has exactly one owning service. Other services read it through an API or a read replica with an explicit, versioned view — never a second ORM model that can silently disagree about the columns.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-b">Both</span> First: run a schema diff against the live database and reconcile. This is a same-day task, not a roadmap item.</li>
+      <li><span class="app app-c">Customer</span> Re-add <code>assigned_employee</code> (or the agreed replacement column) in a new migration, and align coordinate column types.</li>
+      <li><span class="app app-b">Both</span> Then: retire the second ORM definition. The vendor app should reach bookings through the integration API from <span class="gid">X-02</span>, keeping only its own <code>workforce_*</code> tables locally.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/migrations/0038_remove_workforce_models_and_fields.py:73–76</code> vs <code>vendor/backend/service_requests/models.py:165–170</code> and <code>workforce_api/services/automatic_dispatch.py:330, 723</code>.</p>
+  </article>
+
+  <article class="gap p0" id="x-05">
+    <div class="gap-head"><span class="gid">X-05</span><h5>There is no vendor entity — the "vendor app" is a single company's employee app</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>A technician signing up becomes a <code>User(role="employee")</code> plus an <code>Employee</code> row attached to a <code>Company</code> that defaults to a hard-coded <code>CalServices Operations</code> tenant. There is no partner or vendor business object: no service-provider profile, no fleet, no shop, no crew, no agreement, no coverage area of its own, no independent rating, no ledger. The word "vendor" in the codebase means "employee of the platform's own company".</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>This is the difference between a workforce-management product and a marketplace. Every marketplace behaviour the brief asks for — vendor reputation, vendor onboarding, vendor payouts, vendor-level quality control, customers seeing who is coming — has no object to hang off. Adding it later means touching the dispatch engine, the payment model, the ratings model and the admin console simultaneously.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Two clearly separated tiers: a <b>partner</b> (the business entity that is onboarded, contracted, rated and paid) and a <b>resource</b> (the individual person or vehicle that executes a job). Home-services platforms match on partner then person; logistics platforms match on person-plus-vehicle. Both keep the partner's commercial record — commission rate, payout account, compliance state — separate from the individual's operational record.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-v">Vendor</span> New app <code>vendor/backend/partners/</code> with <code>Partner</code>, <code>PartnerAgreement</code>, <code>PartnerServiceArea</code>, <code>PartnerRating</code>; <code>Employee</code> gains a nullable <code>partner</code> FK so today's direct-employed technicians remain valid.</li>
+      <li><span class="app app-v">Vendor</span> Extend the onboarding wizard (<code>frontend/src/pages/onboarding/OnboardingWizardPage.jsx</code>) with a partner track alongside the individual track.</li>
+      <li><span class="app app-v">Vendor</span> Move the onboarding state currently buried in <code>Employee.bank_details</code> JSON into real columns — dispatch Gates 2 and 8 read <code>bank_details["onboarding"]["status"]</code> and <code>bank_details["leaves"]</code> from an unindexed JSON blob on every candidate evaluation.</li>
+      <li><span class="app app-c">Customer</span> Surface partner identity in the booking and tracking payloads (<code>_build_tracking_payload</code> currently hard-codes vendor name to "Sevo").</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>vendor/backend/workforce_api/views.py:143–215</code> · <code>vendor/backend/employees/models.py:36</code> · <code>Customer/backend/service_requests/views.py:654</code>.</p>
+  </article>
+
+  <article class="gap p0" id="x-06">
+    <div class="gap-head"><span class="gid">X-06</span><h5>No commission, payout or settlement model anywhere</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>Money flows in (booking amount, COD collection) and stops. There is no take-rate, no partner earnings ledger, no payout batch, no reconciliation of cash a technician collected against cash the platform is owed. The only related fields are <code>Package.platform_fee</code> (a flat ₹29 default that is never added to any total) and an employee payroll module (<code>WorkforcePayPeriod</code>, <code>WorkforcePayslip</code>) that models salaried wages, not marketplace earnings.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>The platform cannot state its own revenue, cannot pay a partner, and cannot detect a technician who collected cash and did not remit it. At any real volume this is not a feature gap, it is an accounting control failure.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Every completed job writes an immutable earnings entry: gross fare, platform commission, taxes, incentives, adjustments, net payable. Cash-collected jobs write a negative entry against the partner's float. A settlement run nets the entries per partner per cycle and emits one payout instruction. The ledger is append-only and reconciles to the gateway.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-v">Vendor</span> New models <code>PartnerEarning</code> (one row per job, immutable), <code>PartnerLedgerEntry</code>, <code>PayoutBatch</code> in the new <code>partners</code> app.</li>
+      <li><span class="app app-v">Vendor</span> Write an earning row on the <code>completed</code> transition in <code>service_requests/state_machine.py</code> and on every <code>PaymentCollectionEvent</code>.</li>
+      <li><span class="app app-c">Customer</span> Apply <code>Package.platform_fee</code> and <code>Package.gst_rate</code> in server-side pricing (see <span class="gid">HS-B-02</span>) so the commission base is a real number.</li>
+      <li><span class="app app-v">Vendor</span> Add a technician-facing earnings screen; <code>EmployeePerformancePage.jsx</code> is the natural home.</li>
+    </ul></div>
+    <p class="evidence">Evidence: search for <code>commission|payout|settlement|take_rate</code> across both backends returns one hit — <code>Customer/backend/service_requests/models.py:717</code>.</p>
+  </article>
+
+  <article class="gap p0" id="x-07">
+    <div class="gap-head"><span class="gid">X-07</span><h5>Notifications are email-only; there is no SMS, push or WhatsApp channel</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>service_requests/notifications.py</code> is 716 lines of <code>send_mail(...)</code> — every booking confirmation, reschedule, refund, complaint and feedback link goes out as email and nothing else. The one SMS path that exists (OTP login) ships with <code>MockSMSProvider</code>, which prints the code to the server console; a Twilio provider is stubbed but not in <code>requirements.txt</code>. There is no Firebase/FCM dependency in either frontend. The customer web app's only "push" is the browser Notifications API, which does nothing inside the shipped WebView app.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>In this market SMS and WhatsApp are the channel — a large share of customers will not have supplied an email at all, and the booking form treats email as optional. Right now a customer who books with a phone number receives no communication of any kind for the entire lifecycle of the job. Technicians receive job offers only as an in-app <code>WorkforceNotification</code> row, visible only if the dashboard tab is open, with a 5-minute offer expiry running against them.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A notification service with one message definition rendered per channel, a per-user channel preference and consent record, delivery receipts, and retry with fallback (push → SMS if unread in N seconds). Transactional SMS goes through a DLT-registered template. Job offers reach a partner as a high-priority push with sound, not a database row.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-b">Both</span> New shared <code>notifications</code> service: <code>Template</code>, <code>Message</code>, <code>DeliveryAttempt</code>, channel adapters for SMS (MSG91/Gupshup/Twilio, DLT templates registered), WhatsApp Business, FCM push and email.</li>
+      <li><span class="app app-c">Customer</span> Replace direct <code>send_mail</code> calls in <code>notifications.py</code> with <code>notify(event, recipient, context)</code>; keep the existing HTML templates as the email renderer.</li>
+      <li><span class="app app-c">Customer</span> Set a real <code>SMS_PROVIDER</code> and add the SDK to <code>requirements.txt</code>; <code>accounts/services.py:90</code> already has the provider interface.</li>
+      <li><span class="app app-v">Vendor</span> Fire push on <code>WorkforceNotification</code> creation, especially <code>JOB_OFFER</code> in <code>automatic_dispatch.py:632</code>.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/accounts/services.py:58–94</code> · <code>Customer/backend/requirements.txt</code> (no twilio, no firebase) · <code>Customer/frontend/package.json</code> (no messaging SDK).</p>
+  </article>
+
+  <article class="gap p0" id="x-08">
+    <div class="gap-head"><span class="gid">X-08</span><h5>The mobile app is a WebView shell, and the technician has no app at all</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>SEVO.apk</code> is a Flutter app whose entire job is to load <code>https://customer.caldimservices.online</code> in a WebView. Its <code>pubspec.yaml</code> declares <code>webview_flutter</code> and <code>url_launcher</code> and nothing else — no state management, no HTTP client, no maps, no notifications. A native client with Riverpod, GoRouter, auth/booking/tracking repositories and a Razorpay key exists in git history but is not what ships. Technicians have no app; they run the React workspace in a mobile browser.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>A WebView cannot do the four things these categories depend on: background GPS, reliable push, native payment SDKs (UPI intent, Razorpay checkout), and camera/storage permissions that survive a backgrounded app. Concretely: the moment a technician locks their phone, GPS transmission stops, and 120 seconds later the dispatch engine classifies them as stale and stops offering them work — while the customer's tracking map freezes.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Both sides are native or Flutter-native. The partner app in particular is built around a foreground service with a persistent notification, exactly so location keeps flowing with the screen off — this is not optional for any category that promises live tracking.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Restore the native Flutter client from history (<code>lib/core/network</code>, <code>lib/features/*</code> at commit <code>216390e~</code>), add <code>dio</code>, <code>flutter_riverpod</code>, <code>go_router</code>, <code>firebase_messaging</code>, <code>google_maps_flutter</code>, <code>razorpay_flutter</code>, and finish the screens the router already declares.</li>
+      <li><span class="app app-v">Vendor</span> New technician mobile app — this is a build, not a port. Minimum: login, online/offline toggle, job offer with sound + accept/decline countdown, navigation, arrival + OTP, proof capture, cash collection, earnings.</li>
+      <li><span class="app app-v">Vendor</span> Background location via a foreground service; keep the 25-second heartbeat cadence <code>useGPSPosition.js</code> already uses so <code>MAX_GPS_AGE_SECONDS = 120</code> stays satisfiable.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/Mobile App/calservices_customer</code> — <code>lib/main.dart</code> and <code>pubspec.yaml</code> at <code>HEAD</code> · <code>vendor/frontend/src/hooks/useGPSPosition.js:27</code> vs <code>automatic_dispatch.py:34</code>.</p>
+  </article>
+
+  <article class="gap p1" id="x-09">
+    <div class="gap-head"><span class="gid">X-09</span><h5>No customer-to-technician channel, and the technician's real phone number is exposed</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>There is no in-app chat, no call button, no number masking. The tracking payload ships <code>technician_phone</code> as a raw personal number to any client that has the tracking token. There are canned-message and communication-log models in <code>customer_care</code>, but they serve support tickets, not the customer↔technician relationship.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>"Where are you", "the gate code is 4102", "I'll be ten minutes late" is the highest-volume interaction in both categories, and today it happens on personal numbers outside the platform — which means no record when something is disputed, no protection for the technician after the job ends, and every off-platform conversation is an opportunity to take the next job off-platform too.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>In-app chat with quick replies for the common messages, plus a masked-call bridge (Exotel, Knowlarity, Twilio proxy) that connects the two parties through a platform number that expires when the job closes. Both are logged and both are available to support during a dispute.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-b">Both</span> New <code>JobMessage</code> model scoped to a booking, delivered over the existing customer WebSocket and the vendor SSE stream.</li>
+      <li><span class="app app-b">Both</span> Integrate a call-masking provider; replace <code>technician_phone</code> in the tracking payload with a session-scoped masked number.</li>
+      <li><span class="app app-c">Customer</span> <code>service_requests/views.py:_build_tracking_payload</code> — stop returning the raw number even when <code>has_full_access</code> is true.</li>
+    </ul></div>
+    <p class="evidence">Evidence: no <code>chat</code>, <code>masked</code>, <code>exotel</code> or equivalent in either backend · <code>Customer/backend/service_requests/views.py:683–697</code>.</p>
+  </article>
+
+  <article class="gap p1" id="x-10">
+    <div class="gap-head"><span class="gid">X-10</span><h5>Two different mapping stacks produce two different ETAs</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The customer app draws routes with Leaflet and fetches geometry from public OSRM demo servers (<code>router.project-osrm.org</code>, <code>routing.openstreetmap.de</code>). The vendor app loads the Google Maps JS API and uses <code>DirectionsService</code>. Neither ETA is computed server-side; each client calculates its own, from a different engine, with different traffic assumptions — and the dispatch engine ranks candidates on straight-line haversine distance, a third measure again.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>The customer is told 14 minutes, the technician's app says 22, and dispatch picked that technician because they were 3 km away as the crow flies across a river with no bridge. ETA credibility is the main thing a tracking screen sells; two engines guarantee it is wrong for one of the two parties. The public OSRM demo servers are also rate-limited and explicitly not licensed for production traffic.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>One routing provider, called server-side, cached, and broadcast to both parties as a single authoritative ETA. Dispatch ranks on road-network travel time, not straight-line distance — the difference decides who gets the job.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-b">Both</span> New server-side <code>routing</code> service (self-hosted OSRM, Google Routes, or Mapbox) exposing <code>eta(origin, destination, mode)</code>; both clients render the ETA they are given rather than computing one.</li>
+      <li><span class="app app-v">Vendor</span> <code>automatic_dispatch.py:get_eligible_candidates</code> — replace <code>proximity_score = 100 - dist_km*2</code> with a travel-time score from a batched distance-matrix call over the top N haversine candidates.</li>
+      <li><span class="app app-c">Customer</span> Retire <code>frontend/src/api/routing.js</code>'s public-server fallback list.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/frontend/src/api/routing.js:7–12</code> · <code>vendor/frontend/src/utils/loadGoogleMaps.js</code> · <code>vendor/backend/workforce_api/services/automatic_dispatch.py:466–476</code>.</p>
+  </article>
+
+  <article class="gap p1" id="x-11">
+    <div class="gap-head"><span class="gid">X-11</span><h5>Dispatch is an unsupervised polling loop, not a service</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>Matching runs as <code>python manage.py dispatch_pending_workforce_jobs --loop --interval 5</code> — a single process, no supervisor, no health endpoint, no lock preventing two copies, no alerting if it dies. Celery and django-celery-beat are installed in the customer app and unused for this. There are no metrics on the dispatch funnel: how many bookings went unmatched, median time to accept, offer decline rate per technician.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>If this process stops, no booking is ever assigned and nothing alerts anyone — the failure mode is silence. And without funnel metrics there is no way to answer the only question that matters operationally: <em>why did this booking not get a technician?</em> The engine logs richly to stdout (<code>9GATE_RESULT</code>, <code>DISPATCH_REJECT</code>) but nothing aggregates it.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Matching is event-driven — a new booking enqueues a match task immediately, and a periodic sweeper only catches strays. Every rejection reason is a counter on a dashboard, with alerts on unmatched-rate and time-to-assign.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-v">Vendor</span> Move <code>dispatch_pending_jobs</code> onto Celery: an immediate task on booking creation, a beat sweeper every 30 s for expired offers, and a distributed lock so concurrent workers cannot double-offer.</li>
+      <li><span class="app app-v">Vendor</span> Persist the gate results already computed in <code>check_candidate_eligibility</code> to a <code>DispatchAttempt</code> table so "why unmatched" is queryable, not grep-able.</li>
+      <li><span class="app app-v">Vendor</span> Add <code>/healthz</code> and export counters for offers created, accepted, expired, and bookings unassigned &gt; 10 min.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>vendor/backend/workforce_api/management/commands/dispatch_pending_workforce_jobs.py</code> · <code>Customer/backend/quicktims/celery.py</code> (configured, unused for dispatch).</p>
+  </article>
+</section>
+
+<!-- ══════════════════════ PART 2 ══════════════════════ -->
+<section id="home">
+  <h2 class="part">Part 2</h2>
+  <h3 class="section-title">Home Services — measured against NoBroker</h3>
+  <p class="lede">The defining property of this category is that <strong>the job is scheduled, the scope is uncertain, and the customer is letting a stranger into their home</strong>. Everything the reference platform does follows from those three facts: appointment slots with real capacity, an inspect-then-quote loop for uncertain scope, and heavy investment in trust signals before the technician arrives.</p>
+
+  <h4 class="wf" id="hs-a">Registration, authentication &amp; trust</h4>
+  <p class="wf-note">Six gaps. The customer side has a decent OTP mechanism that nothing real is wired into; the technician side has a thorough document-verification workflow with no identity verification underneath it.</p>
+
+  <article class="gap p0" id="hs-a-01">
+    <div class="gap-head"><span class="gid">HS-A-01</span><h5>Customer OTP login prints the code to the server console</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The OTP mechanism itself is sound — hashed codes in <code>OTPRequest</code>, expiry, attempt limits, IP and identifier rate limiting, an audit log, a pluggable provider interface. What is missing is a provider. <code>get_sms_provider()</code> returns <code>MockSMSProvider</code> unless <code>SMS_PROVIDER=twilio</code>, and the Twilio SDK is not in <code>requirements.txt</code>. Email OTP goes through <code>send_mail</code>, so it works only if SMTP is configured and only for customers who gave an email.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Nobody can log in. This is the first screen of the product.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Phone-first OTP over a DLT-registered transactional SMS template, with auto-read on Android via the SMS Retriever API, a resend timer, and a truecaller/one-tap alternative. Email is the fallback, not the primary.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Add an MSG91 or Gupshup provider class beside <code>TwilioSMSProvider</code> in <code>accounts/services.py</code>, register the DLT template, set <code>SMS_PROVIDER</code>.</li>
+      <li><span class="app app-c">Customer</span> Add the SDK to <code>requirements.txt</code> and the credentials to deployment config; <code>MockSMSProvider</code> should be selectable only when <code>DEBUG</code> is true.</li>
+      <li><span class="app app-c">Customer</span> Emit the SMS from a Celery task — <code>request_otp</code> currently calls the provider inline.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/accounts/services.py:58–94, 226–227</code>.</p>
+  </article>
+
+  <article class="gap p1" id="hs-a-02">
+    <div class="gap-head"><span class="gid">HS-A-02</span><h5>Booking is fully anonymous and silently creates a shadow account</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>BookingCreateView</code> is <code>AllowAny</code>. If the phone number doesn't match an existing user it creates one — <code>username = cust_&lt;phone&gt;</code>, no password, no verification — and attaches the booking to it. The phone number is never proved to belong to the person booking.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Anyone can create bookings against anyone's phone number, which is both a spam vector and a way to poison a real customer's history: the next time that person logs in with OTP they inherit bookings they never made. It also means the platform's customer count is fiction — a mix of real accounts and booking-form artefacts.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Browse and price without an account; the moment the booking is confirmed, verify the phone with an OTP inline in the checkout sheet. The account is created from a verified number, not from a typed one.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Require a verified-phone token on <code>POST /api/booking/</code> — issue a short-lived signed token from <code>CustomerOTPVerifyAPIView</code> and validate it in <code>BookingCreateView</code>.</li>
+      <li><span class="app app-c">Customer</span> <code>CustomerEntryFlowModal.jsx</code> already implements the OTP sheet; move it in front of checkout submission rather than beside it.</li>
+      <li><span class="app app-c">Customer</span> Mark auto-created users <code>is_verified=False</code> and exclude them from customer analytics until they complete a verified login.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/views.py:234, 312–347</code>.</p>
+  </article>
+
+  <article class="gap p1" id="hs-a-03">
+    <div class="gap-head"><span class="gid">HS-A-03</span><h5>There is no logged-in customer area in the web app</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>Every customer-facing route in <code>App.jsx</code> is public: landing, booking, three logistics pages, a token-scoped feedback page, a token-scoped tracking page. There is no <code>/my-bookings</code>, <code>/profile</code>, <code>/addresses</code> or <code>/payments</code> route. The API supports all of it — <code>/booking/my-bookings/</code>, <code>/auth/customer/profile/</code>, <code>/auth/customer/addresses/</code> — and the booking page fetches order history inline, but there is no destination a returning customer can navigate to.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Repeat rate is the whole economics of home services. A customer who cannot find their past bookings, saved addresses or invoices without digging up an email link is a customer who re-books from scratch, or doesn't.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>An account tab with bookings (upcoming / past), saved addresses, payment methods, invoices, coupons, referrals and support history. "Book again" from a past booking is one tap and pre-fills everything.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Add <code>/account/*</code> routes in <code>ui/routes.js</code> and <code>ui/App.jsx</code> behind a customer guard, reusing <code>CustomerLayout.jsx</code>.</li>
+      <li><span class="app app-c">Customer</span> New pages: <code>MyBookingsPage</code>, <code>SavedAddressesPage</code>, <code>InvoicesPage</code> — all three back onto existing endpoints.</li>
+      <li><span class="app app-c">Customer</span> Add "Book again" that rehydrates <code>cart_data</code> from a past <code>ServiceRequest</code>.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/frontend/src/ui/App.jsx:298–351</code> · <code>Customer/backend/accounts/urls.py:52–61</code>.</p>
+  </article>
+
+  <article class="gap p0" id="hs-a-04">
+    <div class="gap-head"><span class="gid">HS-A-04</span><h5>Technician signup verifies neither phone nor email nor identity</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>WorkforceSignupView</code> takes an email, a mobile number and a password and creates an active account. No OTP on either channel. The onboarding wizard that follows collects documents and an admin verifies them, but there is no government-ID check, no police verification record, no address proof requirement in the model, and no background-check status field. Document requirements are per-company free text (<code>WorkforceRequiredDocument.category</code>), so there is no guarantee an ID document is even requested.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>This is the trust foundation of a home-services marketplace — the platform is asserting to a customer that it is safe to let this person into their house. Without verified identity that assertion is unbacked, and after an incident the platform has no record it can point to.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Phone OTP at signup, then a KYC step: government ID captured and verified (Aadhaar/DigiLocker or a KYC vendor), face match against a live selfie, police verification with an expiry date, and a background-check status that gates activation. Verification state is re-checked, not just captured once.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-v">Vendor</span> Add OTP verification to <code>WorkforceSignupView</code> before the account is created (reuse the customer app's <code>OTPRequest</code> mechanism over the shared <code>accounts</code> tables).</li>
+      <li><span class="app app-v">Vendor</span> New <code>EmployeeVerification</code> model: <code>id_type</code>, <code>id_number_hash</code>, <code>kyc_provider_ref</code>, <code>face_match_score</code>, <code>police_verification_status</code>, <code>police_verification_expiry</code>, <code>background_check_status</code>.</li>
+      <li><span class="app app-v">Vendor</span> Add a Gate 10 in <code>check_candidate_eligibility</code> for verification validity, alongside the existing compliance gate.</li>
+      <li><span class="app app-c">Customer</span> Surface "ID verified · Police verified" on the technician card in the tracking payload — verification is only worth doing if the customer sees it.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>vendor/backend/workforce_api/views.py:134–190</code> · <code>vendor/backend/workforce_api/models.py:122–137</code>.</p>
+  </article>
+
+  <article class="gap p1" id="hs-a-05">
+    <div class="gap-head"><span class="gid">HS-A-05</span><h5>No trust signals anywhere before the technician is assigned</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The catalog carries a hard-coded <code>rating = "4.8"</code> string and a <code>jobs_count_str = "10K+"</code> label on <code>CatalogCategory</code> — decorative placeholders, not computed. There is no service-level rating, no review count, no "X jobs completed in your area", no warranty statement, no verified-professional badge on the booking flow. The tracking payload deliberately hides technician identity until acceptance, which is correct, but nothing fills the gap in the meantime.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>The customer is asked to pay before they know who is coming. Every trust signal that is missing at that moment is conversion lost at exactly the highest-intent step.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Real aggregated ratings per service with review counts, a service-guarantee statement with a defined window, "verified &amp; trained professionals" with what that means, and an assurance panel at checkout. After confirmation the customer gets the assigned professional's name, photo, rating and job count as soon as it is known.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Compute <code>CatalogCategory.rating</code> and <code>Service.rating</code> nightly from real <code>ServiceFeedback</code>; keep the string field but stop seeding it.</li>
+      <li><span class="app app-c">Customer</span> Add review counts and 3–5 recent reviews to the service detail modal — <code>PublicFeedbackListView</code> already returns them by category.</li>
+      <li><span class="app app-c">Customer</span> Add a service-guarantee block to checkout backed by a real policy record, not static copy.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/models.py:646–647</code> · <code>Customer/backend/service_requests/views.py:1006–1033</code>.</p>
+  </article>
+
+  <article class="gap p2" id="hs-a-06">
+    <div class="gap-head"><span class="gid">HS-A-06</span><h5>Referrals and loyalty exist as admin screens with no customer-facing loop</h5><span class="sev sev-p2">P2</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>ReferralsPage.jsx</code> and <code>OffersPage.jsx</code> live behind the admin guard. There is a working coupon engine (<code>Coupon</code>, <code>CouponUsage</code>, category/service/package scoping, validation endpoint) but no referral code on a customer account, no attribution, no reward issuance, and no loyalty tier.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Referral is the cheapest acquisition channel in this category and the coupon plumbing is already built — the missing piece is the identity link and the reward trigger, not the discount machinery.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Each customer gets a referral code; a referee's first completed booking issues a coupon to both sides automatically. Tiers unlock priority slots or discounts.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Add <code>referral_code</code> to <code>User</code> and a <code>Referral</code> model (referrer, referee, booking, reward state).</li>
+      <li><span class="app app-c">Customer</span> Issue rewards on the <code>completed</code> transition via the existing <code>Coupon</code> engine; expose the code in the new account area.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/frontend/src/ui/App.jsx:414</code> (admin-guarded) · <code>Customer/backend/service_requests/models.py:1232–1330</code>.</p>
+  </article>
+
+  <h4 class="wf" id="hs-b">Booking, matching &amp; scheduling</h4>
+  <p class="wf-note">Eight gaps. This is where the strongest existing engineering sits — the 9-gate dispatch engine is genuinely good — and also where the most consequential shortcuts are: prices the client can set, slots that are always available, and an inspect-then-quote loop that is modelled but not wired.</p>
+
+  <article class="gap p0" id="hs-b-01">
+    <div class="gap-head"><span class="gid">HS-B-01</span><h5>The booking total is whatever the browser says it is</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>ServiceRequestPublicCreateSerializer</code> accepts <code>total_amount</code> and <code>cart_data</code> straight from the request body. Server-side price correction exists — <code>resolve_logistics_fare()</code> — but it returns <code>submitted_amount</code> unchanged for anything that isn't one of the three logistics categories. For every home-services booking the client's number is persisted verbatim. <code>Package.gst_rate</code> and <code>Package.platform_fee</code> exist on the catalog and are never applied.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>A customer can book a ₹4,999 deep clean for ₹1 by editing one field. It also means the recorded revenue is not derivable from the catalog, so no invoice, tax filing or commission calculation can be trusted.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>The client sends a cart of catalog identifiers and quantities; the server prices it, applies taxes, fees and coupons, and returns the authoritative total which the client then displays. If the displayed total and the server total differ, checkout stops and re-quotes.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> New <code>service_requests/services/pricing_service.py</code> function <code>price_cart(cart_data, coupon, address)</code> returning line items, subtotal, GST, platform fee, discount and total from <code>Package</code>/<code>AddOn</code> rows.</li>
+      <li><span class="app app-c">Customer</span> <code>BookingCreateView</code> — ignore the submitted <code>total_amount</code> entirely; set <code>subtotal_amount</code>, <code>discount_amount</code> and <code>final_amount</code> from the pricing service. Those three columns already exist.</li>
+      <li><span class="app app-c">Customer</span> Add <code>POST /api/booking/quote/</code> so the checkout page renders the server price before submitting, and fails loudly on mismatch.</li>
+      <li><span class="app app-c">Customer</span> Tighten <code>resolve_logistics_fare</code>'s final branch from "trust the client" to "reject" once every booking carries a tier or lane id — the docstring already says this.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/serializers.py:139–146</code> · <code>Customer/backend/service_requests/services/logistics_pricing.py:44–50</code>.</p>
+  </article>
+
+  <article class="gap p0" id="hs-b-02">
+    <div class="gap-head"><span class="gid">HS-B-02</span><h5>Slot availability is hard-coded — every slot is always open</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>get_real_technician_availability()</code> loops over the time-slot choices and returns <code>available_count: 5, total_technicians: 5, is_available: True</code> for every one, regardless of date, area, service or how many technicians actually exist. There is no capacity model: no slot definition, no per-area technician count, no booking-against-capacity, no blackout dates.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>The platform will confirm forty 10am bookings in a zone staffed by three technicians, then discover the problem at dispatch time — which surfaces to customers as no-shows and last-minute reschedules, the two things that kill a services brand fastest. It also makes the <code>preferred_time</code> field meaningless, since nothing enforces it downstream.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Slots are inventory. Capacity per slot per area is derived from active partner schedules minus already-committed jobs, decremented atomically at booking, and a slot that hits zero is greyed out. Same-day slots close as the cutoff passes.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-b">Both</span> New capacity service reading <code>WorkforceEmployeeSchedule</code> (day-of-week windows, already modelled), approved services per employee, and committed bookings, to produce real counts per slot × area × service.</li>
+      <li><span class="app app-c">Customer</span> Replace the stub in <code>service_requests/services/__init__.py:177</code>; expose it as a public pre-booking endpoint, not only the authenticated reschedule endpoint.</li>
+      <li><span class="app app-c">Customer</span> Reserve capacity inside the booking transaction with <code>select_for_update</code>; release it on cancellation.</li>
+      <li><span class="app app-c">Customer</span> Replace free-text <code>preferred_time</code> with the <code>TimeSlotChoices</code> enum that already exists in <code>models.py</code>.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/services/__init__.py:177–190</code> · <code>Customer/backend/service_requests/models.py:825</code>.</p>
+  </article>
+
+  <article class="gap p0" id="hs-b-03">
+    <div class="gap-head"><span class="gid">HS-B-03</span><h5>The inspect-then-quote flow is modelled but unreachable</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>ServiceRequest</code> has <code>request_kind</code> with values <code>inspection</code> / <code>quoted_work</code>, a unique <code>quote_number</code>, and a <code>parent_request</code> self-FK — the data model for "inspection visit produces a quote which becomes a second job" is fully there. The customer-facing quote page calls <code>get_quote_by_token()</code>, which requests <code>/customer/quote-token/&lt;token&gt;/</code> from the vendor app. That route does not exist. The page can never load a quote.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Uncertain scope is the norm in this category — a leak, a rewire, a repaint cannot be priced from a photo. Without a quote loop the platform can only sell fixed-price packages, which caps it to the commodity half of the market and pushes everything else off-platform into a phone call.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Book an inspection at a nominal or waived fee. The professional surveys and submits a line-itemised quote. The customer receives it, sees each line, approves or negotiates, and approval converts it into a scheduled job — often with the inspection fee credited against it.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-v">Vendor</span> New <code>Quote</code> and <code>QuoteLineItem</code> models plus a technician quote-builder screen; route <code>GET /workforce/customer/quote-token/&lt;token&gt;/</code> and a decide endpoint.</li>
+      <li><span class="app app-c">Customer</span> Build the quote view/approve UI — <code>CustomerDecisionPage.jsx</code> (built for work extensions) is the pattern to follow.</li>
+      <li><span class="app app-c">Customer</span> On approval, create the child <code>ServiceRequest</code> with <code>request_kind="quoted_work"</code> and <code>parent_request</code> set; <code>WorkforceBookingFromQuoteView</code> already exists as the entry point.</li>
+      <li><span class="app app-c">Customer</span> Add inspection-fee credit logic to the pricing service from <span class="gid">HS-B-01</span>.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/models.py:270–279</code> · <code>Customer/backend/workforce_integration/services.py:293–307</code> vs <code>vendor/backend/workforce_api/urls.py</code>.</p>
+  </article>
+
+  <article class="gap p0" id="hs-b-04">
+    <div class="gap-head"><span class="gid">HS-B-04</span><h5>Bookings without coordinates are created, then never dispatched</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>Latitude and longitude are optional on the booking serializer. When they are absent the service-area gate substitutes a default Hosur coordinate <em>for the eligibility check only</em> — the booking is saved with <code>latitude = NULL</code>. The dispatch engine filters on <code>latitude__isnull=False</code>, so those bookings are never picked up, and <code>dispatch_job()</code> flips them to <code>unassigned</code> with the log line <code>DISPATCH_GPS_MISSING</code>. Nothing alerts anyone and nothing surfaces it to the customer.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>A confirmed, possibly paid booking silently falls out of the system. The customer sees "confirmed" forever. Because the default coordinate passes the zone gate, this also means bookings outside the service area can be accepted whenever the browser fails to provide a location.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>The address is geocoded to a pin at capture time and the pin is mandatory; you cannot proceed to payment without one. Serviceability is checked against the real pin, not a fallback.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Make <code>latitude</code>/<code>longitude</code> required in <code>ServiceRequestPublicCreateSerializer</code>; server-side geocode the typed address as a fallback rather than defaulting to a fixed pin.</li>
+      <li><span class="app app-c">Customer</span> Remove the <code>12.7409, 77.8253</code> substitution in <code>BookingCreateView</code> — reject instead.</li>
+      <li><span class="app app-v">Vendor</span> Emit an ops alert when a booking sits <code>unassigned</code> for more than N minutes for any reason.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/views.py:255–259</code> · <code>vendor/backend/workforce_api/services/automatic_dispatch.py:543–548, 700–705</code>.</p>
+  </article>
+
+  <article class="gap p1" id="hs-b-05">
+    <div class="gap-head"><span class="gid">HS-B-05</span><h5>Matching offers one technician at a time with a five-minute expiry</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>dispatch_job()</code> ranks candidates, takes <code>candidates[0]</code>, creates one exclusive <code>WorkforceJobOffer</code> valid for <code>DEFAULT_OFFER_DURATION_MINUTES = 5</code>, and waits. If it expires, the sweeper offers the next candidate — another five minutes. Three declines is a fifteen-minute wait. There is no broadcast, no batching, no escalation ladder, no widening radius, no manual-dispatch trigger before the ladder exhausts.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>For a scheduled home-services job this is tolerable but slow, and it produces a long tail where a booking made at 9pm for tomorrow morning is still unassigned at 10pm. It is not tolerable at all for the transport category — see <span class="gid">GT-B-05</span>.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A scheduled job is offered to a small ranked batch with a short acceptance window (30–60 s), first accept wins, and the radius widens on each unsuccessful round. An unassigned job escalates to a human dispatcher well before the customer's appointment time.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-v">Vendor</span> <code>automatic_dispatch.py</code> — add a batch mode: create N simultaneous offers, first <code>accept-offer</code> wins under <code>select_for_update</code>, the rest are cancelled. The acceptance view already locks correctly.</li>
+      <li><span class="app app-v">Vendor</span> Make offer duration and batch size configurable per service category; home services can stay long, transport must be short.</li>
+      <li><span class="app app-v">Vendor</span> Add radius widening across rounds instead of a fixed <code>MAX_DISPATCH_RADIUS_KM = 50</code>.</li>
+      <li><span class="app app-v">Vendor</span> Escalate to the ops queue after K failed rounds; <code>AdminOperationsPage.jsx</code> is the destination.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>vendor/backend/workforce_api/services/automatic_dispatch.py:40, 588–612</code>.</p>
+  </article>
+
+  <article class="gap p1" id="hs-b-06">
+    <div class="gap-head"><span class="gid">HS-B-06</span><h5>The customer sees nothing between "confirmed" and a technician accepting</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>_build_tracking_payload</code> correctly withholds technician identity until acceptance — but the interval it covers is filled with a bare <code>WAITING_FOR_PROFESSIONAL</code> freshness string. There is no "finding you a professional" state with a progress indication, no expected-assignment-by time, no notification when assignment happens, no visible fallback if it doesn't.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>This is the single most anxious moment in the booking — the customer has paid and does not know if anyone is coming. Filling it is cheap and disproportionately affects perceived reliability.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>An explicit searching state with a countdown or "we'll confirm your professional by 8am", a push when the professional is assigned with their name, photo and rating, and a clear escalation path if assignment fails.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Add an <code>assignment_expected_by</code> field on the booking, set from the slot start minus a lead time; render it in <code>CustomerTrackingStatusCard.jsx</code>.</li>
+      <li><span class="app app-c">Customer</span> Send the assignment notification once <span class="gid">X-01</span> and <span class="gid">X-07</span> land — the <code>technician.assigned</code> handler already exists.</li>
+      <li><span class="app app-c">Customer</span> Show the searching state on the post-booking confirmation screen, not only on the tracking page.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/views.py:677</code>.</p>
+  </article>
+
+  <article class="gap p2" id="hs-b-07">
+    <div class="gap-head"><span class="gid">HS-B-07</span><h5>No recurring bookings or annual maintenance contracts</h5><span class="sev sev-p2">P2</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>Every booking is a one-off. There is no schedule template, no series, no subscription, no AMC product, no auto-renewal, no "your next quarterly AC service is due" trigger.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Cleaning, pest control and AC servicing are naturally recurring, and recurring revenue is what makes a services marketplace's unit economics work. Every repeat booking currently costs full acquisition effort.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A subscription plan (weekly / monthly / quarterly) generates child bookings on a schedule, each individually reschedulable, with plan-level pricing and cancellation terms. AMC packages bundle N visits over a year with a service-level promise.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> New <code>BookingSeries</code> model with an RRULE-style schedule; a Celery beat job materialises the next occurrence as a normal <code>ServiceRequest</code> with <code>parent_request</code> set.</li>
+      <li><span class="app app-c">Customer</span> Add a plan type and visit allowance to <code>Package</code>; add renewal reminders to the notification service.</li>
+    </ul></div>
+    <p class="evidence">Evidence: no recurrence, series or subscription model in <code>Customer/backend/service_requests/models.py</code>.</p>
+  </article>
+
+  <article class="gap p2" id="hs-b-08">
+    <div class="gap-head"><span class="gid">HS-B-08</span><h5>Rescheduling is a manual admin queue with no capacity check</h5><span class="sev sev-p2">P2</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The reschedule workflow is thorough — <code>RescheduleRequest</code>, status history, attachments, admin review, suggested alternate slots, customer response. But every path requires an admin decision, the suggested slots come from the always-available stub in <span class="gid">HS-B-02</span>, and there is no self-serve path even for a reschedule 48 hours out.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Reschedules are high-frequency. Routing all of them through a human is the fastest way to build an ops team that scales linearly with bookings, and it makes the customer wait for something that should be instant.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Self-serve reschedule inside a policy window (free beyond N hours, fee or refusal inside it), instantly confirmed against live slot capacity. Only exceptions reach a human.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Add an auto-approve branch in <code>apply_reschedule_transition</code> when the request is outside the policy window and the target slot has capacity.</li>
+      <li><span class="app app-c">Customer</span> Define the policy window per category in <code>settings_hub</code> rather than in code.</li>
+      <li><span class="app app-v">Vendor</span> Release and re-reserve the technician's committed capacity on an approved reschedule.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/services/__init__.py:197–232</code> · <code>Customer/backend/service_requests/urls.py</code> (reschedule block).</p>
+  </article>
+
+  <h4 class="wf" id="hs-c">Payment &amp; transaction handling</h4>
+  <p class="wf-note">Seven gaps. There is no payment gateway. The endpoint that marks a booking paid is unauthenticated and takes the client's word for it. This section is the highest-risk part of the codebase.</p>
+
+  <article class="gap p0" id="hs-c-01">
+    <div class="gap-head"><span class="gid">HS-C-01</span><h5>Anyone can mark any booking as paid</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>PaymentVerifyView</code> is <code>permission_classes = [AllowAny]</code>. It reads <code>mock_success</code> from the request body, <b>defaulting to <code>True</code></b>, and on that basis sets <code>payment_status = PAID</code>, <code>status = CONFIRMED</code>, mints an invoice number and saves. There is no signature check, no gateway callback, no amount comparison, no ownership check, no idempotency key. A single <code>POST {"booking_id": 123}</code> from anywhere on the internet marks booking 123 paid.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Direct, trivially exploitable revenue loss, and the resulting records are indistinguishable from genuine payments — so it also destroys the integrity of every financial report downstream. This must not reach production in any form.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>The client never asserts payment. The gateway signs a callback; the server verifies the HMAC against its secret, matches order id and amount, and only then transitions the order. The server independently reconciles against the gateway's payment API before releasing the job.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Delete the <code>mock_success</code> path from <code>service_requests/payment_views.py</code> outright.</li>
+      <li><span class="app app-c">Customer</span> Implement real verification: <code>razorpay.utility.verify_payment_signature({order_id, payment_id, signature})</code>, then assert <code>amount == sr.final_amount</code> before any status change.</li>
+      <li><span class="app app-c">Customer</span> Add a server-to-server webhook endpoint as the authoritative source, with the <code>Payment</code> model (already defined with <code>razorpay_order_id</code>, <code>razorpay_payment_id</code>, <code>razorpay_signature</code>) as the idempotency record.</li>
+      <li><span class="app app-c">Customer</span> Require an authenticated owner or a valid tracking token for the client-initiated verify call.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/payment_views.py:74–118</code>.</p>
+  </article>
+
+  <article class="gap p0" id="hs-c-02">
+    <div class="gap-head"><span class="gid">HS-C-02</span><h5>No payment gateway is integrated at all</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>PaymentInitiateView</code> returns <code>order_id = f"order_cal_{uuid4().hex[:16]}"</code> — a fabricated string, not a gateway order. The <code>razorpay</code> package is absent from <code>requirements.txt</code>; no checkout SDK appears in the frontend's dependencies; <code>service_requests/gateways/</code> contains only a <code>__pycache__</code> directory. The <code>Payment</code> model with all its Razorpay columns has no code that writes to it.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Online payment does not exist. Every real transaction is cash on service, which caps the platform to what a technician can collect at the door, exposes it to the reconciliation risk in <span class="gid">X-06</span>, and rules out prepaid-only categories.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>UPI intent, cards, netbanking and wallets through one gateway, with saved instruments, UPI autopay for subscriptions, and a webhook-driven ledger. Cash is offered as one method among several, not as the only one that works.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Add <code>razorpay</code> to <code>requirements.txt</code>; implement <code>gateways/razorpay_gateway.py</code> behind a thin interface so a second gateway can be added later.</li>
+      <li><span class="app app-c">Customer</span> <code>PaymentInitiateView</code> — create a real order, persist a <code>Payment</code> row in <code>PENDING</code>, return the real <code>order_id</code>.</li>
+      <li><span class="app app-c">Customer</span> Load Razorpay Checkout in <code>BookingPage.jsx</code>; in the mobile app use <code>razorpay_flutter</code> once <span class="gid">X-08</span> lands.</li>
+      <li><span class="app app-c">Customer</span> Add refund calls to the same gateway interface — see <span class="gid">HS-C-06</span>.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/payment_views.py:57</code> · <code>Customer/backend/requirements.txt</code> · <code>Customer/frontend/package.json</code>.</p>
+  </article>
+
+  <article class="gap p0" id="hs-c-03">
+    <div class="gap-head"><span class="gid">HS-C-03</span><h5>Three payment records per booking with nothing reconciling them</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>Payment state lives in three places: <code>ServiceRequest.payment_status</code> (8 values, customer app), <code>Payment</code> (6 values, customer app, currently unwritten), and <code>JobPayment</code> (7 values, vendor app, with its own <code>PaymentCollectionEvent</code> audit trail). The three enums do not share vocabulary — the vendor's <code>CASH_PENDING</code> and <code>AUTHORIZED</code> have no counterpart, the customer's <code>PARTIALLY_REFUNDED</code> has none in the other direction. Nothing keeps them in step.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>The technician's app can show a job as cash-collected while the customer's booking still reads "pending", and the finance report reads a third thing. Every one of these divergences becomes a support ticket, and there is no single record you can point at to resolve it.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>One payment ledger owned by one service. The order carries a derived, denormalised status for display; the ledger is the truth. Every state change is an append-only event, never an in-place update.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-b">Both</span> Nominate <code>Payment</code> (customer app) as the ledger of record; <code>JobPayment</code> becomes the technician-side view of collection, emitting events into it via <span class="gid">X-01</span>.</li>
+      <li><span class="app app-b">Both</span> Publish one shared payment-status enum; <code>ServiceRequest.payment_status</code> becomes a projection updated only by the ledger.</li>
+      <li><span class="app app-v">Vendor</span> Emit <code>payment.collected</code> on every <code>PaymentCollectionEvent</code>; the customer-side handler already exists.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/models.py:137–147, 1475–1481</code> · <code>vendor/backend/workforce_api/models.py:1112–1120</code>.</p>
+  </article>
+
+  <article class="gap p1" id="hs-c-04">
+    <div class="gap-head"><span class="gid">HS-C-04</span><h5>Cancellation charges nothing and refunds nothing automatically</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>CustomerBookingCancelView</code> captures a reason, a persona and a timestamp, records the transition, and stops. There is no fee calculation, no dependence on how close to the appointment the cancellation is, no dependence on whether a technician had already been dispatched, and no automatic refund initiation for a booking that was paid online.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Free cancellation at any point transfers all the cost of a wasted dispatch to the platform and the technician — a technician who drove 12 km and got cancelled on arrival is paid nothing and has lost an hour. That is how partner supply is lost. Meanwhile a paid customer who cancels has to open a support ticket to get their own money back.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A published policy expressed as a rule set: free before N hours, a percentage after, full charge after the professional has departed. The fee is computed and shown in the cancellation sheet <em>before</em> the customer confirms, and the balance is auto-refunded to source.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> New <code>CancellationPolicy</code> model in <code>settings_hub</code> (category, hours-before threshold, fee percentage, status-based override).</li>
+      <li><span class="app app-c">Customer</span> Add <code>GET /api/booking/&lt;id&gt;/cancellation-preview/</code> returning the fee and refund amount; render it in <code>BookingCancellationModal.jsx</code>, which currently only collects a reason.</li>
+      <li><span class="app app-c">Customer</span> On cancel, create a <code>RefundRequest</code> automatically in an approved state when the policy says the refund is unconditional.</li>
+      <li><span class="app app-v">Vendor</span> Credit the technician a dispatch compensation entry against the ledger from <span class="gid">X-06</span> when the cancellation happens after acceptance.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/views.py:518–600</code>.</p>
+  </article>
+
+  <article class="gap p1" id="hs-c-05">
+    <div class="gap-head"><span class="gid">HS-C-05</span><h5>Refunds are an entirely manual admin workflow that never calls a gateway</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The refund module is extensive — <code>RefundRequest</code>, evidence uploads, request-info, internal notes, send-to-finance, approve, reject. What it never does is move money. There is no gateway refund call, no refund reference, no status polling, no "expected in 5–7 working days" surfaced to the customer.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Approving a refund in the admin console changes a database row and nothing else. Someone has to remember to push the money through the gateway dashboard by hand, and no one can tell from the app whether they did.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Approval triggers a gateway refund API call, stores the refund id, and tracks it to completion via webhook. Small refunds within policy are auto-approved with no human in the loop, and the customer sees the state and the expected date.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> <code>AdminRefundApproveView</code> — call the gateway refund API, persist <code>gateway_refund_id</code> and status on <code>RefundRequest</code>.</li>
+      <li><span class="app app-c">Customer</span> Handle refund webhooks to move the request to <code>COMPLETED</code>; notify the customer on each transition.</li>
+      <li><span class="app app-c">Customer</span> Add an auto-approve rule for refunds under a configurable threshold arising from platform-side cancellations.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/views.py</code> (refund block) · <code>Customer/backend/service_requests/models.py:1031–1107</code>.</p>
+  </article>
+
+  <article class="gap p1" id="hs-c-06">
+    <div class="gap-head"><span class="gid">HS-C-06</span><h5>Invoices carry no tax breakdown and no platform fee</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>InvoiceDownloadView</code> renders a PDF from <code>total_amount</code>. <code>Package.gst_rate</code> and <code>Package.platform_fee</code> exist on the catalog and are never read by any pricing path, so the invoice shows a single gross number with no HSN/SAC code, no GST split, no GSTIN, and no line items. <code>invoice_id</code> is minted ad-hoc as <code>INV-&lt;request_id&gt;-&lt;6 hex&gt;</code> at payment time.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>The invoice is not a valid tax document, which blocks every business customer, and the number series is not sequential or auditable — both are compliance problems rather than product ones, and both get harder to fix retroactively.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A GST-compliant invoice per completed job: line items with HSN/SAC, taxable value, CGST/SGST or IGST split by place of supply, platform fee as its own line, seller GSTIN, and a gapless sequential number per financial year.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Make the pricing service from <span class="gid">HS-B-01</span> emit a line-item breakdown; persist it as an <code>Invoice</code> + <code>InvoiceLine</code> record rather than deriving the PDF from one column.</li>
+      <li><span class="app app-c">Customer</span> Add a gapless sequence per financial year; keep <code>invoice_id</code> as the display number.</li>
+      <li><span class="app app-c">Customer</span> Store the seller GSTIN and place-of-supply rules in <code>settings_hub</code>.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/models.py:710–717</code> · <code>Customer/backend/service_requests/payment_views.py:104–107</code>.</p>
+  </article>
+
+  <article class="gap p2" id="hs-c-07">
+    <div class="gap-head"><span class="gid">HS-C-07</span><h5>No wallet, credits or partial payment</h5><span class="sev sev-p2">P2</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>Payment is all-or-nothing on a single amount. There is no customer wallet, no credit balance from a goodwill gesture or a failed job, no advance-plus-balance split, and no way to pay a supplemental invoice from a stored credit. Supplemental invoices for approved work extensions exist but must be paid in full through the same missing gateway.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Goodwill credit is the cheapest way to resolve a service failure without a cash refund, and advance-plus-balance is standard for larger jobs where the scope may grow. Without either, every recovery is a full refund and every scope change is an awkward conversation at the door.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A wallet with an append-only entry per credit and debit, applied automatically at checkout before the gateway charge, with clear expiry rules.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> New <code>CustomerWallet</code> and <code>WalletEntry</code> models; apply the balance in the pricing service before the gateway amount is computed.</li>
+      <li><span class="app app-c">Customer</span> Allow partial capture on <code>SupplementalInvoice</code> and settle the balance in cash through the vendor-side collection flow.</li>
+    </ul></div>
+    <p class="evidence">Evidence: no wallet or credit model in <code>Customer/backend</code> · <code>Customer/backend/service_requests/models.py:556–585</code>.</p>
+  </article>
+
+  <h4 class="wf" id="hs-d">Real-time tracking &amp; notifications</h4>
+  <p class="wf-note">Seven gaps. The customer app has a proper WebSocket tracking channel with authorisation, initial-state snapshots and event broadcasting. Nothing publishes into it from the field.</p>
+
+  <article class="gap p0" id="hs-d-01">
+    <div class="gap-head"><span class="gid">HS-D-01</span><h5>The technician's GPS never reaches the customer's map</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The technician's device posts coordinates to <code>/workforce/presence/location/</code>, which stores them in <code>accounts_user.last_known_location</code> and in <code>JobLocationPoint</code>. The customer's tracking payload reads <code>ServiceRequest.technician_latitude/longitude</code> — columns written only by <code>AdminSRUpdateTechnicianLocationView</code>, an admin/webhook endpoint that the vendor app never calls. The two halves of live tracking are both built and are not connected.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Live tracking is the headline feature of the customer app and it does not work. The map either shows nothing or shows a position an admin typed in.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>The partner device streams position to the platform, which fans it out to exactly the subscribers entitled to see it, at a cadence tuned to the job phase — frequent while travelling, sparse once on site.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-v">Vendor</span> In <code>WorkforceLocationUpdateView</code>, after persisting, emit <code>technician.location_updated</code> to the customer webhook (see <span class="gid">X-01</span>) for any job in an active state, throttled to ~10 s.</li>
+      <li><span class="app app-c">Customer</span> The handler at <code>workforce_integration/views.py:318</code> already writes the columns and calls <code>broadcast_tracking_event</code> — no change needed.</li>
+      <li><span class="app app-b">Both</span> Stop streaming when the job reaches <code>arrived</code>; there is no reason to keep publishing a technician's position once they are inside the customer's home.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>vendor/backend/workforce_api/views.py:4195–4300</code> · <code>Customer/backend/service_requests/views.py:731, 1225–1246</code>.</p>
+  </article>
+
+  <article class="gap p0" id="hs-d-02">
+    <div class="gap-head"><span class="gid">HS-D-02</span><h5>Location stops the moment the technician's screen locks</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>Position comes from the browser Geolocation API in a React tab, on a 25-second heartbeat with a 10-metre movement threshold. Browsers throttle or suspend this when the tab is backgrounded and stop it when the screen locks. There is no foreground service, no offline persistence beyond a 50-point in-memory queue that dies with the tab.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>A technician riding to a job will lock their phone. Within 120 seconds the dispatch engine's freshness gate classifies them as stale and stops offering them work, and the customer's map freezes at the last known point. The behaviour is worst precisely when tracking matters most.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A native foreground service with a persistent notification, batching fixes and flushing them when connectivity returns, running whether or not the app is on screen.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-v">Vendor</span> This is the primary functional reason the technician mobile app in <span class="gid">X-08</span> is required. Port <code>useGPSPosition.js</code>'s cadence and threshold logic into the native tracker.</li>
+      <li><span class="app app-v">Vendor</span> Until then, keep a wake-lock on the technician dashboard while a job is active and show an explicit "keep this screen on" state, so the limitation is at least visible.</li>
+      <li><span class="app app-v">Vendor</span> Persist the offline queue to IndexedDB rather than a ref.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>vendor/frontend/src/hooks/useGPSPosition.js:24–28, 240–246</code> · <code>vendor/backend/workforce_api/services/automatic_dispatch.py:34</code>.</p>
+  </article>
+
+  <article class="gap p1" id="hs-d-03">
+    <div class="gap-head"><span class="gid">HS-D-03</span><h5>The vendor app cannot publish to the customer's realtime channel</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The customer app runs Django Channels over Redis with a <code>TrackingConsumer</code> and group fan-out. The vendor app does not have <code>channels</code> in <code>INSTALLED_APPS</code> at all; it uses Server-Sent Events for its own technician stream. There is no shared channel layer, so a vendor-side event cannot reach a customer-side socket except through HTTP.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>It means the webhook in <span class="gid">X-01</span> is not an optional nicety — it is the only possible transport between the two realtime systems, and it adds a hop of latency to every field event.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>One realtime substrate for the whole platform — a shared pub/sub the partner service publishes to and the consumer gateway subscribes from — so a field event reaches a customer screen in one hop.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-v">Vendor</span> Short term: accept the webhook hop and make it fast — fire-and-forget from a Celery task with retry.</li>
+      <li><span class="app app-b">Both</span> Longer term: add <code>channels</code> and <code>channels_redis</code> to the vendor app pointed at the same Redis, and publish directly to the <code>tracking_&lt;id&gt;</code> groups the customer consumer already joins.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>vendor/backend/workforce_core/settings.py:36–56</code> · <code>Customer/backend/quicktims/routing.py</code>.</p>
+  </article>
+
+  <article class="gap p1" id="hs-d-04">
+    <div class="gap-head"><span class="gid">HS-D-04</span><h5>Notifications are fire-and-forget with no delivery guarantee</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>Every notification call in the customer app is <code>send_mail(..., fail_silently=True)</code> inside a bare <code>try/except</code>. There is no outbox, no retry, no delivery record, no bounce handling, and no way to answer "was the customer told?". Notifications are also sent inline in the request path rather than queued.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>A transient SMTP failure silently loses the customer's booking confirmation — and since the tracking link and the feedback link both arrive by email, losing that message loses the customer's only access to their booking.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A transactional outbox: the message is persisted in the same transaction as the business event, a worker delivers it, provider receipts update its state, and failures retry with backoff before escalating.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Build the notification service from <span class="gid">X-07</span> around a <code>Message</code> + <code>DeliveryAttempt</code> outbox; deliver from Celery.</li>
+      <li><span class="app app-c">Customer</span> Remove <code>fail_silently=True</code> — a delivery failure should be a recorded state, not a swallowed exception.</li>
+      <li><span class="app app-c">Customer</span> Ingest provider webhooks for delivery and bounce status.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/notifications.py</code> — <code>fail_silently=True</code> throughout.</p>
+  </article>
+
+  <article class="gap p1" id="hs-d-05">
+    <div class="gap-head"><span class="gid">HS-D-05</span><h5>Customers have no notification preferences or consent record</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The vendor app has <code>WorkforceNotificationPreference</code> per employee. The customer app has nothing equivalent — no per-channel opt-in, no transactional/promotional split, no unsubscribe, no consent timestamp.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Once SMS and WhatsApp are switched on, promotional messages without recorded consent are a regulatory exposure, and a customer with no way to turn marketing off will turn the whole channel off — including the transactional messages the service depends on.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Transactional and promotional are separate consent scopes. Transactional is implied by the booking; promotional requires explicit opt-in with a timestamp and a one-tap opt-out on every message.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> New <code>CustomerNotificationPreference</code> mirroring the vendor model; capture consent at OTP verification and expose it in the account area from <span class="gid">HS-A-03</span>.</li>
+      <li><span class="app app-c">Customer</span> Enforce the scope check inside the notification service, not at each call site.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>vendor/backend/workforce_api/models.py:859</code> — no customer-side counterpart.</p>
+  </article>
+
+  <article class="gap p1" id="hs-d-06">
+    <div class="gap-head"><span class="gid">HS-D-06</span><h5>No milestone notifications across the job lifecycle</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>Email exists for booking confirmation, reschedule, refund, complaint and the feedback link. There is nothing for the moments in between: professional assigned, professional on the way, arriving in ~10 minutes, arrived, work started, work completed, payment due, payment received.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>These are the messages that make a customer feel the service is under control, and they are also what removes the "where are you?" phone call from the ops team's day. Every one of them already has a corresponding webhook event type defined on the receiving side.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A fixed milestone set per category, each mapped to a channel and a template, with a deep link straight to the tracking screen. The arrival warning is ETA-driven, not status-driven.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Define a milestone → template map and trigger it from the webhook handlers in <code>workforce_integration/views.py</code>, which is where every field event already lands.</li>
+      <li><span class="app app-c">Customer</span> Add an ETA-threshold trigger for "arriving soon" once the server-side ETA from <span class="gid">X-10</span> exists.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/notifications.py</code> (function list) vs <code>workforce_integration/views.py:154–397</code> (event list).</p>
+  </article>
+
+  <article class="gap p2" id="hs-d-07">
+    <div class="gap-head"><span class="gid">HS-D-07</span><h5>No job timeline the customer can see after the fact</h5><span class="sev sev-p2">P2</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>Both sides record history — <code>BookingStatusEvent</code> on the customer side, <code>WorkforceJobLifecycleEvent</code> and a <code>/jobs/&lt;pk&gt;/timeline/</code> endpoint on the vendor side — but the customer never sees either. The tracking page shows current state only, and once the job closes there is no record of what happened when.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>A timeline is the cheapest dispute-resolution tool there is: "arrived 10:42, started 10:51, completed 12:20" settles most billing arguments without a support agent reading logs.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A per-job timeline in the customer's order detail with timestamps, the proof photos, and the payment record, retained and linkable from a support ticket.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Expose <code>BookingStatusEvent</code> as a customer-visible timeline on the booking detail screen, filtered to customer-meaningful transitions.</li>
+      <li><span class="app app-v">Vendor</span> Include proof photo URLs in the <code>job.completion_proof_submitted</code> event so the customer sees before/after images.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/state_machine.py:82–120</code> · <code>vendor/backend/workforce_api/urls.py</code> (<code>jobs/&lt;pk&gt;/timeline/</code>).</p>
+  </article>
+
+  <h4 class="wf" id="hs-e">Ratings, reviews &amp; vendor management</h4>
+  <p class="wf-note">Six gaps. There are two feedback tables in the shared database that do not know about each other, and the one the customer writes to has no link to the person who did the work.</p>
+
+  <article class="gap p0" id="hs-e-01">
+    <div class="gap-head"><span class="gid">HS-E-01</span><h5>A customer's rating cannot be attributed to a technician</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>ServiceFeedback</code> — the model the customer's feedback form writes to — has a one-to-one link to the booking and no employee foreign key. <code>WorkforceJobFeedback</code> — the model the vendor's performance screen reads — does have an employee FK, but is written by <code>WorkforceJobFeedbackSubmitView</code>, an <code>IsAuthenticated</code> endpoint inside the vendor app that a customer has no path to. The customer app tries to bridge the two with <code>send_technician_feedback()</code>, which calls a vendor endpoint that does not exist.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Technician reputation is unbacked. <code>WorkforcePerformanceMeView</code> computes an average rating from a table customers cannot write to, so a technician's displayed rating reflects whatever was seeded there, not what customers actually said. Quality control, incentives and dispatch ranking all rest on this number.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>One review per job, written once, carrying references to the order, the customer, the partner and the individual who performed the work. Aggregates are derived from it; nothing else is a source of ratings.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Add <code>employee_id</code> and <code>partner_id</code> (once <span class="gid">X-05</span> lands) to <code>ServiceFeedback</code>, populated from the assignment at submission time.</li>
+      <li><span class="app app-b">Both</span> Make <code>ServiceFeedback</code> the single source; emit <code>feedback.submitted</code> to the vendor app and have <code>WorkforceJobFeedback</code> become a read projection, or drop it entirely.</li>
+      <li><span class="app app-v">Vendor</span> Recompute <code>WorkforcePerformanceMeView</code> aggregates from the canonical table; write a nightly rollup rather than aggregating per request.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/models.py:591–624</code> · <code>vendor/backend/workforce_api/models.py:894–920, views.py:7045–7093</code>.</p>
+  </article>
+
+  <article class="gap p1" id="hs-e-02">
+    <div class="gap-head"><span class="gid">HS-E-02</span><h5>Feedback is only requested after an admin manually verifies the job</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The feedback token is generated and emailed when an admin moves the booking to <code>verified</code> → <code>feedback_pending</code>. There is no in-app rating prompt at completion, no push, no reminder, and no rating without leaving the app to open an email.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Response rate collapses with every hour and every extra click between the job finishing and the ask. Gating it behind a manual admin step means feedback arrives days late, or not at all — and every gap in the rating data weakens quality control in <span class="gid">HS-E-05</span>.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>The rating sheet appears in the app the moment the job is marked complete, before the customer navigates away. Stars first, optional detail second, with a push reminder some hours later if skipped.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Create the <code>ServiceFeedback</code> row and its token at <code>completed</code>, not <code>verified</code>; keep the admin verification step for payouts, not for feedback.</li>
+      <li><span class="app app-c">Customer</span> Render the rating sheet inline on the tracking screen on completion; keep the token URL as the notification fallback.</li>
+      <li><span class="app app-c">Customer</span> Add a reminder at T+4h and T+24h through the notification service.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/views.py</code> (<code>AdminSRVerifyView</code>, <code>AdminSRResendFeedbackView</code>) · <code>state_machine.py:35–37</code>.</p>
+  </article>
+
+  <article class="gap p1" id="hs-e-03">
+    <div class="gap-head"><span class="gid">HS-E-03</span><h5>Public reviews are unmoderated and expose customer names</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>PublicFeedbackListView</code> returns the twenty most recent submitted reviews with <code>customer_name</code> in full, substituting <code>"Great service!"</code> whenever the comment is blank. There is no moderation queue, no profanity or PII filter, no verified-booking badge, no partner right of reply, no reporting, and no way to hide a review pending investigation.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Two separate problems. Publishing full customer names alongside a service category and an implied location is a privacy exposure. And fabricating positive review text for empty comments means the public review wall is partly invented — which is the kind of thing that is very hard to explain afterwards.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Reviews display as a first name and an initial, carry a verified-booking marker, pass an automated filter before publication, and give the partner a visible reply. Empty comments show as a star rating with no text.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> <code>views.py:1021–1027</code> — mask the name to first name + initial and stop substituting comment text.</li>
+      <li><span class="app app-c">Customer</span> Add <code>moderation_status</code> to <code>ServiceFeedback</code> and publish only <code>APPROVED</code>; auto-approve above a score threshold, queue the rest.</li>
+      <li><span class="app app-v">Vendor</span> Add a partner reply field and a dispute flag surfaced in the technician workspace.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/views.py:1006–1033</code>.</p>
+  </article>
+
+  <article class="gap p1" id="hs-e-04">
+    <div class="gap-head"><span class="gid">HS-E-04</span><h5>The customer never sees a technician profile</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The tracking payload carries name, photo, phone and a rating number — assembled defensively from three possible sources, with <code>technician_rating</code> a free-form snapshot column that nothing computes. There is no profile view: no jobs completed, no tenure, no specialisations, no verification badges, no recent reviews for that person.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>The profile is where all the verification and rating investment becomes visible to the customer. Without it, <span class="gid">HS-A-04</span> and <span class="gid">HS-E-01</span> are cost with no return.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A tappable professional card: photo, name, rating with review count, jobs completed, years on platform, verification badges, and a few recent reviews for that individual.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-v">Vendor</span> Expose a public technician-profile endpoint returning the computed aggregates plus verification flags.</li>
+      <li><span class="app app-c">Customer</span> Replace the snapshot fields in <code>_build_tracking_payload</code> with the profile payload; render a professional card in <code>CustomerTrackingHeader.jsx</code>.</li>
+      <li><span class="app app-c">Customer</span> Stop maintaining <code>technician_rating</code> as a writable column — derive it.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/views.py:679–720</code> · <code>Customer/backend/service_requests/models.py:1371</code>.</p>
+  </article>
+
+  <article class="gap p1" id="hs-e-05">
+    <div class="gap-head"><span class="gid">HS-E-05</span><h5>No quality-control loop — ratings have no consequences</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>Ratings are stored and displayed. Nothing acts on them. There is no minimum rating to stay active, no auto-suspend, no retraining trigger, no effect on dispatch ranking (the score is proximity + skill proficiency + territory + clock-in bonus — rating is not a term), no rework SLA, no penalty for a job marked <code>unable_to_complete</code>, and no complaint-rate threshold.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Quality is the product in home services. Without a feedback loop from rating to work allocation, a poor technician receives exactly as many jobs as a good one, and the platform's only lever is a human noticing.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A partner scorecard combining rating, acceptance rate, cancellation rate, on-time rate and complaint rate. It drives dispatch priority directly, triggers coaching below thresholds, and suspends below a floor. Partners can see their own scorecard and what moves it.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-v">Vendor</span> New <code>PartnerScorecard</code> rollup computed nightly from feedback, offers, cancellations and complaints.</li>
+      <li><span class="app app-v">Vendor</span> Add a scorecard term to the ranking in <code>automatic_dispatch.py:get_eligible_candidates</code>, and a Gate 11 for the suspension floor.</li>
+      <li><span class="app app-v">Vendor</span> Surface the scorecard in <code>EmployeePerformancePage.jsx</code> with the thresholds stated.</li>
+      <li><span class="app app-c">Customer</span> Feed complaint outcomes from <code>Complaint</code> resolution into the scorecard.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>vendor/backend/workforce_api/services/automatic_dispatch.py:466–492</code> (scoring terms) · <code>views.py:6959–7010</code> (metrics computed, unused).</p>
+  </article>
+
+  <article class="gap p2" id="hs-e-06">
+    <div class="gap-head"><span class="gid">HS-E-06</span><h5>Skills and services are matched on fuzzy string comparison</h5><span class="sev sev-p2">P2</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>Gate 6 of the dispatch engine decides whether a technician can do a job by comparing the booking's <code>service_category</code> string against the employee's approved-service strings and verified-skill names — exact match, substring match, then a 25-entry hand-maintained alias table. There is no foreign key between the customer app's catalog (<code>CatalogCategory</code> → <code>Service</code> → <code>Package</code>) and the vendor app's <code>WorkforceServiceCatalog</code> and <code>WorkforceSkill</code>.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Every new service added to the catalog needs a matching alias entry in Python or it silently matches nobody — or worse, substring-matches the wrong trade. The failure is invisible: the booking just goes unassigned, and the alias table has to be grown by hand forever.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A single service taxonomy with stable identifiers. Partner capabilities are rows referencing those identifiers; matching is a join, not string similarity.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-b">Both</span> Introduce a stable <code>service_code</code> on the customer catalog and reference it from <code>WorkforceServiceCatalog</code> and <code>WorkforceEmployeeSkill</code>; persist the code on the booking alongside the display name.</li>
+      <li><span class="app app-v">Vendor</span> Replace <code>canonical_service_match()</code> with an identifier join; keep the alias table only as a migration aid for historic rows.</li>
+      <li><span class="app app-c">Customer</span> Block publishing a catalog service that has no mapped capability, instead of discovering it at dispatch time.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>vendor/backend/workforce_api/services/automatic_dispatch.py:46–120</code>.</p>
+  </article>
+</section>
+
+<!-- ══════════════════════ PART 3 ══════════════════════ -->
+<section id="goods">
+  <h2 class="part">Part 3</h2>
+  <h3 class="section-title">Goods &amp; Transport — measured against Porter</h3>
+  <p class="lede">Every platform gap in Part 1 applies here too. This part covers only what is <strong>different</strong> — and the differences are structural, not cosmetic. A home-services booking is an appointment; a transport booking is a trip. The codebase currently models the second as a variant of the first, with a second address column bolted on.</p>
+
+  <h4 class="wf" id="gt-diff">How this category differs — and what the code assumes instead</h4>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Dimension</th><th>Home services</th><th>Goods &amp; transport</th><th>What the codebase does today</th></tr></thead>
+      <tbody>
+        <tr><td>Time</td><td>Scheduled to a slot, hours or days ahead</td><td>Mostly <b>now</b>; match in seconds</td><td>Requires <code>preferred_date</code>; offer window is 5 minutes</td></tr>
+        <tr><td>Price</td><td>Catalog package price, known up front</td><td>Estimate then <b>actual</b>: distance, waiting, labour, tolls, surge</td><td>Flat lane fare or a tier's "starting price"; no distance engine</td></tr>
+        <tr><td>Geography</td><td>One address</td><td>Pickup → (stops) → drop, with a route</td><td>Two text columns, <code>address</code> and <code>drop_address</code></td></tr>
+        <tr><td>Resource</td><td>A person with a skill</td><td>A person <b>and a vehicle</b> with capacity and permits</td><td>An <code>Employee</code> with a service-role string; no vehicle object</td></tr>
+        <tr><td>Lifecycle</td><td>Travel → arrive → work → complete</td><td>To pickup → load → in transit → at drop → unload → deliver</td><td>The home-services lifecycle only</td></tr>
+        <tr><td>Proof</td><td>Before/after photos of the work</td><td><b>Proof of delivery</b>: recipient, signature or OTP, condition</td><td>Service photos; no consignee record</td></tr>
+        <tr><td>Tracking</td><td>Nice to have while travelling</td><td>The product — customers watch the whole trip</td><td>Foreground browser GPS only, not reaching the customer</td></tr>
+        <tr><td>Risk</td><td>Damage inside the home</td><td>Goods lost, damaged, mis-delivered; statutory documents</td><td>No goods record, no value, no insurance, no e-way bill hook</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <h5>An honest note on scope</h5>
+    <p>The codebase is candid about this. <code>logistics/models.py</code> and <code>service_requests/models.py</code> both carry comments explaining that the full trip model — <code>Trip</code>, <code>TripStop</code>, <code>Consignment</code>, e-way bills — was deliberately deferred as an over-build for a two-address MVP. That was a reasonable call for a launch. It is not a sustainable one for parity with Porter, and the gaps below are what the deferral costs.</p>
+  </div>
+
+  <h4 class="wf" id="gt-a">Registration &amp; authentication</h4>
+
+  <article class="gap p0" id="gt-a-01">
+    <div class="gap-head"><span class="gid">GT-A-01</span><h5>There is no vehicle — a driver is a technician with a job title</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The <code>Employee</code> model has no vehicle at all: no type, no registration number, no capacity in kg or cubic feet, no body dimensions, no fuel type, no permit class, no ownership record. The <code>logistics.ServiceTier</code> catalog describes vehicle classes to the <em>customer</em> (3-wheeler, Tata Ace, 2-wheeler, with capacity labels), but nothing on the supply side says which driver can actually provide one.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>A customer booking a Tata Ace for 900 kg can be matched to a two-wheeler rider, because matching compares the string "truck" against the driver's service-role list. There is no capacity check, no dimension check, and no way to run a mixed fleet.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A vehicle is a first-class object with a class, a registration, capacity, documents and an expiry-tracked compliance state. A driver is linked to one or more vehicles; the active vehicle at the time of a booking determines eligibility. Matching filters on vehicle class before it filters on distance.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-v">Vendor</span> New <code>Vehicle</code> model — <code>vehicle_class</code> (FK to the shared tier taxonomy), <code>registration_number</code>, <code>capacity_kg</code>, <code>body_length_ft</code>, <code>permit_type</code>, <code>owner</code> (partner or driver) — plus <code>DriverVehicleAssignment</code> for the active pairing.</li>
+      <li><span class="app app-v">Vendor</span> Add a vehicle-class gate to <code>check_candidate_eligibility</code> for logistics categories, matching against <code>ServiceRequest.logistics_tier</code>, which the booking already carries.</li>
+      <li><span class="app app-v">Vendor</span> Extend the onboarding wizard with a vehicle step; extend <code>WorkforceRequiredDocument</code> with vehicle-scoped requirements.</li>
+      <li><span class="app app-c">Customer</span> Show the assigned vehicle class and registration in the tracking payload — it is how the customer identifies the arriving vehicle.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>vendor/backend/employees/models.py</code> (no vehicle fields) · <code>Customer/backend/logistics/models.py:52–100</code>.</p>
+  </article>
+
+  <article class="gap p0" id="gt-a-02">
+    <div class="gap-head"><span class="gid">GT-A-02</span><h5>No driving licence, RC, insurance or permit is required to be dispatched</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>Document requirements are free-text categories configured per company (<code>WorkforceRequiredDocument.category</code>). Nothing in the model or the dispatch gates knows what a driving licence is. The compliance engine does track expiry and Gate 5 rejects candidates with expired mandatory compliance records — good machinery, but there is no seeded requirement set for driving licence, vehicle RC, commercial insurance, fitness certificate, PUC or road permit.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Dispatching an unlicensed driver or an uninsured vehicle is a legal exposure that sits directly on the platform, and after an incident there is no record that anything was ever checked. Expiry matters as much as possession — insurance lapses annually.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A statutory document set per vehicle class, each with an expiry, verified at onboarding and re-verified before expiry. An expired document takes the driver offline automatically, with advance warning notifications.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-v">Vendor</span> Seed a logistics document set as <code>WorkforceComplianceRequirement</code> rows with <code>is_mandatory=True</code> — the expiry and gating machinery in <code>WorkforceEmployeeCompliance.get_computed_status()</code> already does the work.</li>
+      <li><span class="app app-v">Vendor</span> Scope requirements to the vehicle as well as the person once <span class="gid">GT-A-01</span> lands.</li>
+      <li><span class="app app-v">Vendor</span> Add expiry-warning notifications at T−30 and T−7 days.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>vendor/backend/workforce_api/models.py:122–201, 203–263</code> · <code>services/automatic_dispatch.py</code> (Gate 5).</p>
+  </article>
+
+  <article class="gap p1" id="gt-a-03">
+    <div class="gap-head"><span class="gid">GT-A-03</span><h5>No sender or consignee identity for higher-value consignments</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The booking records one customer. There is no consignee — no receiver name, phone or relationship at the drop address — and no identity requirement scaled to declared value. The customer's own identity is a phone number that, per <span class="gid">HS-A-02</span>, is not even verified.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Handing goods to the wrong person is the defining failure mode of this category, and there is currently nobody the driver is supposed to hand them to. It is also what makes the platform a soft target for using couriers to move contraband.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Sender and receiver are separate contacts on the booking, both notified. Higher declared values require verified sender identity and a receiver OTP at handover.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Add <code>consignee_name</code>, <code>consignee_phone</code> and <code>declared_value</code> to the logistics booking flow and to <code>ServiceRequest</code>.</li>
+      <li><span class="app app-c">Customer</span> Require verified sender identity above a configurable declared-value threshold.</li>
+      <li><span class="app app-b">Both</span> Feed the consignee into the delivery OTP in <span class="gid">GT-D-01</span>.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/models.py:169–206</code> (one customer, no consignee).</p>
+  </article>
+
+  <h4 class="wf" id="gt-b">Booking, fare estimation &amp; matching</h4>
+
+  <article class="gap p0" id="gt-b-01">
+    <div class="gap-head"><span class="gid">GT-B-01</span><h5>There is no fare engine — only flat lane prices and "starting from" tiers</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>resolve_logistics_fare()</code> returns the <code>Lane.fare</code> if a pre-agreed route was chosen, otherwise the <code>ServiceTier.starting_price</code>, otherwise whatever the client submitted. There is no base fare plus per-kilometre rate, no minimum distance, no waiting charge, no loading/unloading labour charge, no toll or parking pass-through, no night or peak multiplier, no surge, and no return-trip pricing.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>The platform cannot price a route it has not pre-agreed, which means it can only serve a fixed list of popular lanes out of Hosur. Anything else falls through to the client's number. It also means a 4 km job and a 40 km job on the same tier are quoted identically.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Fare = base + (distance × per-km rate) + (loaded time × per-minute rate) + waiting beyond free minutes + labour + tolls + surge, per vehicle class, per city, versioned so historic bookings reprice consistently. The estimate is shown before booking; the actual is computed from the trip that happened.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> New <code>FareRule</code> model per vehicle class × city with all the components above, versioned by effective date. <code>Lane</code> stays as an override for pre-agreed routes.</li>
+      <li><span class="app app-c">Customer</span> New <code>fare_service.estimate(tier, pickup, drops, options)</code> using the server-side routing distance from <span class="gid">X-10</span>; expose it as a pre-booking quote endpoint.</li>
+      <li><span class="app app-c">Customer</span> Replace <code>resolve_logistics_fare</code>'s trust-the-client fallback with a hard rejection.</li>
+      <li><span class="app app-c">Customer</span> Persist the estimate and the fare-rule version on the booking so the final fare in <span class="gid">GT-C-01</span> is auditable against it.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/services/logistics_pricing.py:26–50</code> · <code>Customer/backend/logistics/models.py:104–133</code>.</p>
+  </article>
+
+  <article class="gap p0" id="gt-b-02">
+    <div class="gap-head"><span class="gid">GT-B-02</span><h5>A five-minute sequential offer is unusable for on-demand transport</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The same dispatch path serves both categories: one offer, one candidate, <code>DEFAULT_OFFER_DURATION_MINUTES = 5</code>, then the next candidate. A customer standing beside their goods waits five minutes per decline. There is also no "book now" concept — <code>preferred_date</code> is a required field on every booking.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>This is the single behaviour that most separates the product from Porter. On-demand transport is judged on time-to-match; two declines here is a ten-minute wait during which the customer opens a competitor. The batching work in <span class="gid">HS-B-05</span> is optional for home services and mandatory here.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A booking is broadcast to a ranked batch of nearby drivers with a 15–30 second acceptance window; first accept wins; the radius widens each round and the whole ladder resolves inside a minute or two. Scheduled bookings are a separate, slower path.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-v">Vendor</span> Per-category dispatch profiles: <code>{batch_size, offer_seconds, radius_ladder}</code>. Transport gets <code>{5, 20s, [3,6,10,15] km}</code>; home services keeps the current behaviour.</li>
+      <li><span class="app app-c">Customer</span> Add a <code>scheduled_for</code> datetime and an "immediate" booking mode; stop requiring <code>preferred_date</code> for logistics categories.</li>
+      <li><span class="app app-v">Vendor</span> Offers must arrive as push with sound — a 20-second window is meaningless as a database row (see <span class="gid">X-07</span>, <span class="gid">X-08</span>).</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>vendor/backend/workforce_api/services/automatic_dispatch.py:40, 605–612</code> · <code>Customer/backend/service_requests/models.py:196</code>.</p>
+  </article>
+
+  <article class="gap p0" id="gt-b-03">
+    <div class="gap-head"><span class="gid">GT-B-03</span><h5>The job lifecycle has no trip states</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The vendor state machine runs <code>accepted → on_the_way → arrived → service_started → in_progress → proof_submitted → completed</code>. There is no <code>at_pickup</code>, <code>loading</code>, <code>loaded</code>, <code>in_transit</code>, <code>at_drop</code>, <code>unloading</code> or <code>delivered</code>. A trip's entire loaded leg — the part the customer most wants to watch — collapses into a single <code>in_progress</code>.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Without loaded-leg states there is no way to show a meaningful trip status, to compute loading time for billing, to distinguish "delayed at pickup" from "stuck in traffic", or to detect a driver who has taken the goods and gone somewhere else. It also means <code>arrived</code> is ambiguous — arrived where?</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Each stop has its own arrive / start / complete triple, and the trip status is derived from where the vehicle is in the stop sequence. Time at each stop is measured because it is billable.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-b">Both</span> Extend the canonical status enum from <span class="gid">X-03</span> with the trip states, gated to logistics categories.</li>
+      <li><span class="app app-v">Vendor</span> Reuse the existing geofence arrival machinery (<code>PreServiceVerification</code>) per stop rather than once per job.</li>
+      <li><span class="app app-c">Customer</span> Map the new states to customer-facing labels in <code>trackingUtils.js</code> and the status card.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>vendor/backend/service_requests/state_machine.py:11–33</code> · <code>vendor/backend/workforce_api/models.py:489–523</code>.</p>
+  </article>
+
+  <article class="gap p1" id="gt-b-04">
+    <div class="gap-head"><span class="gid">GT-B-04</span><h5>No description of what is being moved</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>A logistics booking carries a pickup address, a drop address, a tier and a fare. It does not carry the goods: no description, no weight, no dimensions, no piece count, no fragile or hazardous flag, no declared value, no packaging state, and no photographs.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>The driver arrives without knowing whether they are collecting a laptop or a fridge, which is the most common cause of a refusal at pickup — a wasted trip for both sides. It also means no capacity check is possible, no hazardous-goods refusal, and no basis for a damage claim because nothing recorded what was handed over.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A goods declaration at booking — category, approximate weight, piece count, fragile flag, declared value — which drives the vehicle recommendation, the price, the insurance option and the driver's brief.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> New <code>Consignment</code> model linked to the booking: description, category, weight, dimensions, pieces, fragile, hazardous, declared value, photos.</li>
+      <li><span class="app app-c">Customer</span> Add the goods step to the three logistics booking pages (<code>MiniTruckBookingHosurPage.jsx</code>, <code>TwoWheelerBookingHosurPage.jsx</code>, <code>PackersMoversBookingHosurPage.jsx</code>).</li>
+      <li><span class="app app-v">Vendor</span> Show the consignment on the job offer card — a driver should be able to decline informed rather than at the door.</li>
+      <li><span class="app app-c">Customer</span> Reject bookings whose declared weight exceeds the selected tier's capacity.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/models.py:200–221</code> — <code>drop_address</code>, <code>logistics_tier</code>, <code>logistics_lane</code> and nothing about the goods.</p>
+  </article>
+
+  <article class="gap p1" id="gt-b-05">
+    <div class="gap-head"><span class="gid">GT-B-05</span><h5>Exactly two addresses, no stops, no route</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>Pickup is the existing <code>address</code> column; drop is a second text column. Only the pickup has coordinates — <code>drop_address</code> is free text with no latitude or longitude. There is no stop sequence, no per-stop contact, no per-stop instructions, and therefore no route to plan or price.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Multi-stop is standard in this category — a single delivery run with three drops is the common commercial case, and Packers &amp; Movers routinely involves intermediate stops. More immediately: without drop coordinates the platform cannot compute trip distance, so it cannot price by distance (<span class="gid">GT-B-01</span>) or show an ETA to destination (<span class="gid">GT-D-02</span>).</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>An ordered list of stops, each geocoded, each with a type (pickup / drop), a contact and instructions. Fare and ETA are computed over the full sequence; the driver app presents them as a run sheet.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> New <code>TripStop</code> model (booking, sequence, type, lat, lng, address, contact, instructions). Migrate <code>address</code>/<code>drop_address</code> into stops 0 and 1 and keep the columns as a denormalised display cache.</li>
+      <li><span class="app app-c">Customer</span> Geocode the drop in the booking pages using the existing <code>AddressPicker</code> map component.</li>
+      <li><span class="app app-v">Vendor</span> Render the stop sequence as a run sheet in the technician workspace; advance the trip stop-by-stop.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/models.py:200–221</code> and the design note above it acknowledging the deferral.</p>
+  </article>
+
+  <article class="gap p1" id="gt-b-06">
+    <div class="gap-head"><span class="gid">GT-B-06</span><h5>Only three hard-coded city booking pages, all pointing at Hosur</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>Goods and transport is reached through three bespoke React pages — mini truck, two-wheeler, packers &amp; movers — each with Hosur baked into its route and its content. <code>ServiceTier</code> and <code>Lane</code> are keyed by a <code>city</code> string, but there is no city model, no city selector, no serviceable-city list, and no generic booking flow that takes a city as a parameter.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Launching a second city means writing more pages and adding more routes. The catalog behind them is already city-parameterised — the frontend is what hard-codes the geography.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>One booking flow. The city is detected or selected, and it selects the vehicle classes, fare rules, lanes and serviceable areas. Adding a city is a data operation.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Collapse the three pages into one <code>LogisticsBookingPage</code> parameterised by <code>{category, city}</code>; keep the existing URLs as redirects.</li>
+      <li><span class="app app-c">Customer</span> Add a <code>City</code> model with serviceability, replacing the <code>city</code> string on <code>ServiceTier</code>, <code>Lane</code> and <code>ServiceArea</code>.</li>
+      <li><span class="app app-c">Customer</span> Drive city selection from the existing <code>CustomerLocationDetectView</code>.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/frontend/src/ui/App.jsx:303–323</code> · <code>Customer/backend/logistics/models.py:30–47</code>.</p>
+  </article>
+
+  <h4 class="wf" id="gt-c">Payment &amp; transaction handling</h4>
+
+  <article class="gap p0" id="gt-c-01">
+    <div class="gap-head"><span class="gid">GT-C-01</span><h5>No final fare — the estimate is the invoice</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>Whatever <code>total_amount</code> was set at booking is what gets collected. There is no fare finalisation at the drop: no actual distance travelled, no waiting time beyond the free allowance, no extra stop charge, no labour charge, no toll or parking reimbursement, and no adjustment record. The work-extension mechanism could carry an adjustment, but it is a scope-approval workflow, not a fare recalculation.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Every real trip diverges from the estimate. Without finalisation the platform either absorbs the difference — waiting time and tolls come out of the driver's earnings — or the driver negotiates cash at the door, which is exactly what the platform exists to prevent.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>The trip is measured as it happens. At the drop, the actual fare is computed, shown to both parties with each component itemised, and collected. A capped variance against the estimate protects the customer; anything beyond it requires explicit approval.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> New <code>TripFare</code> record: estimated components, actual components, variance, approval state. Finalise on the <code>delivered</code> transition from <span class="gid">GT-B-03</span>.</li>
+      <li><span class="app app-v">Vendor</span> Measure actual distance from <code>JobLocationPoint</code> — the points are already being persisted — and stop-dwell time from the per-stop timestamps.</li>
+      <li><span class="app app-b">Both</span> Reuse the customer-approval pattern from <code>WorkExtension</code> for variances above the cap; the token-based decision page already exists.</li>
+      <li><span class="app app-c">Customer</span> Show the itemised final fare on the receipt, not a single number.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/services/logistics_pricing.py</code> · <code>vendor/backend/workforce_api/models.py:1061–1092</code>.</p>
+  </article>
+
+  <article class="gap p1" id="gt-c-02">
+    <div class="gap-head"><span class="gid">GT-C-02</span><h5>Cash collected by a driver is never reconciled</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The COD flow is well built — <code>JobPayment</code> with a hashed customer-confirmation OTP, attempt limits, an immutable <code>PaymentCollectionEvent</code> trail, and change-returned tracking. What follows it does not exist: no driver cash float, no running balance owed to the platform, no deposit record, no daily settlement, and no limit on how much uncollected cash a driver may be carrying.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>In a cash-heavy category the platform is extending unsecured credit to every driver, in an amount nobody is tracking. It is also the most common source of partner disputes, and there is no statement to settle them against.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Every cash collection debits the partner's float; every deposit credits it. A float ceiling blocks new assignments until the driver deposits. A daily statement nets cash collected against commission and incentives, and one payout settles the balance.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-v">Vendor</span> Build the float on the ledger from <span class="gid">X-06</span>: a debit entry per <code>PaymentCollectionEvent</code>, a credit per deposit.</li>
+      <li><span class="app app-v">Vendor</span> Add a float-ceiling gate to <code>check_candidate_eligibility</code> — a driver over the limit stops receiving offers.</li>
+      <li><span class="app app-v">Vendor</span> Add a daily statement view to the technician workspace.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>vendor/backend/workforce_api/models.py:1103–1300</code> — collection is modelled, settlement is not.</p>
+  </article>
+
+  <article class="gap p2" id="gt-c-03">
+    <div class="gap-head"><span class="gid">GT-C-03</span><h5>No goods insurance and no damage-claim path</h5><span class="sev sev-p2">P2</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>No declared value, no insurance option at checkout, no coverage record, no claim workflow, no liability cap in the model. Damage would arrive as a generic <code>Complaint</code> with no consignment to reference and no photographs from pickup to compare against.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Insurance is a revenue line and a conversion lever for higher-value shipments, and a stated liability cap is what protects the platform when something breaks. Without a pickup-condition record every claim becomes one person's word against another's.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Optional coverage priced off declared value, purchased at checkout. Condition photos at pickup and at drop bound the claim. A defined liability cap applies when coverage was declined.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Add <code>InsuranceOption</code> and <code>InsurancePolicy</code> models priced from the <code>Consignment</code> declared value in <span class="gid">GT-B-04</span>.</li>
+      <li><span class="app app-v">Vendor</span> Require condition photos at pickup as well as at drop; extend <code>PostServiceProof</code> to a per-stop proof model.</li>
+      <li><span class="app app-c">Customer</span> Add a damage claim type to <code>Complaint</code> that references the consignment and both photo sets.</li>
+    </ul></div>
+    <p class="evidence">Evidence: no insurance or claim model in either backend · <code>vendor/backend/workforce_api/models.py:741–765</code>.</p>
+  </article>
+
+  <h4 class="wf" id="gt-d">Tracking, proof &amp; notifications</h4>
+
+  <article class="gap p0" id="gt-d-01">
+    <div class="gap-head"><span class="gid">GT-D-01</span><h5>No proof of delivery</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>Job completion is evidenced by <code>PostServiceProof</code> — photos of finished work — and, separately, by a payment OTP. There is no delivery record: no recipient name, no recipient signature, no delivery OTP given to the consignee, no delivered-at timestamp with the drop location, no condition note, and no delivery receipt.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>This is the category's core control. Without it the platform cannot prove the goods were handed to the right person, cannot resolve a "never arrived" dispute, and has no document a business customer can file. The pieces to build it — hashed OTP with expiry and attempt limits, geofenced position capture, photo upload — all already exist in the vendor app for other purposes.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>At the drop the driver captures recipient name and a signature or an OTP sent to the consignee, plus a photo of the delivered goods and the captured GPS position. A delivery receipt goes to both sender and receiver.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-v">Vendor</span> New <code>DeliveryProof</code> model per drop stop: recipient name, relationship, signature image, OTP hash and verification timestamp, photo, captured lat/lng, condition note.</li>
+      <li><span class="app app-v">Vendor</span> Reuse the OTP pattern from <code>JobPayment.payment_confirmation_otp_hash</code>, which is already hashed with expiry and attempt limits.</li>
+      <li><span class="app app-c">Customer</span> Send the delivery OTP to the consignee from <span class="gid">GT-A-03</span>; emit a delivery receipt to both parties.</li>
+      <li><span class="app app-b">Both</span> Block the <code>delivered</code> transition until proof exists, the same way <code>arrived</code> is already gated on the geofence check.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>vendor/backend/workforce_api/models.py:741–765</code> · <code>models.py:1200–1215</code> (the OTP pattern to reuse).</p>
+  </article>
+
+  <article class="gap p1" id="gt-d-02">
+    <div class="gap-head"><span class="gid">GT-D-02</span><h5>One ETA where the trip has two legs, and no trip replay</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The tracking payload computes a single distance and ETA from the technician to the booking's coordinates — the pickup. There is no ETA to the drop, no progress along the loaded leg, no distance remaining, and no completed-trip path. <code>JobLocationPoint</code> stores the breadcrumb trail on the vendor side and it is never exposed.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Once the goods are loaded, the customer's only question is when they arrive at the destination — and that is precisely the number the tracking screen cannot show. The stored breadcrumbs would also settle route disputes and support distance-based billing, at no additional collection cost.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>ETA is phase-aware: to pickup before loading, to the next stop after. The trip line is drawn as it happens and retained, so both parties can replay the route afterwards.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Make <code>_build_tracking_payload</code> compute ETA to the current target stop rather than always to the booking address.</li>
+      <li><span class="app app-v">Vendor</span> Expose a trip-path endpoint over <code>JobLocationPoint</code>, decimated for transfer; emit the path with the completion event.</li>
+      <li><span class="app app-c">Customer</span> Draw the loaded leg and remaining distance on <code>CustomerTrackingMap.jsx</code>.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/views.py:616–617, 671–678</code> · <code>vendor/backend/workforce_api/models.py:1061–1092</code>.</p>
+  </article>
+
+  <article class="gap p1" id="gt-d-03">
+    <div class="gap-head"><span class="gid">GT-D-03</span><h5>The person receiving the goods is never told anything</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>All notifications and the tracking link go to the booking customer. The consignee — who does not exist as a record (<span class="gid">GT-A-03</span>) — receives no dispatch notice, no arrival warning, no tracking link and no delivery confirmation.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>In most transport bookings the sender and the receiver are different people in different places. A receiver who does not know a vehicle is coming is a failed delivery, and the sender ends up relaying every update by phone.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>The receiver gets their own tracking link and their own notification stream — dispatched, out for delivery, arriving, delivered — scoped so they see only what concerns their stop.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Issue a per-stop tracking token alongside the booking-level one; the <code>tracking_token</code> mechanism and the public tracking view already support token-scoped access.</li>
+      <li><span class="app app-c">Customer</span> Add consignee recipients to the milestone map in <span class="gid">HS-D-06</span>, scoped to their stop.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/models.py:266</code> (single booking-level token) · <code>views.py:920–955</code>.</p>
+  </article>
+
+  <h4 class="wf" id="gt-e">Ratings &amp; partner management</h4>
+
+  <article class="gap p1" id="gt-e-01">
+    <div class="gap-head"><span class="gid">GT-E-01</span><h5>Feedback asks home-services questions about a delivery</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>ServiceFeedback</code> collects a rating, <code>employee_behaviour</code>, <code>work_quality</code> and <code>issue_resolved</code>. None of those describe a trip. There is no punctuality dimension, no goods-condition dimension, no vehicle-condition rating, no handling or packing quality, and no per-form variation by category.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>"Was your issue resolved?" is meaningless after a house move, so the answers are noise — which means the transport side of the marketplace has no usable quality data at all, and the scorecard in <span class="gid">HS-E-05</span> has nothing to score it on.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>The rating form varies by category. Transport asks about punctuality, goods condition, driver conduct and vehicle condition, with quick-tap tags rather than free text.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Replace the fixed columns on <code>ServiceFeedback</code> with a category-scoped question set plus a JSON answer map; keep the headline rating as a column.</li>
+      <li><span class="app app-c">Customer</span> Add a transport question set and render it in <code>FeedbackPage.jsx</code> and the in-app sheet from <span class="gid">HS-E-02</span>.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/models.py:591–617</code>.</p>
+  </article>
+
+  <article class="gap p1" id="gt-e-02">
+    <div class="gap-head"><span class="gid">GT-E-02</span><h5>Declining and cancelling carry no consequence</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>WorkforceJobOffer</code> records <code>REJECTED</code>, <code>EXPIRED</code> and <code>CANCELLED</code> per offer, and the technician can cancel an accepted assignment. Nothing aggregates any of it. There is no acceptance rate, no cancellation rate, no cancel-after-accept penalty, and none of it affects who gets offered the next job.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>In on-demand transport, cherry-picking is the dominant supply-side failure — accept, see the destination, cancel. Without a measured and enforced acceptance and cancellation rate, the drivers who behave worst are indistinguishable from those who behave best, and short or awkward trips never get served.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Acceptance rate and cancellation rate are published to the partner, feed dispatch priority, and gate incentives. Cancelling after accepting costs more than declining, and a late cancellation compensates the customer.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-v">Vendor</span> Roll <code>WorkforceJobOffer</code> outcomes into the <code>PartnerScorecard</code> from <span class="gid">HS-E-05</span> as acceptance and cancellation rates over a trailing window.</li>
+      <li><span class="app app-v">Vendor</span> Weight the dispatch ranking by them, and add a cooldown after a cancel-after-accept in <code>WorkforceJobTechnicianCancelView</code>.</li>
+      <li><span class="app app-c">Customer</span> Auto-issue a goodwill credit when a driver cancels after acceptance — the wallet from <span class="gid">HS-C-07</span>.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>vendor/backend/workforce_api/models.py:393–426</code> · <code>services/automatic_dispatch.py:466–492</code>.</p>
+  </article>
+</section>
+
+<!-- ══════════════════════ PART 4 ══════════════════════ -->
+<section id="edges">
+  <h2 class="part">Part 4</h2>
+  <h3 class="section-title">Edge cases &amp; error handling</h3>
+  <p class="lede">Nine defects that are not workflow gaps but will produce incidents. Three of them are security issues that should be fixed before anything else in this document.</p>
+
+  <article class="gap p0" id="ec-01">
+    <div class="gap-head"><span class="gid">EC-01</span><h5>The service-start OTP is derivable by the person it is meant to check</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>ServiceRequest.save()</code> generates <code>start_otp</code> as <code>sha256("calservices_booking_otp_{request_id}_{phone}_{customer_name}")</code>, taking the first eight hex digits modulo 900000. Every input is known to the technician, and the salt is a literal in the source. The value is stored in plaintext on the row and compared with <code>str(entered) == str(sr.start_otp)</code>. An <code>otp_hash</code> column exists and is not used on this path.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>The OTP exists so that work cannot be marked started without the customer present. A technician who can compute it can start and complete a job they never attended — and in the COD flow, trigger collection. The control provides no assurance at all.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A random code generated server-side at the moment it is needed, delivered to the customer over a channel the partner cannot read, stored only as a hash, single-use, short-lived, rate-limited.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Generate the code with <code>secrets.randbelow</code> at the <code>arrived</code> transition, not at booking creation; store only the hash in <code>otp_hash</code> and set <code>otp_expires_at</code>.</li>
+      <li><span class="app app-c">Customer</span> Deliver it to the customer by SMS or push, and remove <code>start_otp</code> from every serializer and tracking payload.</li>
+      <li><span class="app app-c">Customer</span> Stop sending <code>start_otp</code> in the dispatch payload in <code>workforce_integration/services.py:92</code>.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/models.py:347–350</code> · <code>views.py:2285</code>.</p>
+  </article>
+
+  <article class="gap p0" id="ec-02">
+    <div class="gap-head"><span class="gid">EC-02</span><h5>OTP verification is unauthenticated and bypasses the state machine</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>BookingVerifyStartOTPView</code> is <code>AllowAny</code>, identifies the booking by a guessable sequential id or request id, and on success writes <code>sr.status = "in_progress"</code> directly rather than calling <code>apply_transition</code>. A booking sitting in <code>confirmed</code> jumps straight to <code>in_progress</code> without ever passing acceptance, travel, or the geofenced arrival check the vendor state machine enforces.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>It defeats the arrival gate that the vendor app is careful about, and it is callable by anyone. Combined with <span class="gid">EC-01</span>, the OTP control is bypassable end to end.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Verification is authenticated as the assigned partner, on a job that is already in the arrived state, and every write goes through the one transition function.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Require the assigned technician's credential (or the service credential from <span class="gid">X-02</span>); reject unless the booking is in <code>arrived</code>.</li>
+      <li><span class="app app-c">Customer</span> Route the write through <code>apply_transition</code> — the direct assignment at <code>views.py:2288</code> is the bug.</li>
+      <li><span class="app app-c">Customer</span> Audit all direct <code>sr.status = ...</code> assignments in <code>views.py</code> for the same pattern.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/views.py:2258, 2285–2293</code>.</p>
+  </article>
+
+  <article class="gap p1" id="ec-03">
+    <div class="gap-head"><span class="gid">EC-03</span><h5>Booking creation is not idempotent</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>POST /api/booking/</code> takes no idempotency key. A double-tap, a retry on a slow response, or a network retry creates a second booking, a second coupon redemption and a second dispatch. The webhook receiver on the same codebase does implement idempotency properly — the booking endpoint does not.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Duplicate bookings are the most common support ticket in this class of product, and they are worse here because the booking POST can block for up to five seconds (<span class="gid">X-02</span>), which makes users tap again.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>The client generates an idempotency key per checkout attempt; the server stores it against the created order and returns the same order for any repeat.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Accept an <code>Idempotency-Key</code> header, store it uniquely against the booking, return the existing booking on repeat.</li>
+      <li><span class="app app-c">Customer</span> Apply the same to <code>/payment/verify/</code> and <code>/customer/refunds/create/</code>.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/views.py:229–430</code> vs <code>workforce_integration/views.py:100–130</code>.</p>
+  </article>
+
+  <article class="gap p1" id="ec-04">
+    <div class="gap-head"><span class="gid">EC-04</span><h5>Human-readable booking IDs are generated with a race condition</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>_generate_request_id()</code> reads the highest existing row for a category prefix, adds one, then loops while the candidate exists. There is no lock and no unique sequence. Two concurrent bookings in the same category can compute the same candidate, and the retry loop is a read-then-write with the same race.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p><code>request_id</code> is unique at the database level, so the loser gets an <code>IntegrityError</code> — a failed booking after payment, under exactly the load conditions where it is most expensive. The function is also O(n) on every booking.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>A database sequence per prefix, or a random collision-resistant identifier. Never a read-max-and-increment.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Replace with a Postgres sequence per category prefix, or a counter row locked with <code>select_for_update</code>.</li>
+      <li><span class="app app-c">Customer</span> Move ID assignment out of <code>save()</code> into the creation service so it participates in the booking transaction explicitly.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/models.py:51–76</code>.</p>
+  </article>
+
+  <article class="gap p1" id="ec-05">
+    <div class="gap-head"><span class="gid">EC-05</span><h5>Failures are swallowed and reported as success</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The integration client returns <code>{"success": True, "fallback": True}</code> when a call fails. Notification helpers use <code>fail_silently=True</code> inside bare excepts. Tracking broadcasts log a warning and continue. There is no dead-letter queue, no retry, and no alert — the system's default response to a failed cross-service operation is to pretend it worked.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>It is why the integration in <span class="gid">X-02</span> could be entirely non-functional without anyone noticing. Every silent fallback removes a signal that something needs fixing.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Failures are recorded, retried with backoff, and escalated to a dead-letter queue with an alert. A degraded path is an explicit state, never a success return.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Return honest failure states from <code>WorkforceIntegrationService</code>; put every cross-service call on a Celery task with retry and a DLQ table.</li>
+      <li><span class="app app-b">Both</span> Add error tracking (Sentry or equivalent) — neither backend has any.</li>
+      <li><span class="app app-b">Both</span> Alert on DLQ depth and on integration failure rate.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/workforce_integration/services.py:131–135, 286–290</code> · <code>service_requests/notifications.py</code>.</p>
+  </article>
+
+  <article class="gap p1" id="ec-06">
+    <div class="gap-head"><span class="gid">EC-06</span><h5>Rate limiting is one blunt global rule, and the vendor app has none</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>The customer app does configure DRF throttling — 60 requests per minute anonymous, 300 authenticated, globally. What is missing is any differentiation: booking creation, payment verify, tracking-token lookup, feedback submission and coupon validation all share the same 60/minute allowance as browsing the catalog, and there are no scoped throttles for the sensitive writes. The two OTP views in <code>accounts/views.py</code> explicitly set <code>throttle_classes = []</code>, relying entirely on the in-service limiter. The vendor app configures no throttling at all.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>60 attempts a minute against a tracking-token lookup or an unauthenticated payment-verify endpoint is a lot of attempts. The global rule is sized for protecting the database from load, not for protecting a specific endpoint from abuse — and the vendor app, which exposes signup, login and the SSE stream, has no ceiling at all.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Tight per-endpoint scopes on unauthenticated writes on top of a generous global rule, plus a WAF or bot-management layer in front, plus a challenge on the anonymous booking form.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Add <code>ScopedRateThrottle</code> scopes for booking creation, payment initiate/verify, tracking lookup, feedback and coupon validation — single-digit rates per minute per IP.</li>
+      <li><span class="app app-v">Vendor</span> Configure <code>DEFAULT_THROTTLE_CLASSES</code> and rates in <code>workforce_core/settings.py</code>; scope signup and login tightly.</li>
+      <li><span class="app app-c">Customer</span> Add a challenge to anonymous booking submission.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/quicktims/settings.py:243–251</code> · <code>accounts/views.py:982, 1114</code> · <code>vendor/backend/workforce_core/settings.py:158–168</code> (no throttle keys).</p>
+  </article>
+
+  <article class="gap p1" id="ec-07">
+    <div class="gap-head"><span class="gid">EC-07</span><h5>No test coverage on the paths that were changed most recently</h5><span class="sev sev-p1">P1</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p>There are substantial test suites — spatial dispatch, offer expiry and rings, GPS geofence auto-clock-in, registration routing — sitting loose in the repository root as scripts rather than in a runner. What is not covered: the pricing path, the payment path, the state-machine divergence between the two apps, and the integration contract. There is no CI test job in either <code>.github/workflows</code>.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>The two highest-risk gaps in this document — client-set prices and unauthenticated payment confirmation — are exactly the kind that a single contract test would have caught, and would catch again if reintroduced.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Contract tests between services run in CI on both repositories. Pricing and payment have property-based tests. A schema-drift check runs against the shared database on every migration.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-b">Both</span> Move the existing suites under <code>tests/</code> and add a CI job that runs them.</li>
+      <li><span class="app app-b">Both</span> Add contract tests for the webhook event set and the shared status enum (see <span class="gid">X-01</span>, <span class="gid">X-03</span>).</li>
+      <li><span class="app app-c">Customer</span> Add tests asserting that a client-supplied <code>total_amount</code> is ignored and that payment verification fails without a valid signature.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Calservices/backend/test_*.py</code> (loose scripts) · no test step in either workflow directory.</p>
+  </article>
+
+  <article class="gap p2" id="ec-08">
+    <div class="gap-head"><span class="gid">EC-08</span><h5>Tracking tokens never expire</h5><span class="sev sev-p2">P2</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>tracking_token</code> is a UUID4 minted at booking creation, never rotated and never expired. It authorises the public tracking view, the live-location endpoint and, in some paths, cancellation. Anyone who ever held the link — forwarded, in a browser history, in a screenshot — retains access to the booking's address, technician identity and phone number indefinitely.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>The token is doing real authorisation work over personal data, so its lifetime should match the job's. It currently outlives it by forever.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>Share links are scoped to the trip and expire shortly after it ends; sensitive fields drop out of the payload once the job closes.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Add <code>tracking_token_expires_at</code>, set to completion plus a short window; check it in <code>CustomerPublicTrackingView</code> and the live-location view.</li>
+      <li><span class="app app-c">Customer</span> Redact technician phone and address from the payload once the booking is terminal.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/models.py:266, 351–353</code> · <code>views.py:920–955</code>.</p>
+  </article>
+
+  <article class="gap p0" id="ec-09">
+    <div class="gap-head"><span class="gid">EC-09</span><h5>Anyone can download any customer's invoice</h5><span class="sev sev-p0">P0</span></div>
+    <div class="band"><span class="band-label">What's missing</span><p><code>InvoiceDownloadView</code> is <code>permission_classes = [AllowAny]</code> and resolves the booking from a sequential integer id or a predictable request id like <code>AC0012</code>. There is no ownership check and no token requirement. The PDF it returns prints the customer's name, phone, email and full service address, plus the amount and transaction id.</p></div>
+    <div class="band"><span class="band-label">Why it matters</span><p>Iterating <code>/api/booking/1/invoice/</code> upward enumerates the entire customer base's contact details and home addresses. This is a direct personal-data breach, not a theoretical one, and the identifiers are guessable by design because they are meant to be human-readable.</p></div>
+    <div class="band ref"><span class="band-label">How mature platforms do it</span><p>An invoice is served only to the authenticated owner or against a signed, expiring link. Documents containing personal data are never addressable by a sequential identifier alone.</p></div>
+    <div class="band band-fix"><span class="band-label">What to change</span><ul>
+      <li><span class="app app-c">Customer</span> Require an authenticated owner, an admin, or a valid <code>tracking_token</code> in <code>InvoiceDownloadView</code>; the ownership check in <code>CustomerBookingCancelView</code> is the pattern to reuse.</li>
+      <li><span class="app app-c">Customer</span> Audit every other <code>AllowAny</code> view in <code>service_requests/</code> that resolves a booking by id — <code>CustomerBookingLiveLocationView</code> and <code>BookingVerifyStartOTPView</code> are in the same shape.</li>
+      <li><span class="app app-c">Customer</span> Serve documents through short-lived signed URLs rather than direct id lookup.</li>
+    </ul></div>
+    <p class="evidence">Evidence: <code>Customer/backend/service_requests/payment_views.py:171–199, 257–268</code>.</p>
+  </article>
+</section>
+
+<!-- ══════════════════════ PART 5 ══════════════════════ -->
+<section id="roadmap">
+  <h2 class="part">Part 5</h2>
+  <h3 class="section-title">A sequence for the rebuild</h3>
+  <p class="lede">The gaps are not independent. Roughly half of them are unblocked by four pieces of work, and doing those four first makes the rest smaller. This is a dependency order, not a schedule — the durations are indicative for a small team working both codebases.</p>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Stage</th><th>What it is</th><th>Unblocks</th><th>Indicative</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><b>0 · Stop the bleeding</b></td>
+          <td>Remove the <code>mock_success</code> payment path; authenticate and gate OTP verification and invoice download; regenerate start OTPs randomly; add scoped throttles; reconcile the live database schema against both ORMs.</td>
+          <td><span class="gid">HS-C-01</span> <span class="gid">EC-01</span> <span class="gid">EC-02</span> <span class="gid">EC-09</span> <span class="gid">EC-06</span> <span class="gid">X-04</span></td>
+          <td class="num">1 week</td>
+        </tr>
+        <tr>
+          <td><b>1 · One contract</b></td>
+          <td>Write down the integration contract; build the vendor-side event emitter with an outbox; add service authentication; publish one canonical status enum; move dispatch onto Celery.</td>
+          <td><span class="gid">X-01</span> <span class="gid">X-02</span> <span class="gid">X-03</span> <span class="gid">X-11</span> <span class="gid">HS-D-01</span> <span class="gid">HS-D-03</span> and every tracking gap downstream</td>
+          <td class="num">3–4 weeks</td>
+        </tr>
+        <tr>
+          <td><b>2 · Money is real</b></td>
+          <td>Server-side pricing from the catalog; a real gateway with webhook-driven verification; one payment ledger; gateway refunds; GST-compliant invoices; the commission and payout ledger.</td>
+          <td><span class="gid">HS-B-01</span> <span class="gid">HS-C-02</span> <span class="gid">HS-C-03</span> <span class="gid">HS-C-05</span> <span class="gid">HS-C-06</span> <span class="gid">X-06</span> <span class="gid">GT-C-02</span></td>
+          <td class="num">4–5 weeks</td>
+        </tr>
+        <tr>
+          <td><b>3 · The platform can talk</b></td>
+          <td>Notification service with SMS, WhatsApp, push and email over an outbox; consent and preferences; the milestone map; the customer account area.</td>
+          <td><span class="gid">X-07</span> <span class="gid">HS-A-01</span> <span class="gid">HS-A-03</span> <span class="gid">HS-D-04</span> <span class="gid">HS-D-05</span> <span class="gid">HS-D-06</span> <span class="gid">GT-D-03</span></td>
+          <td class="num">3–4 weeks</td>
+        </tr>
+        <tr>
+          <td><b>4 · Native apps</b></td>
+          <td>Finish the native customer app; build the technician app with background location and push job offers.</td>
+          <td><span class="gid">X-08</span> <span class="gid">HS-D-02</span> and the acceptance-window work in <span class="gid">GT-B-02</span></td>
+          <td class="num">8–10 weeks</td>
+        </tr>
+        <tr>
+          <td><b>5 · Marketplace shape</b></td>
+          <td>Partner entity and vehicles; verification and KYC; slot capacity; batched dispatch with a radius ladder; scorecards feeding dispatch.</td>
+          <td><span class="gid">X-05</span> <span class="gid">HS-A-04</span> <span class="gid">HS-B-02</span> <span class="gid">HS-B-05</span> <span class="gid">HS-E-05</span> <span class="gid">GT-A-01</span> <span class="gid">GT-A-02</span></td>
+          <td class="num">6–8 weeks</td>
+        </tr>
+        <tr>
+          <td><b>6 · Trips, not appointments</b></td>
+          <td>Trip stops and consignments; the fare engine with finalisation; trip lifecycle states; proof of delivery; two-leg ETA and trip replay.</td>
+          <td>The whole of Part 3</td>
+          <td class="num">6–8 weeks</td>
+        </tr>
+        <tr>
+          <td><b>7 · Quality &amp; growth</b></td>
+          <td>Feedback at completion with category-specific forms; review moderation; technician profiles; quotes; recurring bookings; referrals; wallet.</td>
+          <td>Remaining P1 and P2 gaps</td>
+          <td class="num">ongoing</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <h5>What not to rebuild</h5>
+    <p>Several parts of this system are better than they need to be and should be preserved rather than replaced: the 9-gate dispatch eligibility engine and its logging; the geofenced arrival verification; the work-extension approval loop with its token-based customer decision page; the COD payment state machine with hashed OTP and an immutable collection audit trail; the reschedule, refund and complaint workflows; the webhook receiver's idempotency and replay protection; and the OTP request/verify mechanism in <code>accounts/services.py</code>.</p>
+    <p>Most of the P0 list is not missing engineering. It is engineering that was built and never connected.</p>
+  </div>
+</section>
+
+</main>
+
+<footer class="colophon">
+  Gap analysis prepared from a direct read of the Customer and Vendor codebases as they stand in <code>D:\Caldim\Calservices</code>.<br>
+  Reference behaviour for NoBroker (Home Services) and Porter (Goods &amp; Transport) is inferred from category first principles, not from vendor documentation.<br>
+  Gap identifiers are stable — cite them as <code>X-01</code>, <code>HS-C-01</code>, <code>GT-B-03</code> in tickets so this document and the backlog stay linked.
+</footer>
+
+</div>

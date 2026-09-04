@@ -12,7 +12,6 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from .authentication import set_auth_cookies
 from employees.models import Employee
-from workforce_api.services.registration import get_employee_registration_status
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -173,21 +172,13 @@ class LoginView(APIView):
             except Exception:
                 emp = None
 
-            is_super = bool(getattr(user, "is_superuser", False) or str(getattr(user, "role", "")).lower() in ["superadmin", "super_admin"])
-            raw_role = str(getattr(user, "role", None) or "employee").lower()
-            if is_super:
-                user_role = "superadmin"
-            elif raw_role in ["service_provider_admin", "admin", "manager"]:
-                user_role = "service_provider_admin" if raw_role == "service_provider_admin" else raw_role
-            else:
+            user_role = (getattr(user, "role", None) or "employee").lower()
+            if emp and user_role not in ["admin", "manager"]:
                 user_role = "employee"
 
             company_id = getattr(user, "company_id", None) or (getattr(emp, "company_id", None) if emp else None)
             company_obj = getattr(user, "company", None) or (getattr(emp, "company", None) if emp else None)
             company_name = getattr(company_obj, "company_name", "") if company_obj else ""
-
-            is_superadmin_val = is_super
-            is_provider_admin_val = bool(not is_super and user_role in ["service_provider_admin", "admin", "manager"] and company_id is not None)
 
             # Step 5: Issue JWT access and refresh tokens
             refresh = RefreshToken.for_user(user)
@@ -205,26 +196,74 @@ class LoginView(APIView):
                 identifier, lookup_type, matched_user_id, matched_user_active, password_check, db_status, response_code, response_code_name
             )
 
-            if is_superadmin_val or is_provider_admin_val:
-                reg_status = "approved"
-            else:
-                reg_status = get_employee_registration_status(emp or user)
+            is_platform_admin = bool(
+                getattr(user, "is_superuser", False)
+                or (getattr(user, "is_staff", False) and getattr(user, "company_id", None) == 1)
+                or str(getattr(user, "role", "")).lower() in ("superadmin", "platform_admin")
+                or (str(getattr(user, "role", "")).lower() in ("admin", "manager") and getattr(user, "company_id", None) == 1)
+            )
+            is_vendor_admin = bool(
+                not is_platform_admin
+                and (user_role in ["admin", "manager"] or getattr(user, "is_staff", False))
+            )
+            is_technician = not (is_platform_admin or is_vendor_admin)
+            is_tied_worker = False
+            if emp:
+                from workforce_api.models import VendorTechnicianRelationship
+                has_active_rel = VendorTechnicianRelationship.objects.filter(
+                    technician=emp,
+                    status__in=[
+                        VendorTechnicianRelationship.Status.ACTIVE,
+                        VendorTechnicianRelationship.Status.RESIGNATION_REQUESTED,
+                    ],
+                ).exists()
+                if not has_active_rel and emp.company_id:
+                    emp.company = None
+                    emp.save(update_fields=["company"])
+                    company_id = None
+                    company_name = None
+                is_tied_worker = bool(has_active_rel)
 
+            is_solo_worker = is_technician and not is_tied_worker
+            if is_solo_worker:
+                company_id = None
+                company_name = None
+                if getattr(user, "company_id", None):
+                    user.company = None
+                    user.save(update_fields=["company"])
+            if is_solo_worker and emp:
+                try:
+                    from workforce_api.models import WalletAccount
+                    WalletAccount.objects.get_or_create(
+                        employee=emp,
+                        account_type=WalletAccount.AccountType.INDIVIDUAL_WORKER,
+                        defaults={"company": None, "is_active": True},
+                    )
+                    from vendor_wallet.models import EmployeeWallet
+                    from vendor_wallet.constants import WALLET_ACTIVE
+                    target_company = emp.company or getattr(user, "company", None)
+                    if not target_company and getattr(emp, "company_id", None):
+                        from companies.models import Company
+                        target_company = Company.objects.filter(id=emp.company_id).first()
+                    if not target_company:
+                        from companies.models import Company
+                        target_company = Company.objects.order_by("id").first()
+                    if target_company:
+                        EmployeeWallet.objects.get_or_create(
+                            employee=emp,
+                            defaults={"company": target_company, "currency": "INR", "status": WALLET_ACTIVE},
+                        )
+                except Exception as _w_err:
+                    logger.warning("Could not ensure individual wallet: %s", str(_w_err))
 
-            association_status = "INDEPENDENT"
-            requested_provider_id = None
-            requested_provider_name = None
+            user_type = (
+                "platform_admin"
+                if is_platform_admin
+                else ("vendor_admin" if is_vendor_admin else "technician")
+            )
 
-            if company_id:
-                association_status = "APPROVED"
-            elif emp:
-                bank_details = emp.bank_details or {}
-                onboarding = bank_details.get("onboarding", {})
-                jr = onboarding.get("join_request")
-                if jr and isinstance(jr, dict):
-                    association_status = jr.get("status", "PENDING")
-                    requested_provider_id = jr.get("provider_id")
-                    requested_provider_name = jr.get("provider_name")
+            from workforce_api.services.registration import get_employee_registration_status
+            reg_status = get_employee_registration_status(user)
 
             response = Response({
                 "message": "Login successful.",
@@ -240,15 +279,13 @@ class LoginView(APIView):
                     "role": user_role,
                     "company": company_id,
                     "company_name": company_name,
-                    "provider_id": company_id,
-                    "provider_name": company_name,
-                    "is_independent": bool(company_id is None),
-                    "association_status": association_status,
-                    "requested_provider_id": requested_provider_id,
-                    "requested_provider_name": requested_provider_name,
                     "is_superuser": getattr(user, "is_superuser", False),
-                    "is_superadmin": is_superadmin_val,
-                    "is_provider_admin": is_provider_admin_val,
+                    "is_platform_admin": is_platform_admin,
+                    "is_vendor_admin": is_vendor_admin,
+                    "is_technician": is_technician,
+                    "is_tied_worker": is_tied_worker,
+                    "is_solo_worker": is_solo_worker,
+                    "user_type": user_type,
                     "employee_id": getattr(emp, "employee_id", None) if emp else None,
                     "registration_status": reg_status,
                 }
@@ -316,13 +353,8 @@ class WorkforceRefreshView(APIView):
                             emp = Employee.objects.filter(user=user).first()
                         except Exception:
                             emp = None
-                    is_super = bool(getattr(user, "is_superuser", False) or str(getattr(user, "role", "")).lower() in ["superadmin", "super_admin"])
-                    raw_role = str(getattr(user, "role", None) or "employee").lower()
-                    if is_super:
-                        user_role = "superadmin"
-                    elif raw_role in ["service_provider_admin", "admin", "manager"]:
-                        user_role = "service_provider_admin" if raw_role == "service_provider_admin" else raw_role
-                    else:
+                    user_role = getattr(user, "role", "employee")
+                    if emp and user_role not in ["admin", "manager"]:
                         user_role = "employee"
                     company_id = getattr(user, "company_id", None) or (getattr(emp, "company_id", None) if emp else None)
         except (OperationalError, DatabaseError) as db_err:
@@ -380,53 +412,78 @@ class MeView(APIView):
 
             company_name = getattr(company_obj, "company_name", None) if company_obj else None
 
-            is_super = bool(getattr(user, "is_superuser", False) or str(getattr(user, "role", "")).lower() in ["superadmin", "super_admin"])
-            raw_role = str(getattr(user, "role", None) or "employee").lower()
-            if is_super:
-                user_role = "superadmin"
-            elif raw_role in ["service_provider_admin", "admin", "manager"]:
-                user_role = "service_provider_admin" if raw_role == "service_provider_admin" else raw_role
-            else:
+            user_role = getattr(user, "role", "employee")
+            if emp and user_role not in ["admin", "manager"]:
                 user_role = "employee"
 
-            is_superadmin_val = is_super
-            is_provider_admin_val = bool(not is_super and user_role in ["service_provider_admin", "admin", "manager"] and company_id is not None)
-
-            if is_superadmin_val or is_provider_admin_val:
-                reg_status = "approved"
-            else:
-                reg_status = get_employee_registration_status(emp or user)
-
-
-            association_status = "INDEPENDENT"
-            requested_provider_id = None
-            requested_provider_name = None
-
-            if company_id:
-                association_status = "APPROVED"
-            elif emp:
-                bank_details = emp.bank_details or {}
-                onboarding = bank_details.get("onboarding", {})
-                jr = onboarding.get("join_request")
-                if jr and isinstance(jr, dict):
-                    association_status = jr.get("status", "PENDING")
-                    requested_provider_id = jr.get("provider_id")
-                    requested_provider_name = jr.get("provider_name")
-
-            # Include employee presence/availability in /auth/me/ response so that the
-            # frontend AuthProvider does NOT need a separate sequential call to
-            # /workforce/onboarding/me/ during auth initialization.
-            last_known_location = None
-            is_online = False
-            live_availability = "offline"
-
+            is_platform_admin = bool(
+                getattr(user, "is_superuser", False)
+                or (getattr(user, "is_staff", False) and getattr(user, "company_id", None) == 1)
+                or str(getattr(user, "role", "")).lower() in ("superadmin", "platform_admin")
+                or (str(getattr(user, "role", "")).lower() in ("admin", "manager") and getattr(user, "company_id", None) == 1)
+            )
+            is_vendor_admin = bool(
+                not is_platform_admin
+                and (user_role in ["admin", "manager"] or getattr(user, "is_staff", False))
+            )
+            is_technician = not (is_platform_admin or is_vendor_admin)
+            is_tied_worker = False
             if emp:
-                from workforce_api.services.workload import reconcile_employee_availability
-                live_availability = reconcile_employee_availability(emp)
-                is_online = bool(getattr(emp, "is_online", False))
-                raw_loc = getattr(user, "last_known_location", None)
-                if isinstance(raw_loc, dict) and raw_loc.get("latitude") and raw_loc.get("longitude"):
-                    last_known_location = raw_loc
+                from workforce_api.models import VendorTechnicianRelationship
+                has_active_rel = VendorTechnicianRelationship.objects.filter(
+                    technician=emp,
+                    status__in=[
+                        VendorTechnicianRelationship.Status.ACTIVE,
+                        VendorTechnicianRelationship.Status.RESIGNATION_REQUESTED,
+                    ],
+                ).exists()
+                if not has_active_rel and emp.company_id:
+                    emp.company = None
+                    emp.save(update_fields=["company"])
+                    company_id = None
+                    company_name = None
+                is_tied_worker = bool(has_active_rel)
+
+            is_solo_worker = is_technician and not is_tied_worker
+            if is_solo_worker:
+                company_id = None
+                company_name = None
+                if getattr(user, "company_id", None):
+                    user.company = None
+                    user.save(update_fields=["company"])
+            if is_solo_worker and emp:
+                try:
+                    from workforce_api.models import WalletAccount
+                    WalletAccount.objects.get_or_create(
+                        employee=emp,
+                        account_type=WalletAccount.AccountType.INDIVIDUAL_WORKER,
+                        defaults={"company": None, "is_active": True},
+                    )
+                    from vendor_wallet.models import EmployeeWallet
+                    from vendor_wallet.constants import WALLET_ACTIVE
+                    target_company = emp.company or getattr(user, "company", None)
+                    if not target_company and getattr(emp, "company_id", None):
+                        from companies.models import Company
+                        target_company = Company.objects.filter(id=emp.company_id).first()
+                    if not target_company:
+                        from companies.models import Company
+                        target_company = Company.objects.order_by("id").first()
+                    if target_company:
+                        EmployeeWallet.objects.get_or_create(
+                            employee=emp,
+                            defaults={"company": target_company, "currency": "INR", "status": WALLET_ACTIVE},
+                        )
+                except Exception as _w_err:
+                    logger.warning("Could not ensure individual wallet: %s", str(_w_err))
+
+            user_type = (
+                "platform_admin"
+                if is_platform_admin
+                else ("vendor_admin" if is_vendor_admin else "technician")
+            )
+
+            from workforce_api.services.registration import get_employee_registration_status
+            reg_status = get_employee_registration_status(user)
 
             return Response({
                 "id": user.id,
@@ -437,21 +494,15 @@ class MeView(APIView):
                 "role": user_role,
                 "company": company_id,
                 "company_name": company_name,
-                "provider_id": company_id,
-                "provider_name": company_name,
-                "is_independent": bool(company_id is None),
-                "association_status": association_status,
-                "requested_provider_id": requested_provider_id,
-                "requested_provider_name": requested_provider_name,
                 "is_superuser": getattr(user, "is_superuser", False),
-                "is_superadmin": is_superadmin_val,
-                "is_provider_admin": is_provider_admin_val,
+                "is_platform_admin": is_platform_admin,
+                "is_vendor_admin": is_vendor_admin,
+                "is_technician": is_technician,
+                "is_tied_worker": is_tied_worker,
+                "is_solo_worker": is_solo_worker,
+                "user_type": user_type,
                 "employee_id": getattr(emp, "employee_id", None) if emp else None,
                 "registration_status": reg_status,
-                # Presence & location (for AuthProvider initialization — avoids second API call)
-                "is_online": is_online,
-                "live_availability": live_availability,
-                "last_known_location": last_known_location,
             }, status=status.HTTP_200_OK)
         except (OperationalError, DatabaseError) as db_err:
             logger.error("Database error in MeView: %s", str(db_err), exc_info=True)
@@ -471,57 +522,7 @@ class LogoutView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        user = request.user
-        emp = getattr(user, "employee_profile", None) if (user and user.is_authenticated) else None
-
-        # Requirement: When technician is ONLINE, prevent sign-out and notify user to go OFFLINE first
-        if emp and emp.is_online:
-            return Response(
-                {
-                    "error": "You are currently ONLINE. Please switch your status to OFFLINE before signing out.",
-                    "code": "CANNOT_LOGOUT_WHILE_ONLINE",
-                    "is_online": True,
-                    "availability": emp.current_availability,
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if emp:
-            try:
-                from django.utils import timezone
-                from employees.models import PresenceLog
-                from workforce_api.services.workload import reconcile_employee_availability
-
-                now = timezone.now()
-                emp.last_logout_at = now
-                emp.save(update_fields=["last_logout_at", "updated_at"])
-                reconcile_employee_availability(emp)
-
-                try:
-                    open_log = PresenceLog.objects.filter(employee=emp, logout_at__isnull=True).order_by("-id").first()
-                    if open_log:
-                        open_log.logout_at = now
-                        if open_log.login_at:
-                            open_log.duration_seconds = max(0, int((now - open_log.login_at).total_seconds()))
-                        open_log.save()
-                    else:
-                        PresenceLog.objects.create(
-                            employee=emp,
-                            company=emp.company,
-                            logout_at=now,
-                        )
-                except Exception:
-                    pass
-
-                logger.info(f"[LOGOUT_PRESENCE] Employee #{emp.id} ({user.username}) signed out while OFFLINE.")
-            except Exception as e:
-                logger.error(f"[LOGOUT_PRESENCE_ERR] Failed to log employee logout: {e}")
-
-        response = Response({
-            "message": "Logged out successfully.",
-            "is_online": False,
-            "availability": "offline",
-        }, status=status.HTTP_200_OK)
-        from .authentication import clear_auth_cookies
-        clear_auth_cookies(response)
+        response = Response({"message": "Logged out successfully."}, status=status.HTTP_200_OK)
+        response.delete_cookie("qt_access")
+        response.delete_cookie("qt_refresh")
         return response
