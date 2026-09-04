@@ -16,7 +16,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env", override=True)
 
 _raw_secret = os.getenv("SECRET_KEY") or os.getenv("DJANGO_SECRET_KEY")
-DEBUG = (os.getenv("DEBUG") or os.getenv("DJANGO_DEBUG") or "True").lower() in ("true", "1", "t")
+# SECURITY: DEBUG defaults to FALSE. A missing or misspelled env var must never
+# silently place a production deployment into debug mode, which would expose full
+# stack traces, SQL and settings values on every error page -- and would also
+# disarm the DEBUG-gated interlock in workforce_api/services/payouts.py that stops
+# mock (fabricated) payouts from running against real money. Local development
+# opts IN explicitly via DJANGO_DEBUG=1 in backend/.env.
+DEBUG = (os.getenv("DEBUG") or os.getenv("DJANGO_DEBUG") or "False").strip().lower() in ("true", "1", "t", "yes")
 
 if not _raw_secret:
     if DEBUG:
@@ -26,7 +32,12 @@ if not _raw_secret:
 else:
     SECRET_KEY = _raw_secret
 
-_allowed_hosts_env = os.getenv("ALLOWED_HOSTS")
+# Accept BOTH spellings. .env.example, the production .env and backend-ci.yml all
+# use DJANGO_ALLOWED_HOSTS, but this block previously read only ALLOWED_HOSTS --
+# so the configured value was silently ignored and the fallback below was used
+# instead. SECRET_KEY and DEBUG above already accept both prefixes; this one was
+# the odd omission.
+_allowed_hosts_env = os.getenv("ALLOWED_HOSTS") or os.getenv("DJANGO_ALLOWED_HOSTS")
 if _allowed_hosts_env:
     ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
 else:
