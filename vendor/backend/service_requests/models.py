@@ -182,8 +182,14 @@ class ServiceRequest(models.Model):
     issue_title = models.CharField(max_length=300)
     description = models.TextField(blank=True, default="")
     address = models.TextField()
-    latitude = models.FloatField(null=True, blank=True)
-    longitude = models.FloatField(null=True, blank=True)
+    # X-04: was FloatField, which silently mismatched the shared table's
+    # actual NUMERIC(9,6) column (see Customer/backend/service_requests/
+    # migrations/0030_servicerequest_latitude_servicerequest_longitude_and_more.py).
+    # This model is managed=False (mirrors the Customer app's table), so this
+    # is a Python-side type correction only -- no DB schema change, no new
+    # migration, and no existing location data is touched.
+    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     preferred_date = models.DateField(null=True, blank=True)
     preferred_time = models.CharField(max_length=50, blank=True, null=True)
     photo = models.ImageField(upload_to="service_requests/photos/", null=True, blank=True)
