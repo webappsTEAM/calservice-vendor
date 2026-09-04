@@ -19,6 +19,7 @@ import {
   Radio,
   Briefcase,
   Wrench,
+  Banknote,
   X,
 } from 'lucide-react';
 import { TechnicianNavigationView } from '../navigation/TechnicianNavigationView.jsx';
@@ -112,6 +113,8 @@ export function PortalCockpitLayout({
 }) {
   const navigate = useNavigate();
   const [shiftElapsedSeconds, setShiftElapsedSeconds] = useState(0);
+  const [showHoldPanel, setShowHoldPanel] = useState(false);
+  const [holdReason, setHoldReason] = useState('');
 
   const isClockedIn = Boolean(timeTracking?.is_clocked_in);
   const isBreak = timeTracking?.shift_status === 'on_break';
@@ -131,11 +134,19 @@ export function PortalCockpitLayout({
   const isProofSubmitted = status === 'PROOF_SUBMITTED' || status === 'PENDING_APPROVAL' || status === 'WAITING_FOR_PAYMENT';
   const isCompleted = status === 'COMPLETED' || status === 'WORK_COMPLETED';
 
-  const isCashPending = (isProofSubmitted || isInProgress) && (
-    activeJob?.payment_status === 'cash_pending' ||
-    activeJob?.payment?.payment_status === 'CASH_PENDING' ||
+  const isCashJob = (
+    activeJob?.payment_method === 'COD' ||
     activeJob?.payment_method === 'CASH_ON_SERVICE' ||
     activeJob?.payment?.payment_method === 'CASH_ON_SERVICE'
+  );
+  const isPaid = (
+    activeJob?.payment_status === 'paid' ||
+    activeJob?.payment_status === 'collected' ||
+    activeJob?.payment?.payment_status === 'PAID'
+  );
+  const isCashPending = (
+    activeJob?.payment_status === 'cash_pending' ||
+    activeJob?.payment?.payment_status === 'CASH_PENDING'
   );
 
   // Verification Gate Statuses (All 4 are strictly mandatory for assigned active job)
@@ -746,6 +757,15 @@ export function PortalCockpitLayout({
                     <ShieldCheck className="w-4 h-4" />
                     <span>Confirm Customer Cash Payment (₹{payoutAmount})</span>
                   </button>
+                ) : isCashJob && !isPaid ? (
+                  <button
+                    type="button"
+                    onClick={() => onOpenCashModal && onOpenCashModal(activeJob)}
+                    className="w-full py-3.5 rounded-xl font-black text-xs transition-all flex items-center justify-center gap-2 bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 text-white shadow-md cursor-pointer"
+                  >
+                    <Banknote className="w-4 h-4" />
+                    <span>Collect Cash Payment (₹{payoutAmount})</span>
+                  </button>
                 ) : (
                   <div className="w-full py-3.5 rounded-xl font-bold text-xs bg-indigo-50 text-indigo-800 border border-indigo-200 flex items-center justify-center gap-2">
                     <CheckCircle2 className="w-4 h-4 text-indigo-600" />
@@ -781,6 +801,77 @@ export function PortalCockpitLayout({
                   </span>
                 </button>
               )}
+
+              {/* Hold / Resume. A hold pauses the working-hours clock and
+                  alerts an admin with the reason given; resuming restarts it. */}
+              {(() => {
+                const jobStatus = String(activeJob?.status || '').toLowerCase();
+
+                if (jobStatus === 'on_hold') {
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => handleJobAction(activeJob.id, 'RESUME')}
+                      disabled={actionLoading}
+                      className="w-full mt-2 py-3 rounded-xl font-black text-xs transition-all flex items-center justify-center gap-2 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-white shadow-md cursor-pointer disabled:opacity-60"
+                    >
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                      <span>Resume Service (Currently On Hold)</span>
+                    </button>
+                  );
+                }
+
+                if (jobStatus !== 'in_progress') return null;
+
+                if (!showHoldPanel) {
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => setShowHoldPanel(true)}
+                      disabled={actionLoading}
+                      className="w-full mt-2 py-2.5 rounded-xl font-bold text-[11px] transition-all flex items-center justify-center gap-2 bg-white border border-slate-300 text-slate-600 hover:bg-slate-50 cursor-pointer disabled:opacity-60"
+                    >
+                      <span>Hold Service Temporarily</span>
+                    </button>
+                  );
+                }
+
+                return (
+                  <div className="mt-2 p-3 rounded-xl border border-amber-300 bg-amber-50">
+                    <label className="block text-[11px] font-bold text-amber-900 mb-1.5">
+                      Why does this job need to go on hold?
+                    </label>
+                    <input
+                      type="text"
+                      value={holdReason}
+                      onChange={(e) => setHoldReason(e.target.value)}
+                      placeholder="e.g. Waiting for a spare part"
+                      className="w-full px-3 py-2 rounded-lg border border-amber-300 text-xs mb-2 focus:outline-none focus:border-amber-500"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => { setShowHoldPanel(false); setHoldReason(''); }}
+                        className="flex-1 py-2 rounded-lg text-[11px] font-bold bg-white border border-slate-300 text-slate-600 hover:bg-slate-50 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!holdReason.trim() || actionLoading}
+                        onClick={async () => {
+                          await handleJobAction(activeJob.id, 'ON_HOLD', { reason: holdReason.trim() });
+                          setShowHoldPanel(false);
+                          setHoldReason('');
+                        }}
+                        className="flex-1 py-2 rounded-lg text-[11px] font-black bg-amber-500 hover:bg-amber-600 text-white cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Confirm Hold
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           )}
         </div>

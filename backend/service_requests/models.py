@@ -52,11 +52,11 @@ class CatalogCategory(models.Model):
 
     class Meta:
         managed = False
-        db_table = "service_requests_catalogcategory"
+        db_table = "service_requests_estimationquotationitem"
         ordering = ["sort_order", "id"]
 
     def __str__(self):
-        return self.name
+        return f"{self.service_name} x {self.quantity} = ₹{self.line_total}"
 
 
 class Service(models.Model):
@@ -166,8 +166,9 @@ class ServiceRequest(models.Model):
     customer = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
-        related_name="service_requests_as_customer",
         null=True, blank=True,
+        related_name="sr_payments",
+        db_column="customer_id",
     )
     customer_name = models.CharField(max_length=200, blank=True, default="")
     phone = models.CharField(max_length=30, blank=True, default="")
@@ -443,36 +444,14 @@ class EmployeeJob(models.Model):
     service_request = models.ForeignKey(
         ServiceRequest,
         on_delete=models.CASCADE,
-        related_name="employee_jobs",
-        db_column="service_request_id"
+        related_name="payments",
+        db_column="service_request_id",
     )
-    employee = models.ForeignKey(
-        "employees.Employee",
-        on_delete=models.CASCADE,
-        related_name="employee_jobs",
-        db_column="employee_id"
-    )
-    status = models.CharField(max_length=50, default="ASSIGNED")
-    notes = models.TextField(blank=True, default="")
-    assigned_date = models.DateTimeField(auto_now_add=True, null=True, blank=True)
-    accepted_date = models.DateTimeField(null=True, blank=True)
-    started_date = models.DateTimeField(null=True, blank=True)
-    completed_date = models.DateTimeField(null=True, blank=True)
-    is_primary = models.BooleanField(default=True)
-    assigned_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True, blank=True,
-        related_name="assigned_employee_jobs",
-        db_column="assigned_by_id"
-    )
-
-    uncompletion_reason = models.TextField(blank=True, default="")
-    source_work_extension_id = models.BigIntegerField(null=True, blank=True)
 
     class Meta:
         managed = False
-        db_table = "service_requests_employeejob"
+        db_table = "service_requests_payment"
+        ordering = ["-created_at"]
 
     def __str__(self):
         return f"EmployeeJob SR-{self.service_request_id} -> Emp {self.employee_id} ({self.status})"

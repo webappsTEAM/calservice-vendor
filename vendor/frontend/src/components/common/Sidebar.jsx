@@ -174,6 +174,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
             </button>
             {!collapsed.operations && (
               <div className="space-y-0.5">
+                {renderNavLink('/workforce/admin/estimations', Wind, 'AC Estimations')}
                 {renderNavLink('/workforce/admin/jobs', Briefcase, 'Field Jobs')}
                 {renderNavLink('/workforce/admin/dispatch', Send, 'Dispatch Radar')}
                 {renderNavLink('/workforce/admin/skills', Award, 'Skills Master')}

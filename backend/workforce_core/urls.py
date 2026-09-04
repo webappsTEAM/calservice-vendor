@@ -20,6 +20,9 @@ urlpatterns = [
     path("api/workforce/", include("workforce_api.urls")),
     # Vendor & Employee Wallet namespace
     path("api/workforce/", include("vendor_wallet.urls")),
+    # Vendor AC Inspection & Estimation module (/api/vendor/ and /api/workforce/vendor/)
+    path("api/vendor/", include("service_requests.vendor_urls")),
+    path("api/workforce/vendor/", include("service_requests.vendor_urls")),
     # Shared /api/auth/ endpoints for login/me/logout
     path("api/auth/", include("accounts.urls")),
 ]

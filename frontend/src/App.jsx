@@ -116,6 +116,7 @@ export function App() {
             {/* Direct Role Route Aliases */}
             <Route path="/admin" element={<Navigate to="/workforce/admin" replace />} />
             <Route path="/admin/*" element={<Navigate to="/workforce/admin" replace />} />
+            <Route path="/vendor/estimations" element={<Navigate to="/workforce/admin/estimations" replace />} />
             <Route path="/employee" element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="/employee/*" element={<Navigate to="/workforce/employee/dashboard" replace />} />
 
@@ -256,6 +257,22 @@ export function App() {
               element={
                 <AdminRoute>
                   <AdminJobsPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/estimations"
+              element={
+                <AdminRoute>
+                  <VendorEstimationsPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/vendor/estimations"
+              element={
+                <AdminRoute>
+                  <VendorEstimationsPage />
                 </AdminRoute>
               }
             />

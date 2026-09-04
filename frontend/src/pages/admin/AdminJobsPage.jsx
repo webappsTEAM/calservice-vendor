@@ -59,7 +59,18 @@ export function AdminJobsPage() {
       key: 'request_id',
       header: 'Job ID',
       render: (val, row) => (
-        <span className="font-mono font-bold text-zinc-950">{val || `SR-${row.id}`}</span>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="font-mono font-bold text-zinc-950">{val || `SR-${row.id}`}</span>
+          {row.job_type === 'ESTIMATION' ? (
+            <span className="px-1.5 py-0.5 text-[10px] font-extrabold uppercase bg-amber-100 text-amber-900 border border-amber-300 rounded-md">
+              Estimation
+            </span>
+          ) : (
+            <span className="px-1.5 py-0.5 text-[10px] font-bold uppercase bg-blue-50 text-blue-800 border border-blue-200 rounded-md">
+              Service
+            </span>
+          )}
+        </div>
       ),
     },
     {
@@ -110,8 +121,18 @@ export function AdminJobsPage() {
       align: 'right',
       render: (_, row) => {
         const isTrackable = ['assigned', 'accepted', 'on_the_way', 'arrived', 'in_progress', 'completed'].includes((row.status || '').toLowerCase());
+        const isEstimation = row.job_type === 'ESTIMATION' || (row.status || '').includes('quotation') || (row.status || '').includes('inspection');
         return (
           <div className="flex items-center justify-end gap-1.5">
+            {isEstimation && (
+              <Link
+                to="/workforce/vendor/estimations"
+                className="px-2.5 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 font-bold text-xs border border-amber-200 transition-all shadow-xs inline-flex items-center gap-1"
+                title="View in AC Estimation Workflow"
+              >
+                <span>Estimation</span>
+              </Link>
+            )}
             {isTrackable && (
               <button
                 type="button"

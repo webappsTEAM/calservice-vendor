@@ -2175,8 +2175,9 @@ class WorkforceJobListView(APIView):
 
             # Canonical query definitions
             assigned_active_qs = Q(
-                assigned_employee=emp,
                 status__in=ACTIVE_QUEUE_STATUSES
+            ) & (
+                Q(assigned_employee=emp) | Q(technician_id=user.id)
             )
             completed_qs = Q(
                 assigned_employee=emp,
