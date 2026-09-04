@@ -6,6 +6,7 @@ import 'package:mobile/features/admin/data/admin_finance_repository.dart';
 import 'package:mobile/features/admin/domain/admin_wallet.dart';
 import 'package:mobile/features/admin/presentation/finance/admin_finance_providers.dart';
 import 'package:mobile/features/admin/presentation/finance/widgets/admin_adjustment_dialog.dart';
+import 'package:mobile/shared/widgets/workforce_avatar.dart';
 
 /// Card component for an individual technician wallet on the Admin Wallets screen.
 class AdminWalletCard extends ConsumerWidget {
@@ -113,19 +114,16 @@ class AdminWalletCard extends ConsumerWidget {
                 Expanded(
                   child: Row(
                     children: [
-                      CircleAvatar(
+                      WorkforceAvatar(
+                        imageUrl: wallet.employeeAvatar,
+                        name: wallet.employeeName,
+                        initial: wallet.employeeName.isNotEmpty
+                            ? wallet.employeeName[0].toUpperCase()
+                            : 'T',
                         radius: 18,
+                        fontSize: 14,
                         backgroundColor: const Color(0xFF004E89).withValues(alpha: 0.1),
-                        child: Text(
-                          wallet.employeeName.isNotEmpty
-                              ? wallet.employeeName[0].toUpperCase()
-                              : 'T',
-                          style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w800,
-                            color: Color(0xFF004E89),
-                          ),
-                        ),
+                        foregroundColor: const Color(0xFF004E89),
                       ),
                       const SizedBox(width: 10),
                       Expanded(

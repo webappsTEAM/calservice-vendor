@@ -9,6 +9,7 @@ import '../../features/jobs/presentation/jobs_providers.dart';
 import '../../features/notifications/presentation/notifications_providers.dart';
 import '../../features/profile/presentation/profile_providers.dart';
 import '../../routing/app_routes.dart';
+import 'workforce_avatar.dart';
 
 /// The official Workforce Mobile Header / AppBar.
 /// Features:
@@ -217,27 +218,17 @@ class WorkforceAppBar extends ConsumerWidget implements PreferredSizeWidget {
         if (showAvatar)
           Padding(
             padding: const EdgeInsets.only(left: 4, right: AppSpacing.md),
-            child: InkWell(
+            child: WorkforceAvatar(
+              imageUrl: photoUrl,
+              name: displayName,
+              initial: initial,
+              radius: 16,
+              borderColor: Colors.white.withValues(alpha: 0.8),
+              borderWidth: 1.5,
+              backgroundColor: const Color(0xFF1E293B),
+              foregroundColor: Colors.white,
+              fontSize: 13,
               onTap: () => _showUserMenu(context, ref, user, displayName, initial, photoUrl),
-              borderRadius: BorderRadius.circular(999),
-              child: Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white.withValues(alpha: 0.8), width: 1.5),
-                  color: const Color(0xFF1E293B),
-                ),
-                child: ClipOval(
-                  child: photoUrl != null && photoUrl.isNotEmpty
-                      ? Image.network(
-                          photoUrl,
-                          fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) => _InitialAvatar(initial: initial),
-                        )
-                      : _InitialAvatar(initial: initial),
-                ),
-              ),
             ),
           ),
       ],
@@ -261,6 +252,9 @@ class WorkforceAppBar extends ConsumerWidget implements PreferredSizeWidget {
     String initial,
     String? photoUrl,
   ) {
+    final isAdmin = user?.isAdmin == true;
+    final roleLabel = isAdmin ? 'ADMIN' : 'TECHNICIAN';
+
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.white,
@@ -276,17 +270,14 @@ class WorkforceAppBar extends ConsumerWidget implements PreferredSizeWidget {
             children: [
               Row(
                 children: [
-                  CircleAvatar(
+                  WorkforceAvatar(
+                    imageUrl: photoUrl,
+                    name: displayName,
+                    initial: initial,
                     radius: 24,
                     backgroundColor: AppColors.primary.withValues(alpha: 0.12),
-                    child: Text(
-                      initial,
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: AppColors.primary,
-                      ),
-                    ),
+                    foregroundColor: AppColors.primary,
+                    fontSize: 18,
                   ),
                   const SizedBox(width: AppSpacing.md),
                   Expanded(
@@ -314,17 +305,24 @@ class WorkforceAppBar extends ConsumerWidget implements PreferredSizeWidget {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
-                      color: user?.isAdmin == true
+                      color: isAdmin
                           ? const Color(0xFFFEF3C7)
                           : const Color(0xFFEFF6FF),
                       borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                        color: isAdmin
+                            ? const Color(0xFFFDE68A)
+                            : const Color(0xFFBFDBFE),
+                        width: 0.8,
+                      ),
                     ),
                     child: Text(
-                      user?.isAdmin == true ? 'ADMIN' : 'EMPLOYEE',
+                      roleLabel,
                       style: TextStyle(
                         fontSize: 10,
                         fontWeight: FontWeight.w800,
-                        color: user?.isAdmin == true
+                        letterSpacing: 0.4,
+                        color: isAdmin
                             ? const Color(0xFF92400E)
                             : const Color(0xFF1E40AF),
                       ),
@@ -338,13 +336,34 @@ class WorkforceAppBar extends ConsumerWidget implements PreferredSizeWidget {
               ListTile(
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.person_outline_rounded, color: Color(0xFF475569)),
-                title: const Text('View Profile', style: TextStyle(fontWeight: FontWeight.w600)),
-                trailing: const Icon(Icons.chevron_right_rounded),
+                title: const Text('My Profile', style: TextStyle(fontWeight: FontWeight.w600)),
+                trailing: const Icon(Icons.chevron_right_rounded, color: Color(0xFF94A3B8)),
                 onTap: () {
                   Navigator.of(ctx).pop();
-                  context.push('/more/profile');
+                  context.push(AppRoutes.moreProfile);
                 },
               ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.settings_outlined, color: Color(0xFF475569)),
+                title: const Text('Settings', style: TextStyle(fontWeight: FontWeight.w600)),
+                trailing: const Icon(Icons.chevron_right_rounded, color: Color(0xFF94A3B8)),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  context.push(AppRoutes.moreSettings);
+                },
+              ),
+              if (isAdmin)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.storage_rounded, color: Color(0xFF004E89)),
+                  title: const Text('Database Egress', style: TextStyle(fontWeight: FontWeight.w600)),
+                  trailing: const Icon(Icons.chevron_right_rounded, color: Color(0xFF94A3B8)),
+                  onTap: () {
+                    Navigator.of(ctx).pop();
+                    context.push(AppRoutes.adminMonitoringDatabaseEgress);
+                  },
+                ),
               ListTile(
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(
@@ -389,26 +408,6 @@ class WorkforceAppBar extends ConsumerWidget implements PreferredSizeWidget {
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _InitialAvatar extends StatelessWidget {
-  const _InitialAvatar({required this.initial});
-
-  final String initial;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Text(
-        initial,
-        style: const TextStyle(
-          fontSize: 13,
-          fontWeight: FontWeight.w900,
-          color: Colors.white,
         ),
       ),
     );

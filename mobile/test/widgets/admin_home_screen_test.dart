@@ -237,6 +237,7 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('Refresh Data'), findsOneWidget);
+      expect(find.text('Database Egress'), findsOneWidget);
       expect(find.text('Open Dispatch Console'), findsOneWidget);
 
       // Action Center Section
@@ -434,10 +435,12 @@ void main() {
       addTearDown(() => tester.view.resetDevicePixelRatio());
 
       await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: SingleChildScrollView(
-              child: AdminTitleSection(onRefresh: () {}),
+        ProviderScope(
+          child: MaterialApp(
+            home: Scaffold(
+              body: SingleChildScrollView(
+                child: AdminTitleSection(onRefresh: () {}),
+              ),
             ),
           ),
         ),

@@ -1,3 +1,5 @@
+import '../../../core/config/app_config.dart';
+
 /// Mirrors the user object returned by `/auth/login/` and `/auth/me/`.
 class AuthUser {
   const AuthUser({
@@ -12,9 +14,12 @@ class AuthUser {
     required this.isSuperuser,
     required this.employeeId,
     required this.registrationStatus,
+    this.avatar,
   });
 
   factory AuthUser.fromJson(Map<String, dynamic> json) {
+    final rawAvatar = (json['avatar'] as String?) ?? (json['avatar_url'] as String?);
+
     return AuthUser(
       id: json['id'] as int,
       username: json['username'] as String? ?? '',
@@ -28,6 +33,7 @@ class AuthUser {
       employeeId: json['employee_id'] as String?,
       registrationStatus:
           (json['registration_status'] as String?) ?? 'not_started',
+      avatar: AppConfig.resolveMediaUrl(rawAvatar),
     );
   }
 
@@ -42,6 +48,7 @@ class AuthUser {
   final bool isSuperuser;
   final String? employeeId;
   final String registrationStatus;
+  final String? avatar;
 
   /// The backend already normalizes `role` to "employee" for anyone with an
   /// Employee profile who isn't admin/manager, so a plain equality check is
@@ -56,5 +63,9 @@ class AuthUser {
       role == 'vendor_admin' ||
       isSuperuser;
 
-  String get displayName => firstName.isNotEmpty ? firstName : username;
+  String get displayName {
+    final full = '$firstName $lastName'.trim();
+    if (full.isNotEmpty) return full;
+    return username;
+  }
 }

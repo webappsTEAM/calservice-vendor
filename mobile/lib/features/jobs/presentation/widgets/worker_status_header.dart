@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/theme/app_theme.dart';
 import '../../../../shared/widgets/status_chip.dart';
+import '../../../../shared/widgets/workforce_avatar.dart';
 import '../../../auth/presentation/auth_controller.dart';
 import '../../../profile/presentation/profile_providers.dart';
 import '../../../profile/presentation/widgets/employee_availability_toggle.dart';
@@ -34,6 +35,7 @@ class WorkerStatusHeader extends ConsumerWidget {
         ? profile.fullName
         : (user?.displayName.isNotEmpty == true ? user!.displayName : 'Technician');
     final initial = displayName.isNotEmpty ? displayName[0].toUpperCase() : 'T';
+    final photoUrl = profile?.avatar ?? user?.avatar;
     final workerId = profile?.employeeId ?? user?.employeeId ?? user?.username ?? '—';
     final isOnline = profile?.isOnline ?? false;
     final activeJobRef = activeJob?.requestId ?? (activeJob?.id != null ? 'SR-${activeJob!.id}' : null);
@@ -63,23 +65,16 @@ class WorkerStatusHeader extends ConsumerWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   // Avatar
-                  Container(
-                    width: isCompact ? 40 : 46,
-                    height: isCompact ? 40 : 46,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFF1F5F9),
-                      borderRadius: BorderRadius.circular(AppRadius.card),
-                      border: Border.all(color: const Color(0xFFE2E8F0)),
-                    ),
-                    alignment: Alignment.center,
-                    child: Text(
-                      initial,
-                      style: TextStyle(
-                        fontSize: isCompact ? 17 : 19,
-                        fontWeight: FontWeight.w900,
-                        color: const Color(0xFF1E293B),
-                      ),
-                    ),
+                  WorkforceAvatar(
+                    imageUrl: photoUrl,
+                    name: displayName,
+                    initial: initial,
+                    radius: isCompact ? 20 : 23,
+                    fontSize: isCompact ? 17 : 19,
+                    backgroundColor: const Color(0xFFF1F5F9),
+                    foregroundColor: const Color(0xFF1E293B),
+                    borderColor: const Color(0xFFE2E8F0),
+                    borderWidth: 1,
                   ),
                   SizedBox(width: isCompact ? AppSpacing.sm : AppSpacing.md),
                   // Details: Name, Job Status, ID

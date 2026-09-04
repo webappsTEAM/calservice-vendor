@@ -524,35 +524,62 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
     final locationsAsync = ref.watch(adminLocationsProvider);
 
     return Scaffold(
+      backgroundColor: const Color(0xFFF8FAFC),
       appBar: const WorkforceAppBar(
         showStatusSubBar: false,
         showDrawerMenu: true,
       ),
       drawer: const AdminDrawer(),
       body: dashboardAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
+        loading: () => const Center(
+          child: CircularProgressIndicator(
+            color: Color(0xFF004E89),
+          ),
+        ),
         error: (err, _) => Center(
           child: Padding(
             padding: const EdgeInsets.all(AppSpacing.lg),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.error_outline_rounded,
-                    color: Color(0xFFDC2626), size: 40),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: const BoxDecoration(
+                    color: Color(0xFFFEF2F2),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.error_outline_rounded,
+                      color: Color(0xFFDC2626), size: 36),
+                ),
                 const SizedBox(height: 12),
-                Text('Unable to load operations data: $err',
-                    textAlign: TextAlign.center),
+                Text(
+                  'Unable to load operations data: $err',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
                 const SizedBox(height: 16),
-                FilledButton(
+                FilledButton.icon(
                   onPressed: _refreshAll,
-                  child: const Text('Retry'),
+                  icon: const Icon(Icons.refresh_rounded, size: 16),
+                  label: const Text('Retry'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF004E89),
+                  ),
                 ),
               ],
             ),
           ),
         ),
         data: (data) {
-          final allJobs = data.jobs;
+          final activeJobs = data.jobs.where((j) {
+            final st = j.status.toLowerCase();
+            return st != 'completed' &&
+                st != 'cancelled' &&
+                st != 'unable_to_complete';
+          }).toList();
           final fleet = fleetAsync.valueOrNull ?? data.fleet;
           final pendingExtensions = pendingExtAsync.valueOrNull ?? [];
           final pendingServices = pendingSvcAsync.valueOrNull ?? [];
@@ -561,20 +588,25 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
           // Initial selection handling from route param
           if (_selectedJob == null && widget.jobId != null) {
             final targetId = widget.jobId!.trim();
-            _selectedJob = allJobs.where((j) =>
+            _selectedJob = activeJobs.where((j) =>
                 j.id.toString() == targetId ||
                 j.requestId.toLowerCase() == targetId.toLowerCase()).firstOrNull;
           }
-          if (_selectedJob == null && allJobs.isNotEmpty) {
-            _selectedJob = allJobs.first;
+          if (_selectedJob != null &&
+              !activeJobs.any((j) => j.id == _selectedJob!.id)) {
+            _selectedJob = null;
+          }
+          if (_selectedJob == null && activeJobs.isNotEmpty) {
+            _selectedJob = activeJobs.first;
           }
 
-          final onlineCount = data.onlineAndAvailableCount;
-          final offlineCount = (fleet.length - onlineCount).clamp(0, 99999);
-          final activeBookingsCount = allJobs.length;
+          final onlineCount = fleet.where((f) => f.isOnline).length;
+          final offlineCount = fleet.where((f) => !f.isOnline).length;
+          final activeBookingsCount = activeJobs.length;
 
           return RefreshIndicator(
             onRefresh: _refreshAll,
+            color: const Color(0xFF004E89),
             child: ListView(
               padding: const EdgeInsets.all(AppSpacing.md),
               children: [
@@ -583,8 +615,15 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
                   padding: const EdgeInsets.all(AppSpacing.md),
                   decoration: BoxDecoration(
                     color: Colors.white,
-                    borderRadius: BorderRadius.circular(AppRadius.card),
+                    borderRadius: BorderRadius.circular(14),
                     border: Border.all(color: const Color(0xFFE2E8F0)),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x060F172A),
+                        blurRadius: 8,
+                        offset: Offset(0, 2),
+                      ),
+                    ],
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -593,32 +632,84 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Container(
-                            padding: const EdgeInsets.all(8),
+                            width: 42,
+                            height: 42,
                             decoration: BoxDecoration(
-                              color: const Color(0xFFEFF6FF),
-                              borderRadius: BorderRadius.circular(8),
+                              gradient: const LinearGradient(
+                                colors: [Color(0xFF004E89), Color(0xFF2563EB)],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                              ),
+                              borderRadius: BorderRadius.circular(11),
+                              boxShadow: const [
+                                BoxShadow(
+                                  color: Color(0x28004E89),
+                                  blurRadius: 6,
+                                  offset: Offset(0, 2),
+                                ),
+                              ],
                             ),
                             child: const Icon(
                               Icons.radar_rounded,
-                              color: Color(0xFF2563EB),
-                              size: 24,
+                              color: Colors.white,
+                              size: 22,
                             ),
                           ),
                           const SizedBox(width: 12),
-                          const Expanded(
+                          Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  'Dynamic Dispatch & Fleet Operations',
-                                  style: TextStyle(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w800,
-                                    color: Color(0xFF0F172A),
-                                  ),
+                                Row(
+                                  children: [
+                                    const Expanded(
+                                      child: Text(
+                                        'Dynamic Dispatch & Fleet Operations',
+                                        style: TextStyle(
+                                          fontSize: 14.5,
+                                          fontWeight: FontWeight.w800,
+                                          color: Color(0xFF0F172A),
+                                          letterSpacing: -0.2,
+                                        ),
+                                      ),
+                                    ),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 7, vertical: 2.5),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFECFDF5),
+                                        borderRadius: BorderRadius.circular(20),
+                                        border: Border.all(
+                                            color: const Color(0xFFA7F3D0)),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Container(
+                                            width: 6,
+                                            height: 6,
+                                            decoration: const BoxDecoration(
+                                              color: Color(0xFF10B981),
+                                              shape: BoxShape.circle,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 4),
+                                          const Text(
+                                            'LIVE',
+                                            style: TextStyle(
+                                              fontSize: 9.5,
+                                              fontWeight: FontWeight.w800,
+                                              color: Color(0xFF065F46),
+                                              letterSpacing: 0.5,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                                SizedBox(height: 2),
-                                Text(
+                                const SizedBox(height: 3),
+                                const Text(
                                   'Skill-based technician matching and real-time GPS telemetry radar',
                                   style: TextStyle(
                                     fontSize: 11.5,
@@ -632,20 +723,55 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
                         ],
                       ),
                       const SizedBox(height: 12),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
+                      const Divider(height: 1, color: Color(0xFFF1F5F9)),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        alignment: WrapAlignment.spaceBetween,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        spacing: 8,
+                        runSpacing: 8,
                         children: [
-                          OutlinedButton.icon(
-                            onPressed: _isActionInProgress ? null : _refreshAll,
-                            icon: const Icon(Icons.refresh_rounded, size: 16),
-                            label: const Text('Refresh Fleet Data'),
-                            style: OutlinedButton.styleFrom(
-                              visualDensity: VisualDensity.compact,
+                          const Text(
+                            'Authoritative Geodesic Haversine',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF94A3B8),
+                            ),
+                          ),
+                          InkWell(
+                            onTap: _isActionInProgress ? null : _refreshAll,
+                            borderRadius: BorderRadius.circular(6),
+                            child: Container(
                               padding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 6),
-                              textStyle: const TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
+                                  horizontal: 10, vertical: 5),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF8FAFC),
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: const Color(0xFFCBD5E1)),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  _isActionInProgress
+                                      ? const SizedBox(
+                                          width: 12,
+                                          height: 12,
+                                          child: CircularProgressIndicator(
+                                              strokeWidth: 2),
+                                        )
+                                      : const Icon(Icons.refresh_rounded,
+                                          size: 14, color: Color(0xFF004E89)),
+                                  const SizedBox(width: 5),
+                                  const Text(
+                                    'Refresh Fleet Data',
+                                    style: TextStyle(
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w700,
+                                      color: Color(0xFF004E89),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ),
@@ -667,15 +793,17 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
 
                 // ── Tab Bar Navigation (5 Tabs) ──────────────────────────────
                 Container(
+                  padding: const EdgeInsets.all(3),
                   decoration: BoxDecoration(
                     color: const Color(0xFFF1F5F9),
-                    borderRadius: BorderRadius.circular(10),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
                   ),
                   child: TabBar(
                     controller: _tabController,
                     isScrollable: true,
                     tabAlignment: TabAlignment.start,
-                    labelColor: const Color(0xFF2563EB),
+                    labelColor: const Color(0xFF004E89),
                     unselectedLabelColor: const Color(0xFF64748B),
                     labelStyle: const TextStyle(
                       fontSize: 12,
@@ -687,37 +815,36 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
                     ),
                     indicator: BoxDecoration(
                       color: Colors.white,
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(9),
                       boxShadow: const [
                         BoxShadow(
-                          color: Color(0x0A0F172A),
-                          blurRadius: 2,
+                          color: Color(0x100F172A),
+                          blurRadius: 4,
                           offset: Offset(0, 1),
                         ),
                       ],
                     ),
                     indicatorSize: TabBarIndicatorSize.tab,
                     dividerColor: Colors.transparent,
-                    padding: const EdgeInsets.all(4),
                     tabs: [
                       const Tab(
-                        icon: Icon(Icons.send_rounded, size: 16),
+                        icon: Icon(Icons.send_rounded, size: 15),
                         text: 'Dispatch Monitor',
                       ),
                       Tab(
-                        icon: const Icon(Icons.near_me_rounded, size: 16),
+                        icon: const Icon(Icons.near_me_rounded, size: 15),
                         text: 'Live Fleet (${fleet.length})',
                       ),
                       Tab(
-                        icon: const Icon(Icons.add_circle_outline_rounded, size: 16),
+                        icon: const Icon(Icons.add_circle_outline_rounded, size: 15),
                         text: 'Scope Extensions (${pendingExtensions.length})',
                       ),
                       Tab(
-                        icon: const Icon(Icons.build_circle_outlined, size: 16),
+                        icon: const Icon(Icons.build_circle_outlined, size: 15),
                         text: 'Service Requests (${pendingServices.length})',
                       ),
                       Tab(
-                        icon: const Icon(Icons.location_on_outlined, size: 16),
+                        icon: const Icon(Icons.location_on_outlined, size: 15),
                         text: 'Work Locations (${locations.length})',
                       ),
                     ],
@@ -727,7 +854,7 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
 
                 // ── Tab Content Views ────────────────────────────────────────
                 _buildActiveTabContent(
-                  allJobs: allJobs,
+                  allJobs: activeJobs,
                   fleet: fleet,
                   pendingExtensions: pendingExtensions,
                   pendingServices: pendingServices,
@@ -765,7 +892,8 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
               value: '$totalFleet',
               subtitle: 'Technicians on roster',
               icon: Icons.groups_rounded,
-              color: const Color(0xFF2563EB),
+              color: const Color(0xFF004E89),
+              badgeBg: const Color(0xFFEFF6FF),
               width: cardWidth,
             ),
             _MetricCard(
@@ -774,6 +902,7 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
               subtitle: 'Available for work',
               icon: Icons.check_circle_rounded,
               color: const Color(0xFF059669),
+              badgeBg: const Color(0xFFECFDF5),
               width: cardWidth,
             ),
             _MetricCard(
@@ -782,6 +911,7 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
               subtitle: 'Off duty / break',
               icon: Icons.pause_circle_rounded,
               color: const Color(0xFF64748B),
+              badgeBg: const Color(0xFFF1F5F9),
               width: cardWidth,
             ),
             _MetricCard(
@@ -790,6 +920,7 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
               subtitle: 'In queue / assigned',
               icon: Icons.work_outline_rounded,
               color: const Color(0xFFD97706),
+              badgeBg: const Color(0xFFFEF3C7),
               width: cardWidth,
             ),
           ],
@@ -840,12 +971,63 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
           badgeText: 'Auto-Dispatched',
           icon: Icons.assignment_outlined,
         ),
-        const SizedBox(height: AppSpacing.sm),
+        const SizedBox(height: 8),
         if (allJobs.isEmpty)
-          const EmptyState(
-            icon: Icons.check_circle_outline_rounded,
-            title: 'No Active Bookings',
-            message: 'No active service bookings in queue.',
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x040F172A),
+                  blurRadius: 6,
+                  offset: Offset(0, 1),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF0FDF4),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: const Color(0xFFBBF7D0)),
+                  ),
+                  child: const Icon(
+                    Icons.check_circle_outline_rounded,
+                    color: Color(0xFF16A34A),
+                    size: 22,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'No Active Bookings',
+                        style: TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF0F172A),
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        'No active service bookings in queue.',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: Color(0xFF64748B),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           )
         else
           ...allJobs.map((j) {
@@ -863,288 +1045,455 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
           title: '2. Live Automated Geo-Dispatch Engine Monitor',
           icon: Icons.radar_rounded,
         ),
-        const SizedBox(height: AppSpacing.sm),
+        const SizedBox(height: 8),
         _buildGeoDispatchMonitorCard(_selectedJob),
-        const SizedBox(height: AppSpacing.md),
-
-        // Candidate Matching Section
-        if (_selectedJob != null) ...[
-          _buildCandidateMatchingSection(_selectedJob!),
-        ],
       ],
     );
   }
 
   Widget _buildGeoDispatchMonitorCard(Job? selectedJob) {
+    final candidatesAsync = selectedJob != null
+        ? ref.watch(adminEligibleTechniciansProvider(selectedJob.id))
+        : null;
+
+    final candidatesCount = candidatesAsync?.valueOrNull?.length ?? 0;
+
     return Container(
-      padding: const EdgeInsets.all(AppSpacing.md),
       decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFC),
-        borderRadius: BorderRadius.circular(AppRadius.card),
-        border: Border.all(color: const Color(0xFFCBD5E1)),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x060F172A),
+            blurRadius: 8,
+            offset: Offset(0, 2),
+          ),
+        ],
       ),
+      clipBehavior: Clip.antiAlias,
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFEFF6FF),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: const Icon(Icons.hub_outlined,
-                    color: Color(0xFF2563EB), size: 18),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+          // ── Header Bar ──────────────────────────────────────────────
+          Container(
+            padding: const EdgeInsets.symmetric(
+              horizontal: 14,
+              vertical: 12,
+            ),
+            decoration: const BoxDecoration(
+              color: Color(0xFFFAFAFC),
+              border: Border(bottom: BorderSide(color: Color(0xFFF1F5F9))),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
                   children: [
-                    const Text(
-                      'Autonomous Dispatch Active',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w800,
-                        color: Color(0xFF1E40AF),
+                    Container(
+                      padding: const EdgeInsets.all(7),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEFF6FF),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFFDBEAFE)),
+                      ),
+                      child: const Icon(
+                        Icons.radar_rounded,
+                        color: Color(0xFF004E89),
+                        size: 18,
                       ),
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      selectedJob != null
-                          ? 'Inspecting Job: ${selectedJob.requestId} (${selectedJob.status.toUpperCase()})'
-                          : 'Inspecting Job: None Selected',
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Autonomous Dispatch Active',
+                            style: TextStyle(
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w800,
+                              color: Color(0xFF0A2540),
+                              letterSpacing: -0.1,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text.rich(
+                            TextSpan(
+                              text: 'Inspecting Job: ',
+                              style: const TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w500,
+                                color: Color(0xFF64748B),
+                              ),
+                              children: [
+                                TextSpan(
+                                  text: selectedJob != null
+                                      ? (selectedJob.requestId.isNotEmpty
+                                          ? selectedJob.requestId
+                                          : 'SR-${selectedJob.id}')
+                                      : 'None Selected',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                    fontFamily: 'monospace',
+                                    color: selectedJob != null
+                                        ? const Color(0xFF004E89)
+                                        : const Color(0xFF0F172A),
+                                  ),
+                                ),
+                                if (selectedJob != null &&
+                                    selectedJob.status.isNotEmpty)
+                                  TextSpan(
+                                    text:
+                                        ' (${selectedJob.status.toUpperCase()})',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 10.5,
+                                      color: Color(0xFF059669),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                if (selectedJob != null) ...[
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () => _openJobTimeline(selectedJob),
+                          icon: const Icon(Icons.history_rounded, size: 14),
+                          label: const Text('Timeline'),
+                          style: OutlinedButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 7),
+                            textStyle: const TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w700,
+                            ),
+                            side: const BorderSide(color: Color(0xFFCBD5E1)),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: FilledButton.icon(
+                          onPressed: _isActionInProgress
+                              ? null
+                              : () => _triggerAutoDispatch(selectedJob),
+                          icon: const Icon(Icons.auto_awesome_rounded, size: 14),
+                          label: const Text('Re-evaluate Auto-Dispatch'),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFF004E89),
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 7),
+                            textStyle: const TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+
+          // ── Operational Protocol & 20 KM Geographic Dispatch Banner ──
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+            decoration: const BoxDecoration(
+              color: Color(0xFFF0FDF4),
+              border: Border(
+                top: BorderSide(color: Color(0xFFDCFCE7)),
+                bottom: BorderSide(color: Color(0xFFDCFCE7)),
+              ),
+            ),
+            child: const Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: EdgeInsets.only(top: 1),
+                  child: Icon(
+                    Icons.check_circle_rounded,
+                    size: 15,
+                    color: Color(0xFF16A34A),
+                  ),
+                ),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text.rich(
+                    TextSpan(
+                      text: '20 KM Geographic Dispatch Active: ',
                       style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF15803D),
+                        height: 1.35,
+                      ),
+                      children: [
+                        TextSpan(
+                          text:
+                              'Fallback search evaluates candidates across a true 20 km circular radius in all 360° directions using authoritative geodesic Haversine calculation and 9-Gate qualification.',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w500,
+                            color: Color(0xFF166534),
+                            height: 1.35,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // ── Distance Rings Strip ──────────────────────────────────
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              border: Border(bottom: BorderSide(color: Color(0xFFF1F5F9))),
+            ),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  const Text(
+                    'Distance Rings:',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF64748B),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  ...[
+                    {'id': 'all', 'label': 'All 20km ($candidatesCount)'},
+                    {'id': '0-1km', 'label': '0–1 km'},
+                    {'id': '1-2km', 'label': '1–2 km'},
+                    {'id': '2-5km', 'label': '2–5 km'},
+                    {'id': '5-10km', 'label': '5–10 km'},
+                    {'id': '10-15km', 'label': '10–15 km'},
+                    {'id': '15-20km', 'label': '15–20 km'},
+                  ].map((ring) {
+                    final isSelected = _selectedBand == ring['id'];
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: InkWell(
+                        onTap: () =>
+                            setState(() => _selectedBand = ring['id']!),
+                        borderRadius: BorderRadius.circular(20),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 150),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 4.5),
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? const Color(0xFF004E89)
+                                : const Color(0xFFF8FAFC),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color: isSelected
+                                  ? const Color(0xFF004E89)
+                                  : const Color(0xFFE2E8F0),
+                            ),
+                            boxShadow: isSelected
+                                ? const [
+                                    BoxShadow(
+                                      color: Color(0x28004E89),
+                                      blurRadius: 4,
+                                      offset: Offset(0, 1.5),
+                                    ),
+                                  ]
+                                : null,
+                          ),
+                          child: Text(
+                            ring['label']!,
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: isSelected
+                                  ? FontWeight.w800
+                                  : FontWeight.w600,
+                              color: isSelected
+                                  ? Colors.white
+                                  : const Color(0xFF475569),
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+                ],
+              ),
+            ),
+          ),
+
+          // ── Candidate Matching Area ──────────────────────────────
+          if (selectedJob == null)
+            Container(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 20, vertical: 24),
+              color: const Color(0xFFFAFAFC),
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFF1F5F9),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.search_off_rounded,
+                        size: 22,
+                        color: Color(0xFF94A3B8),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _selectedBand == 'all'
+                          ? 'No qualified technicians currently found within the 20 km operational radius for this service request.'
+                          : 'No qualified technicians currently found in the $_selectedBand distance ring.',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
                         fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                        fontFamily: 'monospace',
-                        color: selectedJob != null
-                            ? const Color(0xFF2563EB)
-                            : const Color(0xFF64748B),
+                        fontWeight: FontWeight.w500,
+                        color: Color(0xFF64748B),
+                        height: 1.4,
                       ),
                     ),
                   ],
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          const Text(
-            'Autonomous Dispatch Active: Jobs are automatically assigned to nearest eligible technicians using the 9-Gate Employee Eligibility Engine.',
-            style: TextStyle(
-              fontSize: 11.5,
-              color: Color(0xFF64748B),
-              height: 1.35,
-            ),
-          ),
-          if (selectedJob != null) ...[
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => _openJobTimeline(selectedJob),
-                    icon: const Icon(Icons.history_rounded, size: 15),
-                    label: const Text('View Timeline'),
-                    style: OutlinedButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      textStyle: const TextStyle(
-                          fontSize: 11.5, fontWeight: FontWeight.w700),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: _isActionInProgress
-                        ? null
-                        : () => _triggerAutoDispatch(selectedJob),
-                    icon: const Icon(Icons.auto_awesome_rounded, size: 15),
-                    label: const Text('Re-evaluate Auto-Dispatch'),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFF2563EB),
-                      visualDensity: VisualDensity.compact,
-                      textStyle: const TextStyle(
-                          fontSize: 11.5, fontWeight: FontWeight.w700),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
+            )
+          else
+            _buildCandidatesList(selectedJob, candidatesAsync!),
         ],
       ),
     );
   }
 
-  Widget _buildCandidateMatchingSection(Job selectedJob) {
-    final candidatesAsync =
-        ref.watch(adminEligibleTechniciansProvider(selectedJob.id));
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // 20 KM Geographic Dispatch Banner
-        Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: const Color(0xFFECFDF5),
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: const Color(0xFFA7F3D0)),
-          ),
-          child: const Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _buildCandidatesList(
+    Job selectedJob,
+    AsyncValue<List<EligibleTechnician>> candidatesAsync,
+  ) {
+    return candidatesAsync.when(
+      loading: () => Container(
+        padding: const EdgeInsets.all(AppSpacing.xl),
+        child: const Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.check_circle_rounded,
-                  size: 16, color: Color(0xFF059669)),
-              SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  '20 KM Geographic Dispatch Active: Candidate pool evaluated across a 20 km circular radius using geodesic Haversine calculation and 9-Gate qualification.',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: Color(0xFF065F46),
-                    height: 1.3,
-                  ),
+              SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.5,
+                  color: Color(0xFF004E89),
                 ),
+              ),
+              SizedBox(height: 12),
+              Text(
+                'Scanning 20 km candidate pool across all directions...',
+                style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
               ),
             ],
           ),
         ),
-        const SizedBox(height: 10),
+      ),
+      error: (err, _) => Container(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        color: const Color(0xFFFEF2F2),
+        child: Column(
+          children: [
+            Text(
+              'Failed to scan candidates: $err',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12, color: Color(0xFF991B1B)),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton(
+              onPressed: () => ref.invalidate(
+                  adminEligibleTechniciansProvider(selectedJob.id)),
+              child: const Text('Retry Scan'),
+            ),
+          ],
+        ),
+      ),
+      data: (candidates) {
+        final filtered = candidates.where((tech) {
+          if (_selectedBand == 'all') return true;
+          if (tech.distanceBand == _selectedBand) return true;
+          final d = tech.distanceKm;
+          if (d == null) return false;
+          switch (_selectedBand) {
+            case '0-1km':
+              return d <= 1.0;
+            case '1-2km':
+              return d > 1.0 && d <= 2.0;
+            case '2-5km':
+              return d > 2.0 && d <= 5.0;
+            case '5-10km':
+              return d > 5.0 && d <= 10.0;
+            case '10-15km':
+              return d > 10.0 && d <= 15.0;
+            case '15-20km':
+              return d > 15.0 && d <= 20.0;
+            default:
+              return false;
+          }
+        }).toList();
 
-        // Distance Bands Classification Buttons
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Row(
-            children: [
-              const Text(
-                'Distance Rings: ',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w800,
+        if (filtered.isEmpty) {
+          return Container(
+            padding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.lg, vertical: 28),
+            child: Center(
+              child: Text(
+                _selectedBand == 'all'
+                    ? 'No qualified technicians currently found within the 20 km operational radius for this service request.'
+                    : 'No qualified technicians currently found in the $_selectedBand distance ring.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
                   color: Color(0xFF64748B),
+                  height: 1.4,
                 ),
               ),
-              ...[
-                'all',
-                '0-1km',
-                '1-2km',
-                '2-5km',
-                '5-10km',
-                '10-15km',
-                '15-20km',
-              ].map((band) {
-                final isBandSelected = _selectedBand == band;
-                return Padding(
-                  padding: const EdgeInsets.only(right: 6),
-                  child: ChoiceChip(
-                    label: Text(band == 'all' ? 'All 20km' : band),
-                    selected: isBandSelected,
-                    onSelected: (val) => setState(() => _selectedBand = band),
-                    labelStyle: TextStyle(
-                      fontSize: 11,
-                      fontWeight: isBandSelected
-                          ? FontWeight.w800
-                          : FontWeight.w600,
-                      color: isBandSelected
-                          ? Colors.white
-                          : const Color(0xFF334155),
-                    ),
-                    selectedColor: const Color(0xFF2563EB),
-                    backgroundColor: Colors.white,
-                    visualDensity: VisualDensity.compact,
-                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    side: BorderSide(
-                      color: isBandSelected
-                          ? const Color(0xFF2563EB)
-                          : const Color(0xFFCBD5E1),
-                    ),
-                  ),
-                );
-              }),
-            ],
-          ),
-        ),
-        const SizedBox(height: AppSpacing.sm),
+            ),
+          );
+        }
 
-        // Candidate Cards List
-        candidatesAsync.when(
-          loading: () => Container(
-            padding: const EdgeInsets.all(AppSpacing.lg),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(AppRadius.card),
-              border: Border.all(color: const Color(0xFFE2E8F0)),
-            ),
-            child: const Center(
-              child: Column(
-                children: [
-                  SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2.5),
-                  ),
-                  SizedBox(height: 10),
-                  Text(
-                    'Scanning 20 km candidate pool across all directions...',
-                    style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          error: (err, _) => Container(
-            padding: const EdgeInsets.all(AppSpacing.md),
-            decoration: BoxDecoration(
-              color: const Color(0xFFFEF2F2),
-              borderRadius: BorderRadius.circular(AppRadius.card),
-              border: Border.all(color: const Color(0xFFFECACA)),
-            ),
-            child: Column(
-              children: [
-                Text('Failed to scan candidates: $err',
-                    textAlign: TextAlign.center,
-                    style:
-                        const TextStyle(fontSize: 12, color: Color(0xFF991B1B))),
-                const SizedBox(height: 8),
-                OutlinedButton(
-                  onPressed: () => ref.invalidate(
-                      adminEligibleTechniciansProvider(selectedJob.id)),
-                  child: const Text('Retry Scan'),
-                ),
-              ],
-            ),
-          ),
-          data: (candidates) {
-            final filtered = candidates.where((tech) {
-              if (_selectedBand == 'all') return true;
-              return tech.distanceBand == _selectedBand;
-            }).toList();
-
-            if (filtered.isEmpty) {
-              return EmptyState(
-                icon: Icons.person_off_outlined,
-                title: 'No Qualified Technicians',
-                message: _selectedBand == 'all'
-                    ? 'No online qualified technicians currently within operational radius for this service request.'
-                    : 'No qualified technicians found in the $_selectedBand distance ring.',
-              );
-            }
-
-            return Column(
-              children: filtered.map((tech) {
-                return _EligibleTechnicianCard(
-                  technician: tech,
-                  isAssigning: _isActionInProgress,
-                  onAssign: () => _assignTechnician(selectedJob, tech),
-                );
-              }).toList(),
+        return ListView.separated(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          padding: const EdgeInsets.all(AppSpacing.sm),
+          itemCount: filtered.length,
+          separatorBuilder: (context, index) => const SizedBox(height: AppSpacing.sm),
+          itemBuilder: (context, index) {
+            final tech = filtered[index];
+            return _EligibleTechnicianCard(
+              technician: tech,
+              isAssigning: _isActionInProgress,
+              onAssign: () => _assignTechnician(selectedJob, tech),
             );
           },
-        ),
-      ],
+        );
+      },
     );
   }
 
@@ -1204,8 +1553,16 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
         Container(
           height: 260,
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(AppRadius.card),
-            border: Border.all(color: const Color(0xFFCBD5E1)),
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x060F172A),
+                blurRadius: 8,
+                offset: Offset(0, 2),
+              ),
+            ],
           ),
           clipBehavior: Clip.antiAlias,
           child: withGps.isEmpty
@@ -1329,7 +1686,7 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
             padding: const EdgeInsets.all(AppSpacing.md),
             decoration: BoxDecoration(
               color: const Color(0xFFEFF6FF),
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(10),
               border: Border.all(color: const Color(0xFFBFDBFE)),
             ),
             child: Row(
@@ -1566,6 +1923,7 @@ class _MetricCard extends StatelessWidget {
     required this.icon,
     required this.color,
     required this.width,
+    this.badgeBg,
   });
 
   final String title;
@@ -1574,21 +1932,24 @@ class _MetricCard extends StatelessWidget {
   final IconData icon;
   final Color color;
   final double width;
+  final Color? badgeBg;
 
   @override
   Widget build(BuildContext context) {
+    final bg = badgeBg ?? color.withValues(alpha: 0.1);
+
     return Container(
       width: width,
-      padding: const EdgeInsets.all(AppSpacing.md),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(AppRadius.card),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(color: const Color(0xFFE2E8F0)),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x040F172A),
-            blurRadius: 2,
-            offset: Offset(0, 1),
+            color: Color(0x050F172A),
+            blurRadius: 6,
+            offset: Offset(0, 2),
           ),
         ],
       ),
@@ -1598,33 +1959,45 @@ class _MetricCard extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF64748B),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF64748B),
+                    letterSpacing: 0.1,
+                  ),
                 ),
               ),
-              Icon(icon, size: 16, color: color),
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: bg,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(icon, size: 15, color: color),
+              ),
             ],
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 6),
           Text(
             value,
             style: TextStyle(
-              fontSize: 20,
+              fontSize: 24,
               fontWeight: FontWeight.w900,
               color: color,
+              height: 1.1,
             ),
           ),
-          const SizedBox(height: 2),
+          const SizedBox(height: 4),
           Text(
             subtitle,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(
               fontSize: 11,
+              fontWeight: FontWeight.w500,
               color: Color(0xFF94A3B8),
             ),
           ),
@@ -1663,13 +2036,13 @@ class _DispatchJobItemCard extends StatelessWidget {
 
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(AppRadius.card),
+      borderRadius: BorderRadius.circular(14),
       child: Container(
         margin: const EdgeInsets.only(bottom: 8),
         padding: const EdgeInsets.all(AppSpacing.md),
         decoration: BoxDecoration(
           color: isSelected ? const Color(0xFFEFF6FF) : Colors.white,
-          borderRadius: BorderRadius.circular(AppRadius.card),
+          borderRadius: BorderRadius.circular(14),
           border: Border.all(
             color: isSelected ? const Color(0xFF2563EB) : const Color(0xFFE2E8F0),
             width: isSelected ? 1.5 : 1.0,
@@ -1678,14 +2051,14 @@ class _DispatchJobItemCard extends StatelessWidget {
               ? const [
                   BoxShadow(
                     color: Color(0x142563EB),
-                    blurRadius: 4,
+                    blurRadius: 6,
                     offset: Offset(0, 2),
                   ),
                 ]
               : const [
                   BoxShadow(
                     color: Color(0x040F172A),
-                    blurRadius: 2,
+                    blurRadius: 4,
                     offset: Offset(0, 1),
                   ),
                 ],
@@ -1815,20 +2188,57 @@ class _FleetMemberTelemetryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final initial = member.name.isNotEmpty ? member.name[0].toUpperCase() : 'T';
+
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(AppSpacing.md),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(AppRadius.card),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x040F172A),
+            blurRadius: 4,
+            offset: Offset(0, 1),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: member.isOnline
+                      ? const Color(0xFFECFDF5)
+                      : const Color(0xFFF1F5F9),
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: member.isOnline
+                        ? const Color(0xFFA7F3D0)
+                        : const Color(0xFFCBD5E1),
+                  ),
+                ),
+                child: Center(
+                  child: Text(
+                    initial,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w900,
+                      color: member.isOnline
+                          ? const Color(0xFF065F46)
+                          : const Color(0xFF64748B),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1859,13 +2269,14 @@ class _FleetMemberTelemetryCard extends StatelessWidget {
               _buildPresenceBadge(member),
             ],
           ),
-          const SizedBox(height: 6),
           if (member.activeJob != null && member.activeJob!.isNotEmpty) ...[
+            const SizedBox(height: 8),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
                 color: const Color(0xFFEFF6FF),
                 borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: const Color(0xFFDBEAFE)),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
@@ -1884,8 +2295,8 @@ class _FleetMemberTelemetryCard extends StatelessWidget {
                 ],
               ),
             ),
-            const SizedBox(height: 4),
           ],
+          const SizedBox(height: 6),
           Row(
             children: [
               Icon(
@@ -1973,24 +2384,53 @@ class _EligibleTechnicianCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final initial = technician.name.isNotEmpty ? technician.name[0].toUpperCase() : 'T';
+
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(AppSpacing.md),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(AppRadius.card),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(
           color: technician.isDispatchReady
               ? const Color(0xFFBFDBFE)
               : const Color(0xFFE2E8F0),
         ),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x040F172A),
+            blurRadius: 4,
+            offset: Offset(0, 1),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEFF6FF),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xFFBFDBFE)),
+                ),
+                child: Center(
+                  child: Text(
+                    initial,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w900,
+                      color: Color(0xFF004E89),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -2039,7 +2479,7 @@ class _EligibleTechnicianCard extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 8),
 
           // Distance, Band & Match Score
           Wrap(
@@ -2209,8 +2649,15 @@ class _ScopeExtensionCard extends StatelessWidget {
       padding: const EdgeInsets.all(AppSpacing.md),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(AppRadius.card),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x040F172A),
+            blurRadius: 4,
+            offset: Offset(0, 1),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2346,8 +2793,15 @@ class _ServiceRequestItemCard extends StatelessWidget {
       padding: const EdgeInsets.all(AppSpacing.md),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(AppRadius.card),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x040F172A),
+            blurRadius: 4,
+            offset: Offset(0, 1),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2453,8 +2907,15 @@ class _WorkLocationCard extends StatelessWidget {
       padding: const EdgeInsets.all(AppSpacing.md),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(AppRadius.card),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x040F172A),
+            blurRadius: 4,
+            offset: Offset(0, 1),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2671,6 +3132,17 @@ class _LocationFormBottomSheetState
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFCBD5E1),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -2836,6 +3308,17 @@ class _JobTimelineBottomSheet extends ConsumerWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Center(
+            child: Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: const Color(0xFFCBD5E1),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -2875,7 +3358,11 @@ class _JobTimelineBottomSheet extends ConsumerWidget {
           const Divider(height: 16),
           Expanded(
             child: timelineAsync.when(
-              loading: () => const Center(child: CircularProgressIndicator()),
+              loading: () => const Center(
+                child: CircularProgressIndicator(
+                  color: Color(0xFF004E89),
+                ),
+              ),
               error: (err, _) => Center(
                 child: Text('Failed to load timeline: $err',
                     style: const TextStyle(fontSize: 12, color: Color(0xFFDC2626))),

@@ -6,6 +6,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../routing/app_routes.dart';
 import '../../../shared/widgets/app_card.dart';
 import '../../../shared/widgets/workforce_app_bar.dart';
+import '../../../shared/widgets/workforce_avatar.dart';
 import '../../auth/presentation/auth_controller.dart';
 import '../../jobs/presentation/jobs_providers.dart';
 import '../../profile/presentation/profile_providers.dart';
@@ -29,6 +30,7 @@ class MoreScreen extends ConsumerWidget {
 
     final displayName = user?.displayName ?? 'Technician';
     final initial = displayName.isNotEmpty ? displayName[0].toUpperCase() : 'T';
+    final photoUrl = profileAsync.valueOrNull?.avatar ?? user?.avatar;
     final email = user?.email ?? '';
     final phone = profileAsync.valueOrNull?.displayPhone ?? '';
     final isOnline = profileAsync.valueOrNull?.isOnline ?? false;
@@ -106,34 +108,17 @@ class MoreScreen extends ConsumerWidget {
                       children: [
                         Row(
                           children: [
-                            Stack(
-                              children: [
-                                CircleAvatar(
-                                  radius: 28,
-                                  backgroundColor: Colors.white.withValues(alpha: 0.2),
-                                  child: Text(
-                                    initial,
-                                    style: const TextStyle(
-                                      fontSize: 22,
-                                      fontWeight: FontWeight.w900,
-                                      color: Colors.white,
-                                    ),
-                                  ),
-                                ),
-                                Positioned(
-                                  right: 0,
-                                  bottom: 0,
-                                  child: Container(
-                                    width: 14,
-                                    height: 14,
-                                    decoration: BoxDecoration(
-                                      color: statusColor,
-                                      shape: BoxShape.circle,
-                                      border: Border.all(color: Colors.white, width: 2),
-                                    ),
-                                  ),
-                                ),
-                              ],
+                            WorkforceAvatar(
+                              imageUrl: photoUrl,
+                              name: displayName,
+                              initial: initial,
+                              radius: 28,
+                              fontSize: 22,
+                              backgroundColor: Colors.white.withValues(alpha: 0.2),
+                              foregroundColor: Colors.white,
+                              showPresence: true,
+                              isOnline: isOnline,
+                              availability: profileAsync.valueOrNull?.liveAvailability,
                             ),
                             const SizedBox(width: AppSpacing.md),
                             Expanded(

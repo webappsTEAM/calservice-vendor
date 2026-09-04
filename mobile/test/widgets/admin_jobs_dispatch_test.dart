@@ -339,11 +339,10 @@ void main() {
       expect(find.text('Total Fleet'), findsOneWidget);
       expect(find.text('Online & Ready'), findsWidgets);
       expect(find.text('Offline Fleet'), findsOneWidget);
-      expect(find.text('Active Bookings'), findsOneWidget);
-      expect(find.text('3'), findsOneWidget); // Total Fleet Count
+      expect(find.text('3'), findsNWidgets(2)); // Total Fleet Count (3) and Active Bookings (3)
 
-      // Verify Service Requests Section
-      expect(find.text('1. Customer Service Requests (4)'), findsOneWidget);
+      // Verify Service Requests Section (3 active jobs, excluding completed PA3509)
+      expect(find.text('1. Customer Service Requests (3)'), findsOneWidget);
       expect(find.text('PA3510'), findsOneWidget);
       expect(find.text('GT3504'), findsOneWidget);
       expect(find.text('SR-3498'), findsOneWidget);

@@ -7,6 +7,7 @@ import '../../../shared/widgets/async_value_view.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/status_chip.dart';
 import '../../../shared/widgets/workforce_app_bar.dart';
+import '../../../shared/widgets/workforce_avatar.dart';
 import '../../auth/presentation/auth_controller.dart';
 import '../domain/employee_profile.dart';
 import 'profile_providers.dart';
@@ -121,12 +122,12 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                 _ProtectedIdentityCard(
                   profile: profile,
                   onRequestEdit: (fieldKey, fieldLabel) =>
-                      _openChangeRequestSheet(fieldKey, fieldLabel),
+                      _openChangeRequestSheet(fieldKey, fieldLabel, profile),
                 ),
                 const SizedBox(height: AppSpacing.lg),
                 _ChangeRequestsHistorySection(
                   changeRequestsAsync: changeRequestsAsync,
-                  onSubmitNew: () => _openChangeRequestSheet('first_name', 'Legal First Name'),
+                  onSubmitNew: () => _openChangeRequestSheet('first_name', 'Legal First Name', profile),
                 ),
                 const SizedBox(height: AppSpacing.xl),
                 OutlinedButton.icon(
@@ -253,6 +254,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   Future<void> _openChangeRequestSheet(
     String defaultFieldKey,
     String defaultFieldLabel,
+    EmployeeProfile profile,
   ) async {
     await showModalBottomSheet(
       context: context,
@@ -262,6 +264,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
       ),
       builder: (ctx) => _SubmitChangeRequestSheet(
         initialFieldKey: defaultFieldKey,
+        profile: profile,
         onSubmit: (fieldName, fieldLabel, newValue, reason) async {
           final success = await ref
               .read(profileControllerProvider.notifier)
@@ -310,11 +313,6 @@ class _ProfileHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final initial = profile.firstName.isNotEmpty
-        ? profile.firstName[0].toUpperCase()
-        : (profile.lastName.isNotEmpty ? profile.lastName[0].toUpperCase() : 'T');
-    final hasAvatar = profile.avatar != null && profile.avatar!.isNotEmpty;
-
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(AppSpacing.lg),
@@ -326,20 +324,17 @@ class _ProfileHeader extends StatelessWidget {
               children: [
                 Stack(
                   children: [
-                    CircleAvatar(
+                    WorkforceAvatar(
+                      imageUrl: profile.avatar,
+                      name: profile.fullName,
+                      initial: profile.firstName.isNotEmpty
+                          ? profile.firstName[0].toUpperCase()
+                          : (profile.lastName.isNotEmpty ? profile.lastName[0].toUpperCase() : 'T'),
                       radius: 34,
+                      fontSize: 24,
                       backgroundColor: AppColors.primary.withValues(alpha: 0.12),
-                      backgroundImage: hasAvatar ? NetworkImage(profile.avatar!) : null,
-                      child: !hasAvatar
-                          ? Text(
-                              initial,
-                              style: const TextStyle(
-                                fontSize: 24,
-                                fontWeight: FontWeight.bold,
-                                color: AppColors.primary,
-                              ),
-                            )
-                          : null,
+                      foregroundColor: AppColors.primary,
+                      onTap: onAvatarTap,
                     ),
                     Positioned(
                       bottom: 0,
@@ -440,25 +435,32 @@ class _HeaderMetaItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 14, color: AppColors.textMuted),
-        const SizedBox(width: 4),
-        Flexible(
-          child: Text(
-            text,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 11.5,
-              color: AppColors.textSecondary,
-              fontFamily: isMono ? 'monospace' : null,
-              fontWeight: isMono ? FontWeight.bold : FontWeight.w500,
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxWidth: MediaQuery.of(context).size.width > 64
+            ? MediaQuery.of(context).size.width - 64
+            : 240,
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: AppColors.textMuted),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11.5,
+                color: AppColors.textSecondary,
+                fontFamily: isMono ? 'monospace' : null,
+                fontWeight: isMono ? FontWeight.bold : FontWeight.w500,
+              ),
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -500,29 +502,27 @@ class _PreferencesCard extends StatelessWidget {
               color: AppColors.background,
               border: Border(bottom: BorderSide(color: AppColors.border)),
             ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Expanded(
-                  child: Row(
-                    children: [
-                      Icon(Icons.edit_note_rounded, size: 18, color: AppColors.primary),
-                      const SizedBox(width: AppSpacing.sm),
-                      Expanded(
-                        child: Text(
-                          'PERSONAL PREFERENCES',
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                                color: AppColors.textPrimary,
-                                fontWeight: FontWeight.w800,
-                              ),
-                        ),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final isNarrow = constraints.maxWidth < 300;
+                final title = Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.edit_note_rounded, size: 18, color: AppColors.primary),
+                    const SizedBox(width: AppSpacing.sm),
+                    Flexible(
+                      child: Text(
+                        'PERSONAL PREFERENCES',
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: AppColors.textPrimary,
+                              fontWeight: FontWeight.w800,
+                            ),
                       ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: AppSpacing.sm),
-                Container(
+                    ),
+                  ],
+                );
+                final badge = Container(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
                     color: const Color(0xFFECFDF5),
@@ -537,8 +537,28 @@ class _PreferencesCard extends StatelessWidget {
                       color: Color(0xFF065F46),
                     ),
                   ),
-                ),
-              ],
+                );
+
+                if (isNarrow) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      title,
+                      const SizedBox(height: 4),
+                      badge,
+                    ],
+                  );
+                }
+
+                return Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(child: title),
+                    const SizedBox(width: AppSpacing.sm),
+                    badge,
+                  ],
+                );
+              },
             ),
           ),
           Padding(
@@ -581,81 +601,99 @@ class _PreferencesCard extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: AppSpacing.md),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final isNarrow = constraints.maxWidth < 320;
+                    final tzField = Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Timezone',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.textPrimary),
+                        ),
+                        const SizedBox(height: 4),
+                        DropdownButtonFormField<String>(
+                          initialValue: _validTimezones.contains(selectedTimezone) ? selectedTimezone : 'UTC',
+                          isExpanded: true,
+                          decoration: const InputDecoration(isDense: true),
+                          items: const [
+                            DropdownMenuItem(value: 'Asia/Kolkata', child: Text('Asia/Kolkata (IST)', style: TextStyle(fontSize: 12))),
+                            DropdownMenuItem(value: 'UTC', child: Text('UTC (Universal)', style: TextStyle(fontSize: 12))),
+                            DropdownMenuItem(value: 'America/New_York', child: Text('New York (EST)', style: TextStyle(fontSize: 12))),
+                            DropdownMenuItem(value: 'America/Los_Angeles', child: Text('Los Angeles (PST)', style: TextStyle(fontSize: 12))),
+                            DropdownMenuItem(value: 'Europe/London', child: Text('London (GMT)', style: TextStyle(fontSize: 12))),
+                          ],
+                          onChanged: (val) {
+                            if (val != null) onTimezoneChanged(val);
+                          },
+                        ),
+                      ],
+                    );
+
+                    final langField = Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Language',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.textPrimary),
+                        ),
+                        const SizedBox(height: 4),
+                        DropdownButtonFormField<String>(
+                          initialValue: _validLanguages.contains(selectedLanguage) ? selectedLanguage : 'en',
+                          isExpanded: true,
+                          decoration: const InputDecoration(isDense: true),
+                          items: const [
+                            DropdownMenuItem(value: 'en', child: Text('English (US/UK)', style: TextStyle(fontSize: 12))),
+                            DropdownMenuItem(value: 'hi', child: Text('Hindi (हिंदी)', style: TextStyle(fontSize: 12))),
+                            DropdownMenuItem(value: 'es', child: Text('Spanish (Español)', style: TextStyle(fontSize: 12))),
+                            DropdownMenuItem(value: 'ta', child: Text('Tamil (தமிழ்)', style: TextStyle(fontSize: 12))),
+                          ],
+                          onChanged: (val) {
+                            if (val != null) onLanguageChanged(val);
+                          },
+                        ),
+                      ],
+                    );
+
+                    if (isNarrow) {
+                      return Column(
                         children: [
-                          Text(
-                            'Timezone',
-                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.textPrimary),
-                          ),
-                          const SizedBox(height: 4),
-                          DropdownButtonFormField<String>(
-                            initialValue: _validTimezones.contains(selectedTimezone) ? selectedTimezone : 'UTC',
-                            isExpanded: true,
-                            decoration: const InputDecoration(isDense: true),
-                            items: const [
-                              DropdownMenuItem(value: 'Asia/Kolkata', child: Text('Asia/Kolkata (IST)', style: TextStyle(fontSize: 12))),
-                              DropdownMenuItem(value: 'UTC', child: Text('UTC (Universal)', style: TextStyle(fontSize: 12))),
-                              DropdownMenuItem(value: 'America/New_York', child: Text('New York (EST)', style: TextStyle(fontSize: 12))),
-                              DropdownMenuItem(value: 'America/Los_Angeles', child: Text('Los Angeles (PST)', style: TextStyle(fontSize: 12))),
-                              DropdownMenuItem(value: 'Europe/London', child: Text('London (GMT)', style: TextStyle(fontSize: 12))),
-                            ],
-                            onChanged: (val) {
-                              if (val != null) onTimezoneChanged(val);
-                            },
-                          ),
+                          tzField,
+                          const SizedBox(height: AppSpacing.md),
+                          langField,
                         ],
-                      ),
-                    ),
-                    const SizedBox(width: AppSpacing.md),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Language',
-                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.textPrimary),
-                          ),
-                          const SizedBox(height: 4),
-                          DropdownButtonFormField<String>(
-                            initialValue: _validLanguages.contains(selectedLanguage) ? selectedLanguage : 'en',
-                            isExpanded: true,
-                            decoration: const InputDecoration(isDense: true),
-                            items: const [
-                              DropdownMenuItem(value: 'en', child: Text('English (US/UK)', style: TextStyle(fontSize: 12))),
-                              DropdownMenuItem(value: 'hi', child: Text('Hindi (हिंदी)', style: TextStyle(fontSize: 12))),
-                              DropdownMenuItem(value: 'es', child: Text('Spanish (Español)', style: TextStyle(fontSize: 12))),
-                              DropdownMenuItem(value: 'ta', child: Text('Tamil (தமிழ்)', style: TextStyle(fontSize: 12))),
-                            ],
-                            onChanged: (val) {
-                              if (val != null) onLanguageChanged(val);
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
+                      );
+                    }
+
+                    return Row(
+                      children: [
+                        Expanded(child: tzField),
+                        const SizedBox(width: AppSpacing.md),
+                        Expanded(child: langField),
+                      ],
+                    );
+                  },
                 ),
                 const SizedBox(height: AppSpacing.lg),
                 Align(
                   alignment: Alignment.centerRight,
-                  child: ElevatedButton.icon(
-                    onPressed: isSaving ? null : onSave,
-                    icon: isSaving
-                        ? const SizedBox(
-                            width: 14,
-                            height: 14,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                          )
-                        : const Icon(Icons.save_rounded, size: 16),
-                    label: Text(isSaving ? 'Saving...' : 'Save Preferences'),
-                    style: ElevatedButton.styleFrom(
-                      minimumSize: const Size(160, 42),
-                      backgroundColor: AppColors.primary,
-                      foregroundColor: Colors.white,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: ElevatedButton.icon(
+                      onPressed: isSaving ? null : onSave,
+                      icon: isSaving
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            )
+                          : const Icon(Icons.save_rounded, size: 16),
+                      label: Text(isSaving ? 'Saving...' : 'Save Preferences'),
+                      style: ElevatedButton.styleFrom(
+                        minimumSize: const Size(140, 42),
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: Colors.white,
+                      ),
                     ),
                   ),
                 ),
@@ -703,29 +741,27 @@ class _ProtectedIdentityCard extends StatelessWidget {
               color: AppColors.background,
               border: Border(bottom: BorderSide(color: AppColors.border)),
             ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Expanded(
-                  child: Row(
-                    children: [
-                      const Icon(Icons.lock_outline_rounded, size: 18, color: Color(0xFFD97706)),
-                      const SizedBox(width: AppSpacing.sm),
-                      Expanded(
-                        child: Text(
-                          'VERIFIED IDENTITY & EMPLOYMENT',
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                                color: AppColors.textPrimary,
-                                fontWeight: FontWeight.w800,
-                              ),
-                        ),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final isNarrow = constraints.maxWidth < 320;
+                final title = Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.lock_outline_rounded, size: 18, color: Color(0xFFD97706)),
+                    const SizedBox(width: AppSpacing.sm),
+                    Flexible(
+                      child: Text(
+                        'VERIFIED IDENTITY & EMPLOYMENT',
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: AppColors.textPrimary,
+                              fontWeight: FontWeight.w800,
+                            ),
                       ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: AppSpacing.sm),
-                Container(
+                    ),
+                  ],
+                );
+                final badge = Container(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
                     color: const Color(0xFFFFFBEB),
@@ -740,8 +776,28 @@ class _ProtectedIdentityCard extends StatelessWidget {
                       color: Color(0xFF92400E),
                     ),
                   ),
-                ),
-              ],
+                );
+
+                if (isNarrow) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      title,
+                      const SizedBox(height: 4),
+                      badge,
+                    ],
+                  );
+                }
+
+                return Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(child: title),
+                    const SizedBox(width: AppSpacing.sm),
+                    badge,
+                  ],
+                );
+              },
             ),
           ),
           Padding(
@@ -801,23 +857,23 @@ class _ProtectedIdentityCard extends StatelessWidget {
                 ),
                 _ProtectedFieldTile(
                   label: 'Date of Birth',
-                  value: profile.dateOfBirth ?? '—',
+                  value: profile.dateOfBirth?.isNotEmpty == true ? profile.dateOfBirth! : '—',
                   onRequestEdit: () => onRequestEdit('date_of_birth', 'Date of Birth'),
                 ),
                 _ProtectedFieldTile(
                   label: 'Registered Mobile',
-                  value: profile.mobileNumber ?? '—',
+                  value: profile.mobileNumber?.isNotEmpty == true ? profile.mobileNumber! : '—',
                   onRequestEdit: () => onRequestEdit('mobile_number', 'Registered Mobile'),
                   isMono: true,
                 ),
                 _ProtectedFieldTile(
                   label: 'Department',
-                  value: profile.department ?? 'Field Services',
+                  value: profile.department?.isNotEmpty == true ? profile.department! : 'Field Services',
                   onRequestEdit: () => onRequestEdit('department', 'Department'),
                 ),
                 _ProtectedFieldTile(
                   label: 'State / Territory',
-                  value: profile.state ?? 'California',
+                  value: profile.state?.isNotEmpty == true ? profile.state! : 'Tamil Nadu',
                   onRequestEdit: () => onRequestEdit('state', 'State / Territory'),
                 ),
               ],
@@ -852,39 +908,58 @@ class _ProtectedFieldTile extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
         border: Border.all(color: AppColors.border),
       ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label.toUpperCase(),
-                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isNarrow = constraints.maxWidth < 240;
+          final details = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label.toUpperCase(),
+                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                value,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  fontFamily: isMono ? 'monospace' : null,
+                  color: AppColors.textPrimary,
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  value,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                    fontFamily: isMono ? 'monospace' : null,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          TextButton(
+              ),
+            ],
+          );
+
+          final editBtn = TextButton(
             onPressed: onRequestEdit,
             style: TextButton.styleFrom(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               visualDensity: VisualDensity.compact,
             ),
             child: const Text('Request Edit', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
-          ),
-        ],
+          );
+
+          if (isNarrow) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                details,
+                const SizedBox(height: 4),
+                Align(alignment: Alignment.centerRight, child: editBtn),
+              ],
+            );
+          }
+
+          return Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(child: details),
+              const SizedBox(width: AppSpacing.xs),
+              editBtn,
+            ],
+          );
+        },
       ),
     );
   }
@@ -903,6 +978,8 @@ class _ChangeRequestsHistorySection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final crCount = changeRequestsAsync.valueOrNull?.length ?? 0;
+
     return Card(
       clipBehavior: Clip.antiAlias,
       child: Column(
@@ -915,37 +992,62 @@ class _ChangeRequestsHistorySection extends StatelessWidget {
               color: AppColors.background,
               border: Border(bottom: BorderSide(color: AppColors.border)),
             ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Expanded(
-                  child: Row(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final isNarrow = constraints.maxWidth < 360;
+                final titleWidget = Row(
+                  children: [
+                    Icon(Icons.description_outlined, size: 16, color: AppColors.primary),
+                    const SizedBox(width: AppSpacing.sm),
+                    Expanded(
+                      child: Text(
+                        'Employee Change Requests History ($crCount)',
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: AppColors.textPrimary,
+                              fontWeight: FontWeight.w800,
+                            ),
+                      ),
+                    ),
+                  ],
+                );
+
+                final buttonWidget = FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: TextButton.icon(
+                    onPressed: onSubmitNew,
+                    icon: const Icon(Icons.add_rounded, size: 14),
+                    label: const Text('+ Submit New Change Request', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700)),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
+                );
+
+                if (isNarrow) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(Icons.description_outlined, size: 16, color: AppColors.primary),
-                      const SizedBox(width: AppSpacing.sm),
-                      Expanded(
-                        child: Text(
-                          'EMPLOYEE CHANGE REQUESTS',
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                                color: AppColors.textPrimary,
-                                fontWeight: FontWeight.w800,
-                              ),
-                        ),
+                      titleWidget,
+                      const SizedBox(height: 4),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: buttonWidget,
                       ),
                     ],
-                  ),
-                ),
-                TextButton.icon(
-                  onPressed: onSubmitNew,
-                  icon: const Icon(Icons.send_rounded, size: 13),
-                  label: const Text('Submit New', style: TextStyle(fontSize: 11.5)),
-                  style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    visualDensity: VisualDensity.compact,
-                  ),
-                ),
-              ],
+                  );
+                }
+
+                return Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(child: titleWidget),
+                    const SizedBox(width: AppSpacing.sm),
+                    buttonWidget,
+                  ],
+                );
+              },
             ),
           ),
           AsyncValueView<List<EmployeeChangeRequest>>(
@@ -983,69 +1085,165 @@ class _ChangeRequestCard extends StatelessWidget {
 
   final EmployeeChangeRequest changeRequest;
 
+  String _formatDate(DateTime? dt) {
+    if (dt == null) return '—';
+    final day = dt.day.toString().padLeft(2, '0');
+    final month = dt.month.toString().padLeft(2, '0');
+    final year = dt.year;
+    return '$day/$month/$year';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.all(AppSpacing.lg),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isNarrow = constraints.maxWidth < 260;
+
+          final header = Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Row(
-                children: [
-                  Text(
-                    '#${changeRequest.id}',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                      fontFamily: 'monospace',
-                      color: Color(0xFF64748B),
-                    ),
-                  ),
-                  const SizedBox(width: AppSpacing.sm),
-                  Text(
-                    changeRequest.fieldLabel,
-                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
-                  ),
-                ],
-              ),
-              StatusChip(status: changeRequest.status.toLowerCase(), dense: true),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Row(
-            children: [
-              Text(
-                'Old: ${changeRequest.oldValue ?? '—'}',
-                style: TextStyle(fontSize: 11.5, color: AppColors.textMuted),
-              ),
-              const SizedBox(width: 8),
-              const Icon(Icons.arrow_forward_rounded, size: 12, color: Color(0xFF94A3B8)),
-              const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'New: ${changeRequest.newValue}',
-                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.primary),
+                  'Request #${changeRequest.id}',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    fontFamily: 'monospace',
+                    color: AppColors.textPrimary,
+                  ),
                 ),
               ),
+              const SizedBox(width: AppSpacing.sm),
+              StatusChip(
+                status: changeRequest.status,
+                label: changeRequest.status.toUpperCase(),
+                dense: true,
+              ),
             ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Reason: "${changeRequest.reason}"',
-            style: TextStyle(fontSize: 11.5, fontStyle: FontStyle.italic, color: AppColors.textSecondary),
-          ),
-          if (changeRequest.adminNotes != null && changeRequest.adminNotes!.isNotEmpty) ...[
-            const SizedBox(height: 4),
-            Text(
-              'Admin Note: ${changeRequest.adminNotes}',
-              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFFD97706)),
-            ),
-          ],
-        ],
+          );
+
+          final oldVal = _DetailField(
+            label: 'Old Value',
+            value: changeRequest.oldValue?.isNotEmpty == true ? changeRequest.oldValue! : '—',
+          );
+          final newVal = _DetailField(
+            label: 'Requested Value',
+            value: changeRequest.newValue,
+            valueColor: AppColors.primary,
+            isBold: true,
+          );
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              header,
+              const SizedBox(height: AppSpacing.md),
+              _DetailField(label: 'Field', value: changeRequest.fieldLabel),
+              const SizedBox(height: 6),
+              if (isNarrow) ...[
+                oldVal,
+                const SizedBox(height: 6),
+                newVal,
+              ] else ...[
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(child: oldVal),
+                    const SizedBox(width: AppSpacing.md),
+                    Expanded(child: newVal),
+                  ],
+                ),
+              ],
+              const SizedBox(height: 6),
+              _DetailField(
+                label: 'Reason',
+                value: changeRequest.reason,
+                isItalic: true,
+              ),
+              const SizedBox(height: 6),
+              _DetailField(
+                label: 'Submitted',
+                value: _formatDate(changeRequest.createdAt),
+              ),
+              if (changeRequest.adminNotes != null && changeRequest.adminNotes!.isNotEmpty) ...[
+                const SizedBox(height: AppSpacing.sm),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(AppSpacing.sm),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFFBEB),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: const Color(0xFFFDE68A)),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.info_outline, size: 14, color: Color(0xFFD97706)),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          'Admin Note: ${changeRequest.adminNotes}',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF92400E),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          );
+        },
       ),
+    );
+  }
+}
+
+class _DetailField extends StatelessWidget {
+  const _DetailField({
+    required this.label,
+    required this.value,
+    this.valueColor,
+    this.isBold = false,
+    this.isItalic = false,
+  });
+
+  final String label;
+  final String value;
+  final Color? valueColor;
+  final bool isBold;
+  final bool isItalic;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label.toUpperCase(),
+          style: const TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.bold,
+            color: Color(0xFF64748B),
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          value,
+          softWrap: true,
+          style: TextStyle(
+            fontSize: 12.5,
+            fontWeight: isBold ? FontWeight.bold : FontWeight.w500,
+            fontStyle: isItalic ? FontStyle.italic : FontStyle.normal,
+            color: valueColor ?? AppColors.textPrimary,
+          ),
+        ),
+      ],
     );
   }
 }
@@ -1055,10 +1253,12 @@ class _ChangeRequestCard extends StatelessWidget {
 class _SubmitChangeRequestSheet extends StatefulWidget {
   const _SubmitChangeRequestSheet({
     required this.initialFieldKey,
+    required this.profile,
     required this.onSubmit,
   });
 
   final String initialFieldKey;
+  final EmployeeProfile profile;
   final Future<bool> Function(String fieldName, String fieldLabel, String newValue, String reason)
       onSubmit;
 
@@ -1098,6 +1298,27 @@ class _SubmitChangeRequestSheetState extends State<_SubmitChangeRequestSheet> {
     super.dispose();
   }
 
+  String _getCurrentValue(String key) {
+    switch (key) {
+      case 'first_name':
+        return widget.profile.firstName.isNotEmpty ? widget.profile.firstName : '—';
+      case 'last_name':
+        return widget.profile.lastName.isNotEmpty ? widget.profile.lastName : '—';
+      case 'date_of_birth':
+        return widget.profile.dateOfBirth?.isNotEmpty == true ? widget.profile.dateOfBirth! : '—';
+      case 'mobile_number':
+        return widget.profile.mobileNumber?.isNotEmpty == true ? widget.profile.mobileNumber! : '—';
+      case 'department':
+        return widget.profile.department?.isNotEmpty == true ? widget.profile.department! : 'Field Services';
+      case 'state':
+        return widget.profile.state?.isNotEmpty == true ? widget.profile.state! : 'Tamil Nadu';
+      case 'bank_account':
+        return '—';
+      default:
+        return '—';
+    }
+  }
+
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -1119,6 +1340,8 @@ class _SubmitChangeRequestSheetState extends State<_SubmitChangeRequestSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final currentValue = _getCurrentValue(_targetField);
+
     return Padding(
       padding: EdgeInsets.only(
         bottom: MediaQuery.of(context).viewInsets.bottom,
@@ -1164,6 +1387,31 @@ class _SubmitChangeRequestSheetState extends State<_SubmitChangeRequestSheet> {
                 onChanged: (val) {
                   if (val != null) setState(() => _targetField = val);
                 },
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: 8),
+                decoration: BoxDecoration(
+                  color: AppColors.background,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: Row(
+                  children: [
+                    Text(
+                      'Current Value: ',
+                      style: TextStyle(fontSize: 11.5, color: AppColors.textMuted, fontWeight: FontWeight.w600),
+                    ),
+                    Expanded(
+                      child: Text(
+                        currentValue,
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.textPrimary),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
               ),
               const SizedBox(height: AppSpacing.md),
               Text(

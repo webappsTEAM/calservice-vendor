@@ -6,6 +6,7 @@ import '../../../../core/theme/app_theme.dart';
 import '../../../../shared/widgets/empty_state.dart';
 import '../../../../shared/widgets/status_chip.dart';
 import '../../../../shared/widgets/workforce_app_bar.dart';
+import '../../../../shared/widgets/workforce_avatar.dart';
 import '../../data/admin_dashboard_api.dart';
 import '../../domain/admin_application.dart';
 import '../../domain/admin_change_request.dart';
@@ -742,17 +743,14 @@ class _AdminApplicationCard extends StatelessWidget {
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              CircleAvatar(
+              WorkforceAvatar(
+                imageUrl: app.avatar,
+                name: app.name,
+                initial: app.initial,
                 radius: 20,
+                fontSize: 15,
                 backgroundColor: const Color(0xFF004E89).withValues(alpha: 0.1),
-                child: Text(
-                  app.initial,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w900,
-                    color: Color(0xFF004E89),
-                  ),
-                ),
+                foregroundColor: const Color(0xFF004E89),
               ),
               const SizedBox(width: 10),
               Expanded(

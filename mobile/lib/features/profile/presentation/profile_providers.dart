@@ -1,3 +1,4 @@
+import 'package:flutter/painting.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/profile_repository.dart';
@@ -38,7 +39,16 @@ class ProfileController extends StateNotifier<AsyncValue<void>> {
   Future<bool> uploadAvatar(String filePath) async {
     state = const AsyncValue.loading();
     try {
-      await _ref.read(profileRepositoryProvider).uploadAvatar(filePath);
+      final oldUrl = _ref.read(employeeProfileProvider).valueOrNull?.avatar;
+      final newUrl = await _ref.read(profileRepositoryProvider).uploadAvatar(filePath);
+
+      if (oldUrl != null && oldUrl.isNotEmpty) {
+        await NetworkImage(oldUrl).evict();
+      }
+      if (newUrl.isNotEmpty) {
+        await NetworkImage(newUrl).evict();
+      }
+
       _ref.invalidate(employeeProfileProvider);
       state = const AsyncValue.data(null);
       return true;

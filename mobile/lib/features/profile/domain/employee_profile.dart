@@ -1,3 +1,4 @@
+import '../../../core/config/app_config.dart';
 import '../../../core/utils/json_parsing.dart';
 
 class ApprovedService {
@@ -245,6 +246,8 @@ class EmployeeProfile {
     final controlledJson = json['controlled_fields'];
     final onboardingJson = json['onboarding_data'];
 
+    final rawAvatar = parseString(json['avatar']) ?? parseString(json['avatar_url']);
+
     return EmployeeProfile(
       employeeId: parseString(json['employee_id']),
       firstName: parseString(json['first_name']) ?? '',
@@ -255,7 +258,7 @@ class EmployeeProfile {
       bio: parseString(json['bio']),
       timezone: parseString(json['timezone']) ?? 'UTC',
       language: parseString(json['language']) ?? 'en',
-      avatar: parseString(json['avatar']),
+      avatar: AppConfig.resolveMediaUrl(rawAvatar),
       title: parseString(json['title']),
       companyName: parseString(json['company_name']),
       department: parseString(json['department']),

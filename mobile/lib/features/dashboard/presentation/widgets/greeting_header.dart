@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/theme/app_theme.dart';
+import '../../../../shared/widgets/workforce_avatar.dart';
 import '../../../auth/presentation/auth_controller.dart';
 import '../../../profile/presentation/profile_providers.dart';
 
@@ -28,6 +29,7 @@ class GreetingHeader extends ConsumerWidget {
 
     final displayName = user?.displayName ?? 'Technician';
     final initial = displayName.isNotEmpty ? displayName[0].toUpperCase() : 'T';
+    final photoUrl = profileAsync.valueOrNull?.avatar ?? user?.avatar;
     final greeting = _greetingForHour(DateTime.now().hour);
     final isOnline = profileAsync.valueOrNull?.isOnline ?? false;
 
@@ -70,36 +72,17 @@ class GreetingHeader extends ConsumerWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                Stack(
-                  children: [
-                    CircleAvatar(
-                      radius: 26,
-                      backgroundColor: Colors.white.withValues(alpha: 0.2),
-                      child: Text(
-                        initial,
-                        style: const TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.w900,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ),
-                    Positioned(
-                      right: 0,
-                      bottom: 0,
-                      child: Container(
-                        width: 13,
-                        height: 13,
-                        decoration: BoxDecoration(
-                          color: isOnline
-                              ? const Color(0xFF10B981)
-                              : const Color(0xFF94A3B8),
-                          shape: BoxShape.circle,
-                          border: Border.all(color: Colors.white, width: 2),
-                        ),
-                      ),
-                    ),
-                  ],
+                WorkforceAvatar(
+                  imageUrl: photoUrl,
+                  name: displayName,
+                  initial: initial,
+                  radius: 26,
+                  fontSize: 20,
+                  backgroundColor: Colors.white.withValues(alpha: 0.2),
+                  foregroundColor: Colors.white,
+                  showPresence: true,
+                  isOnline: isOnline,
+                  availability: profileAsync.valueOrNull?.liveAvailability,
                 ),
                 const SizedBox(width: AppSpacing.md),
                 Expanded(

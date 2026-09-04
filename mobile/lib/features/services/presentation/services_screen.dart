@@ -6,6 +6,7 @@ import '../../../shared/widgets/async_value_view.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/status_chip.dart';
 import '../../../shared/widgets/workforce_app_bar.dart';
+import '../../../shared/widgets/workforce_avatar.dart';
 import '../../profile/domain/employee_profile.dart';
 import '../../profile/presentation/profile_providers.dart';
 import '../domain/service_catalog.dart';
@@ -259,11 +260,6 @@ class _WorkerSummaryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final initial = profile.firstName.isNotEmpty
-        ? profile.firstName[0].toUpperCase()
-        : (profile.lastName.isNotEmpty ? profile.lastName[0].toUpperCase() : 'T');
-    final hasAvatar = profile.avatar != null && profile.avatar!.isNotEmpty;
-
     final availabilityStatus = profile.liveAvailability?.toLowerCase() == 'busy'
         ? 'busy'
         : (profile.isOnline ? 'online' : 'offline');
@@ -273,16 +269,16 @@ class _WorkerSummaryCard extends StatelessWidget {
         padding: const EdgeInsets.all(AppSpacing.md),
         child: Row(
           children: [
-            CircleAvatar(
+            WorkforceAvatar(
+              imageUrl: profile.avatar,
+              name: profile.fullName,
+              initial: profile.firstName.isNotEmpty
+                  ? profile.firstName[0].toUpperCase()
+                  : (profile.lastName.isNotEmpty ? profile.lastName[0].toUpperCase() : 'T'),
               radius: 24,
+              fontSize: 18,
               backgroundColor: AppColors.primary.withValues(alpha: 0.12),
-              backgroundImage: hasAvatar ? NetworkImage(profile.avatar!) : null,
-              child: !hasAvatar
-                  ? Text(
-                      initial,
-                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppColors.primary),
-                    )
-                  : null,
+              foregroundColor: AppColors.primary,
             ),
             const SizedBox(width: AppSpacing.md),
             Expanded(

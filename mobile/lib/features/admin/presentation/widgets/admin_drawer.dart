@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../../core/theme/app_theme.dart';
+import '../../../../shared/widgets/workforce_avatar.dart';
 import '../../../auth/presentation/auth_controller.dart';
 
 /// The official Admin Navigation Drawer for Workforce Mobile.
@@ -32,6 +33,7 @@ class _AdminDrawerState extends ConsumerState<AdminDrawer> {
     final displayName = user?.displayName ?? 'Admin';
     final initial = displayName.isNotEmpty ? displayName[0].toUpperCase() : 'A';
     final email = user?.email ?? '';
+    final photoUrl = user?.avatar;
 
     // Active route detection
     String currentLocation = '';
@@ -133,17 +135,14 @@ class _AdminDrawerState extends ConsumerState<AdminDrawer> {
                   const SizedBox(height: AppSpacing.md),
                   Row(
                     children: [
-                      CircleAvatar(
+                      WorkforceAvatar(
+                        imageUrl: photoUrl,
+                        name: displayName,
+                        initial: initial,
                         radius: 19,
+                        fontSize: 14,
                         backgroundColor: Colors.white.withValues(alpha: 0.15),
-                        child: Text(
-                          initial,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
+                        foregroundColor: Colors.white,
                       ),
                       const SizedBox(width: 10),
                       Expanded(
