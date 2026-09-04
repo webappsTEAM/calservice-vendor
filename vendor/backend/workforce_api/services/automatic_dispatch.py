@@ -7,6 +7,7 @@ job reconciliation across Workforce and Marketplace.
 """
 import logging
 from datetime import timedelta
+from decimal import Decimal
 from typing import List, Dict, Any, Tuple, Optional
 
 from django.db import transaction
@@ -66,8 +67,42 @@ DEEP_POOL_CANDIDATE_THRESHOLD = 8   # this many or more counts as "deep"
 THIN_POOL_WINDOW_BONUS_MINUTES = 3
 DEEP_POOL_WINDOW_PENALTY_MINUTES = 2
 SPARSE_SERVICE_CATEGORY_WINDOW_BONUS_MINUTES = 3
+# GT-C-02: maximum unsettled cash a technician may hold before they stop
+# being offered further CASH-collecting work (Gate 10). Rupees. Set to 0 or
+# None to disable the ceiling entirely. Override per deployment with
+# settings.DISPATCH_CASH_FLOAT_CEILING.
+CASH_FLOAT_CEILING = Decimal("10000.00")
+
 MIN_OFFER_WINDOW_MINUTES = 2
 MAX_OFFER_WINDOW_MINUTES = 15
+
+# ── X-11 / GT-B-02: rapid offer window for on-demand transport ────────────
+# The minute-scale window above is right for a scheduled home-services
+# visit, where a technician may reasonably be mid-task when an offer
+# arrives. It is far too slow for on-demand goods transport: a customer
+# standing next to their load watching "finding a driver" for two minutes
+# per candidate, across several candidates, is the single most visible
+# way this feels unlike Porter. Those platforms run a 15-30s ladder.
+#
+# So transport categories get their own seconds-scale ladder, and every
+# other category keeps exactly the existing minute-scale behaviour --
+# this is deliberately not a platform-wide change to dispatch timing.
+#
+# packers_movers is NOT included: a relocation is a scheduled, surveyed
+# job, not an on-demand hail, so rushing that offer would just burn
+# candidates.
+RAPID_DISPATCH_SERVICE_CATEGORIES = {
+    "goods_transport_truck",
+    "goods_transport_two_wheeler",
+}
+# The ladder, indexed by how many offers this job has already burned.
+# Widens as the job gets harder to place, rather than hammering the same
+# short window forever.
+RAPID_OFFER_WINDOW_LADDER_SECONDS = [20, 25, 30]
+# Thin pools get a little more room even on the fast path.
+RAPID_THIN_POOL_WINDOW_BONUS_SECONDS = 10
+MIN_RAPID_OFFER_WINDOW_SECONDS = 15
+MAX_RAPID_OFFER_WINDOW_SECONDS = 45
 
 # Service categories known to have a historically thin technician pool --
 # these get the sparse-category bonus above regardless of how today's live
@@ -194,14 +229,14 @@ def canonical_service_match(requested_service: str, approved_services: List[str]
     return False, "NO_MATCH", ""
 
 
-def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = None) -> Tuple[bool, str, Dict[str, bool]]:
+def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = None, job: Optional[Any] = None) -> Tuple[bool, str, Dict[str, bool]]:
     """
-    9-Gate Employee Eligibility Engine:
-    Authoritative server-side evaluation of 9 mandatory operational gates.
+    10-Gate Employee Eligibility Engine:
+    Authoritative server-side evaluation of 10 mandatory operational gates.
     Every gate fails closed.
     Returns (is_eligible, reason_message, gate_results_dict).
     """
-    gate_results = {f"G{i}": True for i in range(1, 10)}
+    gate_results = {f"G{i}": True for i in range(1, 11)}
 
     # ── Gate 1: Account Active ────────────────────────────────────────────────
     if not emp or not emp.is_active or not getattr(emp.user, "is_active", True):
@@ -404,7 +439,59 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
         )
         return False, f"Gate 9: Technician is busy on active Job #{active_job.id} ({active_job.request_id}).", gate_results
 
-    return True, "All 9 Eligibility Gates Passed", gate_results
+    # ── Gate 10: Cash Float Ceiling (GT-C-02) ──────────────────────────────────
+    # A technician on cash-on-service jobs accumulates company money they
+    # have not yet handed in. The settlement half of GT-C-02 already
+    # existed (CashSettlement + compute_outstanding_cash), but nothing
+    # ever acted on the number: a technician could keep taking cash jobs
+    # while holding an unbounded and growing amount of the company's cash.
+    # This is the exposure limit -- above the ceiling they stop being
+    # offered new work until they settle up.
+    #
+    # Scoped to cash-collecting work only: a technician over the ceiling is
+    # still eligible for prepaid/online jobs, because those add no further
+    # cash exposure. Blocking them from all work would punish the company
+    # twice over.
+    #
+    # Fails OPEN, unlike every other gate here. A ceiling check is a
+    # financial-risk control, not a safety or compliance one, and if the
+    # payment tables are unreadable the right outcome is that customers
+    # still get drivers -- with the failure logged loudly -- rather than
+    # dispatch silently going dark platform-wide.
+    cash_ceiling = getattr(settings, "DISPATCH_CASH_FLOAT_CEILING", CASH_FLOAT_CEILING)
+    # When we know the job, only apply the ceiling to cash-collecting work.
+    # With no job in hand (the standalone eligibility-check endpoints) the
+    # ceiling is applied -- the conservative reading of an unknown job.
+    job_is_cash = True
+    if job is not None:
+        job_is_cash = str(getattr(job, "payment_method", "") or "").upper() in ("COD", "CASH", "CASH_ON_SERVICE")
+    if job_is_cash and cash_ceiling is not None and cash_ceiling > 0:
+        try:
+            from workforce_api.services.cash_reconciliation import compute_outstanding_cash
+
+            outstanding, _qs = compute_outstanding_cash(emp)
+            if outstanding is not None and Decimal(outstanding) > Decimal(str(cash_ceiling)):
+                gate_results["G10"] = False
+                logger.info(
+                    f"[DISPATCH_REJECT] employee={emp.id} reason=CASH_FLOAT_CEILING_EXCEEDED "
+                    f"outstanding={outstanding} ceiling={cash_ceiling}"
+                )
+                return (
+                    False,
+                    (
+                        f"Gate 10: Technician is holding {outstanding} in unsettled cash, "
+                        f"above the {cash_ceiling} float ceiling. Settle cash to resume cash jobs."
+                    ),
+                    gate_results,
+                )
+        except Exception as exc:
+            # See the fail-open note above.
+            logger.warning(
+                f"[DISPATCH_GATE10_UNAVAILABLE] employee={getattr(emp, 'id', None)} "
+                f"could not evaluate cash float ceiling, allowing: {exc}"
+            )
+
+    return True, "All 10 Eligibility Gates Passed", gate_results
 
 
 def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, exclude_employee_ids: Optional[List[int]] = None, radius_km: float = MAX_DISPATCH_RADIUS_KM) -> List[Dict[str, Any]]:
@@ -555,9 +642,9 @@ def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AG
         )
 
         # Check eligibility against service_category, then issue_title
-        is_eligible, reason, gate_results = check_candidate_eligibility(emp, job_obj.service_category)
+        is_eligible, reason, gate_results = check_candidate_eligibility(emp, job_obj.service_category, job=job_obj)
         if not is_eligible and job_obj.issue_title:
-            is_eligible, reason, gate_results = check_candidate_eligibility(emp, job_obj.issue_title)
+            is_eligible, reason, gate_results = check_candidate_eligibility(emp, job_obj.issue_title, job=job_obj)
 
         g_str = " ".join(f"{k}={'PASS' if v else 'FAIL'}" for k, v in gate_results.items())
         logger.info(f"[9GATE_RESULT] employee={emp.id} {g_str}")
@@ -682,6 +769,50 @@ def compute_offer_window_minutes(job_obj, pool_size: int) -> int:
     min_minutes = getattr(settings, "DISPATCH_MIN_OFFER_WINDOW_MINUTES", MIN_OFFER_WINDOW_MINUTES)
     max_minutes = getattr(settings, "DISPATCH_MAX_OFFER_WINDOW_MINUTES", MAX_OFFER_WINDOW_MINUTES)
     return max(min_minutes, min(max_minutes, minutes))
+
+
+def compute_offer_window_seconds(job_obj, pool_size: int, failed_cycles: int = 0) -> int:
+    """
+    X-11 / GT-B-02: how long a single exclusive offer stays open, in
+    SECONDS.
+
+    This is the function dispatch should use. For an on-demand transport
+    category it returns a Porter-style short window from
+    RAPID_OFFER_WINDOW_LADDER_SECONDS -- roughly 20-30s, widening as the
+    job burns candidates, with a bonus when the pool is thin. For every
+    other category it returns exactly what compute_offer_window_minutes()
+    already returned, converted to seconds, so home-services dispatch
+    timing is completely unchanged.
+
+    Kept separate from compute_offer_window_minutes() rather than
+    replacing it: that function is called elsewhere and its minute-scale
+    contract is relied on, so this wraps it instead of changing it.
+    """
+    category = (getattr(job_obj, "service_category", "") or "").strip().lower()
+    rapid_categories = getattr(
+        settings, "DISPATCH_RAPID_SERVICE_CATEGORIES", RAPID_DISPATCH_SERVICE_CATEGORIES
+    )
+    if category not in rapid_categories:
+        return compute_offer_window_minutes(job_obj, pool_size) * 60
+
+    ladder = getattr(
+        settings, "DISPATCH_RAPID_OFFER_WINDOW_LADDER_SECONDS", RAPID_OFFER_WINDOW_LADDER_SECONDS
+    )
+    if not ladder:
+        return compute_offer_window_minutes(job_obj, pool_size) * 60
+
+    index = min(max(int(failed_cycles or 0), 0), len(ladder) - 1)
+    seconds = ladder[index]
+
+    thin_threshold = getattr(settings, "DISPATCH_THIN_POOL_CANDIDATE_THRESHOLD", THIN_POOL_CANDIDATE_THRESHOLD)
+    if pool_size <= thin_threshold:
+        seconds += getattr(
+            settings, "DISPATCH_RAPID_THIN_POOL_WINDOW_BONUS_SECONDS", RAPID_THIN_POOL_WINDOW_BONUS_SECONDS
+        )
+
+    min_seconds = getattr(settings, "DISPATCH_MIN_RAPID_OFFER_WINDOW_SECONDS", MIN_RAPID_OFFER_WINDOW_SECONDS)
+    max_seconds = getattr(settings, "DISPATCH_MAX_RAPID_OFFER_WINDOW_SECONDS", MAX_RAPID_OFFER_WINDOW_SECONDS)
+    return max(min_seconds, min(max_seconds, seconds))
 
 
 def _count_failed_offer_cycles(job_obj) -> int:
@@ -917,8 +1048,14 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
         # window flexes by booking priority, how deep the eligible pool
         # actually is, and service-category sparsity, instead of a fixed
         # five minutes for every job everywhere.
-        offer_window_minutes = compute_offer_window_minutes(job_obj, len(candidates))
-        expires_at = now + timedelta(minutes=offer_window_minutes)
+        # X-11 / GT-B-02: seconds, not minutes. For on-demand transport
+        # categories this is a Porter-style ~20-30s ladder that widens as
+        # the job burns candidates; every other category gets exactly the
+        # previous minute-scale window, converted.
+        offer_window_seconds = compute_offer_window_seconds(
+            job_obj, len(candidates), failed_cycles=failed_cycle_count
+        )
+        expires_at = now + timedelta(seconds=offer_window_seconds)
         _maybe_signal_customer_delay(job_obj, failed_cycle_count)
         offer = WorkforceJobOffer.objects.create(
             job=job_obj,
