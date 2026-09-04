@@ -56,6 +56,33 @@ class IsVendorAdmin(BasePermission):
         return has_admin_role and has_company
 
 
+class IsInternalWorkforceCaller(BasePermission):
+    """
+    Authorizes server-to-server calls from the Customer app's
+    WorkforceIntegrationService -- there is no vendor-side user session for
+    these calls, the Customer app is acting on a customer's behalf (e.g.
+    "the customer cancelled their booking, release the technician").
+    Authenticated by a shared secret, not a session/JWT.
+
+    Reuses WORKFORCE_WEBHOOK_SECRET rather than introducing a second shared
+    secret: it's the same value already used (in the other direction) to
+    authenticate this app's webhook calls INTO the Customer app, so both
+    apps already need to have it configured identically, and it now fails
+    closed in production if unset (see workforce_core/settings.py).
+    """
+    def has_permission(self, request, view):
+        import hmac
+        from django.conf import settings
+        provided = request.META.get("HTTP_AUTHORIZATION", "")
+        if provided.startswith("Bearer "):
+            provided = provided[len("Bearer "):].strip()
+        else:
+            provided = ""
+        expected = getattr(settings, "WORKFORCE_WEBHOOK_SECRET", "") or ""
+        return bool(provided and expected and hmac.compare_digest(provided, expected))
+
+
+
 class IsApprovedTechnician(BasePermission):
     def has_permission(self, request, view):
         user = getattr(request, "user", None)

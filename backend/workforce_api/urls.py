@@ -151,6 +151,21 @@ from .views import (
     PlatformRelievingRequestsView,
     PlatformApproveRelievingView,
     RelievingLegalSignoffView,
+    # Quotation & Estimation
+    WorkforceRateCardListView,
+    WorkforceEstimationGateView,
+    WorkforceQuoteListView,
+    WorkforceQuoteDetailView,
+    WorkforceQuoteItemBulkView,
+    WorkforceQuoteMeasurementsBulkView,
+    WorkforceQuoteInspectionView,
+    WorkforceQuoteSendView,
+    WorkforceQuoteReviseView,
+    WorkforceCustomerQuoteDetailView,
+    WorkforceCustomerQuoteDecideView,
+    WorkforceAdminQuoteClearanceView,
+    WorkforceAdminQuoteMetricsView,
+    WorkforceAdminQuoteRetryConversionView,
 )
 
 
@@ -390,6 +405,22 @@ urlpatterns = [
     path("platform/relieving-requests/", PlatformRelievingRequestsView.as_view(), name="platform-relieving-requests"),
     path("platform/relieving-requests/<int:pk>/approve/", PlatformApproveRelievingView.as_view(), name="platform-approve-relieving"),
     path("relieving-requests/<int:pk>/signoff/", RelievingLegalSignoffView.as_view(), name="relieving-legal-signoff"),
+
+    # ── Quotation & Estimation Routes ─────────────────────────────────────────
+    path("rate-cards/", WorkforceRateCardListView.as_view(), name="workforce-rate-cards-list"),
+    path("jobs/<int:pk>/estimation-gate/", WorkforceEstimationGateView.as_view(), name="workforce-job-estimation-gate"),
+    path("quotes/", WorkforceQuoteListView.as_view(), name="workforce-quote-list"),
+    path("quotes/<int:pk>/", WorkforceQuoteDetailView.as_view(), name="workforce-quote-detail"),
+    path("quotes/<int:pk>/items/bulk/", WorkforceQuoteItemBulkView.as_view(), name="workforce-quote-items-bulk"),
+    path("quotes/<int:pk>/measurements/bulk/", WorkforceQuoteMeasurementsBulkView.as_view(), name="workforce-quote-measurements-bulk"),
+    path("quotes/<int:pk>/inspection/", WorkforceQuoteInspectionView.as_view(), name="workforce-quote-inspection"),
+    path("quotes/<int:pk>/send/", WorkforceQuoteSendView.as_view(), name="workforce-quote-send"),
+    path("quotes/<int:pk>/revise/", WorkforceQuoteReviseView.as_view(), name="workforce-quote-revise"),
+    path("quotes/customer/<str:token>/", WorkforceCustomerQuoteDetailView.as_view(), name="workforce-customer-quote-detail"),
+    path("quotes/customer/<str:token>/decide/", WorkforceCustomerQuoteDecideView.as_view(), name="workforce-customer-quote-decide"),
+    path("admin/quotes/<int:pk>/clearance/", WorkforceAdminQuoteClearanceView.as_view(), name="workforce-admin-quote-clearance"),
+    path("admin/quotes/metrics/", WorkforceAdminQuoteMetricsView.as_view(), name="workforce-admin-quote-metrics"),
+    path("admin/quotes/<int:pk>/retry-conversion/", WorkforceAdminQuoteRetryConversionView.as_view(), name="workforce-admin-quote-retry-conversion"),
 ]
 
 

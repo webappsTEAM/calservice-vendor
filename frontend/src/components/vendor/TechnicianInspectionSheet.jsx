@@ -19,59 +19,89 @@ import {
 } from '../../api/vendorEstimationService.js';
 
 const DEFECT_TEMPLATES = [
+  // HVAC & AC
   {
+    category: 'HVAC',
     type: 'Gas Leakage',
-    title: 'Refrigerant Gas Leakage at Flare Nut',
+    title: 'Refrigerant Gas Leakage at Joint / Valve',
     severity: 'HIGH',
-    description: 'Oil traces and pressure drop detected at service valve connection.',
-    recommended_action: 'Perform nitrogen leak test, braze flare joint, vacuum system, and top up gas.',
+    description: 'Oil traces and pressure drop detected at service valve connection or evaporator coil.',
+    recommended_action: 'Perform nitrogen leak test, braze joint, vacuum system, and top up gas.',
     quantity: 1,
     unit: 'refill',
   },
   {
+    category: 'HVAC',
     type: 'Coil Cleaning',
-    title: 'Severe Cooling Coil Clogging & Slime',
+    title: 'Severe Cooling Coil Grime & Airflow Restriction',
     severity: 'MEDIUM',
-    description: 'Indoor evaporator coil choked with grime, restricting airflow by >50%.',
-    recommended_action: 'Deep chemical foam jet wash of indoor and outdoor condenser coil.',
+    description: 'Evaporator / condenser coil choked with grime, restricting airflow.',
+    recommended_action: 'Deep chemical foam jet wash of indoor and outdoor coils.',
     quantity: 1,
     unit: 'service',
   },
   {
-    type: 'Capacitor',
-    title: 'Compressor Run Capacitor Weak / Bulged',
+    category: 'HVAC',
+    type: 'Capacitor / Motor',
+    title: 'Run Capacitor Weak or Fan Motor Overheating',
     severity: 'HIGH',
-    description: 'Dual capacitor measured 18uF against 45uF rated capacity.',
-    recommended_action: 'Replace with genuine 45/5 uF heavy-duty capacitor.',
+    description: 'Capacitor measured below rated microfarads; motor drawing high startup current.',
+    recommended_action: 'Replace dual capacitor / fan motor and test under load.',
     quantity: 1,
-    unit: 'piece',
+    unit: 'unit',
   },
   {
-    type: 'PCB fault',
-    title: 'Indoor/Outdoor Inverter PCB Fault',
+    category: 'HVAC',
+    type: 'PCB / Electrical',
+    title: 'Motherboard PCB / Sensor Error Fault',
     severity: 'CRITICAL',
-    description: 'Communication error code blinking on display; IPM circuit damaged.',
-    recommended_action: 'Bench test and repair motherboard circuit / replace IPM module.',
+    description: 'Error code blinking; communication failure between controller and motor.',
+    recommended_action: 'Bench test circuit motherboard / replace damaged PCB component.',
     quantity: 1,
     unit: 'unit',
   },
+  // Plumbing
   {
-    type: 'Fan Motor',
-    title: 'Condenser Fan Motor Bearing Jammed',
+    category: 'Plumbing',
+    type: 'Pipe Leakage',
+    title: 'Concealed Pipe Seepage & Joint Crack',
     severity: 'HIGH',
-    description: 'Outdoor unit motor overheating and shutting down within 5 minutes.',
-    recommended_action: 'Replace condenser fan motor and inspect blade alignment.',
+    description: 'Continuous moisture detected inside wall shaft; pressure drop in main line.',
+    recommended_action: 'Expose damaged section, replace CPVC fitting, and pressure test.',
     quantity: 1,
-    unit: 'unit',
+    unit: 'point',
   },
   {
-    type: 'Drainage',
-    title: 'Condensate Drain Tray Overflow & Clog',
-    severity: 'LOW',
-    description: 'Water dripping from indoor unit front panel onto walls.',
-    recommended_action: 'Flush drain pipe, re-pitch slope, and clean drain tray.',
+    category: 'Plumbing',
+    type: 'Drainage / Clog',
+    title: 'Main Sewer / Waste Line Deep Blockage',
+    severity: 'MEDIUM',
+    description: 'Slow drainage and backflow from waste outlet trap.',
+    recommended_action: 'Motorized mechanical cable snaking and hydro-jet flushing.',
     quantity: 1,
     unit: 'service',
+  },
+  // Electrical
+  {
+    category: 'Electrical',
+    type: 'Short Circuit / MCB',
+    title: 'Distribution Board MCB Tripping / Overload',
+    severity: 'CRITICAL',
+    description: 'Main breaker trips upon load increase; heat discoloration on busbar.',
+    recommended_action: 'Re-distribute circuit loads and replace faulty MCB breaker.',
+    quantity: 1,
+    unit: 'unit',
+  },
+  // Painting / Surface
+  {
+    category: 'Painting',
+    type: 'Moisture / Dampness',
+    title: 'Severe Wall Dampness & Plaster Peeling',
+    severity: 'HIGH',
+    description: 'Efflorescence and hollow plaster detected across 120 sqft surface.',
+    recommended_action: 'Scrape loose plaster, apply waterproofing barrier coat, and polymer putty.',
+    quantity: 120,
+    unit: 'sqft',
   },
 ];
 
@@ -200,7 +230,7 @@ export default function TechnicianInspectionSheet({
                 Technician Inspection & Diagnosis Sheet
               </h2>
               <p className="text-xs text-zinc-500">
-                Job #{estimation?.request_id} • {estimation?.ac_details?.ac_brand} {estimation?.ac_details?.ac_type} ({estimation?.ac_details?.ac_capacity})
+                Job #{estimation?.request_id || estimation?.id} • {estimation?.ac_details?.ac_brand ? `${estimation.ac_details.ac_brand} ${estimation.ac_details.ac_type || ''}` : (estimation?.service_category || estimation?.issue_title || 'Technical Assessment')}
               </p>
             </div>
           </div>

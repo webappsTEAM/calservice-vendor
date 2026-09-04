@@ -110,7 +110,8 @@ export async function apiRequest(path, options = {}) {
     config.body = JSON.stringify(options.json);
   }
 
-  const url = path.startsWith('http') ? path : `/api${path.startsWith('/') ? path : '/' + path}`;
+  const cleanPath = path.startsWith('/api/') ? path.slice(4) : (path.startsWith('/') ? path : '/' + path);
+  const url = path.startsWith('http') ? path : `/api${cleanPath}`;
 
   let response;
   try {

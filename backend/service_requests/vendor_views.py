@@ -249,36 +249,59 @@ def _serialize_estimation(sr, est=None, full_detail=False):
 
 def _get_target_estimation(pk):
     """
-    Resolves ServiceRequest and linked Estimation by ID (either ServiceRequest.id or Estimation.id).
+    Resolves ServiceRequest and linked Estimation by ID (either ServiceRequest.id or Estimation.id or request_id).
     Returns (sr, est).
     """
-    sr = ServiceRequest.objects.filter(pk=pk).first()
+    if pk is None:
+        return None, None
+
+    sr = None
+    if str(pk).isdigit():
+        sr = ServiceRequest.objects.filter(pk=int(pk)).first()
+    if not sr:
+        sr = ServiceRequest.objects.filter(request_id=str(pk)).first()
+    if not sr:
+        try:
+            sr = ServiceRequest.objects.filter(pk=pk).first()
+        except Exception:
+            sr = None
+
     if sr:
         est = Estimation.objects.filter(service_request=sr).first()
-        if not est and (sr.job_type == "ESTIMATION" or "ac" in sr.service_category.lower() or "ac" in sr.issue_title.lower()):
-            # Lazily ensure linked Estimation detail exists
+        if not est:
+            # Lazily ensure linked Estimation detail exists for any technical trade
             est = Estimation.objects.create(
                 service_request=sr,
                 ac_type="SPLIT",
                 ac_brand="General",
                 ac_capacity="1.5_TON",
                 ac_quantity=1,
-                customer_symptom=sr.issue_title,
+                customer_symptom=sr.issue_title or sr.description or "Service Inspection",
                 status=sr.status.upper(),
             )
-            # Ensure ₹199 inspection fee record exists
-            EstimationFee.objects.get_or_create(
-                estimation=est,
-                defaults={"amount": Decimal("199.00"), "currency": "INR", "status": "PENDING"}
-            )
+        # Ensure ₹199 inspection fee record exists
+        EstimationFee.objects.get_or_create(
+            estimation=est,
+            defaults={"amount": Decimal("199.00"), "currency": "INR", "status": "PENDING"}
+        )
         return sr, est
 
-    # Attempt lookup by Estimation.id directly
-    est = Estimation.objects.filter(pk=pk).first()
+    # Attempt lookup by Estimation.id directly or by Estimation linked request_id
+    est = None
+    if str(pk).isdigit():
+        est = Estimation.objects.filter(pk=int(pk)).select_related("service_request").first()
+    if not est:
+        est = Estimation.objects.filter(service_request__request_id=str(pk)).select_related("service_request").first()
+
     if est:
+        EstimationFee.objects.get_or_create(
+            estimation=est,
+            defaults={"amount": Decimal("199.00"), "currency": "INR", "status": "PENDING"}
+        )
         return est.service_request, est
 
     return None, None
+
 
 
 def _sync_workforce_quote(sr, quote, computed_items=None):
@@ -383,8 +406,18 @@ class VendorEstimationListView(APIView):
 
     def get(self, request):
         qs = ServiceRequest.objects.filter(
-            models.Q(job_type="ESTIMATION") | models.Q(request_kind="ESTIMATION") | models.Q(service_category__icontains="ac")
+            models.Q(job_type__iexact="ESTIMATION") |
+            models.Q(request_kind__iexact="ESTIMATION") |
+            models.Q(service_category__icontains="ac") |
+            models.Q(service_category__icontains="estimation") |
+            models.Q(issue_title__icontains="estimation") |
+            models.Q(issue_title__icontains="inspection")
         ).distinct()
+
+        # Service Category filter (e.g. HVAC/AC, Plumbing, Electrical, Appliances, Painting, etc.)
+        category_filter = request.query_params.get("category", "").strip().lower()
+        if category_filter and category_filter != "all":
+            qs = qs.filter(service_category__icontains=category_filter)
 
         # Status filter
         status_filter = request.query_params.get("status", "").strip().lower()
@@ -425,14 +458,23 @@ class VendorEstimationListView(APIView):
                 | models.Q(request_id__icontains=search)
                 | models.Q(issue_title__icontains=search)
                 | models.Q(address__icontains=search)
+                | models.Q(service_category__icontains=search)
             )
 
         qs = qs.order_by("-id")
 
         # Metric counts across entire dataset
         all_est_qs = ServiceRequest.objects.filter(
-            models.Q(job_type="ESTIMATION") | models.Q(request_kind="ESTIMATION") | models.Q(service_category__icontains="ac")
-        )
+            models.Q(job_type__iexact="ESTIMATION") |
+            models.Q(request_kind__iexact="ESTIMATION") |
+            models.Q(service_category__icontains="ac") |
+            models.Q(service_category__icontains="estimation") |
+            models.Q(issue_title__icontains="estimation") |
+            models.Q(issue_title__icontains="inspection")
+        ).distinct()
+        if category_filter and category_filter != "all":
+            all_est_qs = all_est_qs.filter(service_category__icontains=category_filter)
+
         metrics = {
             "all": all_est_qs.count(),
             "requested": all_est_qs.filter(status__in=["requested", "new_request", "unassigned", "confirmed"]).count(),
@@ -567,10 +609,11 @@ class VendorEstimationAssignTechnicianView(APIView):
         if emp_obj:
             try:
                 from service_requests.models import EmployeeJob
+                EmployeeJob.objects.filter(service_request=sr, is_primary=True).exclude(employee=emp_obj).update(is_primary=False)
                 EmployeeJob.objects.update_or_create(
                     service_request=sr,
                     employee=emp_obj,
-                    defaults={"status": "ASSIGNED", "assigned_date": timezone.now()}
+                    defaults={"status": "ASSIGNED", "is_primary": True, "assigned_date": timezone.now()}
                 )
             except Exception as ej_err:
                 logger.warning(f"Could not sync EmployeeJob: {ej_err}")
@@ -626,6 +669,12 @@ class VendorEstimationStartJourneyView(APIView):
             est.status = "TECHNICIAN_ON_THE_WAY"
             est.save(update_fields=["status", "updated_at"])
 
+        try:
+            from service_requests.models import EmployeeJob
+            EmployeeJob.objects.filter(service_request=sr).update(status="ON_THE_WAY")
+        except Exception:
+            pass
+
         return Response({
             "success": True,
             "message": "Trip started. Status set to TECHNICIAN_ON_THE_WAY.",
@@ -652,6 +701,12 @@ class VendorEstimationArrivedView(APIView):
         if est:
             est.status = "TECHNICIAN_ARRIVED"
             est.save(update_fields=["status", "updated_at"])
+
+        try:
+            from service_requests.models import EmployeeJob
+            EmployeeJob.objects.filter(service_request=sr).update(status="ARRIVED")
+        except Exception:
+            pass
 
         return Response({
             "success": True,
@@ -696,6 +751,12 @@ class VendorEstimationVerifyOtpView(APIView):
         sr.status = "inspection_in_progress"
         sr.started_at = sr.started_at or now
         sr.save(update_fields=["otp_verified", "otp_verified_at", "status", "started_at", "updated_at"])
+
+        try:
+            from service_requests.models import EmployeeJob
+            EmployeeJob.objects.filter(service_request=sr).update(status="IN_PROGRESS")
+        except Exception:
+            pass
 
         if est:
             est.status = "INSPECTION_IN_PROGRESS"

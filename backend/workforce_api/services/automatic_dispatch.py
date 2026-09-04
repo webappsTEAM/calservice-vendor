@@ -917,8 +917,20 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
         # window flexes by booking priority, how deep the eligible pool
         # actually is, and service-category sparsity, instead of a fixed
         # five minutes for every job everywhere.
-        offer_window_minutes = compute_offer_window_minutes(job_obj, len(candidates))
-        expires_at = now + timedelta(minutes=offer_window_minutes)
+        # Estimations do NOT expire on a short timer: they remain active until the technician explicitly accepts or declines.
+        is_estimation = bool(
+            (job_obj.job_type or "").upper() == "ESTIMATION" or
+            (job_obj.request_kind or "").lower() in ["estimation", "inspection"] or
+            "estimation" in (job_obj.service_category or "").lower() or
+            "estimation" in (job_obj.issue_title or "").lower() or
+            "inspection" in (job_obj.issue_title or "").lower()
+        )
+        if is_estimation:
+            expires_at = now + timedelta(days=365)
+        else:
+            offer_window_minutes = compute_offer_window_minutes(job_obj, len(candidates))
+            expires_at = now + timedelta(minutes=offer_window_minutes)
+
         _maybe_signal_customer_delay(job_obj, failed_cycle_count)
         offer = WorkforceJobOffer.objects.create(
             job=job_obj,
@@ -987,6 +999,7 @@ def expire_and_reassign_offers() -> int:
     """
     Scans for expired job offers in OFFERED state, marks them EXPIRED,
     and automatically triggers fallback dispatch for each affected job.
+    Estimations do NOT expire automatically: they remain until accepted or declined.
     Returns the count of expired offers handled.
     """
     now = timezone.now()
@@ -994,6 +1007,13 @@ def expire_and_reassign_offers() -> int:
         WorkforceJobOffer.objects.filter(
             status=WorkforceJobOffer.Status.OFFERED,
             expires_at__lte=now,
+        ).exclude(
+            Q(job__job_type__iexact="ESTIMATION") |
+            Q(job__request_kind__iexact="estimation") |
+            Q(job__request_kind__iexact="inspection") |
+            Q(job__service_category__icontains="estimation") |
+            Q(job__issue_title__icontains="estimation") |
+            Q(job__issue_title__icontains="inspection")
         ).select_related("job")
     )
 

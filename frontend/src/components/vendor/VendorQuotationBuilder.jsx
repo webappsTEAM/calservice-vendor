@@ -17,14 +17,25 @@ import {
 import { apiSaveQuotation, apiSendQuotation } from '../../api/vendorEstimationService.js';
 
 const QUICK_ITEM_TEMPLATES = [
-  { title: 'R32 Refrigerant Gas Refill (Up to 1kg)', item_type: 'GAS', unit_price: 1850, quantity: 1, unit: 'kg' },
-  { title: 'R410A Refrigerant Gas Refill (Up to 1kg)', item_type: 'GAS', unit_price: 1950, quantity: 1, unit: 'kg' },
+  // HVAC & AC
+  { title: 'R32 / R410A Refrigerant Gas Refill (Up to 1kg)', item_type: 'PART', unit_price: 1850, quantity: 1, unit: 'kg' },
   { title: 'Gas Leakage Repair & Nitrogen Pressure Brazing', item_type: 'LABOR', unit_price: 650, quantity: 1, unit: 'job' },
-  { title: 'Inverter AC Dual Run Capacitor (45/5 uF)', item_type: 'PART', unit_price: 850, quantity: 1, unit: 'pc' },
+  { title: 'Inverter Dual Run Capacitor (45/5 uF)', item_type: 'PART', unit_price: 850, quantity: 1, unit: 'pc' },
   { title: 'Inverter PCB Motherboard Repair & Servicing', item_type: 'PART', unit_price: 2450, quantity: 1, unit: 'unit' },
   { title: 'Condenser Fan Motor Replacement', item_type: 'PART', unit_price: 1650, quantity: 1, unit: 'pc' },
   { title: 'Chemical Jet Foam Deep Coil Wash', item_type: 'LABOR', unit_price: 799, quantity: 1, unit: 'service' },
-  { title: 'Drain Pipe Flushing & Tray Re-alignment', item_type: 'LABOR', unit_price: 350, quantity: 1, unit: 'service' },
+  // Plumbing
+  { title: 'CPVC Concealed Pipe Line Repair & Joint Fitting', item_type: 'LABOR', unit_price: 650, quantity: 1, unit: 'point' },
+  { title: 'Heavy-Duty Brass Ball Valve (1 Inch)', item_type: 'PART', unit_price: 450, quantity: 1, unit: 'pc' },
+  { title: 'Drain Line Mechanical Snaking & Hydro Jetting', item_type: 'LABOR', unit_price: 950, quantity: 1, unit: 'service' },
+  // Electrical
+  { title: 'Distribution Board MCB Breaker (32A Double Pole)', item_type: 'PART', unit_price: 550, quantity: 1, unit: 'pc' },
+  { title: 'Circuit Load Balancing & Diagnostic Rewiring', item_type: 'LABOR', unit_price: 850, quantity: 1, unit: 'job' },
+  // Painting & Surface
+  { title: 'Wall Crack Polymer Putty & Seepage Barrier (Per Sqft)', item_type: 'PART', unit_price: 35, quantity: 100, unit: 'sqft' },
+  { title: 'Surface Waterproofing & Primer Application', item_type: 'LABOR', unit_price: 18, quantity: 100, unit: 'sqft' },
+  // General Diagnostics
+  { title: 'Senior Specialist On-Site Technical Diagnosis', item_type: 'LABOR', unit_price: 299, quantity: 1, unit: 'service' },
 ];
 
 export default function VendorQuotationBuilder({

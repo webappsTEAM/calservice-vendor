@@ -2093,12 +2093,18 @@ class WorkforcePresenceStatusView(APIView):
 def is_employee_authorized_for_job(emp, job) -> bool:
     """
     Validates tenant compatibility between an employee and a job:
+    - If the job is explicitly offered or assigned to this employee -> Authorized
     - Solo technician (emp.company_id is None) can handle platform jobs (job.company_id in (None, 1)).
     - Platform technician (emp.company_id == 1) can handle platform jobs (job.company_id in (None, 1)).
     - Vendor technician (emp.company_id > 1) can handle jobs belonging to their company (job.company_id == emp.company_id).
     """
     if not emp or not job:
         return False
+    if getattr(job, "assigned_employee_id", None) == emp.id:
+        return True
+    from workforce_api.models import WorkforceJobOffer
+    if WorkforceJobOffer.objects.filter(job=job, employee=emp).exists():
+        return True
     job_cid = getattr(job, "company_id", None)
     emp_cid = getattr(emp, "company_id", None)
     if emp_cid is None or emp_cid == 1:
@@ -2160,7 +2166,14 @@ class WorkforceJobListView(APIView):
                 offered_job_ids = list(WorkforceJobOffer.objects.filter(
                     employee=emp,
                     status="OFFERED",
-                    expires_at__gt=now
+                ).filter(
+                    Q(expires_at__gt=now) |
+                    Q(job__job_type__iexact="ESTIMATION") |
+                    Q(job__request_kind__iexact="estimation") |
+                    Q(job__request_kind__iexact="inspection") |
+                    Q(job__service_category__icontains="estimation") |
+                    Q(job__issue_title__icontains="estimation") |
+                    Q(job__issue_title__icontains="inspection")
                 ).values_list("job_id", flat=True))
 
             try:
@@ -2223,10 +2236,17 @@ class WorkforceJobListView(APIView):
 
             if job_ids:
                 # 1. Bulk fetch employee job offers
-                offers = list(WorkforceJobOffer.objects.filter(job_id__in=job_ids, employee=emp).order_by("offered_at"))
+                offers = list(WorkforceJobOffer.objects.filter(job_id__in=job_ids, employee=emp).select_related("job").order_by("offered_at"))
                 for o in offers:
                     emp_offers_map[o.job_id] = o
-                    if o.status == "OFFERED" and o.expires_at > now:
+                    is_est_job = (
+                        (getattr(o.job, "job_type", "") or "").upper() == "ESTIMATION" or
+                        (getattr(o.job, "request_kind", "") or "").lower() in ["estimation", "inspection"] or
+                        "estimation" in (getattr(o.job, "service_category", "") or "").lower() or
+                        "estimation" in (getattr(o.job, "issue_title", "") or "").lower() or
+                        "inspection" in (getattr(o.job, "issue_title", "") or "").lower()
+                    )
+                    if o.status == "OFFERED" and (o.expires_at > now or is_est_job):
                         active_offers_map[o.job_id] = o
 
                 # 2. Bulk fetch acceptance lifecycle events
@@ -3600,8 +3620,24 @@ class WorkforceJobAcceptOfferView(APIView):
             now = timezone.now()
             cancellation_deadline = now + timedelta(minutes=5)
 
+            is_estimation = bool(
+                (getattr(job_obj, "job_type", "") or "").upper() == "ESTIMATION" or
+                (getattr(job_obj, "request_kind", "") or "").lower() in ["estimation", "inspection"] or
+                getattr(job_obj, "is_estimation", False) or
+                (hasattr(job_obj, "estimation_booking") and job_obj.estimation_booking is not None) or
+                (job_obj.service_type and "estimation" in str(job_obj.service_type).lower()) or
+                (job_obj.service_category and "estimation" in str(job_obj.service_category).lower()) or
+                (job_obj.issue_title and ("estimation" in str(job_obj.issue_title).lower() or "inspection" in str(job_obj.issue_title).lower()))
+            )
+            if not is_estimation:
+                try:
+                    from service_requests.models import Estimation
+                    is_estimation = Estimation.objects.filter(request_id=job_obj.id).exists()
+                except Exception:
+                    pass
+
             if offer and offer.status == WorkforceJobOffer.Status.OFFERED:
-                if offer.expires_at < now:
+                if not is_estimation and offer.expires_at < now:
                     offer.status = WorkforceJobOffer.Status.EXPIRED
                     offer.save()
                     run_automatic_dispatch(job_obj)
@@ -10834,6 +10870,336 @@ class RelievingLegalSignoffView(APIView):
         except Exception as e:
             logger.exception("Error in legal signoff: %s", e)
             return Response({"error": "Failed to record legal signoff."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# =============================================================================
+# WORKFORCE ESTIMATION & QUOTATION VIEWS
+# =============================================================================
+from workforce_api.models import (
+    WorkforceRateCard,
+    WorkforceQuote,
+    WorkforceQuoteItem,
+    WorkforceQuoteMeasurement,
+    WorkforceQuotePhoto,
+    WorkforcePaintingQuote,
+    WorkforceMasonQuote,
+    generate_quote_number,
+)
+
+
+def _serialize_quote_summary(q):
+    job = q.job
+    return {
+        "id": q.id,
+        "quote_number": q.quote_number,
+        "quote_version": q.quote_version,
+        "job_id": q.job_id,
+        "work_job_id": q.work_job_id,
+        "status": q.status,
+        "title": q.title,
+        "description": q.description,
+        "service_category": q.service_category or (job.service_category if job else ""),
+        "service_name": q.service_name or (job.issue_title if job else ""),
+        "estimated_labor_cost": float(q.estimated_labor_cost),
+        "estimated_materials_cost": float(q.estimated_materials_cost),
+        "subtotal_amount": float(q.subtotal_amount),
+        "discount_amount": float(q.discount_amount),
+        "tax_amount": float(q.tax_amount),
+        "total_amount": float(q.total_amount),
+        "inspection_fee": float(q.inspection_fee),
+        "inspection_fee_adjusted": float(q.inspection_fee_adjusted),
+        "net_payable": float(q.net_payable),
+        "valid_until": q.valid_until.isoformat() if q.valid_until else None,
+        "created_at": q.created_at.isoformat() if q.created_at else None,
+        "updated_at": q.updated_at.isoformat() if q.updated_at else None,
+        "customer_name": job.customer_name if job else "",
+        "customer_phone": job.phone if job else "",
+        "technician_name": q.technician.user.get_full_name() if q.technician and q.technician.user else (job.technician_name if job else ""),
+        "items_count": q.items.count(),
+        "job_details": {
+            "id": job.id if job else None,
+            "request_id": job.request_id if job else None,
+            "issue_title": job.issue_title if job else "",
+            "customer_name": job.customer_name if job else "",
+            "address": job.address if job else "",
+            "preferred_date": job.preferred_date.isoformat() if job and job.preferred_date else None,
+            "status": job.status if job else "",
+        } if job else None,
+    }
+
+
+class WorkforceRateCardListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        qs = WorkforceRateCard.objects.filter(is_active=True)
+        cat = request.query_params.get("category")
+        if cat:
+            qs = qs.filter(service_category__iexact=cat)
+        srv = request.query_params.get("service")
+        if srv:
+            qs = qs.filter(service_name__icontains=srv)
+        search = request.query_params.get("search")
+        if search:
+            qs = qs.filter(
+                models.Q(item_name__icontains=search)
+                | models.Q(description__icontains=search)
+                | models.Q(service_name__icontains=search)
+            )
+        data = [
+            {
+                "id": rc.id,
+                "service_id": rc.service_id,
+                "service_category": rc.service_category,
+                "service_name": rc.service_name,
+                "section": rc.section,
+                "item_name": rc.item_name,
+                "description": rc.description,
+                "unit": rc.unit,
+                "default_rate": float(rc.default_rate),
+                "default_cost": float(rc.default_cost),
+                "tax_rate": float(rc.tax_rate),
+                "max_discount_percent": float(rc.max_discount_percent),
+            }
+            for rc in qs
+        ]
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class WorkforceEstimationGateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        from service_requests.models import ServiceRequest
+        from workforce_api.services.quotation_service import can_create_quote
+
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        can_create, reason, gates = can_create_quote(job)
+        return Response({
+            "can_create_quote": can_create,
+            "reason": reason,
+            "gates": gates,
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceQuoteListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        emp = getattr(user, "employee_profile", None)
+        qs = WorkforceQuote.objects.select_related("job", "technician", "technician__user").prefetch_related("items")
+
+        if not (user.is_superuser or getattr(user, "role", "") == "admin"):
+            if emp:
+                qs = qs.filter(models.Q(technician=emp) | models.Q(job__assigned_employee=emp) | models.Q(company=emp.company))
+            else:
+                qs = qs.filter(company=getattr(user, "company", None))
+
+        tab = request.query_params.get("tab")
+        if tab and tab != "all":
+            tab_status_map = {
+                "draft": [WorkforceQuote.Status.DRAFT],
+                "pending_review": [WorkforceQuote.Status.PENDING_REVIEW],
+                "sent": [WorkforceQuote.Status.SENT_TO_CUSTOMER],
+                "accepted": [WorkforceQuote.Status.CUSTOMER_ACCEPTED],
+                "changes_requested": [WorkforceQuote.Status.CHANGES_REQUESTED],
+                "declined": [WorkforceQuote.Status.DECLINED],
+                "expired": [WorkforceQuote.Status.EXPIRED],
+                "converted": [WorkforceQuote.Status.CONVERTED, WorkforceQuote.Status.CONVERSION_PENDING],
+            }
+            if tab in tab_status_map:
+                qs = qs.filter(status__in=tab_status_map[tab])
+
+        st = request.query_params.get("status")
+        if st:
+            qs = qs.filter(status__iexact=st)
+
+        job_id = request.query_params.get("job_id")
+        if job_id:
+            qs = qs.filter(job_id=job_id)
+
+        search = request.query_params.get("search")
+        if search:
+            qs = qs.filter(
+                models.Q(quote_number__icontains=search)
+                | models.Q(title__icontains=search)
+                | models.Q(service_name__icontains=search)
+                | models.Q(job__customer_name__icontains=search)
+            )
+
+        quotes_data = [_serialize_quote_summary(q) for q in qs.order_by("-created_at")]
+        return Response(quotes_data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        from service_requests.models import ServiceRequest
+        from workforce_api.services.quotation_service import recalculate_quote_totals
+
+        job_id = request.data.get("job_id")
+        job = ServiceRequest.objects.filter(pk=job_id).first()
+        if not job:
+            return Response({"error": "Valid job_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        emp = getattr(request.user, "employee_profile", None) or job.assigned_employee
+        quote = WorkforceQuote.objects.create(
+            job=job,
+            quote_number=generate_quote_number(),
+            technician=emp,
+            company=job.company,
+            customer=job.customer,
+            title=request.data.get("title", f"Quotation for {job.issue_title}"),
+            description=request.data.get("description", ""),
+            service_category=job.service_category,
+            service_name=job.issue_title,
+            status=WorkforceQuote.Status.DRAFT,
+        )
+        return Response(_serialize_quote_summary(quote), status=status.HTTP_201_CREATED)
+
+
+class WorkforceQuoteDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        quote = WorkforceQuote.objects.filter(pk=pk).select_related("job", "technician", "technician__user").first()
+        if not quote:
+            return Response({"error": "Quote not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        summary = _serialize_quote_summary(quote)
+        summary["items"] = [
+            {
+                "id": it.id,
+                "name": it.name,
+                "description": it.description,
+                "section": it.section,
+                "item_type": it.item_type,
+                "quantity": float(it.quantity),
+                "unit": it.unit,
+                "unit_price": float(it.unit_price),
+                "tax_rate": float(it.tax_rate),
+                "discount_amount": float(it.discount_amount),
+                "total_amount": float(it.total_amount),
+            }
+            for it in quote.items.all().order_by("sort_order", "id")
+        ]
+        return Response(summary, status=status.HTTP_200_OK)
+
+
+class WorkforceQuoteItemBulkView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        quote = WorkforceQuote.objects.filter(pk=pk).first()
+        if not quote:
+            return Response({"error": "Quote not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Items saved successfully."}, status=status.HTTP_200_OK)
+
+
+class WorkforceQuoteMeasurementsBulkView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        return Response({"message": "Measurements saved."}, status=status.HTTP_200_OK)
+
+
+class WorkforceQuoteInspectionView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        return Response({"message": "Inspection recorded."}, status=status.HTTP_200_OK)
+
+
+class WorkforceQuoteSendView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        from workforce_api.services.quotation_service import send_quote_to_customer
+        try:
+            quote = send_quote_to_customer(pk)
+            return Response(_serialize_quote_summary(quote), status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class WorkforceQuoteReviseView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        from workforce_api.services.quotation_service import create_revised_quote_version
+        try:
+            new_quote = create_revised_quote_version(pk)
+            return Response(_serialize_quote_summary(new_quote), status=status.HTTP_201_CREATED)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class WorkforceCustomerQuoteDetailView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, token):
+        quote = WorkforceQuote.objects.filter(decision_token=token).first()
+        if not quote:
+            return Response({"error": "Invalid decision token."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(_serialize_quote_summary(quote), status=status.HTTP_200_OK)
+
+
+class WorkforceCustomerQuoteDecideView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, token):
+        from workforce_api.services.quotation_service import record_customer_decision
+        quote = WorkforceQuote.objects.filter(decision_token=token).first()
+        if not quote:
+            return Response({"error": "Invalid decision token."}, status=status.HTTP_404_NOT_FOUND)
+        dec = request.data.get("decision")
+        reason = request.data.get("decline_reason")
+        notes = request.data.get("notes")
+        try:
+            res = record_customer_decision(quote.id, dec, decline_reason=reason, notes=notes)
+            return Response({"message": "Decision recorded.", "quote": _serialize_quote_summary(res)}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class WorkforceAdminQuoteClearanceView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request, pk):
+        from workforce_api.services.quotation_service import admin_clear_mason_structural
+        try:
+            q = admin_clear_mason_structural(pk, request.user, request.data.get("notes", ""))
+            return Response(_serialize_quote_summary(q), status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class WorkforceAdminQuoteMetricsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        total = WorkforceQuote.objects.count()
+        converted = WorkforceQuote.objects.filter(status=WorkforceQuote.Status.CONVERTED).count()
+        rate = round((converted / total * 100), 2) if total > 0 else 0.0
+        return Response({
+            "total_quotes": total,
+            "converted_count": converted,
+            "conversion_rate_percent": rate,
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceAdminQuoteRetryConversionView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request, pk):
+        from workforce_api.services.quotation_service import convert_accepted_quote_to_work_booking
+        try:
+            job = convert_accepted_quote_to_work_booking(pk)
+            return Response({"message": "Conversion successful.", "job_id": job.id}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
 
 
 

@@ -8,6 +8,7 @@ import {
   apiRejectJobOffer,
   apiVerifyOTP,
 } from '../../api/workforceService.js';
+import { apiVerifyOtp as apiVerifyEstimationOtp } from '../../api/vendorEstimationService.js';
 import { AppShell } from '../../components/common/AppShell.jsx';
 import { LoadingState } from '../../components/enterprise/LoadingState.jsx';
 import { ErrorState } from '../../components/enterprise/ErrorState.jsx';
@@ -152,40 +153,67 @@ function getServiceCategoryMeta(categoryName = '', title = '') {
 /**
  * Status Tag (Clear, high-visibility status pill)
  */
-function getStatusTag(status = '') {
+function getStatusTag(jobOrStatus) {
+  const status = typeof jobOrStatus === 'object' ? (jobOrStatus?.status || '') : (jobOrStatus || '');
+  const isOffer = typeof jobOrStatus === 'object' ? Boolean(jobOrStatus?.is_offer) : false;
   const st = (status || '').toUpperCase();
-  if (['OFFERED', 'PENDING', 'UNASSIGNED', 'DISPATCHING', 'REDISPATCHING'].includes(st)) {
+
+  if (isOffer || ['OFFERED', 'PENDING', 'UNASSIGNED', 'REQUESTED', 'DISPATCHING', 'REDISPATCHING'].includes(st)) {
     return {
       label: st === 'UNASSIGNED' ? 'Available' : 'New Offer',
       badgeClass: 'bg-amber-500 text-white font-bold',
       isOffer: true,
     };
   }
-  if (['ASSIGNED', 'ACCEPTED'].includes(st)) {
+  if (['ASSIGNED', 'ACCEPTED', 'TECHNICIAN_ASSIGNED', 'VENDOR_CONFIRMED'].includes(st)) {
     return {
       label: 'Assigned',
       badgeClass: 'bg-indigo-600 text-white font-bold',
     };
   }
-  if (['ON_THE_WAY', 'EN_ROUTE'].includes(st)) {
+  if (['ON_THE_WAY', 'EN_ROUTE', 'TECHNICIAN_ON_THE_WAY'].includes(st)) {
     return {
       label: 'En Route',
       badgeClass: 'bg-sky-600 text-white font-bold animate-pulse',
     };
   }
-  if (['ARRIVED'].includes(st)) {
+  if (['ARRIVED', 'TECHNICIAN_ARRIVED'].includes(st)) {
     return {
       label: 'Arrived at Site',
       badgeClass: 'bg-violet-600 text-white font-bold',
     };
   }
-  if (['IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'PROOF_SUBMITTED'].includes(st)) {
+  if (['INSPECTION_IN_PROGRESS', 'INSPECTION_STARTED', 'INSPECTION'].includes(st)) {
+    return {
+      label: 'Inspection Active',
+      badgeClass: 'bg-purple-600 text-white font-bold',
+    };
+  }
+  if (['INSPECTION_COMPLETED', 'FINDINGS_SUBMITTED', 'QUOTATION_CREATED'].includes(st)) {
+    return {
+      label: 'Quote Drafted',
+      badgeClass: 'bg-purple-700 text-white font-bold',
+    };
+  }
+  if (['QUOTATION_SENT'].includes(st)) {
+    return {
+      label: 'Quote Sent to Customer',
+      badgeClass: 'bg-purple-800 text-white font-bold animate-pulse',
+    };
+  }
+  if (['CUSTOMER_APPROVED', 'CONVERTED_TO_JOB'].includes(st)) {
+    return {
+      label: 'Quote Approved',
+      badgeClass: 'bg-emerald-700 text-white font-bold',
+    };
+  }
+  if (['IN_PROGRESS', 'IN_SERVICE', 'PROOF_SUBMITTED'].includes(st)) {
     return {
       label: 'In Progress',
       badgeClass: 'bg-emerald-600 text-white font-bold',
     };
   }
-  if (['COMPLETED', 'WORK_COMPLETED', 'WAITING_FOR_PAYMENT'].includes(st)) {
+  if (['COMPLETED', 'WORK_COMPLETED', 'WAITING_FOR_PAYMENT', 'CLOSED'].includes(st)) {
     return {
       label: 'Completed',
       badgeClass: 'bg-teal-600 text-white font-bold',
@@ -198,7 +226,7 @@ function getStatusTag(status = '') {
     };
   }
   return {
-    label: status || 'Scheduled',
+    label: (status || 'Scheduled').replace(/_/g, ' '),
     badgeClass: 'bg-slate-600 text-white font-bold',
   };
 }
@@ -262,10 +290,12 @@ export function EmployeeJobsPage() {
         // Continue if transition already initiated
       }
       if (selectedJobForDetails?.id === jobId) setSelectedJobForDetails(null);
+      await loadJobs();
       // Immediately place into active navigation cockpit
       navigate(`/workforce/employee/dashboard?job_id=${jobId}&nav=1`);
     } catch (err) {
       alert(err.message || 'Could not accept job offer.');
+      await loadJobs();
     } finally {
       setActionLoadingId(null);
     }
@@ -325,7 +355,18 @@ export function EmployeeJobsPage() {
     try {
       setIsVerifyingOtp(true);
       setOtpError('');
-      await apiVerifyOTP(otpModalJob.id, cleanOtp);
+      const isEst = (otpModalJob?.job_type || '').toUpperCase() === 'ESTIMATION' ||
+                    (otpModalJob?.request_kind || '').toLowerCase() === 'estimation' ||
+                    Boolean(otpModalJob?.estimation_details);
+      if (isEst) {
+        try {
+          await apiVerifyEstimationOtp(otpModalJob.id, cleanOtp);
+        } catch (estErr) {
+          await apiVerifyOTP(otpModalJob.id, cleanOtp);
+        }
+      } else {
+        await apiVerifyOTP(otpModalJob.id, cleanOtp);
+      }
       setOtpModalJob(null);
       setEnteredOtp('');
       await loadJobs();
@@ -339,13 +380,22 @@ export function EmployeeJobsPage() {
   // Tab counts
   const counts = useMemo(() => {
     const offers = jobs.filter((j) =>
-      ['OFFERED', 'PENDING', 'UNASSIGNED', 'DISPATCHING', 'REDISPATCHING'].includes((j.status || '').toUpperCase())
+      Boolean(j.is_offer) ||
+      ['OFFERED', 'PENDING', 'UNASSIGNED', 'REQUESTED', 'DISPATCHING', 'REDISPATCHING'].includes((j.status || '').toUpperCase())
     ).length;
-    const active = jobs.filter((j) =>
-      ['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'PROOF_SUBMITTED'].includes((j.status || '').toUpperCase())
-    ).length;
+    const active = jobs.filter((j) => {
+      const isOff = Boolean(j.is_offer) || ['OFFERED', 'PENDING', 'UNASSIGNED', 'REQUESTED', 'DISPATCHING', 'REDISPATCHING'].includes((j.status || '').toUpperCase());
+      return !isOff && [
+        'ASSIGNED', 'ACCEPTED', 'TECHNICIAN_ASSIGNED', 'VENDOR_CONFIRMED',
+        'ON_THE_WAY', 'EN_ROUTE', 'TECHNICIAN_ON_THE_WAY', 'ARRIVED', 'TECHNICIAN_ARRIVED',
+        'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'INSPECTION_IN_PROGRESS',
+        'INSPECTION_STARTED', 'INSPECTION_COMPLETED', 'FINDINGS_SUBMITTED',
+        'QUOTATION_CREATED', 'QUOTATION_SENT', 'CUSTOMER_APPROVED', 'CONVERTED_TO_JOB',
+        'PROOF_SUBMITTED'
+      ].includes((j.status || '').toUpperCase());
+    }).length;
     const completed = jobs.filter((j) =>
-      ['COMPLETED', 'WORK_COMPLETED', 'WAITING_FOR_PAYMENT'].includes((j.status || '').toUpperCase())
+      ['COMPLETED', 'WORK_COMPLETED', 'WAITING_FOR_PAYMENT', 'CLOSED'].includes((j.status || '').toUpperCase())
     ).length;
 
     return {
@@ -360,16 +410,24 @@ export function EmployeeJobsPage() {
   const filteredJobs = useMemo(() => {
     return jobs.filter((job) => {
       const status = (job.status || '').toUpperCase();
+      const isOffer = Boolean(job.is_offer) || ['OFFERED', 'PENDING', 'UNASSIGNED', 'REQUESTED', 'DISPATCHING', 'REDISPATCHING'].includes(status);
       const term = searchTerm.toLowerCase().trim();
       const meta = getServiceCategoryMeta(job.service_category, job.service_title);
 
-      if (activeTab === 'OFFERS' && !['OFFERED', 'PENDING', 'UNASSIGNED', 'DISPATCHING', 'REDISPATCHING'].includes(status)) {
+      if (activeTab === 'OFFERS' && !isOffer) {
         return false;
       }
-      if (activeTab === 'ACTIVE' && !['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'PROOF_SUBMITTED'].includes(status)) {
+      if (activeTab === 'ACTIVE' && (isOffer || ![
+        'ASSIGNED', 'ACCEPTED', 'TECHNICIAN_ASSIGNED', 'VENDOR_CONFIRMED',
+        'ON_THE_WAY', 'EN_ROUTE', 'TECHNICIAN_ON_THE_WAY', 'ARRIVED', 'TECHNICIAN_ARRIVED',
+        'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'INSPECTION_IN_PROGRESS',
+        'INSPECTION_STARTED', 'INSPECTION_COMPLETED', 'FINDINGS_SUBMITTED',
+        'QUOTATION_CREATED', 'QUOTATION_SENT', 'CUSTOMER_APPROVED', 'CONVERTED_TO_JOB',
+        'PROOF_SUBMITTED'
+      ].includes(status))) {
         return false;
       }
-      if (activeTab === 'COMPLETED' && !['COMPLETED', 'WORK_COMPLETED', 'WAITING_FOR_PAYMENT'].includes(status)) {
+      if (activeTab === 'COMPLETED' && !['COMPLETED', 'WORK_COMPLETED', 'WAITING_FOR_PAYMENT', 'CLOSED'].includes(status)) {
         return false;
       }
 
@@ -544,29 +602,30 @@ export function EmployeeJobsPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {filteredJobs.map((job) => {
               const status = (job.status || '').toUpperCase();
-              const isOffer = status === 'OFFERED' || status === 'PENDING' || status === 'UNASSIGNED' || status === 'DISPATCHING' || status === 'REDISPATCHING';
-              const isAssigned = status === 'ASSIGNED' || status === 'ACCEPTED';
-              const isOnTheWay = status === 'ON_THE_WAY' || status === 'EN_ROUTE';
-              const isArrived = status === 'ARRIVED';
-              const isInProgress = status === 'IN_PROGRESS' || status === 'IN_SERVICE' || status === 'INSPECTION' || status === 'PROOF_SUBMITTED';
-              const isCompleted = status === 'COMPLETED' || status === 'WORK_COMPLETED' || status === 'WAITING_FOR_PAYMENT';
+              const isOffer = Boolean(job.is_offer) || ['OFFERED', 'PENDING', 'UNASSIGNED', 'REQUESTED', 'DISPATCHING', 'REDISPATCHING'].includes(status);
+              const isAssigned = !isOffer && ['ASSIGNED', 'ACCEPTED', 'TECHNICIAN_ASSIGNED', 'VENDOR_CONFIRMED'].includes(status);
+              const isOnTheWay = ['ON_THE_WAY', 'EN_ROUTE', 'TECHNICIAN_ON_THE_WAY'].includes(status);
+              const isArrived = ['ARRIVED', 'TECHNICIAN_ARRIVED'].includes(status);
+              const isInspection = ['INSPECTION', 'INSPECTION_IN_PROGRESS', 'INSPECTION_STARTED', 'INSPECTION_COMPLETED', 'FINDINGS_SUBMITTED', 'QUOTATION_CREATED', 'QUOTATION_SENT'].includes(status);
+              const isConverted = ['CUSTOMER_APPROVED', 'CONVERTED_TO_JOB'].includes(status);
+              const isInProgress = ['IN_PROGRESS', 'IN_SERVICE', 'PROOF_SUBMITTED'].includes(status);
+              const isCompleted = ['COMPLETED', 'WORK_COMPLETED', 'WAITING_FOR_PAYMENT', 'CLOSED'].includes(status);
+
+              const isEstimation = (job.job_type || '').toUpperCase() === 'ESTIMATION' ||
+                                  (job.request_kind || '').toLowerCase() === 'estimation' ||
+                                  Boolean(job.estimation_details);
 
               const catMeta = getServiceCategoryMeta(job.service_category, job.service_title);
-              const statusTag = getStatusTag(job.status);
+              const statusTag = getStatusTag(job);
               const CategoryIcon = catMeta.icon;
 
               const mapUrl = job.address
                 ? `https://maps.google.com/?q=${encodeURIComponent(job.address)}`
                 : null;
 
-              // Bug found: job.estimated_price / job.price are not fields the
-              // vendor API ever returns (WorkforceJobSerializer sends
-              // total_amount and a computed payment{amount_due,...} object) --
-              // so this always fell through to the 450 literal, showing the
-              // exact same payout on every job regardless of its real value.
-              // Matches the correct pattern already used in
-              // EmployeeDashboardPage.jsx (selectedJob.payment?.amount_due || selectedJob.total_amount).
-              const payoutAmount = job.payment?.amount_due || job.total_amount || 0;
+              const payoutAmount = isConverted
+                ? (job.total_amount || 0)
+                : (isEstimation ? (job.estimation_details?.fee?.amount || 199) : (job.payment?.amount_due || job.total_amount || 0));
 
               return (
                 <div
@@ -574,6 +633,8 @@ export function EmployeeJobsPage() {
                   className={`bg-white rounded-2xl border transition-all flex flex-col justify-between overflow-hidden shadow-2xs hover:shadow-md ${
                     isOffer
                       ? 'border-amber-300 ring-2 ring-amber-400/20'
+                      : isEstimation
+                      ? 'border-purple-300 ring-2 ring-purple-400/15'
                       : isInProgress
                       ? 'border-emerald-300 ring-2 ring-emerald-400/20'
                       : 'border-slate-200/90'
@@ -584,17 +645,17 @@ export function EmployeeJobsPage() {
                     {/* Header Row: Category Badge + Status + Payout */}
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex items-center gap-3">
-                        <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${catMeta.iconBg}`}>
-                          <CategoryIcon className="w-5 h-5" />
+                        <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${isEstimation ? 'bg-purple-100 text-purple-700' : catMeta.iconBg}`}>
+                          {isEstimation ? <Wrench className="w-5 h-5" /> : <CategoryIcon className="w-5 h-5" />}
                         </div>
                         <div>
                           <div className="flex items-center gap-1.5 flex-wrap">
                             <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase border ${catMeta.tagColor}`}>
                               {catMeta.label}
                             </span>
-                            {job.job_type === 'ESTIMATION' && (
-                              <span className="px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase bg-amber-50 text-amber-800 border border-amber-300">
-                                Estimation
+                            {isEstimation && (
+                              <span className="px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase bg-purple-100 text-purple-800 border border-purple-300 flex items-center gap-1">
+                                <span>Estimation</span>
                               </span>
                             )}
                             <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${statusTag.badgeClass}`}>
@@ -607,13 +668,13 @@ export function EmployeeJobsPage() {
                         </div>
                       </div>
 
-                      {/* Prominent Swiggy-Style Payout Amount */}
+                      {/* Prominent Payout Amount */}
                       <div className="text-right shrink-0">
                         <div className="text-lg sm:text-xl font-black text-slate-900 font-mono tracking-tight">
                           ₹{Number(payoutAmount).toLocaleString('en-IN')}
                         </div>
-                        <span className="text-[10px] font-semibold text-emerald-700 block">
-                          Earn on finish
+                        <span className="text-[10px] font-semibold text-purple-700 block">
+                          {isConverted ? 'Approved Work Total' : isEstimation ? 'Visit / Inspection Fee' : 'Earn on finish'}
                         </span>
                       </div>
                     </div>
@@ -671,11 +732,6 @@ export function EmployeeJobsPage() {
                           </span>
                         </div>
 
-                        {/* Bug found: WorkforceJobSerializer sends "phone", never
-                            "customer_phone" -- so this Call button was always
-                            hidden, even for phone-booked jobs where a real
-                            number is on file. Read the real field, keep
-                            customer_phone as a harmless second fallback. */}
                         {(job.phone || job.customer_phone) ? (
                           <a
                             href={`tel:${job.phone || job.customer_phone}`}
@@ -767,25 +823,36 @@ export function EmployeeJobsPage() {
                         </button>
                       )}
 
+                      {/* INSPECTION / QUOTATION LINK */}
+                      {isInspection && (
+                        <Link
+                          to="/workforce/vendor/estimations"
+                          className="px-4 py-2 bg-purple-700 hover:bg-purple-800 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
+                        >
+                          <Wrench className="w-3.5 h-3.5" />
+                          <span>Inspection & Quote Sheet</span>
+                        </Link>
+                      )}
+
+                      {/* CONVERTED / CUSTOMER APPROVED */}
+                      {isConverted && (
+                        <Link
+                          to={`/workforce/employee/dashboard?job_id=${job.id}`}
+                          className="px-5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-2"
+                        >
+                          <span>Quote Approved — Open Cockpit</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </Link>
+                      )}
+
                       {/* IN PROGRESS -> COCKPIT */}
-                      {isInProgress && (
+                      {isInProgress && !isConverted && !isInspection && (
                         <Link
                           to="/workforce/employee/dashboard"
                           className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-2"
                         >
                           <span>Open Job Cockpit</span>
                           <ArrowRight className="w-3.5 h-3.5" />
-                        </Link>
-                      )}
-
-                      {/* ESTIMATION WORKFLOW LINK */}
-                      {(job.job_type === 'ESTIMATION' || (job.status || '').toLowerCase().includes('inspection') || (job.status || '').toLowerCase().includes('quotation')) && (
-                        <Link
-                          to="/workforce/vendor/estimations"
-                          className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
-                        >
-                          <Wrench className="w-3.5 h-3.5" />
-                          <span>Estimation Portal</span>
                         </Link>
                       )}
 
@@ -824,13 +891,40 @@ export function EmployeeJobsPage() {
                 </div>
                 <div className="text-right">
                   <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">
-                    Payout Amount
+                    {selectedJobForDetails.job_type === 'ESTIMATION' ? 'Inspection Visit Fee' : 'Payout Amount'}
                   </span>
                   <span className="text-base font-black text-slate-900 font-mono">
-                    ₹{Number(selectedJobForDetails.payment?.amount_due || selectedJobForDetails.total_amount || 0).toLocaleString('en-IN')}
+                    ₹{Number(selectedJobForDetails.job_type === 'ESTIMATION' ? (selectedJobForDetails.estimation_details?.fee?.amount || 199) : (selectedJobForDetails.payment?.amount_due || selectedJobForDetails.total_amount || 0)).toLocaleString('en-IN')}
                   </span>
                 </div>
               </div>
+
+              {/* Estimation Details if present */}
+              {(selectedJobForDetails.job_type === 'ESTIMATION' || selectedJobForDetails.estimation_details) && (
+                <div className="p-4 bg-purple-50/70 border border-purple-200 rounded-xl space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-purple-700 font-black uppercase tracking-wider flex items-center gap-1">
+                      <Wrench className="w-3.5 h-3.5 text-purple-600" />
+                      <span>Service Estimation Specifications</span>
+                    </span>
+                    <span className="px-2 py-0.5 bg-purple-200/80 text-purple-900 text-[10px] font-bold rounded-md">
+                      {selectedJobForDetails.status}
+                    </span>
+                  </div>
+                  {selectedJobForDetails.estimation_details?.customer_symptom && (
+                    <p className="text-purple-950 font-medium text-xs">
+                      <strong>Customer Symptom:</strong> {selectedJobForDetails.estimation_details.customer_symptom}
+                    </p>
+                  )}
+                  {selectedJobForDetails.estimation_details?.ac_type && (
+                    <div className="flex items-center gap-3 text-[11px] text-purple-900 pt-1">
+                      <span><strong>Type:</strong> {selectedJobForDetails.estimation_details.ac_type}</span>
+                      <span><strong>Brand:</strong> {selectedJobForDetails.estimation_details.ac_brand}</span>
+                      <span><strong>Capacity:</strong> {selectedJobForDetails.estimation_details.ac_capacity}</span>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Customer Info */}
               <div className="p-4 bg-white border border-slate-200 rounded-xl space-y-2">
@@ -885,7 +979,7 @@ export function EmployeeJobsPage() {
                 >
                   Close
                 </button>
-                {(selectedJobForDetails.status === 'OFFERED' || selectedJobForDetails.status === 'PENDING' || selectedJobForDetails.status === 'UNASSIGNED') && (
+                {(selectedJobForDetails.is_offer || ['OFFERED', 'PENDING', 'UNASSIGNED', 'REQUESTED', 'DISPATCHING', 'REDISPATCHING'].includes((selectedJobForDetails.status || '').toUpperCase())) && (
                   <button
                     type="button"
                     onClick={(e) => handleAcceptOffer(selectedJobForDetails.id, e)}

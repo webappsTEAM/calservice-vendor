@@ -48,6 +48,7 @@ import { AdminServiceProvidersPage } from './pages/admin/AdminServiceProvidersPa
 import { ProviderProfilePage } from './pages/admin/ProviderProfilePage.jsx';
 import { VendorTechnicianNetworkPage } from './pages/admin/VendorTechnicianNetworkPage.jsx';
 import { VendorInvitationsPage } from './pages/admin/VendorInvitationsPage.jsx';
+import VendorEstimationsPage from './pages/vendor/estimations/VendorEstimationsPage.jsx';
 import { PlatformVendorsPage } from './pages/platform/PlatformVendorsPage.jsx';
 import { PlatformWorkforcePage } from './pages/platform/PlatformWorkforcePage.jsx';
 import { CustomerTrackingPage } from './pages/customer/CustomerTrackingPage.jsx';
@@ -271,9 +272,9 @@ export function App() {
             <Route
               path="/workforce/vendor/estimations"
               element={
-                <AdminRoute>
+                <AuthenticatedRoute>
                   <VendorEstimationsPage />
-                </AdminRoute>
+                </AuthenticatedRoute>
               }
             />
             <Route

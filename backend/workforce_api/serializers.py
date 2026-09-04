@@ -465,6 +465,7 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
     offer_expires_at = serializers.SerializerMethodField()
     settlement_channel = serializers.SerializerMethodField()
     earnings_wallet_owner = serializers.SerializerMethodField()
+    estimation_details = serializers.SerializerMethodField()
 
     class Meta:
         model = ServiceRequest
@@ -512,6 +513,11 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             # performed the job (see WalletLedgerEntry.worker_performed).
             "settlement_channel",
             "earnings_wallet_owner",
+            "job_type",
+            "request_kind",
+            "start_otp",
+            "invoice_id",
+            "estimation_details",
         ]
 
     def _get_context_emp(self):
@@ -573,6 +579,25 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             return False
         return bool(obj.assigned_employee_id == emp.id)
 
+    def _is_estimation_job(self, obj):
+        if (getattr(obj, "job_type", "") or "").upper() == "ESTIMATION" or (getattr(obj, "request_kind", "") or "").lower() in ["estimation", "inspection"]:
+            return True
+        if getattr(obj, "is_estimation", False):
+            return True
+        if hasattr(obj, "estimation_booking") and obj.estimation_booking is not None:
+            return True
+        if obj.service_type and "estimation" in str(obj.service_type).lower():
+            return True
+        if obj.service_category and "estimation" in str(obj.service_category).lower():
+            return True
+        if obj.issue_title and ("estimation" in str(obj.issue_title).lower() or "inspection" in str(obj.issue_title).lower()):
+            return True
+        try:
+            from service_requests.models import Estimation
+            return Estimation.objects.filter(request_id=obj.id).exists()
+        except Exception:
+            return False
+
     def get_is_offer(self, obj):
         if self.get_is_accepted_by_current_employee(obj) or self.get_is_assigned_to_current_employee(obj):
             return False
@@ -581,8 +606,11 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             return False
         offer = self._get_emp_offer(obj, emp)
         from django.utils import timezone
-        if offer and offer.status == "OFFERED" and offer.expires_at > timezone.now():
-            return True
+        if offer and offer.status == "OFFERED":
+            if self._is_estimation_job(obj):
+                return True
+            if offer.expires_at > timezone.now():
+                return True
         return False
 
     def get_offer_status(self, obj):
@@ -595,12 +623,17 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
         if not offer:
             return None
         from django.utils import timezone
-        if offer.status == "OFFERED" and offer.expires_at <= timezone.now():
-            return "EXPIRED"
+        if offer.status == "OFFERED":
+            if self._is_estimation_job(obj):
+                return "OFFERED"
+            if offer.expires_at <= timezone.now():
+                return "EXPIRED"
         return offer.status
 
     def get_offer_expires_at(self, obj):
         if not self.get_is_offer(obj):
+            return None
+        if self._is_estimation_job(obj):
             return None
         emp = self._get_context_emp()
         offer = self._get_emp_offer(obj, emp)
@@ -693,15 +726,16 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             from .models import WorkforceJobOffer
             from django.utils import timezone
             offer = WorkforceJobOffer.objects.filter(job=obj, employee=emp, status="OFFERED").first()
-            if offer and offer.expires_at <= timezone.now():
+            if offer and not self._is_estimation_job(obj) and offer.expires_at <= timezone.now():
                 offer = None
         if not offer:
             return None
+        is_est = self._is_estimation_job(obj)
         return {
             "id": offer.id,
             "status": "OFFERED",
             "offered_at": offer.offered_at.isoformat(),
-            "expires_at": offer.expires_at.isoformat(),
+            "expires_at": None if is_est else offer.expires_at.isoformat(),
             "is_expired": False,
         }
 
@@ -830,6 +864,48 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             "cancellation_deadline": deadline.isoformat(),
             "remaining_seconds": remaining_seconds,
         }
+
+    def get_estimation_details(self, obj):
+        try:
+            from service_requests.models import Estimation
+            est = Estimation.objects.filter(service_request=obj).first()
+            if not est and (obj.job_type or "").upper() != "ESTIMATION" and (obj.request_kind or "").lower() != "estimation":
+                return None
+            if not est:
+                return {
+                    "is_estimation": True,
+                    "status": obj.status.upper(),
+                }
+            fee = est.fees.first()
+            insp = est.inspections.first()
+            quote = est.quotations.order_by("-version").first()
+            return {
+                "id": est.id,
+                "is_estimation": True,
+                "status": est.status,
+                "customer_symptom": est.customer_symptom or obj.issue_title or "",
+                "ac_type": est.ac_type,
+                "ac_brand": est.ac_brand,
+                "ac_capacity": est.ac_capacity,
+                "ac_quantity": est.ac_quantity,
+                "fee": {
+                    "id": fee.id if fee else None,
+                    "amount": float(fee.amount) if fee else 199.0,
+                    "status": fee.status if fee else "PENDING",
+                    "waived_reason": fee.waived_reason if fee else "",
+                } if fee else None,
+                "inspection_status": insp.status if insp else "PENDING",
+                "latest_quote": {
+                    "id": quote.id,
+                    "quote_ref": quote.quote_ref,
+                    "status": quote.status,
+                    "total_amount": float(quote.total_amount),
+                    "items_count": quote.items.count(),
+                } if quote else None,
+            }
+        except Exception:
+            return None
+
 
 
 class WorkforceEmployeeChangeRequestSerializer(serializers.ModelSerializer):

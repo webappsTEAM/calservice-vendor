@@ -39,7 +39,6 @@ def _generate_request_id():
 
 
 class CatalogCategory(models.Model):
-
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=200, unique=True)
     description = models.TextField(blank=True, default="")
@@ -49,14 +48,57 @@ class CatalogCategory(models.Model):
     rating = models.CharField(max_length=10, blank=True, default="4.8")
     is_active = models.BooleanField(default=True)
     sort_order = models.IntegerField(default=0)
+    flow_type = models.CharField(max_length=50, blank=True, default="")
 
     class Meta:
         managed = False
-        db_table = "service_requests_estimationquotationitem"
+        db_table = "service_requests_catalogcategory"
         ordering = ["sort_order", "id"]
 
     def __str__(self):
-        return f"{self.service_name} x {self.quantity} = ₹{self.line_total}"
+        return self.name
+
+
+QUOTATION_SERVICE_IDS = {
+    35: "Masonry Wall Repair",
+    36: "Tile Laying & Replacement",
+    37: "Plastering & Masonry Work",
+    38: "Brickwork Construction",
+    91: "Interior Full Home Painting",
+    92: "Exterior Wall Painting",
+    93: "Waterproofing & Primer Coating",
+    94: "Wood & Metal Polish",
+}
+
+
+def is_quotation_service(service_or_id=None, name=None, category=None, **kwargs):
+    if service_or_id is not None:
+        if isinstance(service_or_id, int) and service_or_id in QUOTATION_SERVICE_IDS:
+            return True
+        if hasattr(service_or_id, "id") and getattr(service_or_id, "id") in QUOTATION_SERVICE_IDS:
+            return True
+        if hasattr(service_or_id, "name") and not name:
+            name = getattr(service_or_id, "name")
+        if hasattr(service_or_id, "category") and not category:
+            cat = getattr(service_or_id, "category")
+            category = cat.name if hasattr(cat, "name") else str(cat)
+    if name:
+        lower_name = str(name).lower()
+        if any(kw in lower_name for kw in ["paint", "mason", "estimation", "inspection", "waterproof"]):
+            return True
+    if category:
+        lower_cat = str(category).lower()
+        if any(kw in lower_cat for kw in ["paint", "mason", "estimation", "inspection"]):
+            return True
+    return False
+
+
+class RequestKind(models.TextChoices):
+    STANDARD     = "standard",     "Standard"
+    INSPECTION   = "inspection",   "Inspection"
+    QUOTED_WORK  = "quoted_work",  "Quoted Work"
+    ESTIMATION   = "estimation",   "Estimation"
+    WORK         = "work",         "Work"
 
 
 class Service(models.Model):
@@ -83,6 +125,12 @@ class Service(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.category.name if self.category else 'No Category'})"
+
+    @property
+    def pricing_mode(self):
+        if self.id in QUOTATION_SERVICE_IDS or is_quotation_service(self):
+            return "QUOTATION"
+        return "FIXED"
 
 
 class ServiceRequest(models.Model):
@@ -228,13 +276,16 @@ class ServiceRequest(models.Model):
 
     status = models.CharField(max_length=30, choices=Status.choices, default=Status.NEW_REQUEST)
     priority = models.CharField(max_length=20, choices=Priority.choices, default=Priority.NORMAL)
+    job_type = models.CharField(max_length=50, blank=True, default="SERVICE", db_index=True)
     # X-04: were missing -- this app's own request_id auto-numbering only
     # makes sense in the context of what KIND of request it is, and quote
     # jobs are a first-class case the workforce app should be able to see.
     request_kind = models.CharField(max_length=30, default="standard", db_index=True,
                                      choices=[("standard", "Standard"),
                                               ("inspection", "Inspection"),
-                                              ("quoted_work", "Quoted Work")])
+                                              ("quoted_work", "Quoted Work"),
+                                              ("estimation", "Estimation"),
+                                              ("work", "Work")])
     quote_number = models.CharField(max_length=100, blank=True, null=True, unique=True, db_index=True)
 
     # X-04: pricing snapshot fields, all missing from this mirror -- a
@@ -266,6 +317,7 @@ class ServiceRequest(models.Model):
         null=True, blank=True,
         related_name="assigned_service_requests",
     )
+    technician_id = models.BigIntegerField(null=True, blank=True)
     technician_name = models.CharField(max_length=200, blank=True, default="")
     technician_phone = models.CharField(max_length=50, blank=True, default="")
     technician_photo = models.CharField(max_length=500, blank=True, default="")
@@ -274,6 +326,12 @@ class ServiceRequest(models.Model):
     # this app previously had no way to set them via its ORM at all.
     technician_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     technician_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    technician_speed = models.FloatField(null=True, blank=True)
+    technician_accuracy = models.FloatField(null=True, blank=True)
+    technician_heading = models.FloatField(null=True, blank=True)
+    technician_location_updated_at = models.DateTimeField(null=True, blank=True)
+    technician_last_seen_at = models.DateTimeField(null=True, blank=True)
+    technician_arrived_at = models.DateTimeField(null=True, blank=True)
     technician_location_name = models.CharField(max_length=200, blank=True, default="")
     start_otp = models.CharField(max_length=10, blank=True, default="")
     otp_verified = models.BooleanField(default=False)
@@ -304,6 +362,13 @@ class ServiceRequest(models.Model):
     workforce_job_id = models.CharField(max_length=100, blank=True, default="")
     external_assignment_id = models.CharField(max_length=100, blank=True, default="")
     technician_rating = models.FloatField(null=True, blank=True)
+
+    vendor_id = models.CharField(max_length=100, blank=True, null=True)
+    vendor_name = models.CharField(max_length=200, blank=True, null=True)
+    vendor_confirmed_at = models.DateTimeField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -438,15 +503,85 @@ class ServiceRequest(models.Model):
         reason = "Ready for completion." if is_ready else f"Cannot complete ServiceRequest: {'; '.join(pending_dependencies)}"
         return is_ready, reason, pending_dependencies
 
+    @property
+    def is_estimation(self):
+        return (
+            getattr(self, "job_type", "") == "ESTIMATION"
+            or str(self.request_kind).lower() in ["estimation", "inspection"]
+            or is_quotation_service(name=self.issue_title, category=self.service_category)
+        )
+
+    @property
+    def is_work_job(self):
+        return not self.is_estimation
+
+    @property
+    def pricing_mode(self):
+        return "QUOTATION" if self.is_estimation else "FIXED"
 
 
 class EmployeeJob(models.Model):
     service_request = models.ForeignKey(
         ServiceRequest,
         on_delete=models.CASCADE,
+        related_name="employee_jobs",
+        db_column="service_request_id",
+    )
+    employee = models.ForeignKey(
+        "employees.Employee",
+        on_delete=models.CASCADE,
+        related_name="employee_jobs",
+        db_column="employee_id",
+    )
+    status = models.CharField(max_length=50, default="ASSIGNED")
+    notes = models.TextField(blank=True, default="")
+    assigned_date = models.DateTimeField(null=True, blank=True)
+    accepted_date = models.DateTimeField(null=True, blank=True)
+    started_date = models.DateTimeField(null=True, blank=True)
+    completed_date = models.DateTimeField(null=True, blank=True)
+    is_primary = models.BooleanField(default=True)
+    assigned_by_id = models.BigIntegerField(null=True, blank=True)
+    uncompletion_reason = models.TextField(blank=True, default="")
+    source_work_extension_id = models.BigIntegerField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_employeejob"
+        ordering = ["-assigned_date"]
+
+    def __str__(self):
+        return f"EmployeeJob SR-{self.service_request_id} -> Emp {self.employee_id} ({self.status})"
+
+
+class ServiceRequestPayment(models.Model):
+    service_request = models.ForeignKey(
+        ServiceRequest,
+        on_delete=models.CASCADE,
         related_name="payments",
         db_column="service_request_id",
     )
+    customer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_column="customer_id",
+        related_name="sr_payments_list",
+    )
+    customer_id_snapshot = models.CharField(max_length=100, blank=True, default="")
+    service_request_id_snapshot = models.CharField(max_length=100, blank=True, default="")
+    razorpay_order_id = models.CharField(max_length=100, blank=True, null=True)
+    razorpay_payment_id = models.CharField(max_length=100, blank=True, null=True)
+    razorpay_signature = models.CharField(max_length=255, blank=True, null=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    currency = models.CharField(max_length=10, default="INR")
+    status = models.CharField(max_length=50, default="PENDING")
+    method = models.CharField(max_length=50, default="CASH")
+    gateway = models.CharField(max_length=50, default="MANUAL")
+    error_code = models.CharField(max_length=100, blank=True, default="")
+    error_description = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         managed = False
@@ -454,7 +589,253 @@ class EmployeeJob(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self):
-        return f"EmployeeJob SR-{self.service_request_id} -> Emp {self.employee_id} ({self.status})"
+        return f"Payment #{self.id} for SR-{self.service_request_id}: ₹{self.amount} ({self.status})"
+
+
+class SettingsHubInvoice(models.Model):
+    invoice_number = models.CharField(max_length=100, unique=True, null=True, blank=True)
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_column="company_id",
+        related_name="hub_invoices",
+    )
+    amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    currency = models.CharField(max_length=10, default="INR")
+    status = models.CharField(max_length=50, default="PAID")
+    billing_date = models.DateField(null=True, blank=True)
+    due_date = models.DateField(null=True, blank=True)
+    pdf_url = models.CharField(max_length=500, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = "settings_hub_invoice"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Invoice {self.invoice_number} - ₹{self.amount} ({self.status})"
+
+
+class Estimation(models.Model):
+    service_request = models.ForeignKey(
+        ServiceRequest,
+        on_delete=models.CASCADE,
+        related_name="estimations",
+        db_column="service_request_id",
+        null=True,
+        blank=True,
+    )
+    ac_type = models.CharField(max_length=100, blank=True, null=True)
+    ac_brand = models.CharField(max_length=100, blank=True, null=True)
+    ac_capacity = models.CharField(max_length=100, blank=True, null=True)
+    ac_quantity = models.PositiveSmallIntegerField(default=1, null=True, blank=True)
+    customer_symptom = models.TextField(blank=True, null=True)
+    customer_notes = models.TextField(blank=True, null=True)
+    status = models.CharField(max_length=50, default="draft", null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_estimation"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Estimation #{self.id} for SR #{self.service_request_id} ({self.status})"
+
+
+class EstimationFee(models.Model):
+    estimation = models.ForeignKey(
+        Estimation,
+        on_delete=models.CASCADE,
+        related_name="fees",
+        db_column="estimation_id",
+        null=True,
+        blank=True,
+    )
+    amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, null=True, blank=True)
+    currency = models.CharField(max_length=10, default="INR", null=True, blank=True)
+    status = models.CharField(max_length=50, default="pending", null=True, blank=True)
+    payment_reference = models.CharField(max_length=100, blank=True, null=True)
+    payment_method = models.CharField(max_length=50, blank=True, null=True)
+    collected_at = models.DateTimeField(null=True, blank=True)
+    waived_at = models.DateTimeField(null=True, blank=True)
+    waived_reason = models.TextField(blank=True, null=True)
+    waived_by_id = models.BigIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_estimationfee"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"EstimationFee #{self.id} - ₹{self.amount} ({self.status})"
+
+
+class Inspection(models.Model):
+    estimation = models.ForeignKey(
+        Estimation,
+        on_delete=models.CASCADE,
+        related_name="inspections",
+        db_column="estimation_id",
+        null=True,
+        blank=True,
+    )
+    technician = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_column="technician_id",
+        related_name="ac_inspections",
+    )
+    technician_external_id = models.CharField(max_length=100, blank=True, null=True)
+    technician_name = models.CharField(max_length=200, blank=True, null=True)
+    technician_phone = models.CharField(max_length=50, blank=True, null=True)
+    status = models.CharField(max_length=50, default="pending", null=True, blank=True)
+    diagnosis = models.TextField(blank=True, null=True)
+    notes = models.TextField(blank=True, null=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_inspection"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Inspection #{self.id} for Est #{self.estimation_id} ({self.status})"
+
+
+class InspectionFinding(models.Model):
+    inspection = models.ForeignKey(
+        Inspection,
+        on_delete=models.CASCADE,
+        related_name="findings",
+        db_column="inspection_id",
+        null=True,
+        blank=True,
+    )
+    service_id = models.BigIntegerField(null=True, blank=True)
+    finding_type = models.CharField(max_length=50, blank=True, null=True)
+    title = models.CharField(max_length=255)
+    diagnosis = models.TextField(blank=True, null=True)
+    severity = models.CharField(max_length=50, blank=True, null=True, default="low")
+    description = models.TextField(blank=True, null=True)
+    recommended_action = models.TextField(blank=True, null=True)
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1.00, null=True, blank=True)
+    unit = models.CharField(max_length=50, blank=True, null=True, default="unit")
+    sort_order = models.PositiveSmallIntegerField(default=0, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_inspectionfinding"
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return f"Finding: {self.title} ({self.severity})"
+
+
+class InspectionPhoto(models.Model):
+    inspection = models.ForeignKey(
+        Inspection,
+        on_delete=models.CASCADE,
+        related_name="photos",
+        db_column="inspection_id",
+        null=True,
+        blank=True,
+    )
+    finding_id = models.BigIntegerField(null=True, blank=True)
+    photo = models.CharField(max_length=500)
+    caption = models.CharField(max_length=255, blank=True, null=True)
+    uploaded_by = models.CharField(max_length=100, blank=True, null=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_inspectionphoto"
+        ordering = ["-uploaded_at"]
+
+    def __str__(self):
+        return f"Photo #{self.id} for Inspection #{self.inspection_id}"
+
+
+class EstimationQuotation(models.Model):
+    estimation = models.ForeignKey(
+        Estimation,
+        on_delete=models.CASCADE,
+        related_name="quotations",
+        db_column="estimation_id",
+        null=True,
+        blank=True,
+    )
+    version = models.PositiveSmallIntegerField(default=1, null=True, blank=True)
+    quote_ref = models.CharField(max_length=100, blank=True, null=True)
+    status = models.CharField(max_length=50, default="draft", null=True, blank=True)
+    vendor_id = models.CharField(max_length=100, blank=True, null=True)
+    technician_id = models.CharField(max_length=100, blank=True, null=True)
+    subtotal = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, null=True, blank=True)
+    tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, null=True, blank=True)
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, null=True, blank=True)
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, null=True, blank=True)
+    currency = models.CharField(max_length=10, default="INR", null=True, blank=True)
+    notes = models.TextField(blank=True, null=True)
+    valid_until = models.DateField(null=True, blank=True)
+    customer_approved_at = models.DateTimeField(null=True, blank=True)
+    customer_rejected_at = models.DateTimeField(null=True, blank=True)
+    rejection_reason = models.CharField(max_length=100, blank=True, null=True)
+    rejection_note = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_estimationquotation"
+        ordering = ["-version"]
+
+    def __str__(self):
+        return f"Quotation {self.quote_ref} v{self.version} ({self.status}) - ₹{self.total_amount}"
+
+
+class EstimationQuotationItem(models.Model):
+    quotation = models.ForeignKey(
+        EstimationQuotation,
+        on_delete=models.CASCADE,
+        related_name="items",
+        db_column="quotation_id",
+        null=True,
+        blank=True,
+    )
+    service_id = models.BigIntegerField(null=True, blank=True)
+    catalog_service_id = models.CharField(max_length=100, blank=True, null=True)
+    service_name = models.CharField(max_length=255)
+    description = models.TextField(blank=True, null=True)
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1.00, null=True, blank=True)
+    unit = models.CharField(max_length=50, blank=True, null=True, default="unit")
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, null=True, blank=True)
+    tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0.00, null=True, blank=True)
+    tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, null=True, blank=True)
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, null=True, blank=True)
+    line_total = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, null=True, blank=True)
+    sort_order = models.PositiveSmallIntegerField(default=0, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_estimationquotationitem"
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return f"{self.service_name} x {self.quantity} = ₹{self.line_total}"
 class BookingMessage(models.Model):
     """
     X-09: unmanaged mirror of the Customer app's service_requests.BookingMessage

@@ -70,6 +70,8 @@ class User(AbstractBaseUser):
     email_otp = models.CharField(max_length=6, blank=True, null=True)
     phone_otp = models.CharField(max_length=6, blank=True, null=True)
     otp_created_at = models.DateTimeField(blank=True, null=True)
+    customer_id = models.CharField(max_length=100, blank=True, null=True)
+    custom_permissions = models.JSONField(default=list, blank=True)
 
     objects = UserManager()
 
