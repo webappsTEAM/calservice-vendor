@@ -1,5 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
-import { useLocation, Link } from 'react-router-dom';
+import {
+  useLocation,
+  Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthProvider.jsx';
 import { ClockInCard } from '../../components/employee/ClockInCard.jsx';
 import {
@@ -30,6 +32,8 @@ import {
   apiVerifyArrival,
   apiCancelJob,
   apiUploadDocument,
+  apiHoldJob,
+  apiResumeJob,
 } from '../../api/workforceService.js';
 import {
   apiClockIn,
@@ -852,10 +856,30 @@ export function EmployeeDashboardPage() {
       }
     };
 
-    const handleJobAction = async (jobId, targetStatus) => {
+    const handleJobAction = async (jobId, targetStatus, extra = {}) => {
       try {
         setActionLoading(jobId);
         setError('');
+
+        // Hold and resume also open/close the Break that keeps held time out of
+        // the technician's worked hours, so they use their own endpoints.
+        if (String(targetStatus).toUpperCase() === 'ON_HOLD') {
+          const holdRes = await apiHoldJob(jobId, extra.reason || '');
+          setSuccessMsg(holdRes.message || 'Job placed on hold.');
+          await loadDashboard({ force: true });
+          setTimeout(() => setSuccessMsg(''), 4000);
+          return holdRes;
+        }
+        if (String(targetStatus).toUpperCase() === 'RESUME') {
+          const resumeRes = await apiResumeJob(jobId);
+          setSuccessMsg(resumeRes.message || 'Job resumed.');
+          const resumedTime = await apiGetTimeTracking().catch(() => null);
+          if (resumedTime) setTimeTracking(resumedTime);
+          await loadDashboard({ force: true });
+          setTimeout(() => setSuccessMsg(''), 4000);
+          return resumeRes;
+        }
+
         const res = await apiTransitionJob(jobId, targetStatus);
         // Starting a job also clocks the technician in server-side, so pull the
         // authoritative TimeLog immediately: the shift timer derives its start

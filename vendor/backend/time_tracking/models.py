@@ -185,6 +185,10 @@ class Break(models.Model):
         ("tea", "Tea Break"),
         ("lunch", "Lunch Break"),
         ("personal", "Personal Break"),
+        # A job put on hold opens one of these, so held time is excluded from
+        # worked hours by the same break_seconds()/worked_seconds() maths that
+        # already handles rest breaks, rather than a parallel calculation.
+        ("job_hold", "Job On Hold"),
     ]
     break_type = models.CharField(max_length=20, choices=BREAK_TYPES, default="tea")
     duration_minutes = models.IntegerField(null=True, blank=True)

@@ -42,7 +42,10 @@ ALLOWED_TRANSITIONS = {
     "en_route": ["arrived", "redispatching", "cancelled", "unable_to_complete"],
     "arrived": ["service_started", "in_progress", "cancelled", "unable_to_complete"],
     "service_started": ["in_progress", "cancelled", "unable_to_complete"],
-    "in_progress": ["proof_submitted", "cancelled", "unable_to_complete", "follow_up_required"],
+    "in_progress": ["on_hold", "proof_submitted", "cancelled", "unable_to_complete", "follow_up_required"],
+    # A hold is a pause inside an active job, so it can only return to
+    # in_progress or end the job -- it can never skip straight to proof.
+    "on_hold": ["in_progress", "cancelled", "unable_to_complete"],
     "proof_submitted": ["completed", "cancelled", "unable_to_complete", "follow_up_required"],
     "follow_up_required": ["in_progress", "completed", "cancelled", "unable_to_complete"],
     "completed": [],

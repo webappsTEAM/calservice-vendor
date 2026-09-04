@@ -2336,6 +2336,295 @@ class WorkforceJobTransitionView(APIView):
             return Response({"error": str(e.detail if hasattr(e, 'detail') else e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+# ─── 8b. Service Hold / Resume / Overtime ────────────────────────────────────
+# Built entirely on models that already exist: Break carries the hold window so
+# held time drops out of worked hours through the existing
+# break_seconds()/worked_seconds() maths, WorkforceEventLog carries the audit
+# trail, and WorkforceNotification carries the admin alert (and doubles as the
+# dedup ledger, so the same hold is never announced twice).
+
+DEFAULT_EXPECTED_JOB_MINUTES = 120
+
+
+def _open_hold_break(time_log):
+    """The currently-open job-hold Break on this shift, if any."""
+    if not time_log:
+        return None
+    return time_log.breaks.filter(break_type="job_hold", break_end__isnull=True).first()
+
+
+def _notify_company_admins(job, title, message, notification_type, dedup_key):
+    """
+    Alert this job's company admins once per distinct event.
+
+    Dedup is keyed on (notification_type, related_object_id): the notification
+    table itself is the record of what has already been announced, so a retried
+    request or a double-tap cannot spam admins about the same hold or the same
+    overtime breach.
+    """
+    from django.db.models import Q
+    from django.contrib.auth import get_user_model
+
+    if WorkforceNotification.objects.filter(
+        notification_type=notification_type, related_object_id=dedup_key
+    ).exists():
+        return 0
+
+    User = get_user_model()
+    try:
+        admins = User.objects.filter(is_active=True).filter(Q(is_superuser=True) | Q(is_staff=True))
+        if getattr(job, "company_id", None):
+            admins = admins.filter(Q(company_id=job.company_id) | Q(is_superuser=True))
+        admins = list(admins.distinct()[:20])
+    except Exception:
+        # Never let admin-alerting break the technician's action.
+        admins = list(User.objects.filter(is_active=True, is_superuser=True)[:20])
+
+    sent = 0
+    for admin in admins:
+        try:
+            create_notification(
+                recipient=admin,
+                title=title,
+                message=message,
+                notification_type=notification_type,
+                company=job.company,
+                related_object_id=dedup_key,
+            )
+            sent += 1
+        except Exception as notify_err:
+            logger.warning("Could not notify admin %s about job %s: %s", admin.pk, job.pk, notify_err)
+    return sent
+
+
+def _expected_job_minutes(job):
+    """
+    Expected on-site duration for this job.
+
+    Reuses WorkforceServiceCatalog.duration_minutes -- the only expected-duration
+    rule that exists in this codebase -- matched on the job's service category.
+    Falls back to a conservative default when the category has no catalog entry,
+    rather than inventing a per-job SLA the product does not have.
+    """
+    category = (getattr(job, "service_category", "") or "").strip()
+    if category:
+        entry = (
+            WorkforceServiceCatalog.objects
+            .filter(category__iexact=category, is_active=True)
+            .order_by("-duration_minutes")
+            .first()
+        )
+        if entry and entry.duration_minutes:
+            return int(entry.duration_minutes)
+    return DEFAULT_EXPECTED_JOB_MINUTES
+
+
+def check_job_overtime(job, time_log, actor=None):
+    """
+    Compare worked time against the expected duration and alert admins once.
+
+    Held time is excluded, so a job that sat on hold waiting for a part is not
+    reported as overrunning because of the wait.
+    """
+    if not time_log or not time_log.clock_in:
+        return None
+
+    expected_minutes = _expected_job_minutes(job)
+    elapsed_seconds = int((timezone.now() - time_log.clock_in).total_seconds())
+    try:
+        held_seconds = time_log.break_seconds()
+    except Exception:
+        held_seconds = 0
+    worked_minutes = max(0, (elapsed_seconds - held_seconds) // 60)
+
+    if worked_minutes <= expected_minutes:
+        return {"overtime": False, "worked_minutes": worked_minutes, "expected_minutes": expected_minutes}
+
+    over_by = worked_minutes - expected_minutes
+    _notify_company_admins(
+        job,
+        title="Job Running Over Expected Duration",
+        message=(
+            f"Job #{job.id} ({job.service_category or 'service'}) has been worked for "
+            f"{worked_minutes} min against an expected {expected_minutes} min "
+            f"({over_by} min over). Held time is excluded from this figure."
+        ),
+        notification_type="JOB_OVERTIME",
+        dedup_key=f"overtime:{job.id}",
+    )
+    try:
+        WorkforceEventLog.objects.create(
+            user=actor if getattr(actor, "pk", None) else None,
+            event_type="JOB_OVERTIME_DETECTED",
+            payload={
+                "job_id": job.id,
+                "worked_minutes": worked_minutes,
+                "expected_minutes": expected_minutes,
+                "over_by_minutes": over_by,
+            },
+        )
+    except Exception:
+        pass
+    return {
+        "overtime": True,
+        "worked_minutes": worked_minutes,
+        "expected_minutes": expected_minutes,
+        "over_by_minutes": over_by,
+    }
+
+
+class WorkforceJobHoldView(APIView):
+    """Technician puts an in-progress job on hold, with a reason."""
+    permission_classes = [IsApprovedTechnician]
+
+    def post(self, request, pk):
+        from time_tracking.models import TimeLog, Break
+        from service_requests.state_machine import apply_transition
+
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp or job.assigned_employee != emp:
+            return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
+
+        if job.status != "in_progress":
+            return Response(
+                {"error": f"Only a job that is currently in progress can be put on hold (this one is '{job.status}')."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        reason = str(request.data.get("reason") or "").strip()
+        if not reason:
+            return Response({"error": "A reason is required to put a job on hold."}, status=status.HTTP_400_BAD_REQUEST)
+
+        time_log = TimeLog.objects.filter(employee=emp, clock_out__isnull=True).first()
+        if not time_log:
+            return Response(
+                {"error": "No active shift found for this job, so it cannot be put on hold."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        existing = _open_hold_break(time_log)
+        if existing:
+            # Idempotent: a double-tap returns the hold already running rather
+            # than opening a second one and double-counting the pause.
+            return Response({
+                "message": "This job is already on hold.",
+                "job_id": job.id,
+                "status": job.status,
+                "hold_id": existing.id,
+                "hold_started_at": existing.break_start.isoformat(),
+            }, status=status.HTTP_200_OK)
+
+        now_ts = timezone.now()
+        with transaction.atomic():
+            hold = Break.objects.create(
+                time_log=time_log, break_start=now_ts, break_type="job_hold",
+            )
+            try:
+                apply_transition(job, "on_hold", actor=request.user)
+            except ValidationError as exc:
+                return Response(
+                    {"error": str(exc.detail if hasattr(exc, "detail") else exc)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            WorkforceEventLog.objects.create(
+                user=request.user,
+                event_type="JOB_HOLD_STARTED",
+                payload={
+                    "job_id": job.id, "employee_id": emp.id, "hold_id": hold.id,
+                    "reason": reason, "started_at": now_ts.isoformat(),
+                },
+            )
+
+        _notify_company_admins(
+            job,
+            title="Technician Put a Job On Hold",
+            message=(
+                f"{request.user.get_full_name() or request.user.username} placed Job #{job.id} "
+                f"({job.service_category or 'service'}) on hold. Reason: {reason}"
+            ),
+            notification_type="JOB_HOLD",
+            dedup_key=f"hold:{job.id}:{hold.id}",
+        )
+
+        return Response({
+            "message": "Job placed on hold. The working-hours clock is paused.",
+            "job_id": job.id,
+            "status": job.status,
+            "hold_id": hold.id,
+            "hold_started_at": now_ts.isoformat(),
+            "reason": reason,
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceJobResumeView(APIView):
+    """Technician resumes a held job; the pause stops counting against them."""
+    permission_classes = [IsApprovedTechnician]
+
+    def post(self, request, pk):
+        from time_tracking.models import TimeLog
+        from service_requests.state_machine import apply_transition
+
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp or job.assigned_employee != emp:
+            return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
+
+        if job.status != "on_hold":
+            return Response(
+                {"error": f"Only a job that is on hold can be resumed (this one is '{job.status}')."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        time_log = TimeLog.objects.filter(employee=emp, clock_out__isnull=True).first()
+        hold = _open_hold_break(time_log)
+        now_ts = timezone.now()
+
+        with transaction.atomic():
+            hold_minutes = 0
+            if hold:
+                hold.break_end = now_ts
+                hold.save()  # Break.save() computes duration_minutes itself
+                hold_minutes = hold.duration_minutes or 0
+
+            try:
+                apply_transition(job, "in_progress", actor=request.user)
+            except ValidationError as exc:
+                return Response(
+                    {"error": str(exc.detail if hasattr(exc, "detail") else exc)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            WorkforceEventLog.objects.create(
+                user=request.user,
+                event_type="JOB_HOLD_RESUMED",
+                payload={
+                    "job_id": job.id, "employee_id": emp.id,
+                    "hold_id": hold.id if hold else None,
+                    "resumed_at": now_ts.isoformat(),
+                    "hold_duration_minutes": hold_minutes,
+                },
+            )
+
+        overtime = check_job_overtime(job, time_log, actor=request.user)
+
+        return Response({
+            "message": "Job resumed. The working-hours clock is running again.",
+            "job_id": job.id,
+            "status": job.status,
+            "resumed_at": now_ts.isoformat(),
+            "hold_duration_minutes": hold_minutes,
+            "overtime": overtime,
+        }, status=status.HTTP_200_OK)
+
+
 # ─── 9. Proof of Work & Cash Collection (Phase 16) ───────────────────────────
 
 class WorkforceJobProofView(APIView):
@@ -4995,6 +5284,28 @@ class WorkforceJobRescheduleView(APIView):
                     company=job.company,
                     related_object_id=str(job.id),
                 )
+
+        # Tell the Customer app. Until now this endpoint recorded
+        # customer_notified=True and created a WorkforceNotification -- a row in
+        # this app's own table, which the customer's app never reads -- so the
+        # customer was never actually told their technician was running late.
+        try:
+            from workforce_api.services.customer_webhook import notify_customer_app
+            notify_customer_app(
+                "technician.delayed",
+                job,
+                message=msg,
+                reason=reason,
+                delay_type=delay_type,
+                delay_count=current_delay_count,
+                escalated=reschedule.escalated_to_support,
+                rescheduled_date=str(job.preferred_date) if job.preferred_date else None,
+            )
+        except Exception as delay_webhook_err:
+            logger.info(
+                "Could not notify Customer app of delay on Job #%s: %s",
+                job.id, delay_webhook_err,
+            )
 
         return Response({
             "message": msg,

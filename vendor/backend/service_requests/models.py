@@ -99,6 +99,7 @@ class ServiceRequest(models.Model):
         EN_ROUTE              = "en_route",              "En Route"
         ARRIVED               = "arrived",               "Arrived"
         IN_PROGRESS           = "in_progress",           "In Progress"
+        ON_HOLD               = "on_hold",               "On Hold"
         REDISPATCHING         = "redispatching",         "Redispatching"
         COMPLETED             = "completed",             "Completed"
         CANCELLED             = "cancelled",             "Cancelled"
