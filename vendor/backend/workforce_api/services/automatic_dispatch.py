@@ -10,7 +10,7 @@ from datetime import timedelta
 from decimal import Decimal
 from typing import List, Dict, Any, Tuple, Optional
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Count, Exists, OuterRef, Prefetch, Q
 from django.utils import timezone
 from django.conf import settings
@@ -227,6 +227,47 @@ def canonical_service_match(requested_service: str, approved_services: List[str]
                     return True, "EXPLICIT_ALIAS_SKILL", sk
 
     return False, "NO_MATCH", ""
+
+
+class DispatchRaceLost(Exception):
+    """
+    Raised when the database's unique_active_job_offer_per_employee
+    constraint fires because a concurrent dispatcher offered this
+    technician another job first.
+
+    A dedicated exception rather than a bare return because it has to
+    escape the surrounding transaction.atomic() block -- once IntegrityError
+    has fired, that transaction is poisoned and no further queries may run
+    inside it. dispatch_job() catches this OUTSIDE the atomic block and
+    turns it back into an ordinary (False, reason) result, so the job stays
+    dispatchable for the next sweep rather than surfacing a 500.
+    """
+
+
+def employees_with_live_offers(exclude_job=None):
+    """
+    Ids of technicians who currently hold an OFFERED, unexpired job offer.
+
+    Dispatch concurrency: two dispatch_job() runs for DIFFERENT jobs each
+    lock only their own ServiceRequest row, so they do not exclude one
+    another. Without this, both can rank the same idle technician first and
+    both try to offer them a job at the same moment. Until now the ONLY
+    thing preventing that was the unique_active_job_offer_per_employee
+    constraint in the database -- and hitting it raised IntegrityError out
+    of dispatch rather than gracefully moving to the next candidate.
+
+    This is the application-level half of that guard. The DB constraint
+    stays exactly where it is: this reduces collisions, the row lock in
+    dispatch_job() serialises the ones that remain, and the constraint is
+    the final backstop. Nothing here weakens the existing protection.
+    """
+    qs = WorkforceJobOffer.objects.filter(
+        status=WorkforceJobOffer.Status.OFFERED,
+        expires_at__gt=timezone.now(),
+    )
+    if exclude_job is not None:
+        qs = qs.exclude(job=exclude_job)
+    return set(qs.values_list("employee_id", flat=True))
 
 
 def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = None, job: Optional[Any] = None) -> Tuple[bool, str, Dict[str, bool]]:
@@ -600,6 +641,9 @@ def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AG
 
     ranked_candidates = []
     now = timezone.now()
+    # Technicians already holding a live offer for some OTHER job -- see
+    # employees_with_live_offers() for why this matters.
+    _employees_holding_offers = employees_with_live_offers(exclude_job=job_obj)
 
     for emp in candidates_qs:
         if emp.id in previous_offers:
@@ -640,6 +684,15 @@ def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AG
             f"gps_age={f'{gps_age_s:.1f}s' if gps_age_s is not None else 'MISSING'} "
             f"distance_km={f'{dist_km:.2f}km' if dist_km is not None else 'UNKNOWN'}"
         )
+
+        # Dispatch concurrency: skip anyone already holding a live offer for
+        # a DIFFERENT job. Cheap, and it keeps two concurrent dispatchers
+        # from converging on the same technician in the first place.
+        if emp.id in _employees_holding_offers:
+            logger.info(
+                f"[DISPATCH_REJECT] employee={emp.id} reason=ALREADY_HAS_LIVE_OFFER"
+            )
+            continue
 
         # Check eligibility against service_category, then issue_title
         is_eligible, reason, gate_results = check_candidate_eligibility(emp, job_obj.service_category, job=job_obj)
@@ -920,6 +973,19 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
     job_id = job_id_or_obj.pk if hasattr(job_id_or_obj, "pk") else job_id_or_obj
     from workforce_api.models import WorkforceEventLog
 
+    try:
+        return _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids)
+    except DispatchRaceLost as race:
+        # Lost the offer race to a concurrent dispatcher. Not an error
+        # condition: the job simply stays dispatchable and the next sweep
+        # picks it up. Handled out here because the transaction inside is
+        # already rolled back by the time this arrives.
+        return False, str(race)
+
+
+def _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids):
+    from workforce_api.models import WorkforceEventLog
+
     with transaction.atomic():
         job_obj = ServiceRequest.objects.select_for_update().filter(pk=job_id).first()
         if not job_obj:
@@ -1026,20 +1092,75 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
             _maybe_signal_customer_delay(job_obj, failed_cycle_count)
             return False, f"No eligible technicians available for automatic dispatch. {reason_message}"
 
-        # Top nearest candidate
-        top_candidate = candidates[0]
-        top_emp = top_candidate["employee"]
-        top_dist_km = top_candidate["distance_km"]
-        top_score = top_candidate["score"]
+        # Walk the ranked candidates rather than only ever trying the top
+        # one. Previously a single rejection at this final boundary failed
+        # the whole dispatch run, even with other eligible technicians
+        # standing right behind -- and the "rejection" is now much more
+        # likely, because a concurrent dispatcher may legitimately have
+        # taken the top candidate microseconds ago.
+        top_candidate = None
+        top_emp = None
+        top_dist_km = None
+        top_score = None
+        _skipped = []
 
-        # Final workload concurrency verification boundary
-        busy_check = get_employee_active_job(top_emp)
-        if busy_check:
-            logger.warning(
-                f"[DISPATCH_REJECT] employee={top_emp.id} job={job_obj.id} "
-                f"reason=EMPLOYEE_ALREADY_BUSY active_job={busy_check.id}"
-            )
-            return False, f"Technician #{top_emp.id} is busy on active Job #{busy_check.id}. Cannot offer Job #{job_obj.id}."
+        for _candidate in candidates:
+            _emp = _candidate["employee"]
+
+            # Final workload concurrency verification boundary
+            busy_check = get_employee_active_job(_emp)
+            if busy_check:
+                logger.warning(
+                    f"[DISPATCH_REJECT] employee={_emp.id} job={job_obj.id} "
+                    f"reason=EMPLOYEE_ALREADY_BUSY active_job={busy_check.id}"
+                )
+                _skipped.append(f"#{_emp.id} busy")
+                continue
+
+            # Dispatch concurrency guard, the serialising half.
+            #
+            # Lock this technician's row before deciding to offer them the
+            # job. Two dispatch_job() runs for different jobs hold locks on
+            # different ServiceRequest rows, so they do not exclude each
+            # other -- but they DO both need this employee row, so whoever
+            # gets it first wins and the second blocks here until the first
+            # has committed its offer. The re-check below then sees that
+            # offer and moves on to its next candidate.
+            #
+            # This is deliberately IN ADDITION to the database's
+            # unique_active_job_offer_per_employee constraint, which is left
+            # in place untouched: application guard first, constraint as the
+            # backstop.
+            _locked = Employee.objects.select_for_update().filter(pk=_emp.pk).first()
+            if _locked is None:
+                _skipped.append(f"#{_emp.id} vanished")
+                continue
+
+            _live_offer = WorkforceJobOffer.objects.filter(
+                employee=_locked,
+                status=WorkforceJobOffer.Status.OFFERED,
+                expires_at__gt=timezone.now(),
+            ).exclude(job=job_obj).first()
+            if _live_offer:
+                logger.info(
+                    f"[DISPATCH_REJECT] employee={_emp.id} job={job_obj.id} "
+                    f"reason=ALREADY_HAS_LIVE_OFFER offer={_live_offer.id} "
+                    f"other_job={_live_offer.job_id}"
+                )
+                _skipped.append(f"#{_emp.id} already offered job #{_live_offer.job_id}")
+                continue
+
+            top_candidate = _candidate
+            top_emp = _locked
+            top_dist_km = _candidate["distance_km"]
+            top_score = _candidate["score"]
+            break
+
+        if top_emp is None:
+            reason = "; ".join(_skipped) or "no candidate passed the final concurrency check"
+            logger.info(f"[DISPATCH_NO_CANDIDATE] job={job_obj.id} {reason}")
+            _maybe_signal_customer_delay(job_obj, failed_cycle_count)
+            return False, f"No technician could be offered Job #{job_obj.id} right now ({reason})."
 
         # Expire any previous offers for this job that might be dangling
         WorkforceJobOffer.objects.filter(job=job_obj, status=WorkforceJobOffer.Status.OFFERED).update(status=WorkforceJobOffer.Status.EXPIRED)
@@ -1057,13 +1178,29 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
         )
         expires_at = now + timedelta(seconds=offer_window_seconds)
         _maybe_signal_customer_delay(job_obj, failed_cycle_count)
-        offer = WorkforceJobOffer.objects.create(
-            job=job_obj,
-            employee=top_emp,
-            status=WorkforceJobOffer.Status.OFFERED,
-            rank_score=top_score,
-            expires_at=expires_at,
-        )
+        try:
+            offer = WorkforceJobOffer.objects.create(
+                job=job_obj,
+                employee=top_emp,
+                status=WorkforceJobOffer.Status.OFFERED,
+                rank_score=top_score,
+                expires_at=expires_at,
+            )
+        except IntegrityError:
+            # The unique_active_job_offer_per_employee constraint fired --
+            # the database's backstop caught a race the guards above did not.
+            # Previously this propagated out of dispatch as an unhandled
+            # IntegrityError; now it fails this run cleanly so the job stays
+            # dispatchable and the next sweep can offer it to someone else.
+            # Re-raised inside the atomic block would poison the transaction,
+            # so nothing further is attempted here.
+            logger.warning(
+                f"[DISPATCH_RACE_LOST] job={job_obj.id} employee={top_emp.id} "
+                f"lost the offer race to a concurrent dispatcher; will retry next sweep."
+            )
+            raise DispatchRaceLost(
+                f"Technician #{top_emp.id} was offered another job concurrently."
+            )
 
         # Keep ServiceRequest unassigned until candidate accepts via backend atomic transaction
         if job_obj.status in ["draft", "new_request", "confirmed"]:
