@@ -50,6 +50,7 @@ import { VendorTechnicianNetworkPage } from './pages/admin/VendorTechnicianNetwo
 import { VendorInvitationsPage } from './pages/admin/VendorInvitationsPage.jsx';
 import { PlatformVendorsPage } from './pages/platform/PlatformVendorsPage.jsx';
 import { PlatformWorkforcePage } from './pages/platform/PlatformWorkforcePage.jsx';
+import VendorEstimationsPage from './pages/vendor/estimations/VendorEstimationsPage.jsx';
 import { CustomerTrackingPage } from './pages/customer/CustomerTrackingPage.jsx';
 import { SuperadminRoute } from './components/common/SuperadminRoute.jsx';
 import { WalletDashboardPage } from './pages/admin/wallet/WalletDashboardPage.jsx';
