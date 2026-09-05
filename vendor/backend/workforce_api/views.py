@@ -2177,7 +2177,7 @@ class WorkforceJobListView(APIView):
             assigned_active_qs = Q(
                 status__in=ACTIVE_QUEUE_STATUSES
             ) & (
-                Q(assigned_employee=emp) | Q(technician_id=user.id)
+                Q(assigned_employee=emp) | Q(assigned_employee__user=user)
             )
             completed_qs = Q(
                 assigned_employee=emp,
@@ -9534,6 +9534,18 @@ class WorkforceJobLogisticsLegView(APIView):
         if not emp or job.assigned_employee != emp:
             return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
 
+        # Being the assigned employee is not by itself a tenant check -- an
+        # assignment can outlive a technician moving between companies, and
+        # WorkforceJobProofView (the sibling endpoint on the same trip)
+        # verifies both. Advancing a leg writes to the shared booking row
+        # and fires a customer-facing event, so it gets the same guard.
+        if not is_employee_authorized_for_job(emp, job):
+            return Response(
+                {"error": "Unauthorized access to job belonging to another company.",
+                 "code": "CROSS_TENANT_FORBIDDEN"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         service_name = (job.service_category or "").strip().lower()
         if service_name not in LOGISTICS_SERVICE_CATEGORIES:
             return Response({
@@ -9601,6 +9613,27 @@ class WorkforceJobTripStopsView(APIView):
             return None, Response(
                 {"error": "Unauthorized: Job is not assigned to you."},
                 status=status.HTTP_403_FORBIDDEN,
+            )
+        # Same reasoning as WorkforceJobLogisticsLegView: assignment is not
+        # tenancy, and marking a stop writes to the shared table and emits a
+        # customer event.
+        if not is_employee_authorized_for_job(emp, job):
+            return None, Response(
+                {"error": "Unauthorized access to job belonging to another company.",
+                 "code": "CROSS_TENANT_FORBIDDEN"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        # Stops only exist on logistics bookings, so a non-logistics job
+        # would fail later with a confusing 404 "stop not found". Refuse it
+        # here for the same reason and with the same message as the leg
+        # endpoint.
+        from workforce_api.services.automatic_dispatch import LOGISTICS_SERVICE_CATEGORIES
+
+        if (job.service_category or "").strip().lower() not in LOGISTICS_SERVICE_CATEGORIES:
+            return None, Response(
+                {"error": f"Trip stops are only available for logistics jobs, "
+                          f"not '{job.service_category}'."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
         return job, None
 
