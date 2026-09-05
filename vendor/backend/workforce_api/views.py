@@ -2090,6 +2090,46 @@ class WorkforcePresenceStatusView(APIView):
 
 # ─── 8. Field Jobs & State Machine Execution ─────────────────────────────────
 
+def sync_payment_amount_due(pmt, job):
+    """
+    Keep an UNPAID JobPayment's amount_due in step with the job's fare.
+
+    JobPayment rows are created by get_or_create, and `defaults` only apply
+    on creation -- so amount_due froze at whatever job.total_amount was the
+    first time ANY of three endpoints ran: the driver opening the payment
+    screen, the customer viewing payment, or cash collection. Nothing
+    anywhere updated it afterwards.
+
+    That was fine while the fare never changed after booking. It stopped
+    being fine when fare reconciliation started running at DELIVERED: a trip
+    that ran longer, visited an extra stop, or picked up approved extra work
+    has its total_amount raised, and the driver's collection screen would
+    still show the amount from before the trip. The customer pays the old
+    number and the books say the new one -- or the reverse, if the
+    reconciliation went down and the customer is overcharged.
+
+    Only ever touches a PENDING row. A payment already PAID or COLLECTED is
+    history and is never rewritten; if a fare changes after money has moved,
+    that is a refund or a follow-up charge, not an edit.
+
+    Returns True when it changed something.
+    """
+    if pmt is None or job is None:
+        return False
+    if pmt.payment_status != JobPayment.PaymentStatus.PENDING:
+        return False
+    expected = job.total_amount or Decimal("0.00")
+    if pmt.amount_due == expected:
+        return False
+    logger.info(
+        "Job #%s fare changed after the payment row was created (%s -> %s); "
+        "refreshing amount_due.", job.id, pmt.amount_due, expected,
+    )
+    pmt.amount_due = expected
+    pmt.save(update_fields=["amount_due", "updated_at"])
+    return True
+
+
 def is_employee_authorized_for_job(emp, job) -> bool:
     """
     Validates tenant compatibility between an employee and a job:
@@ -2796,6 +2836,9 @@ class WorkforceJobPaymentDetailView(APIView):
                 "amount_paid": job.total_amount if job.payment_status in ["paid", "collected"] else Decimal("0.00"),
             }
         )
+        # An existing row keeps the amount it was created with; refresh it if
+        # the fare has since been reconciled.
+        sync_payment_amount_due(pmt, job)
 
         events = PaymentCollectionEvent.objects.filter(job_payment=pmt).order_by("-created_at")
 
@@ -2858,6 +2901,11 @@ class WorkforceJobCashCollectView(APIView):
                     "reconciled": False,
                 }
             )
+            # Under select_for_update, so this cannot race a concurrent
+            # collection. Refreshing BEFORE the amount checks below is the
+            # point: the driver must be asked for the reconciled fare, not
+            # the one quoted before the trip ran.
+            sync_payment_amount_due(pmt, job)
 
             # Rule: Cannot collect cash for Online payment booking
             if pmt.payment_method == JobPayment.PaymentMethod.ONLINE:
@@ -3196,6 +3244,7 @@ class WorkforceCustomerJobPaymentView(APIView):
                 "amount_paid": job.total_amount if job.payment_status in ["paid", "collected"] else Decimal("0.00"),
             }
         )
+        sync_payment_amount_due(pmt, job)
 
         return Response({
             "job_id": job.id,
