@@ -197,6 +197,21 @@ class ServiceRequest(models.Model):
     cart_data = models.JSONField(default=list, blank=True)
 
     drop_address = models.TextField(blank=True, default="")
+    # GT-D-02: the drop point's coordinates. `drop_address` is free text, so
+    # without these the driver app could name the destination but not
+    # navigate to it, and this app could not compute anything about the
+    # second half of a trip.
+    #
+    # DEPLOY ORDER (hard requirement): these mirror columns added by the
+    # Customer app's migration 0065_servicerequest_drop_latitude_and_more.
+    # That migration must be applied to the shared database BEFORE this
+    # app is deployed with these fields -- Django selects every concrete
+    # field on the model, so shipping this against a database that lacks
+    # the columns breaks every ServiceRequest query in this app, not just
+    # logistics ones. 0065 is purely additive (two nullable DecimalFields)
+    # and safe to apply on its own ahead of the rest.
+    drop_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    drop_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     # X-04: these were all missing from this mirror even though they exist
     # on the shared table -- a technician handling a logistics job had no
     # way, via this app's ORM, to see who they're actually handing goods to

@@ -465,6 +465,12 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
     offer_expires_at = serializers.SerializerMethodField()
     settlement_channel = serializers.SerializerMethodField()
     earnings_wallet_owner = serializers.SerializerMethodField()
+    # GT: the logistics half of a job. Without these the driver app can see
+    # where to collect from but not where to deliver to, and has no idea
+    # which leg of the trip it is on -- the leg/stop endpoints existed but
+    # nothing in the job payload told the app they applied.
+    is_logistics = serializers.SerializerMethodField()
+    trip_stop_count = serializers.SerializerMethodField()
 
     class Meta:
         model = ServiceRequest
@@ -512,7 +518,33 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             # performed the job (see WalletLedgerEntry.worker_performed).
             "settlement_channel",
             "earnings_wallet_owner",
+            # Goods & Transport
+            "is_logistics",
+            "drop_address",
+            "drop_latitude",
+            "drop_longitude",
+            "drop_contact_name",
+            "drop_contact_phone",
+            "logistics_leg",
+            "logistics_leg_updated_at",
+            "trip_stop_count",
         ]
+
+    def get_is_logistics(self, obj):
+        from workforce_api.services.automatic_dispatch import LOGISTICS_SERVICE_CATEGORIES
+        return (obj.service_category or "").strip().lower() in LOGISTICS_SERVICE_CATEGORIES
+
+    def get_trip_stop_count(self, obj):
+        """
+        How many stops this trip has, so the driver app knows whether to
+        show the multi-stop list at all. Cheap count rather than the full
+        list -- the stops endpoint serves those on demand.
+        """
+        try:
+            from service_requests.models import TripStop
+            return TripStop.objects.filter(booking=obj).count()
+        except Exception:
+            return 0
 
     def _get_context_emp(self):
         request = self.context.get("request")
