@@ -414,3 +414,84 @@ were invisible to the suite before this pass, and two of them fail
 **silently** in production. What makes me comfortable recommending GO once
 the list above is done is that the paths that would fail silently now have
 tests that fail loudly.
+
+
+---
+
+## Addendum — second verification pass (2026-09-05, later)
+
+A second adversarial pass over the areas the first report covered most
+thinly found two more Goods & Transport defects. Both are fixed; both were
+invisible to the test suite beforehand.
+
+### 1. A reconciled fare never reached the amount the driver collects
+
+The first report traced the fare chain as far as `total_amount` and called
+the chain complete. It was not. `JobPayment` rows are created with
+`get_or_create`, whose `defaults` apply **only on creation**, and nothing
+anywhere updates `amount_due` afterwards -- there is not one `amount_due =`
+assignment outside those defaults.
+
+The row is created the first time anyone looks at payment: the driver
+opening the payment screen (the Flutter app calls it from the job detail
+screen), the customer viewing payment, or cash collection. All of those
+routinely happen mid-trip, before `DELIVERED`. So a trip that ran longer,
+visited an extra stop or picked up approved extra work has its
+`total_amount` raised by reconciliation -- and the collection screen still
+shows the pre-trip number. The customer pays the old amount and the books
+say the new one. A reconciliation that lowers the fare overcharges instead.
+
+Fixed with `sync_payment_amount_due()` at all three creation sites. It
+refreshes only a `PENDING` row: `PAID` is history, `CASH_PENDING` means the
+driver has already taken the cash (an OTP is issued for the customer to
+confirm it), and `AUTHORIZED` is held by the gateway for a specific amount.
+A fare change after any of those is a refund or a follow-up charge, not an
+edit. Nine tests, including one that counts creation sites against sync
+calls so a fourth site cannot be added without the refresh.
+
+### 2. The bare `goods_transport` slug bypassed server-side pricing
+
+There are four logistics category sets across the two apps. Three contained
+the bare `goods_transport` slug; `LOGISTICS_CATEGORIES` in
+`logistics_pricing.py` did not -- and that is the set that decides whether a
+client-supplied total is trusted. So the vendor treated those bookings as
+logistics for dispatch, legs and stops, while the Customer app priced them
+at **whatever the client sent**.
+
+Not a legacy slug: it has its own `"GT"` request-id prefix and the generic
+booking page emits it. It is now covered by the pricing gate, and
+deliberately **not** distance-priced -- the bare slug does not say truck or
+two-wheeler, so there is no tier category to validate a quote against. It
+resolves through the flat lane/tier lookup or returns a clean 400.
+
+A test now walks the request-id prefix map -- the closest thing this
+codebase has to a registry of live category slugs -- and asserts every slug
+labelled GT or PM is covered by the pricing gate.
+
+### Also verified this pass
+
+* **Category vocabularies** across both apps now agree (four sets compared
+  programmatically). `truck` and `logistics` appear in the prefix map but in
+  no category set and are emitted by nothing; reported, not changed.
+* **Payment status semantics** checked against the real `PaymentStatus`
+  choices rather than assumed.
+
+### Revised test totals
+
+| Suite | Result |
+|---|---|
+| Customer — Goods & Transport (13 modules) | **176 passed, 0 failed** |
+| Customer — `service_requests` (all) | 283 run, 276 passed, 5 skipped |
+| Vendor — `workforce_api.tests_gt` | **79 passed, 0 failed** |
+
+The 7 remaining failures are unchanged and all out-of-scope painting/masonry.
+
+### Effect on the recommendation
+
+**Unchanged: NO-GO on configuration and data.** No new blocker was
+introduced, and both defects above were code-level and are now fixed. But
+they sharpen the reason for the recommendation: this is the second pass in a
+row where the most damaging Goods & Transport defects were ones that fail
+**silently** in production and were invisible to a green test suite. The
+list in section D has not grown -- and it is still the only thing standing
+between here and GO.
