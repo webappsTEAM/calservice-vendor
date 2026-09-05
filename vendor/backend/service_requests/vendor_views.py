@@ -48,6 +48,18 @@ from employees.models import Employee
 logger = logging.getLogger("workforce.vendor_estimation")
 
 
+# Kept local rather than imported from workforce_api.services.
+# automatic_dispatch: this module is about AC estimation and should not grow
+# a dependency on the dispatch engine just to know what a logistics booking
+# looks like. Mirrors LOGISTICS_SERVICE_CATEGORIES there.
+_LOGISTICS_CATEGORIES = {
+    "goods_transport_truck",
+    "goods_transport_two_wheeler",
+    "packers_movers",
+    "goods_transport",
+}
+
+
 class StandardResultsSetPagination(PageNumberPagination):
     page_size = 15
     page_size_query_param = "page_size"
@@ -113,7 +125,13 @@ def _serialize_estimation(sr, est=None, full_detail=False):
         "location_name": sr.technician_location_name,
         "latitude": sr.technician_latitude,
         "longitude": sr.technician_longitude,
-        "arrived_at": sr.technician_arrived_at.isoformat() if sr.technician_arrived_at else None,
+        # getattr, not attribute access: technician_arrived_at was dropped
+        # from the shared schema and is not on this app's mirror, so a bare
+        # read raises AttributeError. Arrival is recorded by the ARRIVED
+        # status change and its status_events entry.
+        "arrived_at": (
+            _arrived.isoformat() if (_arrived := getattr(sr, "technician_arrived_at", None)) else None
+        ),
     }
 
     # AC specification
@@ -255,7 +273,15 @@ def _get_target_estimation(pk):
     sr = ServiceRequest.objects.filter(pk=pk).first()
     if sr:
         est = Estimation.objects.filter(service_request=sr).first()
-        if not est and (sr.job_type == "ESTIMATION" or "ac" in sr.service_category.lower() or "ac" in sr.issue_title.lower()):
+        # Same "packers_movers" substring trap as the querysets below --
+        # without the exclusion this lazily creates an AC estimation
+        # (SPLIT / General / 1.5 TON) against a furniture-moving job.
+        _is_logistics = (sr.service_category or "").strip().lower() in _LOGISTICS_CATEGORIES
+        if not est and not _is_logistics and (
+            sr.job_type == "ESTIMATION"
+            or "ac" in sr.service_category.lower()
+            or "ac" in sr.issue_title.lower()
+        ):
             # Lazily ensure linked Estimation detail exists
             est = Estimation.objects.create(
                 service_request=sr,
@@ -383,7 +409,20 @@ class VendorEstimationListView(APIView):
 
     def get(self, request):
         qs = ServiceRequest.objects.filter(
-            models.Q(job_type="ESTIMATION") | models.Q(request_kind="ESTIMATION") | models.Q(service_category__icontains="ac")
+            # NOT service_category__icontains="ac" alone: "packers_movers"
+            # contains the substring "ac" (p-AC-kers), so every Packers &
+            # Movers booking was being pulled into the AC estimation list --
+            # where _serialize_estimation reads sr.technician_arrived_at,
+            # which does not exist on this app's ServiceRequest mirror, and
+            # the whole estimation dashboard 500s. Logistics categories are
+            # excluded explicitly rather than by tightening the "ac" match,
+            # so every AC category that matched before still matches.
+            (
+                models.Q(job_type="ESTIMATION")
+                | models.Q(request_kind="ESTIMATION")
+                | models.Q(service_category__icontains="ac")
+            )
+            & ~models.Q(service_category__in=_LOGISTICS_CATEGORIES)
         ).distinct()
 
         # Status filter
@@ -431,7 +470,20 @@ class VendorEstimationListView(APIView):
 
         # Metric counts across entire dataset
         all_est_qs = ServiceRequest.objects.filter(
-            models.Q(job_type="ESTIMATION") | models.Q(request_kind="ESTIMATION") | models.Q(service_category__icontains="ac")
+            # NOT service_category__icontains="ac" alone: "packers_movers"
+            # contains the substring "ac" (p-AC-kers), so every Packers &
+            # Movers booking was being pulled into the AC estimation list --
+            # where _serialize_estimation reads sr.technician_arrived_at,
+            # which does not exist on this app's ServiceRequest mirror, and
+            # the whole estimation dashboard 500s. Logistics categories are
+            # excluded explicitly rather than by tightening the "ac" match,
+            # so every AC category that matched before still matches.
+            (
+                models.Q(job_type="ESTIMATION")
+                | models.Q(request_kind="ESTIMATION")
+                | models.Q(service_category__icontains="ac")
+            )
+            & ~models.Q(service_category__in=_LOGISTICS_CATEGORIES)
         )
         metrics = {
             "all": all_est_qs.count(),
@@ -647,8 +699,15 @@ class VendorEstimationArrivedView(APIView):
             return Response({"error": f"Estimation #{pk} not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
         sr.status = "technician_arrived"
-        sr.technician_arrived_at = timezone.now()
-        sr.save(update_fields=["status", "technician_arrived_at", "updated_at"])
+        # technician_arrived_at is not a column on this app's ServiceRequest
+        # mirror (it was dropped from the shared schema), so writing it here
+        # raised FieldDoesNotExist on save. The status change is the record
+        # of arrival.
+        _arrival_fields = ["status", "updated_at"]
+        if hasattr(sr, "technician_arrived_at"):
+            sr.technician_arrived_at = timezone.now()
+            _arrival_fields.insert(1, "technician_arrived_at")
+        sr.save(update_fields=_arrival_fields)
         if est:
             est.status = "TECHNICIAN_ARRIVED"
             est.save(update_fields=["status", "updated_at"])
