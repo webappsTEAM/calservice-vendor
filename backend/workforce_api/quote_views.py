@@ -194,6 +194,24 @@ def _serialize(q, full=False):
     return data
 
 
+def _advance_percent(data):
+    """
+    The share of the invoice payable up front, or None to let the category's
+    pricing policy decide. Null and 0 mean different things here -- null is
+    "no opinion", 0 would be "nothing up front" -- so an absent or empty value
+    must not collapse to zero.
+    """
+    if "advance_percent" not in data:
+        return None
+    raw = data.get("advance_percent")
+    if raw in (None, ""):
+        return None
+    value = _dec(raw, "advance_percent", 0)
+    if not (Decimal("0") <= value <= Decimal("100")):
+        raise ValueError("advance_percent must be between 0 and 100.")
+    return value
+
+
 def _dec(value, field, default=None):
     """Decimal coercion that reports which field was wrong rather than 500ing."""
     if value in (None, ""):
@@ -321,6 +339,7 @@ class QuoteListCreateView(APIView):
                 service_category=(request.data.get("service_category") or "").strip()[:150],
                 service_name=(request.data.get("service_name") or "").strip()[:200],
                 inspection_fee=_dec(request.data.get("inspection_fee"), "inspection_fee", 0),
+                advance_percent=_advance_percent(request.data),
                 status=WorkforceQuote.Status.DRAFT,
             )
         except ValueError as exc:
@@ -355,8 +374,11 @@ class QuoteDetailView(APIView):
 
         text_fields = {"title": 200, "description": None, "service_category": 150,
                        "service_name": 200, "customer_notes": None}
+        # inspection_fee_adjusted was missing here, so the builder's "credit the
+        # inspection fee against the quote" figure was posted and silently
+        # dropped -- the customer was never given the credit.
         money_fields = ["estimated_labor_cost", "estimated_materials_cost",
-                        "discount_amount", "inspection_fee"]
+                        "discount_amount", "inspection_fee", "inspection_fee_adjusted"]
 
         try:
             for f, cap in text_fields.items():
@@ -373,6 +395,8 @@ class QuoteDetailView(APIView):
                                               f"{list(WorkforceQuote.StructuralImpact.values)}."},
                                     status=status.HTTP_400_BAD_REQUEST)
                 quote.structural_impact = val
+            if "advance_percent" in request.data:
+                quote.advance_percent = _advance_percent(request.data)
         except ValueError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 

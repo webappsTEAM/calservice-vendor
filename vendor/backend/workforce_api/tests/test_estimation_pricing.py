@@ -472,3 +472,70 @@ class InvoicePdfTests(AdvanceScheduleTests):
         self.assertEqual(wrong.status_code, 404)
 
         self.assertEqual(anon.get(f"/api/workforce/invoices/{invoice.id}/pdf/").status_code, 404)
+
+
+class QuoteApiFieldTests(QuoteRulesTests):
+    """Fields the Quotation Builder posts and the API must actually honour."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = APIClient()
+        self.client.force_authenticate(self.tech_user)
+
+    def test_advance_percent_is_accepted_on_create_and_patch(self):
+        resp = self.client.post(
+            "/api/workforce/quotes/",
+            {"job_id": self.job.id, "title": "T", "service_category": "painting",
+             "advance_percent": "50"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        quote = WorkforceQuote.objects.get(pk=resp.data["id"])
+        self.assertEqual(quote.advance_percent, Decimal("50.00"))
+
+        patched = self.client.patch(f"/api/workforce/quotes/{quote.id}/",
+                                    {"advance_percent": "100"}, format="json")
+        self.assertEqual(patched.status_code, 200, patched.content)
+        quote.refresh_from_db()
+        self.assertEqual(quote.advance_percent, Decimal("100.00"))
+
+    def test_absent_advance_percent_leaves_the_policy_in_charge(self):
+        """Null and 0 mean different things: null is 'no opinion'."""
+        resp = self.client.post(
+            "/api/workforce/quotes/",
+            {"job_id": self.job.id, "title": "T", "service_category": "painting"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertIsNone(WorkforceQuote.objects.get(pk=resp.data["id"]).advance_percent)
+
+    def test_out_of_range_advance_percent_is_refused(self):
+        resp = self.client.post(
+            "/api/workforce/quotes/",
+            {"job_id": self.job.id, "title": "T", "service_category": "painting",
+             "advance_percent": "150"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400, resp.content)
+
+    def test_inspection_fee_adjusted_is_no_longer_dropped(self):
+        quote = self._quote(1000)
+        resp = self.client.patch(f"/api/workforce/quotes/{quote.id}/",
+                                 {"inspection_fee_adjusted": "199.00"}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        quote.refresh_from_db()
+        self.assertEqual(quote.inspection_fee_adjusted, Decimal("199.00"))
+        # and it must actually reduce what the customer pays
+        self.assertEqual(quote.net_payable, quote.total_amount - Decimal("199.00"))
+
+    def test_the_quote_advance_overrides_the_category_policy(self):
+        """A waterproofing line in a painting quote still needs 50% up front."""
+        quote = self._quote(1000, advance_percent=Decimal("50.00"))
+        quotation_service.send_quote_to_customer(quote.id)
+        quote.refresh_from_db()
+        quotation_service.record_customer_decision(quote.id, "ACCEPT", token=quote.decision_token)
+        _, _, invoice = quotation_service.admin_review_quote(quote.id, self.admin, approve=True)
+
+        self.assertEqual(pricing_policy.advance_percent("painting"), Decimal("100.00"))
+        self.assertEqual(invoice.advance_percent, Decimal("50.00"))
+        self.assertEqual(invoice.advance_amount, Decimal("590.00"))
