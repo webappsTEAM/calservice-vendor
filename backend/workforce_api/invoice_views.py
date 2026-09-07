@@ -598,9 +598,16 @@ class RateCardListView(APIView):
 
     def get(self, request):
         qs = WorkforceRateCard.objects.filter(is_active=True)
-        category = request.query_params.get("service_category")
+        # The vendor frontend sends ?category=; accept both spellings.
+        category = (
+            request.query_params.get("service_category")
+            or request.query_params.get("category")
+        )
         if category:
             qs = qs.filter(service_category__iexact=category.strip())
+        service = request.query_params.get("service")
+        if service:
+            qs = qs.filter(service_name__iexact=service.strip())
         return Response([
             {
                 "id": c.id,
@@ -667,4 +674,81 @@ class RateCardPriceView(APIView):
                 _money(card.advance_percent) if card.advance_percent is not None else None
             ),
             "note": note,
+        })
+
+
+# --------------------------------------------------------------------------- #
+# admin quote operations the vendor frontend already calls
+# --------------------------------------------------------------------------- #
+class AdminQuoteMetricsView(APIView):
+    """Counts behind the admin quotations dashboard."""
+    permission_classes = [IsSevoAdmin]
+
+    def get(self, request):
+        from django.db.models import Count, Sum
+
+        qs = WorkforceQuote.objects.all()
+        by_status = {
+            row["status"]: row["n"]
+            for row in qs.values("status").annotate(n=Count("id"))
+        }
+        outstanding = (
+            WorkforceInvoice.objects
+            .exclude(status__in=[WorkforceInvoice.Status.CANCELLED, WorkforceInvoice.Status.PAID])
+            .aggregate(total=Sum("balance_due"))["total"]
+        )
+        return Response({
+            "by_status": by_status,
+            "awaiting_pre_send_review": by_status.get(WorkforceQuote.Status.PENDING_REVIEW, 0),
+            "awaiting_admin_approval": by_status.get(WorkforceQuote.Status.PENDING_ADMIN_APPROVAL, 0),
+            "converted": by_status.get(WorkforceQuote.Status.CONVERTED, 0),
+            "total_quotes": qs.count(),
+            "invoices_outstanding_amount": _money(outstanding or 0),
+        })
+
+
+class AdminClearStructuralView(APIView):
+    """Structural clearance for mason quotes with load-bearing impact."""
+    permission_classes = [IsSevoAdmin]
+
+    def post(self, request, pk):
+        if not WorkforceQuote.objects.filter(pk=pk).exists():
+            return Response({"error": "Quotation not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            quote = quotation_service.admin_clear_mason_structural(
+                pk,
+                request.user,
+                approved=bool(request.data.get("approved", True)),
+                notes=request.data.get("notes", "") or "",
+            )
+        except ValidationError as exc:
+            return Response({"error": "; ".join(exc.messages)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"success": True, "quote": _serialize_quote(quote, full=True)})
+
+
+class AdminRetryQuoteConversionView(APIView):
+    """
+    Re-drive a quote stuck in CONVERSION_PENDING.
+
+    Conversion leaves that status behind deliberately when creating the work
+    booking fails, so a transient error is retryable rather than silently
+    losing an accepted quote.
+    """
+    permission_classes = [IsSevoAdmin]
+
+    def post(self, request, pk):
+        quote = WorkforceQuote.objects.filter(pk=pk).first()
+        if quote is None:
+            return Response({"error": "Quotation not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            quote, work_job, invoice = quotation_service.admin_review_quote(
+                quote.id, request.user, approve=True, notes="Conversion retried by admin."
+            )
+        except ValidationError as exc:
+            return Response({"error": "; ".join(exc.messages)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({
+            "success": True,
+            "quote": _serialize_quote(quote, full=True),
+            "work_job_id": getattr(work_job, "id", None),
+            "invoice": _serialize_invoice(invoice, full=True) if invoice else None,
         })

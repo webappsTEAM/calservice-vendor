@@ -351,3 +351,89 @@ class AdvanceScheduleTests(QuoteRulesTests):
         _, invoice = self._approved_invoice(1000)
         today = timezone.localtime().strftime("%Y%m%d")
         self.assertRegex(invoice.invoice_number, rf"^INV-{today}-\d{{4}}$")
+
+
+class AdminSettingsApiTests(QuoteRulesTests):
+    """The endpoints the SEVO admin screens call."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin)
+
+    def test_pricing_policies_are_listed(self):
+        resp = self.client.get("/api/workforce/settings/pricing-policies/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        categories = {p["service_category"] for p in resp.data}
+        self.assertIn("painting", categories)
+        self.assertIn("AC Services", categories)
+
+    def test_admin_can_change_the_consultation_fee_through_the_api(self):
+        policy = WorkforceServicePricingPolicy.objects.get(service_category="AC Services")
+        resp = self.client.patch(
+            f"/api/workforce/settings/pricing-policies/{policy.id}/",
+            {"consultation_fee_amount": "249.00"}, format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(pricing_policy.consultation_fee_for("AC Services")[0], Decimal("249.00"))
+
+    def test_invalid_policy_values_are_refused(self):
+        policy = WorkforceServicePricingPolicy.objects.get(service_category="painting")
+        for payload in ({"advance_percent": "150"},
+                        {"consultation_fee_mode": "SOMETIMES"},
+                        {"beyond_radius_amount": "-10"}):
+            resp = self.client.patch(
+                f"/api/workforce/settings/pricing-policies/{policy.id}/", payload, format="json"
+            )
+            self.assertEqual(resp.status_code, 400, (payload, resp.content))
+
+    def test_a_vendor_admin_cannot_edit_pricing(self):
+        vendor_admin = User.objects.create_user(username="va", email="va@x.test", password="x", role="admin")
+        Employee.objects.create(user=vendor_admin, company=self.company, employee_id="EA")
+        client = APIClient()
+        client.force_authenticate(vendor_admin)
+        self.assertEqual(client.get("/api/workforce/settings/pricing-policies/").status_code, 403)
+
+    def test_rate_cards_are_served_to_the_builder(self):
+        resp = self.client.get("/api/workforce/rate-cards/?category=mason")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(len(resp.data), 6)
+
+    def test_rate_card_pricing_endpoint_matches_the_service(self):
+        card = WorkforceRateCard.objects.get(
+            service_category="mason", item_name="Minor Masonry & Small Construction"
+        )
+        ok = self.client.post("/api/workforce/rate-cards/price/",
+                              {"rate_card_id": card.id, "quantity": 500}, format="json")
+        self.assertEqual(ok.status_code, 200, ok.content)
+        self.assertEqual(ok.data["line_total"], 60000.0)
+
+        refused = self.client.post("/api/workforce/rate-cards/price/",
+                                   {"rate_card_id": card.id, "quantity": 499}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertEqual(refused.data["code"], "PRICING_REFUSED")
+
+    def test_pre_send_review_queue_and_release(self):
+        quote = self._quote(28000)
+        with self.assertRaises(ValidationError):
+            quotation_service.send_quote_to_customer(quote.id)
+
+        queue = self.client.get("/api/workforce/quotes/pending-review/")
+        self.assertEqual(queue.status_code, 200, queue.content)
+        self.assertEqual([q["id"] for q in queue.data], [quote.id])
+
+        released = self.client.post(
+            f"/api/workforce/quotes/{quote.id}/pre-send-review/",
+            {"action": "APPROVE"}, format="json",
+        )
+        self.assertEqual(released.status_code, 200, released.content)
+        self.assertEqual(released.data["quote"]["status"], "SENT_TO_CUSTOMER")
+
+        self.assertEqual(self.client.get("/api/workforce/quotes/pending-review/").data, [])
+
+    def test_admin_quote_metrics(self):
+        resp = self.client.get("/api/workforce/admin/quotes/metrics/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        for key in ("by_status", "awaiting_admin_approval", "awaiting_pre_send_review",
+                    "total_quotes", "invoices_outstanding_amount"):
+            self.assertIn(key, resp.data)

@@ -195,7 +195,11 @@ export function EmployeeRuntimeProvider({ children }) {
                 const active = jobsData.find((j) =>
                   ACTIVE_QUEUE_STATUSES.includes((j.status || j.job_status || '').toLowerCase())
                 );
-                return active || jobsData[0] || null;
+                // No `|| jobsData[0]` fallback. That selected an arbitrary job
+                // when the technician had nothing active -- so the dashboard
+                // showed, and could act on, a job that was not theirs to work.
+                // An empty selection is the honest state.
+                return active || null;
               }
               const updated = jobsData.find((j) => j.id === prev.id);
               return updated || prev;
@@ -412,7 +416,7 @@ export function EmployeeRuntimeProvider({ children }) {
       const type = eventData.event_type;
       console.info(`[EmployeeRuntime SSE Event] ${type}`, eventData);
 
-      if (type === 'OFFER_CREATED' || type === 'JOB_OFFER') {
+      if (['OFFER_CREATED', 'JOB_OFFER', 'JOB_OFFER_CREATED'].includes(type)) {
         const payload = eventData.payload || {};
         if (payload.offer_id || payload.id) {
           triggerOfferBrowserNotification(payload);
@@ -421,12 +425,26 @@ export function EmployeeRuntimeProvider({ children }) {
       } else if (
         [
           'JOB_ASSIGNED',
+          'JOB_ACCEPTED',
           'ARRIVAL_DETECTED',
+          'JOB_ARRIVED',
           'JOB_COMPLETED',
           'JOB_LOCATION_UPDATE',
           'STATUS_CHANGE',
           'EXTENSION_DECIDED',
           'PAYMENT_COLLECTED',
+          // Estimation & quotation lifecycle, emitted by
+          // workforce_api/services/quotation_service.py and invoice_service.py.
+          'INSPECTION_UPDATED',
+          'QUOTATION_CREATED',
+          'QUOTATION_SENT',
+          'QUOTATION_PENDING_REVIEW',
+          'QUOTATION_APPROVED',
+          'QUOTATION_DECLINED',
+          'QUOTATION_CHANGES_REQUESTED',
+          'QUOTATION_ADMIN_REJECTED',
+          'EXECUTION_JOB_CREATED',
+          'PAYMENT_UPDATED',
         ].includes(type)
       ) {
         scheduleCoalescedRefresh(300);

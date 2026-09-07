@@ -426,6 +426,18 @@ urlpatterns = [
     path("settings/pricing-policies/<int:pk>/", invoice_views.PricingPolicyDetailView.as_view(), name="workforce-pricing-policy-detail"),
     path("rate-cards/", invoice_views.RateCardListView.as_view(), name="workforce-rate-cards"),
     path("rate-cards/price/", invoice_views.RateCardPriceView.as_view(), name="workforce-rate-card-price"),
+
+    # --- aliases the vendor frontend already calls (api/workforceService.js) ---
+    # The customer opens the same view whether the link carries a token or the
+    # quote id; the view decides what the value is, so one page serves both.
+    path("customer/quotes/<str:token>/", invoice_views.QuoteCustomerDecisionView.as_view(), name="workforce-customer-quote"),
+    path("customer/quote-token/<str:token>/", invoice_views.QuoteCustomerDecisionView.as_view(), name="workforce-customer-quote-token"),
+    path("customer/quotes/<str:token>/decide/", invoice_views.QuoteCustomerDecisionView.as_view(), name="workforce-customer-quote-decide"),
+    path("customer/quote-token/<str:token>/decide/", invoice_views.QuoteCustomerDecisionView.as_view(), name="workforce-customer-quote-token-decide"),
+
+    path("admin/quotes/metrics/", invoice_views.AdminQuoteMetricsView.as_view(), name="workforce-admin-quote-metrics"),
+    path("admin/quotes/<int:pk>/clear-structural/", invoice_views.AdminClearStructuralView.as_view(), name="workforce-admin-clear-structural"),
+    path("admin/quotes/<int:pk>/retry-conversion/", invoice_views.AdminRetryQuoteConversionView.as_view(), name="workforce-admin-retry-conversion"),
 ]
 
 

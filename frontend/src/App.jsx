@@ -51,6 +51,9 @@ import { VendorInvitationsPage } from './pages/admin/VendorInvitationsPage.jsx';
 import { PlatformVendorsPage } from './pages/platform/PlatformVendorsPage.jsx';
 import { PlatformWorkforcePage } from './pages/platform/PlatformWorkforcePage.jsx';
 import { CustomerTrackingPage } from './pages/customer/CustomerTrackingPage.jsx';
+import { CustomerQuotationDecisionPage } from './pages/customer/CustomerQuotationDecisionPage.jsx';
+import { AdminQuotationApprovalsPage } from './pages/admin/AdminQuotationApprovalsPage.jsx';
+import { AdminPricingPolicyPage } from './pages/admin/AdminPricingPolicyPage.jsx';
 import { SuperadminRoute } from './components/common/SuperadminRoute.jsx';
 import { WalletDashboardPage } from './pages/admin/wallet/WalletDashboardPage.jsx';
 import { WalletPayoutAccountsPage } from './pages/admin/wallet/WalletPayoutAccountsPage.jsx';
@@ -277,6 +280,22 @@ export function App() {
               }
             />
             <Route
+              path="/workforce/admin/quotations"
+              element={
+                <AdminRoute>
+                  <AdminQuotationApprovalsPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/pricing"
+              element={
+                <AdminRoute>
+                  <AdminPricingPolicyPage />
+                </AdminRoute>
+              }
+            />
+            <Route
               path="/workforce/admin/dispatch"
               element={
                 <AdminRoute>
@@ -496,6 +515,13 @@ export function App() {
           {/* Customer Live Tracking Routes */}
           <Route path="/track/:jobId" element={<CustomerTrackingPage />} />
           <Route path="/customer/track/:jobId" element={<CustomerTrackingPage />} />
+
+          {/* Customer quotation decision. Public by design: the token in the URL
+              is the credential, because the link is opened on whatever device
+              the customer happens to have. */}
+          <Route path="/customer/quote/:token" element={<CustomerQuotationDecisionPage />} />
+          <Route path="/booking/quote/:token" element={<CustomerQuotationDecisionPage />} />
+          <Route path="/workforce/customer/quote/:token" element={<CustomerQuotationDecisionPage />} />
 
           {/* Fallback */}
           <Route path="*" element={<Navigate to="/workforce/login" replace />} />
