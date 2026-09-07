@@ -59,6 +59,9 @@ def resolve_payee_wallet(service_request):
     if not emp:
         return None, None
 
+    if hasattr(emp, "_cached_payee_wallet"):
+        return emp._cached_payee_wallet
+
     # Priority 1: Check active VendorTechnicianRelationship or company affiliation
     active_rel = VendorTechnicianRelationship.objects.filter(
         technician=emp,
@@ -74,23 +77,28 @@ def resolve_payee_wallet(service_request):
     if target_company:
         # Tied to a vendor -> credit the Vendor Company's head wallet!
         try:
-            return target_company.head_wallet, "PROVIDER_HEAD"
+            res = (target_company.head_wallet, "PROVIDER_HEAD")
         except WalletAccount.DoesNotExist:
             wallet, _ = WalletAccount.objects.get_or_create(
                 company=target_company,
                 account_type=WalletAccount.AccountType.PROVIDER_HEAD,
             )
-            return wallet, "PROVIDER_HEAD"
+            res = (wallet, "PROVIDER_HEAD")
+        emp._cached_payee_wallet = res
+        return res
 
     # Priority 2: Solo Worker -> credit the worker's individual wallet
     try:
-        return emp.individual_wallet, "INDIVIDUAL_WORKER"
+        res = (emp.individual_wallet, "INDIVIDUAL_WORKER")
     except WalletAccount.DoesNotExist:
         wallet, _ = WalletAccount.objects.get_or_create(
             employee=emp,
             account_type=WalletAccount.AccountType.INDIVIDUAL_WORKER,
+            defaults={"company": None, "is_active": True},
         )
-        return wallet, "INDIVIDUAL_WORKER"
+        res = (wallet, "INDIVIDUAL_WORKER")
+    emp._cached_payee_wallet = res
+    return res
 
 
 def is_in_promo_period(wallet) -> bool:

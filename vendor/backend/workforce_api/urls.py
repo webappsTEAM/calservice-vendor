@@ -402,6 +402,9 @@ urlpatterns = [
     path("relieving-requests/<int:pk>/signoff/", RelievingLegalSignoffView.as_view(), name="relieving-legal-signoff"),
 
     # -- Estimation / Quotation routes -----------------------------------------
+    # The models behind these were deleted by 7204699 and restored in dade298;
+    # the HTTP layer had never been written, so the vendor Estimates screen was
+    # calling ten endpoints that did not exist. Views live in quote_views.py.
     path("quotes/", quote_views.QuoteListCreateView.as_view(), name="workforce-quotes"),
     path("quotes/<int:pk>/", quote_views.QuoteDetailView.as_view(), name="workforce-quote-detail"),
     path("quotes/<int:pk>/items/bulk/", quote_views.QuoteItemsBulkView.as_view(), name="workforce-quote-items-bulk"),

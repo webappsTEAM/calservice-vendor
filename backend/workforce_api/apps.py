@@ -14,6 +14,18 @@ def sync_workforce_schema(sender, **kwargs):
                 ADD COLUMN IF NOT EXISTS otp_attempts INTEGER DEFAULT 0;
             """)
             cursor.execute("""
+                ALTER TABLE service_requests_servicerequest
+                ADD COLUMN IF NOT EXISTS technician_id BIGINT,
+                ADD COLUMN IF NOT EXISTS technician_heading DOUBLE PRECISION DEFAULT 0.0,
+                ADD COLUMN IF NOT EXISTS technician_speed DOUBLE PRECISION DEFAULT 0.0,
+                ADD COLUMN IF NOT EXISTS technician_accuracy DOUBLE PRECISION,
+                ADD COLUMN IF NOT EXISTS technician_location_updated_at TIMESTAMP WITH TIME ZONE,
+                ADD COLUMN IF NOT EXISTS technician_arrived_at TIMESTAMP WITH TIME ZONE,
+                ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMP WITH TIME ZONE,
+                ADD COLUMN IF NOT EXISTS started_at TIMESTAMP WITH TIME ZONE,
+                ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP WITH TIME ZONE;
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS workforce_work_extension (
                     id BIGSERIAL PRIMARY KEY,
                     title VARCHAR(200) NOT NULL DEFAULT 'Scope Extension',

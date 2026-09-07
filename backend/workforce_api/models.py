@@ -558,6 +558,8 @@ class PreServiceVerification(models.Model):
         db_table = "workforce_pre_service_verification"
 
     def check_completion(self):
+        # Work area photo and appliance photo are optional evidence.
+        # Mandatory gates: arrival geofence check-in, customer OTP verification, and technician presence selfie.
         ready = bool(
             self.geofence_passed
             and self.otp_verified

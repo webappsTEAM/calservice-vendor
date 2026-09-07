@@ -42,7 +42,10 @@ ALLOWED_TRANSITIONS = {
     "en_route": ["arrived", "redispatching", "cancelled", "unable_to_complete"],
     "arrived": ["service_started", "in_progress", "cancelled", "unable_to_complete"],
     "service_started": ["in_progress", "cancelled", "unable_to_complete"],
-    "in_progress": ["proof_submitted", "cancelled", "unable_to_complete", "follow_up_required"],
+    "in_progress": ["on_hold", "proof_submitted", "cancelled", "unable_to_complete", "follow_up_required"],
+    # A hold is a pause inside an active job, so it can only return to
+    # in_progress or end the job -- it can never skip straight to proof.
+    "on_hold": ["in_progress", "cancelled", "unable_to_complete"],
     "proof_submitted": ["completed", "cancelled", "unable_to_complete", "follow_up_required"],
     "follow_up_required": ["in_progress", "completed", "cancelled", "unable_to_complete"],
     "completed": [],
@@ -246,6 +249,33 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
                     f"[EMPLOYEE_RELEASED] employee={service_request.assigned_employee.id} "
                     f"job={service_request.id} target_state={target.upper()}"
                 )
+
+                # Close the shift that starting the job opened. Without this the
+                # TimeLog outlives the job, and because a DB constraint allows
+                # only one open log per employee, the technician's NEXT job can
+                # never clock in -- and this job's hours never finalise.
+                try:
+                    from time_tracking.models import TimeLog
+                    for _log in TimeLog.objects.filter(
+                        employee=service_request.assigned_employee,
+                        clock_out__isnull=True,
+                    ):
+                        _log.clock_out = now
+                        _log.clock_out_address = service_request.address or ""
+                        _log.clock_out_notes = f"Auto clock-out on job {target}"
+                        _log.save(update_fields=[
+                            "clock_out", "clock_out_address", "clock_out_notes", "updated_at",
+                        ])
+                        logger.info(
+                            "[CLOCK_OUT] employee=%s job=%s timelog=%s target_state=%s",
+                            service_request.assigned_employee.id, service_request.id,
+                            _log.id, target.upper(),
+                        )
+                except Exception as _clockout_err:
+                    logger.warning(
+                        "Could not close TimeLog for job %s: %s",
+                        service_request.pk, _clockout_err,
+                    )
     except Exception as _sm_err:
         logger.exception(
             "Non-fatal error in post-transition side-effects for Job #%s -> %s: %s",
