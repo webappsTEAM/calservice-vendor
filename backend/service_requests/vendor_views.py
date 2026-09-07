@@ -45,6 +45,8 @@ from service_requests.models import (
 )
 from employees.models import Employee
 
+from workforce_api.services import quotation_service
+
 logger = logging.getLogger("workforce.vendor_estimation")
 
 
@@ -310,10 +312,13 @@ def _sync_workforce_quote(sr, quote, computed_items=None):
 
         company_obj = sr.company or (tech_emp.company if tech_emp else None)
 
+        # Keyed on number AND version: quote_number is shared across revisions
+        # by design, so looking up on it alone returns more than one row as
+        # soon as a v2 exists.
         wf_quote, _ = WorkforceQuote.objects.update_or_create(
             quote_number=quote.quote_ref,
+            quote_version=quote.version,
             defaults={
-                "quote_version": quote.version,
                 "job": sr,
                 "technician": tech_emp,
                 "company": company_obj,
@@ -1187,6 +1192,115 @@ class VendorEstimationFeeWaiveView(APIView):
         })
 
 
+def activate_service_job_from_quotation(sr, est, quote, now=None, target_date=None,
+                                        scheduled_time=None, actor=None):
+    """
+    Turn a customer-approved AC estimation quotation into an active service job.
+
+    Extracted verbatim from VendorEstimationCustomerDecideView so the same
+    activation can be triggered from two places: immediately on customer
+    approval (when SEVO admin approval is switched off), or later by
+    quotation_service.admin_review_quote() once a SEVO admin has approved.
+
+    Returns (message, is_same_day).
+    """
+    now = now or timezone.now()
+    if not target_date:
+        target_date = sr.preferred_date or now.date()
+    scheduled_time = scheduled_time or sr.preferred_time or "10:00 AM - 01:00 PM"
+    is_same_day = (target_date == now.date())
+
+    # Resolve technician: either existing assigned_employee or inspection technician
+    tech_emp = sr.assigned_employee
+    if not tech_emp and sr.technician_id:
+        try:
+            tech_emp = Employee.objects.filter(user_id=sr.technician_id).first()
+        except Exception:
+            tech_emp = None
+
+    # 2. Quotation and Estimation statuses
+    quote.status = "APPROVED"
+    quote.customer_approved_at = now
+    quote.save(update_fields=["status", "customer_approved_at", "updated_at"])
+
+    est.status = "CONVERTED_TO_JOB"  # NOTE: not in Estimation.Status.choices; left as-is because the UI keys on this exact string
+    est.save(update_fields=["status", "updated_at"])
+
+    # 3. Convert ServiceRequest to active SERVICE job
+    sr.job_type = "SERVICE"
+    sr.quote_number = quote.quote_ref
+    sr.preferred_date = target_date
+    sr.preferred_time = scheduled_time
+    sr.total_amount = quote.total_amount
+    sr.subtotal_amount = quote.subtotal
+    sr.discount_amount = quote.discount_amount
+    sr.final_amount = quote.total_amount
+
+    # Build cart_data from approved quotation line items
+    cart_items = []
+    for it in quote.items.all():
+        cart_items.append({
+            "title": it.service_name,
+            "description": it.description or "",
+            "quantity": float(it.quantity),
+            "unit": it.unit,
+            "unit_price": float(it.unit_price),
+            "tax_rate": float(it.tax_rate),
+            "tax_amount": float(it.tax_amount),
+            "line_total": float(it.line_total),
+            "type": it.catalog_service_id or "LABOR",
+        })
+    sr.cart_data = cart_items
+
+    # 4. Same-Day Scheduling Rule: assign immediately to same technician
+    if is_same_day:
+        sr.status = "assigned"
+        if tech_emp:
+            sr.assigned_employee = tech_emp
+            sr.technician_name = sr.technician_name or (tech_emp.user.get_full_name() if tech_emp.user else tech_emp.employee_id)
+            sr.technician_phone = sr.technician_phone or tech_emp.phone
+            sr.technician_id = tech_emp.user_id
+            try:
+                from service_requests.models import EmployeeJob
+                EmployeeJob.objects.update_or_create(
+                    service_request=sr,
+                    employee=tech_emp,
+                    defaults={"status": "ASSIGNED", "assigned_date": now}
+                )
+            except Exception as ej_err:
+                logger.warning(f"Could not update EmployeeJob: {ej_err}")
+        message = f"Quotation approved! Converted to service job #{sr.request_id} and scheduled for today with technician {sr.technician_name}."
+    else:
+        sr.status = "assigned"
+        if tech_emp:
+            sr.assigned_employee = tech_emp
+            sr.technician_name = sr.technician_name or (tech_emp.user.get_full_name() if tech_emp.user else tech_emp.employee_id)
+            sr.technician_phone = sr.technician_phone or tech_emp.phone
+            sr.technician_id = tech_emp.user_id
+        message = f"Quotation approved! Converted to service job #{sr.request_id} scheduled for {target_date.strftime('%d %b %Y')}."
+
+    # 5. Payment Isolation: Waive estimation fee; only service job payment collected upon execution
+    fee = est.fees.first()
+    if fee:
+        fee.status = "WAIVED"
+        fee.waived_reason = f"Fee credited/waived towards accepted service booking #{sr.request_id} (Quotation #{quote.quote_ref})"
+        fee.waived_at = now
+        fee.save(update_fields=["status", "waived_reason", "waived_at", "updated_at"])
+
+    sr.payment_status = "pending"
+    sr.save()
+
+    # 6. Synchronize canonical WorkforceQuote
+    wf_quote = _sync_workforce_quote(sr, quote)
+    if wf_quote:
+        wf_quote.status = "CONVERTED"
+        wf_quote.work_job = sr
+        wf_quote.save(update_fields=["status", "work_job", "updated_at"])
+
+    logger.info(f"[VENDOR_ESTIMATION] Quotation {quote.quote_ref} converted into Service Job #{sr.id}. Same-day: {is_same_day}")
+    return message, is_same_day
+
+
 class VendorEstimationCustomerDecideView(APIView):
     """
     POST /api/vendor/estimations/{id}/customer-decide/
@@ -1236,94 +1350,45 @@ class VendorEstimationCustomerDecideView(APIView):
             scheduled_time = request.data.get("scheduled_time") or sr.preferred_time or "10:00 AM - 01:00 PM"
             is_same_day = (target_date == now.date())
 
-            # Resolve technician: either existing assigned_employee or inspection technician
-            tech_emp = sr.assigned_employee
-            if not tech_emp and sr.technician_id:
-                try:
-                    tech_emp = Employee.objects.filter(user_id=sr.technician_id).first()
-                except Exception:
-                    tech_emp = None
-
-            # 2. Quotation and Estimation statuses
             quote.status = "APPROVED"
             quote.customer_approved_at = now
             quote.save(update_fields=["status", "customer_approved_at", "updated_at"])
 
-            est.status = "CONVERTED_TO_JOB"
-            est.save(update_fields=["status", "updated_at"])
-
-            # 3. Convert ServiceRequest to active SERVICE job
-            sr.job_type = "SERVICE"
-            sr.quote_number = quote.quote_ref
-            sr.preferred_date = target_date
-            sr.preferred_time = scheduled_time
-            sr.total_amount = quote.total_amount
-            sr.subtotal_amount = quote.subtotal
-            sr.discount_amount = quote.discount_amount
-            sr.final_amount = quote.total_amount
-
-            # Build cart_data from approved quotation line items
-            cart_items = []
-            for it in quote.items.all():
-                cart_items.append({
-                    "title": it.service_name,
-                    "description": it.description or "",
-                    "quantity": float(it.quantity),
-                    "unit": it.unit,
-                    "unit_price": float(it.unit_price),
-                    "tax_rate": float(it.tax_rate),
-                    "tax_amount": float(it.tax_amount),
-                    "line_total": float(it.line_total),
-                    "type": it.catalog_service_id or "LABOR",
-                })
-            sr.cart_data = cart_items
-
-            # 4. Same-Day Scheduling Rule: assign immediately to same technician
-            if is_same_day:
-                sr.status = "assigned"
-                if tech_emp:
-                    sr.assigned_employee = tech_emp
-                    sr.technician_name = sr.technician_name or (tech_emp.user.get_full_name() if tech_emp.user else tech_emp.employee_id)
-                    sr.technician_phone = sr.technician_phone or tech_emp.phone
-                    sr.technician_id = tech_emp.user_id
-                    try:
-                        from service_requests.models import EmployeeJob
-                        EmployeeJob.objects.update_or_create(
-                            service_request=sr,
-                            employee=tech_emp,
-                            defaults={"status": "ASSIGNED", "assigned_date": now}
-                        )
-                    except Exception as ej_err:
-                        logger.warning(f"Could not update EmployeeJob: {ej_err}")
-                message = f"Quotation approved! Converted to service job #{sr.request_id} and scheduled for today with technician {sr.technician_name}."
-            else:
-                sr.status = "assigned"
-                if tech_emp:
-                    sr.assigned_employee = tech_emp
-                    sr.technician_name = sr.technician_name or (tech_emp.user.get_full_name() if tech_emp.user else tech_emp.employee_id)
-                    sr.technician_phone = sr.technician_phone or tech_emp.phone
-                    sr.technician_id = tech_emp.user_id
-                message = f"Quotation approved! Converted to service job #{sr.request_id} scheduled for {target_date.strftime('%d %b %Y')}."
-
-            # 5. Payment Isolation: Waive estimation fee; only service job payment collected upon execution
-            fee = est.fees.first()
-            if fee:
-                fee.status = "WAIVED"
-                fee.waived_reason = f"Fee credited/waived towards accepted service booking #{sr.request_id} (Quotation #{quote.quote_ref})"
-                fee.waived_at = now
-                fee.save(update_fields=["status", "waived_reason", "waived_at", "updated_at"])
-
-            sr.payment_status = "pending"
-            sr.save()
-
-            # 6. Synchronize canonical WorkforceQuote
             wf_quote = _sync_workforce_quote(sr, quote)
-            if wf_quote:
-                wf_quote.status = "CONVERTED"
-                wf_quote.work_job = sr
-                wf_quote.save(update_fields=["status", "work_job", "updated_at"])
 
-            logger.info(f"[VENDOR_ESTIMATION] Quotation {quote.quote_ref} converted into Service Job #{sr.id}. Same-day: {is_same_day}")
+            if quotation_service.requires_admin_approval():
+                # Customer approval is not authorisation to start work. Park
+                # the quotation in the SEVO admin queue; the activation below
+                # runs from quotation_service.admin_review_quote() instead.
+                est.status = "CUSTOMER_APPROVED"
+                est.save(update_fields=["status", "updated_at"])
+
+                # Hold the slot the customer picked so the admin-approved
+                # activation schedules what the customer actually chose.
+                sr.preferred_date = target_date
+                sr.preferred_time = scheduled_time
+                sr.save(update_fields=["preferred_date", "preferred_time", "updated_at"])
+
+                if wf_quote:
+                    from workforce_api.models import WorkforceQuote as _WFQ
+                    wf_quote.status = _WFQ.Status.PENDING_ADMIN_APPROVAL
+                    wf_quote.customer_decision = "ACCEPTED"
+                    wf_quote.customer_decided_at = now
+                    wf_quote.submitted_for_approval_at = now
+                    wf_quote.save(update_fields=[
+                        "status", "customer_decision", "customer_decided_at",
+                        "submitted_for_approval_at", "updated_at",
+                    ])
+
+                message = (
+                    f"Quotation {quote.quote_ref} approved by the customer and submitted "
+                    "to the SEVO team for final approval. The job will be scheduled once approved."
+                )
+            else:
+                message, _same_day = activate_service_job_from_quotation(
+                    sr, est, quote, now=now, target_date=target_date,
+                    scheduled_time=scheduled_time, actor=request.user,
+                )
 
         else:
             # Customer rejected quotation / cancelled estimation

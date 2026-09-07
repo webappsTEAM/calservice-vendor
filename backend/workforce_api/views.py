@@ -289,8 +289,6 @@ def ensure_job_started(job, employee, actor, notes="Auto clock-in on pre-service
             missing.append("customer OTP")
         if not verification.presence_photo:
             missing.append("technician selfie")
-        if not verification.work_area_photo:
-            missing.append("work area photo")
         return None, "Cannot start work yet. Still required: " + ", ".join(missing) + "."
 
     now_ts = timezone.now()
@@ -2128,25 +2126,27 @@ class WorkforceJobListView(APIView):
             from workforce_api.services.workload import ACTIVE_QUEUE_STATUSES, WORKLOAD_OCCUPIED_STATUSES
             from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee, expire_and_reassign_offers
 
-            # 1. Sweep expired offers
+            # 1. Sweep expired offers asynchronously so response returns instantly
             try:
-                expire_and_reassign_offers()
+                import threading
+                threading.Thread(target=expire_and_reassign_offers, daemon=True).start()
             except Exception:
                 pass
 
-            # 2. Hard Single Active Job Invariant: Check if technician already has an active assignment in queue
-            from workforce_api.services.workload import reconcile_employee_availability
-            reconcile_employee_availability(emp)
-            emp.refresh_from_db(fields=["current_availability", "is_online"])
+            # 2. Hard Single Active Job Invariant: Check if technician already has an active assignment
+            from workforce_api.services.workload import get_employee_active_job
+            active_job = get_employee_active_job(emp.id)
+            has_active_job = bool(active_job)
 
-            has_active_job = ServiceRequest.objects.filter(
-                assigned_employee=emp,
-                status__in=WORKLOAD_OCCUPIED_STATUSES
-            ).exists()
+            new_avail = "busy" if has_active_job else ("available" if emp.is_online else "offline")
+            if emp.current_availability != new_avail:
+                emp.current_availability = new_avail
+                Employee.objects.filter(pk=emp.pk).update(current_availability=new_avail)
+
+            from service_requests.models import EmployeeJob
 
             if has_active_job:
-                # When technician is occupied with an active job, no new job offers should appear
-                offered_job_ids = []
+                offered_job_ids_qs = ServiceRequest.objects.none().values("id")
             else:
                 # Reconsider pending customer bookings in Supabase for this available technician
                 if emp.is_active and emp.is_online and emp.current_availability == "available":
@@ -2157,23 +2157,19 @@ class WorkforceJobListView(APIView):
                     except Exception as e:
                         logger.debug(f"[DISPATCH_RECONSIDER_ERROR] {e}")
 
-                offered_job_ids = list(WorkforceJobOffer.objects.filter(
+                offered_job_ids_qs = WorkforceJobOffer.objects.filter(
                     employee=emp,
                     status="OFFERED",
                     expires_at__gt=now
-                ).values_list("job_id", flat=True))
+                ).values("job_id")
 
-            try:
-                from service_requests.models import EmployeeJob
-                emp_job_sr_ids = list(EmployeeJob.objects.filter(
-                    employee=emp
-                ).exclude(
-                    status__in=["REJECTED", "CANCELLED"]
-                ).values_list("service_request_id", flat=True))
-            except Exception:
-                emp_job_sr_ids = []
+            emp_job_sr_ids_qs = EmployeeJob.objects.filter(
+                employee=emp
+            ).exclude(
+                status__in=["REJECTED", "CANCELLED"]
+            ).values("service_request_id")
 
-            # Canonical query definitions
+            # Canonical query definitions using subqueries to avoid extra roundtrips
             assigned_active_qs = Q(
                 status__in=ACTIVE_QUEUE_STATUSES
             ) & (
@@ -2184,10 +2180,10 @@ class WorkforceJobListView(APIView):
                 status__in=["completed", "cancelled"]
             )
             offered_qs = Q(
-                id__in=offered_job_ids
+                id__in=offered_job_ids_qs
             )
             employee_job_qs = Q(
-                id__in=emp_job_sr_ids
+                id__in=emp_job_sr_ids_qs
             )
 
             status_filter = str(request.query_params.get("status", "active")).lower().strip()
@@ -2195,7 +2191,7 @@ class WorkforceJobListView(APIView):
             if status_filter == "completed":
                 qs = ServiceRequest.objects.filter(
                     Q(assigned_employee=emp, status="completed") |
-                    (Q(id__in=emp_job_sr_ids) & Q(status="completed"))
+                    (employee_job_qs & Q(status="completed"))
                 )
             elif status_filter == "all":
                 qs = ServiceRequest.objects.filter(
@@ -2250,6 +2246,24 @@ class WorkforceJobListView(APIView):
                 for p in payments:
                     payments_map[p.job_id] = p
 
+                # 5. Bulk fetch active quotes for estimation jobs
+                from .models import WorkforceQuote, PreServiceVerification
+                quotes_map = {}
+                quotes = list(
+                    WorkforceQuote.objects.filter(job_id__in=job_ids)
+                    .exclude(status__in=[WorkforceQuote.Status.SUPERSEDED, WorkforceQuote.Status.CANCELLED])
+                    .order_by("job_id", "-quote_version")
+                )
+                for q in quotes:
+                    if q.job_id not in quotes_map:
+                        quotes_map[q.job_id] = q
+
+                # 6. Bulk fetch pre-service verifications
+                psvs_map = {}
+                psvs = list(PreServiceVerification.objects.filter(job_id__in=job_ids))
+                for psv in psvs:
+                    psvs_map[psv.job_id] = psv
+
             context = {
                 "request": request,
                 "emp_offers_map": emp_offers_map,
@@ -2258,6 +2272,8 @@ class WorkforceJobListView(APIView):
                 "extensions_map": extensions_map,
                 "active_extensions_map": active_extensions_map,
                 "payments_map": payments_map,
+                "quotes_map": quotes_map,
+                "psvs_map": psvs_map,
             }
             jobs = job_list
         else:
@@ -6145,10 +6161,11 @@ class WorkforceLocationUpdateView(APIView):
             except Exception as e:
                 logger.error(f"[LOCATION_UPDATE_ERROR] Error evaluating Job #{job.id}: {e}", exc_info=True)
 
-        # Reconsider pending dispatchable customer jobs upon fresh GPS update
+        # Reconsider pending dispatchable customer jobs upon fresh GPS update asynchronously
         try:
+            import threading
             from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
-            reconsider_jobs_for_employee(emp)
+            threading.Thread(target=reconsider_jobs_for_employee, args=(emp.id,), daemon=True).start()
         except Exception:
             pass
 
@@ -7782,13 +7799,24 @@ class WorkforceJobVerifyOTPView(APIView):
             is_complete = verification.check_completion()
             verification.save()
 
+            # Synchronize authoritative ServiceRequest OTP fields
+            job.otp_verified = True
+            job.otp_verified_at = now
+            job.save(update_fields=["otp_verified", "otp_verified_at", "updated_at"])
+
             _ensure_job_started(job, verification)
+            job.refresh_from_db()
+
+            msg = "Customer OTP verified successfully."
+            if not is_complete and not verification.presence_photo:
+                msg = "Customer OTP verified successfully. Please take your presence selfie in the Job Cockpit to start work."
 
             return Response({
-                "message": "Customer OTP verified successfully.",
+                "message": msg,
                 "otp_verified": True,
                 "is_complete": is_complete,
                 "status": job.status,
+                "requires_selfie": not bool(verification.presence_photo),
             }, status=status.HTTP_200_OK)
 
         verification.otp_attempts += 1

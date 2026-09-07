@@ -465,6 +465,12 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
     offer_expires_at = serializers.SerializerMethodField()
     settlement_channel = serializers.SerializerMethodField()
     earnings_wallet_owner = serializers.SerializerMethodField()
+    request_kind = serializers.CharField(read_only=True)
+    is_estimation = serializers.SerializerMethodField()
+    pricing_mode = serializers.SerializerMethodField()
+    can_create_quote = serializers.SerializerMethodField()
+    active_quote_id = serializers.SerializerMethodField()
+    active_quote_number = serializers.SerializerMethodField()
 
     class Meta:
         model = ServiceRequest
@@ -498,6 +504,7 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             "active_extension",
             "created_at",
             "updated_at",
+            "otp_verified",
             # Authoritative fields
             "job_status",
             "offer_status",
@@ -512,6 +519,13 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             # performed the job (see WalletLedgerEntry.worker_performed).
             "settlement_channel",
             "earnings_wallet_owner",
+            # Commercial Estimation & Quotation Workflow fields
+            "request_kind",
+            "is_estimation",
+            "pricing_mode",
+            "can_create_quote",
+            "active_quote_id",
+            "active_quote_number",
         ]
 
     def _get_context_emp(self):
@@ -834,6 +848,45 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             "cancellation_deadline": deadline.isoformat(),
             "remaining_seconds": remaining_seconds,
         }
+
+    def _get_active_quote(self, obj):
+        if not getattr(obj, "is_estimation", False):
+            return None
+        quotes_map = self.context.get("quotes_map")
+        if quotes_map is not None:
+            return quotes_map.get(obj.id)
+        if not hasattr(obj, "_cached_active_quote"):
+            from .models import WorkforceQuote
+            obj._cached_active_quote = (
+                WorkforceQuote.objects.filter(job=obj)
+                .exclude(status__in=[WorkforceQuote.Status.SUPERSEDED, WorkforceQuote.Status.CANCELLED])
+                .order_by("-quote_version")
+                .first()
+            )
+        return obj._cached_active_quote
+
+    def get_is_estimation(self, obj):
+        return bool(getattr(obj, "is_estimation", False))
+
+    def get_pricing_mode(self, obj):
+        return getattr(obj, "pricing_mode", "FIXED")
+
+    def get_active_quote_id(self, obj):
+        q = self._get_active_quote(obj)
+        return q.id if q else None
+
+    def get_active_quote_number(self, obj):
+        q = self._get_active_quote(obj)
+        return q.quote_number if q else None
+
+    def get_can_create_quote(self, obj):
+        if not getattr(obj, "is_estimation", False):
+            return False
+        psvs_map = self.context.get("psvs_map")
+        psv = psvs_map.get(obj.id) if psvs_map is not None else None
+        from .services import quotation_service
+        can_quote, _ = quotation_service.can_create_quote(obj, psv=psv)
+        return bool(can_quote)
 
 
 class WorkforceEmployeeChangeRequestSerializer(serializers.ModelSerializer):

@@ -4,6 +4,7 @@ Route registrations for Workforce API (/api/workforce/*).
 """
 from django.urls import include, path
 from . import quote_views
+from . import invoice_views
 from .views import (
     WorkforceDispatchHealthView,
     WorkforceSignupView,
@@ -403,6 +404,20 @@ urlpatterns = [
     path("quotes/<int:pk>/inspection/", quote_views.QuoteInspectionView.as_view(), name="workforce-quote-inspection"),
     path("quotes/<int:pk>/send/", quote_views.QuoteSendView.as_view(), name="workforce-quote-send"),
     path("quotes/<int:pk>/revise/", quote_views.QuoteReviseView.as_view(), name="workforce-quote-revise"),
+
+    # --- estimation workflow: customer decision -> SEVO admin -> invoice ---
+    # NB: the literal "pending-approval" route must precede "<int:pk>" style
+    # patterns it could otherwise be swallowed by; it is distinct here, but the
+    # decision route is deliberately namespaced under quotes/decision/ so a
+    # token can never be mistaken for a primary key.
+    path("quotes/pending-approval/", invoice_views.QuotePendingApprovalView.as_view(), name="workforce-quotes-pending-approval"),
+    path("quotes/decision/<str:token>/", invoice_views.QuoteCustomerDecisionView.as_view(), name="workforce-quote-decision"),
+    path("quotes/<int:pk>/admin-review/", invoice_views.QuoteAdminReviewView.as_view(), name="workforce-quote-admin-review"),
+
+    path("invoices/", invoice_views.InvoiceListView.as_view(), name="workforce-invoices"),
+    path("invoices/<int:pk>/", invoice_views.InvoiceDetailView.as_view(), name="workforce-invoice-detail"),
+    path("invoices/<int:pk>/payments/", invoice_views.InvoicePaymentView.as_view(), name="workforce-invoice-payments"),
+    path("invoices/<int:pk>/cancel/", invoice_views.InvoiceCancelView.as_view(), name="workforce-invoice-cancel"),
 ]
 
 

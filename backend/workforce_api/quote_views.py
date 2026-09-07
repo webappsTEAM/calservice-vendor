@@ -55,6 +55,9 @@ TAB_FILTERS = {
     "pending": [WorkforceQuote.Status.PENDING_REVIEW],
     "sent": [WorkforceQuote.Status.SENT_TO_CUSTOMER],
     "accepted": [WorkforceQuote.Status.CUSTOMER_ACCEPTED],
+    "awaiting_approval": [WorkforceQuote.Status.PENDING_ADMIN_APPROVAL],
+    "approved": [WorkforceQuote.Status.ADMIN_APPROVED],
+    "rejected": [WorkforceQuote.Status.ADMIN_REJECTED],
     "changes": [WorkforceQuote.Status.CHANGES_REQUESTED],
     "declined": [WorkforceQuote.Status.DECLINED],
     "expired": [WorkforceQuote.Status.EXPIRED],
@@ -156,6 +159,12 @@ def _serialize(q, full=False):
         "created_at": q.created_at.isoformat() if q.created_at else None,
         "updated_at": q.updated_at.isoformat() if q.updated_at else None,
         "is_editable": q.status in EDITABLE_STATUSES,
+        "awaiting_admin_approval": q.status == WorkforceQuote.Status.PENDING_ADMIN_APPROVAL,
+        "submitted_for_approval_at": q.submitted_for_approval_at.isoformat() if q.submitted_for_approval_at else None,
+        "admin_approved_at": q.admin_approved_at.isoformat() if q.admin_approved_at else None,
+        "admin_approved_by_id": q.admin_approved_by_id,
+        "admin_approval_notes": q.admin_approval_notes,
+        "admin_rejection_reason": q.admin_rejection_reason,
     }
     # The decision token is a bearer credential for the customer's accept/decline
     # link. It is never exposed on the technician-facing API.

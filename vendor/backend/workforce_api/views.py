@@ -289,8 +289,6 @@ def ensure_job_started(job, employee, actor, notes="Auto clock-in on pre-service
             missing.append("customer OTP")
         if not verification.presence_photo:
             missing.append("technician selfie")
-        if not verification.work_area_photo:
-            missing.append("work area photo")
         return None, "Cannot start work yet. Still required: " + ", ".join(missing) + "."
 
     now_ts = timezone.now()
@@ -2248,6 +2246,24 @@ class WorkforceJobListView(APIView):
                 for p in payments:
                     payments_map[p.job_id] = p
 
+                # 5. Bulk fetch active quotes for estimation jobs
+                from .models import WorkforceQuote, PreServiceVerification
+                quotes_map = {}
+                quotes = list(
+                    WorkforceQuote.objects.filter(job_id__in=job_ids)
+                    .exclude(status__in=[WorkforceQuote.Status.SUPERSEDED, WorkforceQuote.Status.CANCELLED])
+                    .order_by("job_id", "-quote_version")
+                )
+                for q in quotes:
+                    if q.job_id not in quotes_map:
+                        quotes_map[q.job_id] = q
+
+                # 6. Bulk fetch pre-service verifications
+                psvs_map = {}
+                psvs = list(PreServiceVerification.objects.filter(job_id__in=job_ids))
+                for psv in psvs:
+                    psvs_map[psv.job_id] = psv
+
             context = {
                 "request": request,
                 "emp_offers_map": emp_offers_map,
@@ -2256,6 +2272,8 @@ class WorkforceJobListView(APIView):
                 "extensions_map": extensions_map,
                 "active_extensions_map": active_extensions_map,
                 "payments_map": payments_map,
+                "quotes_map": quotes_map,
+                "psvs_map": psvs_map,
             }
             jobs = job_list
         else:
@@ -7781,13 +7799,24 @@ class WorkforceJobVerifyOTPView(APIView):
             is_complete = verification.check_completion()
             verification.save()
 
+            # Synchronize authoritative ServiceRequest OTP fields
+            job.otp_verified = True
+            job.otp_verified_at = now
+            job.save(update_fields=["otp_verified", "otp_verified_at", "updated_at"])
+
             _ensure_job_started(job, verification)
+            job.refresh_from_db()
+
+            msg = "Customer OTP verified successfully."
+            if not is_complete and not verification.presence_photo:
+                msg = "Customer OTP verified successfully. Please take your presence selfie in the Job Cockpit to start work."
 
             return Response({
-                "message": "Customer OTP verified successfully.",
+                "message": msg,
                 "otp_verified": True,
                 "is_complete": is_complete,
                 "status": job.status,
+                "requires_selfie": not bool(verification.presence_photo),
             }, status=status.HTTP_200_OK)
 
         verification.otp_attempts += 1

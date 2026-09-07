@@ -4,7 +4,8 @@ Relational database models for Workforce Scheduling, Skills, Compliance, Notific
 """
 import uuid
 from django.conf import settings
-from django.db import models
+from django.db import IntegrityError, models, transaction
+from django.utils import timezone
 
 
 class WorkforceEmployeeSchedule(models.Model):
@@ -431,13 +432,34 @@ class WorkforceJobOffer(models.Model):
     rank_score = models.FloatField(default=0.0)
     wave_id = models.UUIDField(default=uuid.uuid4, db_index=True)
     wave_number = models.IntegerField(default=1, db_index=True)
-    offered_at = models.DateTimeField(auto_now_add=True)
-    expires_at = models.DateTimeField()
+    offered_at = models.DateTimeField(db_index=True, default=timezone.now)
+    expires_at = models.DateTimeField(db_index=True)
     rejection_reason = models.TextField(blank=True, default="")
 
     class Meta:
         db_table = "workforce_job_offer"
         ordering = ["-offered_at"]
+        # Declared in migration 0013 but absent from this model, so every
+        # makemigrations run proposed DROPPING them -- including the
+        # constraint that stops one technician holding two live offers for
+        # the same job. Re-declared here to match what is actually in the
+        # database.
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(wave_number__gte=1, wave_number__lte=6),
+                name="valid_wave_number_1_to_6",
+            ),
+            models.UniqueConstraint(
+                fields=("job", "employee"),
+                condition=models.Q(status="OFFERED"),
+                name="unique_active_job_offer_per_employee",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["job", "status", "expires_at"], name="wf_offer_job_st_exp_idx"),
+            models.Index(fields=["job", "wave_id", "status", "expires_at"], name="wf_offer_job_wave_idx"),
+            models.Index(fields=["employee", "status", "expires_at"], name="wf_offer_emp_st_exp_idx"),
+        ]
 
     def __str__(self):
         return f"Offer Job #{self.job_id} to {self.employee} ({self.status})"
@@ -2140,6 +2162,39 @@ class WorkforceRateCard(models.Model):
         return f"[{self.service_category}] {self.section}: {self.item_name} (₹{self.default_rate}/{self.unit})"
 
 
+QUOTE_NUMBER_SEQUENCE = "workforce_quote_number_seq"
+
+
+def generate_quote_number():
+    """
+    Allocate a commercial quotation number.
+
+    Backed by a dedicated PostgreSQL sequence (migration 0022). nextval()
+    is atomic and takes no locks, so two technicians creating quotes at the
+    same instant can never be handed the same number - unlike a
+    read-max-then-write scheme, which collides under concurrency.
+
+    Numbers are monotonically increasing but NOT gapless: a rolled-back
+    transaction consumes its number. That is normal for document numbering
+    and is the price of not serialising every quote creation.
+
+    On non-PostgreSQL backends (SQLite under tests) it falls back to a
+    max-scan, which can collide; WorkforceQuote.save() retries on the
+    unique-constraint error, so the fallback stays correct.
+    """
+    from django.db import connection
+
+    if connection.vendor == "postgresql":
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT nextval(%s)", [QUOTE_NUMBER_SEQUENCE])
+            return "QT-%05d" % cursor.fetchone()[0]
+
+    last_id = (
+        WorkforceQuote.objects.order_by("-id").values_list("id", flat=True).first()
+    )
+    return "QT-%05d" % ((last_id or 0) + 1)
+
+
 class WorkforceQuote(models.Model):
     """
     Central Commercial Quotation Model for CalTrack Workforce.
@@ -2150,6 +2205,12 @@ class WorkforceQuote(models.Model):
         PENDING_REVIEW      = "PENDING_REVIEW",      "Pending Admin Review"
         SENT_TO_CUSTOMER    = "SENT_TO_CUSTOMER",    "Sent to Customer"
         CUSTOMER_ACCEPTED   = "CUSTOMER_ACCEPTED",   "Customer Accepted"
+        # SEVO back-office gate. A quote the customer accepted is a commercial
+        # commitment but not yet an authorised job: it waits here until a SEVO
+        # admin approves it, and only then is it converted and invoiced.
+        PENDING_ADMIN_APPROVAL = "PENDING_ADMIN_APPROVAL", "Pending SEVO Admin Approval"
+        ADMIN_APPROVED      = "ADMIN_APPROVED",      "Approved by SEVO Admin"
+        ADMIN_REJECTED      = "ADMIN_REJECTED",      "Rejected by SEVO Admin"
         CHANGES_REQUESTED   = "CHANGES_REQUESTED",   "Changes Requested"
         DECLINED            = "DECLINED",            "Declined"
         EXPIRED             = "EXPIRED",             "Expired"
@@ -2163,7 +2224,10 @@ class WorkforceQuote(models.Model):
         SUSPECTED_STRUCTURAL = "SUSPECTED_STRUCTURAL", "Suspected Structural (Clearance Required)"
         STRUCTURAL           = "STRUCTURAL",           "Structural Demolition / Load-Bearing (Clearance Required)"
 
-    quote_number = models.CharField(max_length=50, unique=True, db_index=True)
+    # NOT unique on its own: a revision (v2, v3 ...) deliberately keeps the
+    # same quote_number so the customer sees one document evolving. The
+    # uniqueness that matters is (quote_number, quote_version) -- see Meta.
+    quote_number = models.CharField(max_length=50, db_index=True)
     quote_version = models.IntegerField(default=1, db_index=True)
     job = models.ForeignKey(
         "service_requests.ServiceRequest",
@@ -2246,6 +2310,20 @@ class WorkforceQuote(models.Model):
     admin_cleared_at = models.DateTimeField(null=True, blank=True)
     admin_clearance_notes = models.TextField(blank=True, default="")
 
+    # SEVO admin approval of the accepted quote (distinct from the structural
+    # clearance above, which gates SENDING a mason quote to the customer).
+    admin_approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="approved_quotes",
+    )
+    admin_approved_at = models.DateTimeField(null=True, blank=True)
+    admin_approval_notes = models.TextField(blank=True, default="")
+    admin_rejection_reason = models.TextField(blank=True, default="")
+    submitted_for_approval_at = models.DateTimeField(null=True, blank=True)
+
     sent_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -2253,11 +2331,17 @@ class WorkforceQuote(models.Model):
     class Meta:
         db_table = "workforce_quote"
         ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["quote_number", "quote_version"],
+                name="workforce_quote_number_version_unique",
+            ),
+        ]
         indexes = [
-            models.Index(fields=["job", "status"]),
-            models.Index(fields=["technician", "status"]),
-            models.Index(fields=["company", "status"]),
-            models.Index(fields=["decision_token"]),
+            models.Index(fields=["job", "status"], name="wf_quote_job_status_idx"),
+            models.Index(fields=["technician", "status"], name="wf_quote_tech_status_idx"),
+            models.Index(fields=["company", "status"], name="wf_quote_comp_status_idx"),
+            models.Index(fields=["decision_token"], name="wf_quote_dec_token_idx"),
         ]
 
     def __str__(self):
@@ -2277,9 +2361,28 @@ class WorkforceQuote(models.Model):
         return self.admin_cleared_at is not None
 
     def save(self, *args, **kwargs):
-        if not self.quote_number:
+        """
+        Assign a quote number on first save, retrying if the unique
+        constraint is hit. The inner atomic() is what makes the retry
+        legal: after an IntegrityError the surrounding transaction is
+        unusable unless the failed statement was rolled back to a
+        savepoint first.
+        """
+        if self.quote_number:
+            return super().save(*args, **kwargs)
+
+        last_error = None
+        for _attempt in range(5):
             self.quote_number = generate_quote_number()
-        super().save(*args, **kwargs)
+            try:
+                with transaction.atomic():
+                    return super().save(*args, **kwargs)
+            except IntegrityError as exc:
+                if "quote_number" not in str(exc):
+                    raise
+                last_error = exc
+                self.quote_number = ""
+        raise last_error
 
 
 class WorkforceQuoteItem(models.Model):
@@ -2496,3 +2599,256 @@ class WorkforceSystemSetting(models.Model):
 
     def __str__(self):
         return f"{self.key} = {self.value}"
+
+
+# =============================================================================
+# Commercial Invoicing
+#
+# An approved quotation becomes an invoice. The invoice is the document the
+# customer pays against; the payment is what eventually reaches the provider's
+# wallet (via services/commission.settle_completed_job at job completion).
+#
+# Amounts are FROZEN onto the invoice at issue time. They are deliberately not
+# read back through the quote: a quote can be revised after the fact, and an
+# issued invoice must not silently change value underneath a customer who has
+# already paid it.
+# =============================================================================
+
+INVOICE_NUMBER_SEQUENCE = "workforce_invoice_number_seq"
+
+
+def generate_invoice_number():
+    """
+    Allocate an invoice number from a dedicated PostgreSQL sequence.
+
+    Same reasoning as generate_quote_number(): nextval() is atomic, so two
+    invoices issued in the same instant cannot collide on the unique
+    invoice_number. Gaps are possible (a rolled-back transaction consumes its
+    number) and are acceptable for this document series.
+    """
+    from django.db import connection
+
+    if connection.vendor == "postgresql":
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT nextval(%s)", [INVOICE_NUMBER_SEQUENCE])
+            return "INV-%06d" % cursor.fetchone()[0]
+
+    last_id = (
+        WorkforceInvoice.objects.order_by("-id").values_list("id", flat=True).first()
+    )
+    return "INV-%06d" % ((last_id or 0) + 1)
+
+
+class WorkforceInvoice(models.Model):
+    class Status(models.TextChoices):
+        DRAFT          = "DRAFT",          "Draft"
+        ISSUED         = "ISSUED",         "Issued"
+        PARTIALLY_PAID = "PARTIALLY_PAID", "Partially Paid"
+        PAID           = "PAID",           "Paid"
+        CANCELLED      = "CANCELLED",      "Cancelled"
+        REFUNDED       = "REFUNDED",       "Refunded"
+
+    invoice_number = models.CharField(max_length=50, unique=True, db_index=True)
+
+    # PROTECT: an invoice outlives the quote it came from. Deleting a quoted
+    # job must not silently delete the customer's financial record.
+    quote = models.ForeignKey(
+        "workforce_api.WorkforceQuote",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="invoices",
+    )
+    # The WORK ServiceRequest this invoice bills for (not the inspection job).
+    job = models.ForeignKey(
+        "service_requests.ServiceRequest",
+        on_delete=models.CASCADE,
+        related_name="workforce_invoices",
+        db_index=True,
+    )
+    customer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="workforce_invoices",
+    )
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="workforce_invoices",
+    )
+    technician = models.ForeignKey(
+        "employees.Employee",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="workforce_invoices",
+    )
+
+    # Billing snapshot, frozen at issue. The customer's profile can change
+    # later; the invoice must keep saying who it was billed to.
+    bill_to_name = models.CharField(max_length=200, blank=True, default="")
+    bill_to_phone = models.CharField(max_length=30, blank=True, default="")
+    bill_to_email = models.EmailField(blank=True, default="")
+    bill_to_address = models.TextField(blank=True, default="")
+
+    service_category = models.CharField(max_length=150, blank=True, default="")
+    service_name = models.CharField(max_length=200, blank=True, default="")
+
+    subtotal_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    inspection_fee_adjusted = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    balance_due = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    currency = models.CharField(max_length=10, default="INR")
+
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.DRAFT, db_index=True
+    )
+    issued_at = models.DateTimeField(null=True, blank=True)
+    due_at = models.DateTimeField(null=True, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancellation_reason = models.TextField(blank=True, default="")
+
+    notes = models.TextField(blank=True, default="")
+    metadata = models.JSONField(default=dict, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_invoice"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["job", "status"]),
+            models.Index(fields=["company", "status"]),
+            models.Index(fields=["customer", "status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.invoice_number} - Rs.{self.total_amount} [{self.status}]"
+
+    def save(self, *args, **kwargs):
+        if self.invoice_number:
+            return super().save(*args, **kwargs)
+
+        last_error = None
+        for _attempt in range(5):
+            self.invoice_number = generate_invoice_number()
+            try:
+                with transaction.atomic():
+                    return super().save(*args, **kwargs)
+            except IntegrityError as exc:
+                if "invoice_number" not in str(exc):
+                    raise
+                last_error = exc
+                self.invoice_number = ""
+        raise last_error
+
+
+class WorkforceInvoiceItem(models.Model):
+    """
+    Frozen copy of the quote's line items at the moment the invoice was issued.
+    Copied rather than referenced so a later quote revision cannot rewrite the
+    contents of an invoice the customer has already received.
+    """
+    invoice = models.ForeignKey(
+        WorkforceInvoice, on_delete=models.CASCADE, related_name="items"
+    )
+    section = models.CharField(max_length=50, default="OTHER")
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True, default="")
+    item_type = models.CharField(max_length=50, default="item")
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1.00)
+    unit = models.CharField(max_length=50, default="unit")
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=18.00)
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    line_total = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    sort_order = models.IntegerField(default=0)
+
+    class Meta:
+        db_table = "workforce_invoice_item"
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return f"{self.name} x {self.quantity} = Rs.{self.line_total}"
+
+
+class WorkforceInvoicePayment(models.Model):
+    """
+    One customer payment against an invoice.
+
+    `reference` is unique per invoice: a payment gateway callback is
+    at-least-once, so the same transaction id can arrive twice. The unique
+    constraint is what makes recording a payment idempotent at the database
+    level rather than only in application code.
+    """
+    class Method(models.TextChoices):
+        ONLINE = "ONLINE", "Online / Gateway"
+        UPI    = "UPI",    "UPI"
+        CARD   = "CARD",   "Card"
+        CASH   = "CASH",   "Cash on Service"
+        WALLET = "WALLET", "Customer Wallet"
+        OTHER  = "OTHER",  "Other"
+
+    class Status(models.TextChoices):
+        PENDING  = "PENDING",  "Pending"
+        SUCCESS  = "SUCCESS",  "Success"
+        FAILED   = "FAILED",   "Failed"
+        REFUNDED = "REFUNDED", "Refunded"
+
+    invoice = models.ForeignKey(
+        WorkforceInvoice, on_delete=models.CASCADE, related_name="payments"
+    )
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    method = models.CharField(max_length=20, choices=Method.choices, default=Method.ONLINE)
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.SUCCESS, db_index=True
+    )
+    reference = models.CharField(max_length=200, blank=True, default="")
+    gateway = models.CharField(max_length=50, blank=True, default="")
+    paid_at = models.DateTimeField(null=True, blank=True)
+
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="recorded_invoice_payments",
+    )
+    # Set once this payment has reached the provider's wallet, so the link
+    # from "customer paid" to "provider credited" is inspectable in one hop.
+    ledger_entry = models.ForeignKey(
+        "workforce_api.WalletLedgerEntry",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="source_invoice_payments",
+    )
+    notes = models.CharField(max_length=255, blank=True, default="")
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = "workforce_invoice_payment"
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["invoice", "reference"],
+                condition=models.Q(reference__gt=""),
+                name="workforce_invoice_payment_reference_unique",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["invoice", "status"]),
+        ]
+
+    def __str__(self):
+        return f"Payment Rs.{self.amount} ({self.method}) on {self.invoice_id}"
