@@ -273,15 +273,30 @@ class QuoteListCreateView(APIView):
                                 status=status.HTTP_403_FORBIDDEN)
 
         # The service owns the eligibility rules -- do not duplicate them here.
+        # NOTE: can_create_quote returns a TUPLE (bool, detail_dict), not a bool.
+        # An earlier version of this view tested `if allowed is False`, which a
+        # tuple never satisfies, so the gate silently passed everything through.
         try:
-            allowed = quotation_service.can_create_quote(job)
+            allowed, detail = quotation_service.can_create_quote(job)
         except Exception as exc:
             logger.exception("[QUOTE_CREATE] can_create_quote failed for job %s", job.id)
             return Response({"error": f"Could not evaluate quote eligibility: {exc}"},
                             status=status.HTTP_400_BAD_REQUEST)
-        if allowed is False:
-            return Response({"error": "A quotation cannot be created for this job in its current state."},
-                            status=status.HTTP_409_CONFLICT)
+        if not allowed:
+            # Pass the service's own reason through verbatim. It distinguishes
+            # "not a quotation service" from "pre-service verification incomplete"
+            # and names exactly which of the four gates (GPS / OTP / selfie /
+            # photos) is outstanding, which is what the technician needs to see.
+            detail = detail if isinstance(detail, dict) else {}
+            return Response(
+                {
+                    "error": detail.get("message", "A quotation cannot be created for this job yet."),
+                    "code": detail.get("code", "QUOTE_NOT_ALLOWED"),
+                    "missing": detail.get("missing", []),
+                    "checks": detail.get("checks", {}),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
 
         try:
             quote = WorkforceQuote.objects.create(

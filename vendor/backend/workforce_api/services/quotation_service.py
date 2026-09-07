@@ -34,7 +34,14 @@ def can_create_quote(job):
         return False, {"code": "JOB_NOT_FOUND", "message": "Job not found", "missing": ["JOB"]}
 
     # Only quotation-based services support quotations
-    if not (job.is_estimation or is_quotation_service(name=job.issue_title, category=job.service_category)):
+    # is_estimation is NOT a field on ServiceRequest, nor a column in
+    # service_requests_servicerequest -- it exists nowhere in the schema. Reading
+    # it directly raised AttributeError here on EVERY call, so this gate never
+    # returned a verdict and the estimation workflow could not start at all.
+    # getattr() lets the expression fall through to is_quotation_service(), which
+    # is the classifier that actually works (service id / slug / name / category).
+    _is_estimation = getattr(job, "is_estimation", False)
+    if not (_is_estimation or is_quotation_service(name=job.issue_title, category=job.service_category)):
         return False, {
             "code": "NOT_A_QUOTATION_SERVICE",
             "message": "This job is a standard direct service and does not require an estimation quote.",
