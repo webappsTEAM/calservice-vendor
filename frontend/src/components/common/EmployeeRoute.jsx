@@ -28,7 +28,12 @@ export function EmployeeRoute({ children }) {
 
   // Employee Lifecycle Guard
   const currentPath = location.pathname;
-  const normalizedStatus = (registrationStatus || 'not_started').toLowerCase();
+  const normalizedStatus = (registrationStatus || 'not_started').toLowerCase().trim();
+
+  // Allow profile and settings for authenticated users regardless of registration status
+  if (currentPath.startsWith('/workforce/employee/profile') || currentPath.startsWith('/workforce/employee/settings')) {
+    return children;
+  }
 
   // 1. APPROVED Employee: Full access to normal workforce modules; redirect away from onboarding wizard
   if (normalizedStatus === 'approved') {

@@ -16,8 +16,8 @@ export function Breadcrumbs({ items = [], className = '' }) {
         return (
           <React.Fragment key={idx}>
             <ChevronRight className="w-3 h-3 text-zinc-400 shrink-0" />
-            {item.to && !isLast ? (
-              <Link to={item.to} className="hover:text-zinc-900 transition-colors truncate max-w-xs p-1 rounded-md hover:bg-zinc-200/60">
+            {(item.to || item.href) && !isLast ? (
+              <Link to={item.to || item.href} className="hover:text-zinc-900 transition-colors truncate max-w-xs p-1 rounded-md hover:bg-zinc-200/60">
                 {item.label}
               </Link>
             ) : (

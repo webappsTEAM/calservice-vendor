@@ -48,9 +48,17 @@ export function EmployeeWalletWithdrawalsPage() {
   const [withdrawError, setWithdrawError] = useState('');
 
   const isKycApproved = registrationStatus === 'approved';
-  const verifiedAccounts = payoutAccounts.filter((a) => a.verification_status === 'VERIFIED');
+  const verifiedAccounts = Array.isArray(payoutAccounts)
+    ? payoutAccounts.filter((a) => a?.verification_status === 'VERIFIED')
+    : [];
   const availableNum = parseFloat(summary?.available_balance || '0');
   const canWithdraw = isKycApproved && verifiedAccounts.length > 0 && availableNum >= 5000;
+
+  useEffect(() => {
+    if (verifiedAccounts.length > 0 && !selectedAccountId) {
+      setSelectedAccountId(String(verifiedAccounts[0].id));
+    }
+  }, [verifiedAccounts, selectedAccountId]);
 
   const loadData = useCallback(async () => {
     try {
@@ -61,9 +69,9 @@ export function EmployeeWalletWithdrawalsPage() {
         apiGetWalletSummary().catch(() => null),
         apiGetPayoutAccounts().catch(() => []),
       ]);
-      setWithdrawals(wRes || []);
+      setWithdrawals(Array.isArray(wRes) ? wRes : []);
       setSummary(sumRes);
-      setPayoutAccounts(accRes || []);
+      setPayoutAccounts(Array.isArray(accRes) ? accRes : []);
     } catch (err) {
       setError(err?.message || 'Failed to load withdrawals.');
     } finally {
@@ -90,9 +98,12 @@ export function EmployeeWalletWithdrawalsPage() {
 
     try {
       setWithdrawSubmitting(true);
+      const chosenAccountId = selectedAccountId
+        ? parseInt(selectedAccountId, 10)
+        : (verifiedAccounts[0]?.id || undefined);
       await apiRequestWithdrawal({
         amount: withdrawAmount,
-        payout_account_id: selectedAccountId ? parseInt(selectedAccountId, 10) : undefined,
+        payout_account_id: chosenAccountId,
       });
       setShowWithdrawModal(false);
       setWithdrawAmount('');
@@ -154,8 +165,8 @@ export function EmployeeWalletWithdrawalsPage() {
   return (
     <AppShell
       breadcrumbs={[
-        { label: 'Home', href: '/workforce/employee/dashboard' },
-        { label: 'My Wallet', href: '/workforce/employee/wallet' },
+        { label: 'Home', to: '/workforce/employee/dashboard' },
+        { label: 'My Wallet', to: '/workforce/employee/wallet' },
         { label: 'Withdrawals & Payouts' },
       ]}
     >

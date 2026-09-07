@@ -4,7 +4,6 @@ Django settings for the dedicated Workforce Backend (Port 8001).
 Shared database with primary backend, zero duplicated tables (managed=False).
 """
 
-
 import os
 from datetime import timedelta
 from pathlib import Path
@@ -91,9 +90,10 @@ TEMPLATES = [
 WSGI_APPLICATION = "workforce_core.wsgi.application"
 ASGI_APPLICATION = "workforce_core.asgi.application"
 
-# ─── Database Configuration (Shared Supabase PostgreSQL) ──────────────────────
+# ─── Database Configuration (PostgreSQL / Supabase / SQLite) ─────────────────
 
-USE_POSTGRES = os.getenv("DB_NAME") or os.getenv("DB_HOST")
+USE_SQLITE = os.getenv("USE_SQLITE", "0").lower() in ("1", "true", "yes")
+USE_POSTGRES = not USE_SQLITE and bool(os.getenv("DB_NAME") or os.getenv("DB_HOST"))
 
 if USE_POSTGRES:
     _db_options = {
@@ -101,6 +101,7 @@ if USE_POSTGRES:
         "keepalives_idle": 30,
         "keepalives_interval": 10,
         "keepalives_count": 5,
+        "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "10")),
     }
     _sslmode = os.getenv("DB_SSLMODE", "")
     if _sslmode:

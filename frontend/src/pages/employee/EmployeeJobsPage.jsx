@@ -273,9 +273,13 @@ export function EmployeeJobsPage() {
 
   const handleCopyId = (id, e) => {
     e?.stopPropagation?.();
-    navigator.clipboard?.writeText(String(id));
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
+    try {
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(String(id)).catch(() => {});
+      }
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch (_) {}
   };
 
   const handleAcceptOffer = async (jobId, e) => {

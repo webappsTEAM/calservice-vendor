@@ -77,31 +77,37 @@ export function EmployeeServicesPage() {
     const map = new Map();
 
     // From skills
-    skills.forEach((sk) => {
-      map.set(sk.id || sk.name, {
-        id: sk.id,
-        name: sk.name || sk.skill_name,
-        category: sk.category || 'General',
-        status: sk.status || 'APPROVED',
-        proficiency: sk.proficiency_level || 'INTERMEDIATE',
-        isSkill: true,
+    if (Array.isArray(skills)) {
+      skills.forEach((sk) => {
+        if (!sk) return;
+        map.set(sk.id || sk.name, {
+          id: sk.id,
+          name: sk.name || sk.skill_name,
+          category: sk.category || 'General',
+          status: sk.status || 'APPROVED',
+          proficiency: sk.proficiency_level || 'INTERMEDIATE',
+          isSkill: true,
+        });
       });
-    });
+    }
 
     // From requested services
-    requestedServices.forEach((svc) => {
-      const key = svc.id || svc.name || svc.service_id;
-      if (!map.has(key)) {
-        map.set(key, {
-          id: svc.id || svc.service_id,
-          name: svc.name || svc.title,
-          category: svc.category || 'General',
-          status: svc.status || 'APPROVED',
-          price: svc.base_price || svc.price,
-          isSkill: false,
-        });
-      }
-    });
+    if (Array.isArray(requestedServices)) {
+      requestedServices.forEach((svc) => {
+        if (!svc) return;
+        const key = svc.id || svc.name || svc.service_id;
+        if (!map.has(key)) {
+          map.set(key, {
+            id: svc.id || svc.service_id,
+            name: svc.name || svc.title,
+            category: svc.category || 'General',
+            status: svc.status || 'APPROVED',
+            price: svc.base_price || svc.price,
+            isSkill: false,
+          });
+        }
+      });
+    }
 
     return Array.from(map.values());
   }, [skills, requestedServices]);
@@ -109,13 +115,16 @@ export function EmployeeServicesPage() {
   // Catalog categories
   const categories = useMemo(() => {
     const set = new Set();
-    catalog.forEach((item) => {
-      if (item.category) set.add(item.category);
-    });
+    if (Array.isArray(catalog)) {
+      catalog.forEach((item) => {
+        if (item?.category) set.add(item.category);
+      });
+    }
     return ['ALL', ...Array.from(set)];
   }, [catalog]);
 
   const filteredCatalog = useMemo(() => {
+    if (!Array.isArray(catalog)) return [];
     const existingNames = new Set(myServiceList.map((s) => s.name?.toLowerCase()));
     return catalog.filter((item) => {
       // Don't show already approved/requested services

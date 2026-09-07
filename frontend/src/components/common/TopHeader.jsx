@@ -692,10 +692,10 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                     className="flex items-center gap-2 pl-2 border-l border-zinc-800 text-zinc-300 hover:text-white transition-colors"
                   >
                     <div className="w-7 h-7 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-xs font-bold text-white shadow-xs">
-                      {user.firstName ? user.firstName[0].toUpperCase() : <User className="w-3.5 h-3.5" />}
+                      {user?.firstName ? user.firstName[0].toUpperCase() : <User className="w-3.5 h-3.5" />}
                     </div>
                     <span className="hidden sm:inline text-xs font-medium max-w-[120px] truncate">
-                      {user.firstName ? `${user.firstName} ${user.lastName}` : user.username}
+                      {user?.firstName ? `${user.firstName} ${user.lastName || ''}`.trim() : (user?.username || 'User')}
                     </span>
                     <ChevronDown className="w-3 h-3 opacity-60" />
                   </button>
@@ -704,10 +704,10 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                     <div className="absolute right-0 mt-2 w-52 bg-white text-zinc-900 rounded-md border border-zinc-200 shadow-modal py-1 z-50 text-xs animate-in zoom-in-95 duration-150">
                       <div className="px-3.5 py-2.5 border-b border-zinc-100 bg-zinc-50/50">
                         <p className="font-bold text-zinc-900 truncate">
-                          {user.firstName ? `${user.firstName} ${user.lastName}` : user.username}
+                          {user?.firstName ? `${user.firstName} ${user.lastName || ''}`.trim() : (user?.username || 'User')}
                         </p>
                         <p className="text-[10px] text-slate-500 uppercase tracking-wider mt-0.5">
-                          Role: {user.isAdmin ? 'Admin' : (user.isEmployee ? 'Technician' : (user.role || 'Employee'))}
+                          Role: {user?.isAdmin ? 'Admin' : (user?.isEmployee ? 'Technician' : (user?.role || 'Employee'))}
                         </p>
                       </div>
 

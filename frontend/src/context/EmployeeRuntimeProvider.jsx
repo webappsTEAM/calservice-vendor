@@ -459,7 +459,7 @@ export function EmployeeRuntimeProvider({ children }) {
       try {
         setPresenceState('CONNECTING');
         const res = await authTogglePresence(desiredState);
-        if (res.is_online) {
+        if (res?.is_online) {
           setPresenceState('ONLINE_LOCATION_PENDING');
           // Start background GPS resolution without blocking presence completion
           getGPSPosition(false)
@@ -487,6 +487,29 @@ export function EmployeeRuntimeProvider({ children }) {
     [authTogglePresence, isOnlineAuth, handlePositionChange, refreshActiveJobs]
   );
 
+  const activeAssignedJob = useMemo(() => {
+    return (
+      activeJobs.find((j) => {
+        const st = (j.status || j.job_status || '').toLowerCase();
+        const isAssigned = Boolean(j.is_assigned_to_current_employee || j.assigned_employee_id === user?.id);
+        return isAssigned && ACTIVE_QUEUE_STATUSES.includes(st);
+      }) || null
+    );
+  }, [activeJobs, user?.id]);
+
+  const reconcileJobAccepted = useCallback((jobId) => {
+    refreshActiveJobs({ silent: true });
+  }, [refreshActiveJobs]);
+
+  const reconcileJobCompleted = useCallback((jobId) => {
+    refreshActiveJobs({ silent: true });
+    refreshCompletedJobs({ silent: true });
+  }, [refreshActiveJobs, refreshCompletedJobs]);
+
+  const reconcileOfferRemoved = useCallback((offerId) => {
+    refreshActiveJobs({ silent: true });
+  }, [refreshActiveJobs]);
+
   // ── 10. Context Value Assembly ─────────────────────────────────────────────
   const value = useMemo(
     () => ({
@@ -496,12 +519,17 @@ export function EmployeeRuntimeProvider({ children }) {
       selectedJob,
       setSelectedJob,
       incomingOffer,
+      incomingOffers: incomingOffer ? [incomingOffer] : [],
       hasActiveJob,
+      activeAssignedJob,
       isJobsLoading,
       isCompletedLoading,
       jobsError,
       refreshActiveJobs,
       refreshCompletedJobs,
+      reconcileJobAccepted,
+      reconcileJobCompleted,
+      reconcileOfferRemoved,
 
       // Location & Presence State Machine
       presenceState,
@@ -509,6 +537,7 @@ export function EmployeeRuntimeProvider({ children }) {
       isGpsLive,
       isLocationPending,
       liveLocation,
+      gpsState: isGpsLive ? 'live' : isLocationPending ? 'locating' : 'idle',
       locationState: isGpsLive ? 'live' : isLocationPending ? 'locating' : 'idle',
       locationError,
       scanCurrentLocation,
@@ -530,11 +559,15 @@ export function EmployeeRuntimeProvider({ children }) {
       selectedJob,
       incomingOffer,
       hasActiveJob,
+      activeAssignedJob,
       isJobsLoading,
       isCompletedLoading,
       jobsError,
       refreshActiveJobs,
       refreshCompletedJobs,
+      reconcileJobAccepted,
+      reconcileJobCompleted,
+      reconcileOfferRemoved,
       presenceState,
       isOnline,
       isGpsLive,

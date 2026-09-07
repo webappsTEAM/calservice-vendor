@@ -254,6 +254,22 @@ export function App() {
               }
             />
             <Route
+              path="/workforce/admin/technician-network"
+              element={
+                <AdminRoute>
+                  <VendorTechnicianNetworkPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/vendor-invitations"
+              element={
+                <AdminRoute>
+                  <VendorInvitationsPage />
+                </AdminRoute>
+              }
+            />
+            <Route
               path="/workforce/admin/jobs"
               element={
                 <AdminRoute>
@@ -294,14 +310,6 @@ export function App() {
               }
             />
             <Route
-              path="/workforce/admin/services"
-              element={
-                <AdminRoute>
-                  <AdminApplicationsPage />
-                </AdminRoute>
-              }
-            />
-            <Route
               path="/workforce/admin/skills"
               element={
                 <AdminRoute>
@@ -310,114 +318,23 @@ export function App() {
               }
             />
 
-          {/* Workforce Admin Operations Workspace */}
-          <Route
-            path="/workforce/admin"
-            element={
-              <AdminRoute>
-                <AdminDashboardPage />
-              </AdminRoute>
-            }
-          />
-          <Route
-            path="/workforce/admin/applications"
-            element={
-              <AdminRoute>
-                <AdminApplicationsPage />
-              </AdminRoute>
-            }
-          />
-          <Route
-            path="/workforce/admin/applications/:id"
-            element={
-              <AdminRoute>
-                <AdminApplicationDetailPage />
-              </AdminRoute>
-            }
-          />
-          <Route
-            path="/workforce/admin/employees"
-            element={
-              <AdminRoute>
-                <AdminEmployeesPage />
-              </AdminRoute>
-            }
-          />
-          {/* SEVO Platform Admin Routes */}
-          <Route
-            path="/workforce/platform/vendors"
-            element={
-              <PlatformAdminRoute>
-                <PlatformVendorsPage />
-              </PlatformAdminRoute>
-            }
-          />
-          <Route
-            path="/workforce/platform/workforce"
-            element={
-              <PlatformAdminRoute>
-                <PlatformWorkforcePage />
-              </PlatformAdminRoute>
-            }
-          />
-
-          {/* Vendor Admin & Operations Routes */}
-          <Route
-            path="/workforce/admin/technician-network"
-            element={
-              <AdminRoute>
-                <VendorTechnicianNetworkPage />
-              </AdminRoute>
-            }
-          />
-          <Route
-            path="/workforce/admin/vendor-invitations"
-            element={
-              <AdminRoute>
-                <VendorInvitationsPage />
-              </AdminRoute>
-            }
-          />
-          <Route
-            path="/workforce/admin/jobs"
-            element={
-              <AdminRoute>
-                <AdminJobsPage />
-              </AdminRoute>
-            }
-          />
-          <Route
-            path="/workforce/admin/dispatch"
-            element={
-              <AdminRoute>
-                <AdminOperationsPage />
-              </AdminRoute>
-            }
-          />
-          <Route
-            path="/workforce/admin/operations"
-            element={
-              <AdminRoute>
-                <AdminOperationsPage />
-              </AdminRoute>
-            }
-          />
-          <Route
-            path="/workforce/admin/services"
-            element={
-              <AdminRoute>
-                <AdminApplicationsPage />
-              </AdminRoute>
-            }
-          />
-          <Route
-            path="/workforce/admin/skills"
-            element={
-              <AdminRoute>
-                <AdminSkillsPage />
-              </AdminRoute>
-            }
-          />
+            {/* SEVO Platform Admin Routes */}
+            <Route
+              path="/workforce/platform/vendors"
+              element={
+                <PlatformAdminRoute>
+                  <PlatformVendorsPage />
+                </PlatformAdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/platform/workforce"
+              element={
+                <PlatformAdminRoute>
+                  <PlatformWorkforcePage />
+                </PlatformAdminRoute>
+              }
+            />
 
             {/* Admin Wallet Governance */}
             <Route
@@ -452,54 +369,45 @@ export function App() {
                 </AdminRoute>
               }
             />
+            <Route
+              path="/workforce/admin/scorecards"
+              element={
+                <AdminRoute>
+                  <AdminScorecardsPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/social-security"
+              element={
+                <AdminRoute>
+                  <AdminSocialSecurityPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/reports"
+              element={
+                <AdminRoute>
+                  <AdminReportsPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/settings"
+              element={
+                <AdminRoute>
+                  <AdminDashboardPage />
+                </AdminRoute>
+              }
+            />
 
-          <Route
-            path="/workforce/admin/wallet"
-            element={
-              <AdminRoute>
-                <AdminWalletPage />
-              </AdminRoute>
-            }
-          />
-          <Route
-            path="/workforce/admin/scorecards"
-            element={
-              <AdminRoute>
-                <AdminScorecardsPage />
-              </AdminRoute>
-            }
-          />
-          <Route
-            path="/workforce/admin/social-security"
-            element={
-              <AdminRoute>
-                <AdminSocialSecurityPage />
-              </AdminRoute>
-            }
-          />
-          <Route
-            path="/workforce/admin/reports"
-            element={
-              <AdminRoute>
-                <AdminReportsPage />
-              </AdminRoute>
-            }
-          />
-          <Route
-            path="/workforce/admin/settings"
-            element={
-              <AdminRoute>
-                <AdminDashboardPage />
-              </AdminRoute>
-            }
-          />
+            {/* Customer Live Tracking Routes */}
+            <Route path="/track/:jobId" element={<CustomerTrackingPage />} />
+            <Route path="/customer/track/:jobId" element={<CustomerTrackingPage />} />
 
-          {/* Customer Live Tracking Routes */}
-          <Route path="/track/:jobId" element={<CustomerTrackingPage />} />
-          <Route path="/customer/track/:jobId" element={<CustomerTrackingPage />} />
-
-          {/* Fallback */}
-          <Route path="*" element={<Navigate to="/workforce/login" replace />} />
+            {/* Fallback */}
+            <Route path="*" element={<Navigate to="/workforce/login" replace />} />
         </Routes>
       </BrowserRouter>
     </AuthProvider>
