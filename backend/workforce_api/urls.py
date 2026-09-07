@@ -3,6 +3,7 @@ workforce-app/backend/workforce_api/urls.py
 Route registrations for Workforce API (/api/workforce/*).
 """
 from django.urls import include, path
+from . import quote_views
 from .views import (
     WorkforceDispatchHealthView,
     WorkforceSignupView,
@@ -390,6 +391,18 @@ urlpatterns = [
     path("platform/relieving-requests/", PlatformRelievingRequestsView.as_view(), name="platform-relieving-requests"),
     path("platform/relieving-requests/<int:pk>/approve/", PlatformApproveRelievingView.as_view(), name="platform-approve-relieving"),
     path("relieving-requests/<int:pk>/signoff/", RelievingLegalSignoffView.as_view(), name="relieving-legal-signoff"),
+
+    # -- Estimation / Quotation routes -----------------------------------------
+    # The models behind these were deleted by 7204699 and restored in dade298;
+    # the HTTP layer had never been written, so the vendor Estimates screen was
+    # calling ten endpoints that did not exist. Views live in quote_views.py.
+    path("quotes/", quote_views.QuoteListCreateView.as_view(), name="workforce-quotes"),
+    path("quotes/<int:pk>/", quote_views.QuoteDetailView.as_view(), name="workforce-quote-detail"),
+    path("quotes/<int:pk>/items/bulk/", quote_views.QuoteItemsBulkView.as_view(), name="workforce-quote-items-bulk"),
+    path("quotes/<int:pk>/measurements/bulk/", quote_views.QuoteMeasurementsBulkView.as_view(), name="workforce-quote-measurements-bulk"),
+    path("quotes/<int:pk>/inspection/", quote_views.QuoteInspectionView.as_view(), name="workforce-quote-inspection"),
+    path("quotes/<int:pk>/send/", quote_views.QuoteSendView.as_view(), name="workforce-quote-send"),
+    path("quotes/<int:pk>/revise/", quote_views.QuoteReviseView.as_view(), name="workforce-quote-revise"),
 ]
 
 
