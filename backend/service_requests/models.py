@@ -310,6 +310,34 @@ class ServiceRequest(models.Model):
 
     objects = CompanyScopedManager()
 
+
+    # --- RESTORED-SR-FIELDS 2026-09-07 -------------------------------------
+    # These columns exist in service_requests_servicerequest and are declared in
+    # vendor/backend's copy of this model, but were absent here. This model is
+    # managed = False -- the Customer app owns the schema -- so these are purely
+    # ORM mappings and no migration is created or needed.
+    #
+    # Their absence was a live production defect: service_requests/vendor_views.py
+    # reads sr.job_type and sr.technician_id in ten places, and the deploy pipeline
+    # ships THIS copy. Those reads raised AttributeError on the server while working
+    # locally, because the local dev server runs vendor/backend.
+    # ----------------------------------------------------------------------
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    job_type = models.CharField(max_length=50, default="SERVICE", blank=True)
+    parent_request_id = models.BigIntegerField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    technician_accuracy = models.FloatField(null=True, blank=True)
+    technician_arrived_at = models.DateTimeField(null=True, blank=True)
+    technician_heading = models.FloatField(null=True, blank=True, default=0.0)
+    technician_id = models.CharField(max_length=100, blank=True, default="")
+    technician_last_seen_at = models.DateTimeField(null=True, blank=True)
+    technician_location_updated_at = models.DateTimeField(null=True, blank=True)
+    technician_speed = models.FloatField(null=True, blank=True, default=0.0)
+    vendor_confirmed_at = models.DateTimeField(null=True, blank=True)
+    vendor_id = models.CharField(max_length=100, blank=True, default="")
+    vendor_name = models.CharField(max_length=200, blank=True, default="")
+
     class Meta:
         managed = False
         db_table = "service_requests_servicerequest"
