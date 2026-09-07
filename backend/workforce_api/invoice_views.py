@@ -752,3 +752,44 @@ class AdminRetryQuoteConversionView(APIView):
             "work_job_id": getattr(work_job, "id", None),
             "invoice": _serialize_invoice(invoice, full=True) if invoice else None,
         })
+
+
+class InvoicePdfView(APIView):
+    """
+    The invoice as a PDF, for the customer to download or the vendor to print.
+
+    Reachable two ways: signed in (normal tenancy scoping applies), or with the
+    quotation's decision token as ?token=, so a customer who never created an
+    account can still get their own invoice from the same link the quote came
+    in on. The token is checked against this invoice's own quote, so it grants
+    nothing beyond the document it belongs to.
+    """
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, pk):
+        from django.http import HttpResponse
+        from workforce_api.services.invoice_pdf import render_invoice_pdf
+
+        invoice = None
+        token = (request.query_params.get("token") or "").strip()
+
+        if token and len(token) >= 20:
+            invoice = (
+                WorkforceInvoice.objects
+                .filter(pk=pk, quote__decision_token=token)
+                .select_related("quote")
+                .first()
+            )
+        elif getattr(request.user, "is_authenticated", False):
+            invoice = _visible_invoices(request).filter(pk=pk).first()
+
+        if invoice is None:
+            return Response({"error": "Invoice not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        pdf = render_invoice_pdf(invoice)
+        response = HttpResponse(pdf, content_type="application/pdf")
+        response["Content-Disposition"] = (
+            f'inline; filename="{invoice.invoice_number}.pdf"'
+        )
+        return response

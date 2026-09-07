@@ -54,6 +54,7 @@ import { CustomerTrackingPage } from './pages/customer/CustomerTrackingPage.jsx'
 import { CustomerQuotationDecisionPage } from './pages/customer/CustomerQuotationDecisionPage.jsx';
 import { AdminQuotationApprovalsPage } from './pages/admin/AdminQuotationApprovalsPage.jsx';
 import { AdminPricingPolicyPage } from './pages/admin/AdminPricingPolicyPage.jsx';
+import { InvoicesPage } from './pages/admin/InvoicesPage.jsx';
 import { SuperadminRoute } from './components/common/SuperadminRoute.jsx';
 import { WalletDashboardPage } from './pages/admin/wallet/WalletDashboardPage.jsx';
 import { WalletPayoutAccountsPage } from './pages/admin/wallet/WalletPayoutAccountsPage.jsx';
@@ -292,6 +293,14 @@ export function App() {
               element={
                 <AdminRoute>
                   <AdminPricingPolicyPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/invoices"
+              element={
+                <AdminRoute>
+                  <InvoicesPage />
                 </AdminRoute>
               }
             />

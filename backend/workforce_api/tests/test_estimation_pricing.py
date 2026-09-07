@@ -437,3 +437,38 @@ class AdminSettingsApiTests(QuoteRulesTests):
         for key in ("by_status", "awaiting_admin_approval", "awaiting_pre_send_review",
                     "total_quotes", "invoices_outstanding_amount"):
             self.assertIn(key, resp.data)
+
+
+class InvoicePdfTests(AdvanceScheduleTests):
+    def test_pdf_renders_for_the_signed_in_owner(self):
+        _, invoice = self._approved_invoice(1000)
+        client = APIClient()
+        client.force_authenticate(self.admin)
+        resp = client.get(f"/api/workforce/invoices/{invoice.id}/pdf/")
+        self.assertEqual(resp.status_code, 200, resp.content[:200])
+        self.assertEqual(resp["Content-Type"], "application/pdf")
+        body = b"".join(resp.streaming_content) if resp.streaming else resp.content
+        self.assertTrue(body.startswith(b"%PDF"), body[:20])
+        self.assertGreater(len(body), 1000)
+
+    def test_customer_can_fetch_it_with_the_quotation_token(self):
+        quote = self._quote(1000)
+        quotation_service.send_quote_to_customer(quote.id)
+        quote.refresh_from_db()
+        token = quote.decision_token
+        quotation_service.record_customer_decision(quote.id, "ACCEPT", token=token)
+        _, _, invoice = quotation_service.admin_review_quote(quote.id, self.admin, approve=True)
+
+        anon = APIClient()
+        ok = anon.get(f"/api/workforce/invoices/{invoice.id}/pdf/?token={token}")
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(ok["Content-Type"], "application/pdf")
+
+        # A token belonging to a different quote must not open this invoice.
+        other = self._quote(500)
+        quotation_service.send_quote_to_customer(other.id)
+        other.refresh_from_db()
+        wrong = anon.get(f"/api/workforce/invoices/{invoice.id}/pdf/?token={other.decision_token}")
+        self.assertEqual(wrong.status_code, 404)
+
+        self.assertEqual(anon.get(f"/api/workforce/invoices/{invoice.id}/pdf/").status_code, 404)
