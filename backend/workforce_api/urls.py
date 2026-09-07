@@ -418,6 +418,14 @@ urlpatterns = [
     path("invoices/<int:pk>/", invoice_views.InvoiceDetailView.as_view(), name="workforce-invoice-detail"),
     path("invoices/<int:pk>/payments/", invoice_views.InvoicePaymentView.as_view(), name="workforce-invoice-payments"),
     path("invoices/<int:pk>/cancel/", invoice_views.InvoiceCancelView.as_view(), name="workforce-invoice-cancel"),
+
+    # --- SEVO commercial settings and the pre-send review queue ---
+    path("quotes/pending-review/", invoice_views.QuotePendingPreSendReviewView.as_view(), name="workforce-quotes-pending-review"),
+    path("quotes/<int:pk>/pre-send-review/", invoice_views.QuotePreSendReleaseView.as_view(), name="workforce-quote-pre-send-review"),
+    path("settings/pricing-policies/", invoice_views.PricingPolicyListView.as_view(), name="workforce-pricing-policies"),
+    path("settings/pricing-policies/<int:pk>/", invoice_views.PricingPolicyDetailView.as_view(), name="workforce-pricing-policy-detail"),
+    path("rate-cards/", invoice_views.RateCardListView.as_view(), name="workforce-rate-cards"),
+    path("rate-cards/price/", invoice_views.RateCardPriceView.as_view(), name="workforce-rate-card-price"),
 ]
 
 

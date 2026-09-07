@@ -2146,6 +2146,48 @@ class WorkforceRateCard(models.Model):
     item_name = models.CharField(max_length=200)
     description = models.TextField(blank=True, default="")
     unit = models.CharField(max_length=50, default="sqft")
+
+    # How default_rate is applied. A single rate column cannot express slab
+    # pricing (epoxy 1/2/3 mm), capacity bands (water tank by litres) or size
+    # bands (bathroom small/medium/large), so those carry their thresholds in
+    # pricing_config and are evaluated by services/rate_card_pricing.py.
+    class PricingModel(models.TextChoices):
+        PER_UNIT      = "PER_UNIT",      "Rate per unit"
+        FLAT          = "FLAT",          "Flat price regardless of quantity"
+        TIERED        = "TIERED",        "Rate chosen by a specification tier"
+        CAPACITY_BAND = "CAPACITY_BAND", "Rate or flat price by capacity band"
+        SIZE_BAND     = "SIZE_BAND",     "Flat price by size band"
+        QUOTE_ONLY    = "QUOTE_ONLY",    "No standard rate; priced per site"
+
+    class WarrantyTier(models.TextChoices):
+        NONE     = "NONE",     "No warranty"
+        FIVE_YEAR = "5_YEAR",  "5-Year Warranty"
+        TEN_YEAR  = "10_YEAR", "10-Year Warranty"
+
+    pricing_model = models.CharField(
+        max_length=20, choices=PricingModel.choices, default=PricingModel.PER_UNIT
+    )
+    pricing_config = models.JSONField(
+        default=dict, blank=True,
+        help_text="Bands for TIERED / CAPACITY_BAND / SIZE_BAND. See "
+                  "services/rate_card_pricing.py for the accepted shape.",
+    )
+    minimum_quantity = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0.00,
+        help_text="Quotes below this quantity are rejected -- e.g. Minor Masonry "
+                  "is not viable under 500 sq.ft.",
+    )
+    warranty_tier = models.CharField(
+        max_length=10, choices=WarrantyTier.choices, default=WarrantyTier.NONE
+    )
+    advance_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="Overrides the category's advance_percent for quotes containing "
+                  "this item. Waterproofing needs 50% up front while ordinary "
+                  "painting does not, and both sit in the painting category -- so "
+                  "the rule cannot live on the category alone.",
+    )
+
     default_rate = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     default_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=18.00)
@@ -2162,37 +2204,15 @@ class WorkforceRateCard(models.Model):
         return f"[{self.service_category}] {self.section}: {self.item_name} (₹{self.default_rate}/{self.unit})"
 
 
-QUOTE_NUMBER_SEQUENCE = "workforce_quote_number_seq"
-
-
 def generate_quote_number():
     """
-    Allocate a commercial quotation number.
+    Allocate a commercial quotation number: PQ-YYYYMMDD-NNNN.
 
-    Backed by a dedicated PostgreSQL sequence (migration 0022). nextval()
-    is atomic and takes no locks, so two technicians creating quotes at the
-    same instant can never be handed the same number - unlike a
-    read-max-then-write scheme, which collides under concurrency.
-
-    Numbers are monotonically increasing but NOT gapless: a rolled-back
-    transaction consumes its number. That is normal for document numbering
-    and is the price of not serialising every quote creation.
-
-    On non-PostgreSQL backends (SQLite under tests) it falls back to a
-    max-scan, which can collide; WorkforceQuote.save() retries on the
-    unique-constraint error, so the fallback stays correct.
+    The dated format is a commercial requirement, so the sequence used
+    previously is not enough on its own -- the suffix has to count within the
+    day. next_document_number() does that atomically; see its comment.
     """
-    from django.db import connection
-
-    if connection.vendor == "postgresql":
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT nextval(%s)", [QUOTE_NUMBER_SEQUENCE])
-            return "QT-%05d" % cursor.fetchone()[0]
-
-    last_id = (
-        WorkforceQuote.objects.order_by("-id").values_list("id", flat=True).first()
-    )
-    return "QT-%05d" % ((last_id or 0) + 1)
+    return _dated_number("PQ", "QUOTE")
 
 
 class WorkforceQuote(models.Model):
@@ -2277,6 +2297,12 @@ class WorkforceQuote(models.Model):
     inspection_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     inspection_fee_adjusted = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     net_payable = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    # Null means "use the category policy". Set when the quote contains an item
+    # whose rate card demands a larger advance (waterproofing, masonry), or when
+    # an admin overrides it for this specific job.
+    advance_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True
+    )
 
     status = models.CharField(
         max_length=30,
@@ -2406,7 +2432,15 @@ class WorkforceQuoteItem(models.Model):
     total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     material_source = models.CharField(max_length=50, default="CALTRACK")
     is_customer_supplied = models.BooleanField(default=False)
+    # Legacy boolean, kept so existing readers do not break. warranty_tier is
+    # the field that carries meaning now: the business offers exactly two
+    # tiers, and "true" could not say which one applied.
     warranty_applicable = models.BooleanField(default=True)
+    warranty_tier = models.CharField(
+        max_length=10,
+        choices=[("NONE", "No warranty"), ("5_YEAR", "5-Year Warranty"), ("10_YEAR", "10-Year Warranty")],
+        default="NONE",
+    )
     notes = models.TextField(blank=True, default="")
     sort_order = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -2614,29 +2648,15 @@ class WorkforceSystemSetting(models.Model):
 # already paid it.
 # =============================================================================
 
-INVOICE_NUMBER_SEQUENCE = "workforce_invoice_number_seq"
-
-
 def generate_invoice_number():
     """
-    Allocate an invoice number from a dedicated PostgreSQL sequence.
+    Allocate an invoice number: INV-YYYYMMDD-NNNN.
 
-    Same reasoning as generate_quote_number(): nextval() is atomic, so two
-    invoices issued in the same instant cannot collide on the unique
-    invoice_number. Gaps are possible (a rolled-back transaction consumes its
-    number) and are acceptable for this document series.
+    Matched to the quote format deliberately -- a quote and the invoice that
+    follows it are one document family, and two numbering schemes inside it
+    make reconciliation harder than it needs to be.
     """
-    from django.db import connection
-
-    if connection.vendor == "postgresql":
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT nextval(%s)", [INVOICE_NUMBER_SEQUENCE])
-            return "INV-%06d" % cursor.fetchone()[0]
-
-    last_id = (
-        WorkforceInvoice.objects.order_by("-id").values_list("id", flat=True).first()
-    )
-    return "INV-%06d" % ((last_id or 0) + 1)
+    return _dated_number("INV", "INVOICE")
 
 
 class WorkforceInvoice(models.Model):
@@ -2706,6 +2726,17 @@ class WorkforceInvoice(models.Model):
     amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     balance_due = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     currency = models.CharField(max_length=10, default="INR")
+
+    # Payment schedule, from the category's advance_percent. Waterproofing and
+    # masonry need half up front to buy chemicals, cement and sand before any
+    # work starts; standard painting is billed in full. advance_amount equals
+    # total_amount when the category takes 100% up front.
+    advance_percent = models.DecimalField(max_digits=5, decimal_places=2, default=100.00)
+    advance_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    balance_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    advance_due_at = models.DateTimeField(null=True, blank=True)
+    advance_paid_at = models.DateTimeField(null=True, blank=True)
+    balance_due_at = models.DateTimeField(null=True, blank=True)
 
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.DRAFT, db_index=True
@@ -2852,3 +2883,156 @@ class WorkforceInvoicePayment(models.Model):
 
     def __str__(self):
         return f"Payment Rs.{self.amount} ({self.method}) on {self.invoice_id}"
+
+
+# =============================================================================
+# Document numbering
+#
+# Quote and invoice numbers are dated and sequential within the day:
+#   PQ-20260907-0001, INV-20260907-0001
+#
+# The counter row below is what makes that safe under concurrency. A dated
+# format needs a per-day count, and computing that by reading MAX() and
+# inserting is exactly the race that made quote numbering unreliable before.
+# Here the read and the increment are ONE statement -- an upsert that returns
+# the incremented value -- so two technicians pressing "create quote" in the
+# same millisecond get different numbers without either of them blocking on a
+# table lock.
+# =============================================================================
+
+class WorkforceDocumentCounter(models.Model):
+    scope = models.CharField(max_length=40, db_index=True)   # "QUOTE" | "INVOICE"
+    period = models.CharField(max_length=16, db_index=True)  # "20260907"
+    last_value = models.BigIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_document_counter"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["scope", "period"], name="workforce_document_counter_unique"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.scope} {self.period}: {self.last_value}"
+
+
+def next_document_number(scope, period):
+    """Atomically claim the next number in (scope, period)."""
+    from django.db import connection
+
+    if connection.vendor == "postgresql":
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO workforce_document_counter (scope, period, last_value, updated_at)
+                VALUES (%s, %s, 1, NOW())
+                ON CONFLICT (scope, period)
+                DO UPDATE SET last_value = workforce_document_counter.last_value + 1,
+                              updated_at = NOW()
+                RETURNING last_value
+                """,
+                [scope, period],
+            )
+            return cursor.fetchone()[0]
+
+    # Non-PostgreSQL (SQLite under some test setups): row lock instead. Slower
+    # and serialising, but correct; callers still retry on unique violation.
+    with transaction.atomic():
+        row, _ = WorkforceDocumentCounter.objects.select_for_update().get_or_create(
+            scope=scope, period=period
+        )
+        row.last_value += 1
+        row.save(update_fields=["last_value", "updated_at"])
+        return row.last_value
+
+
+def _dated_number(prefix, scope, when=None):
+    when = when or timezone.localtime()
+    period = when.strftime("%Y%m%d")
+    return "%s-%s-%04d" % (prefix, period, next_document_number(scope, period))
+
+
+# =============================================================================
+# Commercial policy, editable by the SEVO admin
+#
+# Everything here used to be a constant somewhere in the code: the Rs.199
+# inspection fee (four separate literals in service_requests/vendor_views.py),
+# the 15 km / Rs.300 consultation rule, the Rs.30,000 high-value review
+# threshold, the 50% advance on waterproofing and masonry.
+#
+# Money rules change more often than code ships, so they live in a table with
+# an audit trail instead. One row per service category; the seed migration
+# reproduces today's behaviour exactly so nothing moves on deploy.
+# =============================================================================
+
+class WorkforceServicePricingPolicy(models.Model):
+    class ConsultationFeeMode(models.TextChoices):
+        FREE          = "FREE",          "Always free"
+        FLAT          = "FLAT",          "Flat fee"
+        DISTANCE_BAND = "DISTANCE_BAND", "Free within radius, flat fee beyond"
+
+    service_category = models.CharField(max_length=150, unique=True, db_index=True)
+    display_name = models.CharField(max_length=200, blank=True, default="")
+
+    consultation_fee_mode = models.CharField(
+        max_length=20,
+        choices=ConsultationFeeMode.choices,
+        default=ConsultationFeeMode.FLAT,
+    )
+    consultation_fee_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0.00,
+        help_text="Charged when mode is FLAT.",
+    )
+    free_radius_km = models.DecimalField(
+        max_digits=6, decimal_places=2, default=15.00,
+        help_text="DISTANCE_BAND: consultation is free within this radius of the hub.",
+    )
+    beyond_radius_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, default=300.00,
+        help_text="DISTANCE_BAND: charged when the site is beyond free_radius_km.",
+    )
+    # Hosur central hub by default.
+    hub_latitude = models.FloatField(default=12.7409)
+    hub_longitude = models.FloatField(default=77.8253)
+
+    high_value_review_threshold = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+        help_text="Quotes above this are held for admin review BEFORE the customer "
+                  "sees them. Null disables the pre-send gate for this category.",
+    )
+    requires_admin_approval = models.BooleanField(
+        default=True,
+        help_text="Whether a customer-accepted quote waits for SEVO approval "
+                  "before becoming a work booking.",
+    )
+    advance_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=100.00,
+        help_text="Share of the invoice payable up front. 50 for waterproofing "
+                  "and masonry; 100 for standard painting.",
+    )
+    allow_customer_supplied_materials = models.BooleanField(
+        default=False,
+        help_text="Off by default: customer-supplied material voids the "
+                  "workmanship warranty, so quote items claiming it are rejected.",
+    )
+
+    is_active = models.BooleanField(default=True, db_index=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_pricing_policies",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_service_pricing_policy"
+        ordering = ["service_category"]
+        verbose_name_plural = "Workforce service pricing policies"
+
+    def __str__(self):
+        return f"{self.display_name or self.service_category} pricing policy"

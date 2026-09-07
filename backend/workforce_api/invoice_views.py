@@ -29,8 +29,18 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import is_admin_role
-from workforce_api.models import WorkforceInvoice, WorkforceQuote
-from workforce_api.services import invoice_service, quotation_service
+from workforce_api.models import (
+    WorkforceInvoice,
+    WorkforceQuote,
+    WorkforceRateCard,
+    WorkforceServicePricingPolicy,
+)
+from workforce_api.services import (
+    invoice_service,
+    pricing_policy,
+    quotation_service,
+    rate_card_pricing,
+)
 from workforce_api.quote_views import _serialize as _serialize_quote
 
 logger = logging.getLogger(__name__)
@@ -396,3 +406,265 @@ class InvoiceCancelView(APIView):
             return Response({"error": "; ".join(exc.messages)},
                             status=status.HTTP_400_BAD_REQUEST)
         return Response({"success": True, "invoice": _serialize_invoice(inv, full=True)})
+
+
+# --------------------------------------------------------------------------- #
+# pricing policy — the SEVO admin's commercial settings
+# --------------------------------------------------------------------------- #
+POLICY_EDITABLE_FIELDS = [
+    "display_name",
+    "consultation_fee_mode",
+    "consultation_fee_amount",
+    "free_radius_km",
+    "beyond_radius_amount",
+    "hub_latitude",
+    "hub_longitude",
+    "high_value_review_threshold",
+    "requires_admin_approval",
+    "advance_percent",
+    "allow_customer_supplied_materials",
+    "is_active",
+]
+
+
+def _serialize_policy(p):
+    return {
+        "id": p.id,
+        "service_category": p.service_category,
+        "display_name": p.display_name,
+        "consultation_fee_mode": p.consultation_fee_mode,
+        "consultation_fee_mode_display": p.get_consultation_fee_mode_display(),
+        "consultation_fee_amount": _money(p.consultation_fee_amount),
+        "free_radius_km": _money(p.free_radius_km),
+        "beyond_radius_amount": _money(p.beyond_radius_amount),
+        "hub_latitude": p.hub_latitude,
+        "hub_longitude": p.hub_longitude,
+        "high_value_review_threshold": (
+            _money(p.high_value_review_threshold)
+            if p.high_value_review_threshold is not None else None
+        ),
+        "requires_admin_approval": p.requires_admin_approval,
+        "advance_percent": _money(p.advance_percent),
+        "allow_customer_supplied_materials": p.allow_customer_supplied_materials,
+        "is_active": p.is_active,
+        "updated_by_id": p.updated_by_id,
+        "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+    }
+
+
+class PricingPolicyListView(APIView):
+    """
+    The screen where a SEVO admin sets what a consultation costs, when a quote
+    needs review before the customer sees it, and how much is payable up front
+    — per service category. These were code constants until now.
+    """
+    permission_classes = [IsSevoAdmin]
+
+    def get(self, request):
+        return Response([
+            _serialize_policy(p)
+            for p in WorkforceServicePricingPolicy.objects.all()
+        ])
+
+    def post(self, request):
+        category = (request.data.get("service_category") or "").strip()
+        if not category:
+            return Response({"error": "service_category is required."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if WorkforceServicePricingPolicy.objects.filter(
+            service_category__iexact=category
+        ).exists():
+            return Response({"error": f"A policy for '{category}' already exists."},
+                            status=status.HTTP_409_CONFLICT)
+
+        policy = WorkforceServicePricingPolicy(service_category=category, updated_by=request.user)
+        error = _apply_policy_fields(policy, request.data)
+        if error:
+            return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
+        policy.save()
+        return Response(_serialize_policy(policy), status=status.HTTP_201_CREATED)
+
+
+class PricingPolicyDetailView(APIView):
+    permission_classes = [IsSevoAdmin]
+
+    def patch(self, request, pk):
+        policy = WorkforceServicePricingPolicy.objects.filter(pk=pk).first()
+        if policy is None:
+            return Response({"error": "Pricing policy not found."},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        error = _apply_policy_fields(policy, request.data)
+        if error:
+            return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
+
+        policy.updated_by = request.user
+        policy.save()
+        logger.info(
+            "[PRICING_POLICY_UPDATED] %s by user %s: %s",
+            policy.service_category, request.user.id, sorted(request.data.keys()),
+        )
+        return Response(_serialize_policy(policy))
+
+
+def _apply_policy_fields(policy, data):
+    """Returns an error string, or None on success."""
+    Mode = WorkforceServicePricingPolicy.ConsultationFeeMode
+
+    for field in POLICY_EDITABLE_FIELDS:
+        if field not in data:
+            continue
+        value = data[field]
+
+        if field in ("requires_admin_approval", "allow_customer_supplied_materials", "is_active"):
+            setattr(policy, field, bool(value))
+            continue
+        if field in ("display_name", "consultation_fee_mode"):
+            setattr(policy, field, str(value or "").strip())
+            continue
+        if field == "high_value_review_threshold" and value in (None, ""):
+            policy.high_value_review_threshold = None
+            continue
+        if field in ("hub_latitude", "hub_longitude"):
+            try:
+                setattr(policy, field, float(value))
+            except (TypeError, ValueError):
+                return f"{field} must be a number."
+            continue
+        try:
+            setattr(policy, field, _dec(value, field))
+        except ValueError as exc:
+            return str(exc)
+
+    if policy.consultation_fee_mode not in Mode.values:
+        return f"consultation_fee_mode must be one of: {', '.join(Mode.values)}."
+    if not (Decimal("0") <= Decimal(policy.advance_percent) <= Decimal("100")):
+        return "advance_percent must be between 0 and 100."
+    if Decimal(policy.consultation_fee_amount) < 0 or Decimal(policy.beyond_radius_amount) < 0:
+        return "Fee amounts cannot be negative."
+    if Decimal(policy.free_radius_km) < 0:
+        return "free_radius_km cannot be negative."
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# pre-send review queue (high-value + mason structural)
+# --------------------------------------------------------------------------- #
+class QuotePendingPreSendReviewView(APIView):
+    permission_classes = [IsSevoAdmin]
+
+    def get(self, request):
+        quotes = quotation_service.quotes_awaiting_pre_send_review()
+        return Response([_serialize_quote(q) for q in quotes[:200]])
+
+
+class QuotePreSendReleaseView(APIView):
+    """Release (and send) or reject a quote held before the customer sees it."""
+    permission_classes = [IsSevoAdmin]
+
+    def post(self, request, pk):
+        raw = str(request.data.get("action") or "").upper().strip()
+        if raw in ("APPROVE", "RELEASE", "APPROVED"):
+            approve = True
+        elif raw in ("REJECT", "REJECTED", "DECLINE"):
+            approve = False
+        else:
+            return Response({"error": "action must be APPROVE or REJECT."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            quote = quotation_service.release_high_value_quote(
+                pk, request.user, approve=approve,
+                notes=request.data.get("notes", "") or "",
+            )
+        except WorkforceQuote.DoesNotExist:
+            return Response({"error": "Quotation not found."}, status=status.HTTP_404_NOT_FOUND)
+        except ValidationError as exc:
+            return Response({"error": "; ".join(exc.messages)},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            "success": True,
+            "released": approve,
+            "quote": _serialize_quote(quote, full=True),
+        })
+
+
+# --------------------------------------------------------------------------- #
+# rate cards — what the quotation builder offers
+# --------------------------------------------------------------------------- #
+class RateCardListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        qs = WorkforceRateCard.objects.filter(is_active=True)
+        category = request.query_params.get("service_category")
+        if category:
+            qs = qs.filter(service_category__iexact=category.strip())
+        return Response([
+            {
+                "id": c.id,
+                "service_category": c.service_category,
+                "service_name": c.service_name,
+                "section": c.section,
+                "item_name": c.item_name,
+                "description": c.description,
+                "unit": c.unit,
+                "pricing_model": c.pricing_model,
+                "pricing_config": c.pricing_config,
+                "default_rate": _money(c.default_rate),
+                "minimum_quantity": _money(c.minimum_quantity),
+                "tax_rate": _money(c.tax_rate),
+                "max_discount_percent": _money(c.max_discount_percent),
+                "warranty_tier": c.warranty_tier,
+                "advance_percent": (
+                    _money(c.advance_percent) if c.advance_percent is not None else None
+                ),
+                "sort_order": c.sort_order,
+            }
+            for c in qs
+        ])
+
+
+class RateCardPriceView(APIView):
+    """
+    Price one line against a rate card, so the builder shows the same number the
+    backend will compute. Slab and band pricing is not something a UI should be
+    reimplementing in JavaScript.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        card = WorkforceRateCard.objects.filter(
+            pk=request.data.get("rate_card_id"), is_active=True
+        ).first()
+        if card is None:
+            return Response({"error": "Rate card not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            quantity = _dec(request.data.get("quantity"), "quantity")
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            total, unit_price, note = rate_card_pricing.price_line(
+                card, quantity, tier=request.data.get("tier")
+            )
+        except ValidationError as exc:
+            return Response({"error": "; ".join(exc.messages), "code": "PRICING_REFUSED"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            "rate_card_id": card.id,
+            "item_name": card.item_name,
+            "unit": card.unit,
+            "quantity": float(quantity),
+            "unit_price": float(unit_price),
+            "line_total": float(total),
+            "tax_rate": _money(card.tax_rate),
+            "warranty_tier": card.warranty_tier,
+            "advance_percent": (
+                _money(card.advance_percent) if card.advance_percent is not None else None
+            ),
+            "note": note,
+        })

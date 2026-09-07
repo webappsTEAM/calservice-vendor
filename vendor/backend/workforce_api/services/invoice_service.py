@@ -31,6 +31,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
+from workforce_api.services import pricing_policy
 from workforce_api.models import (
     JobPayment,
     WorkforceInvoice,
@@ -121,6 +122,23 @@ def generate_invoice_for_quote(quote, work_job=None, actor=None, due_days=7):
         },
     )
     invoice.balance_due = invoice.total_amount
+
+    # Payment schedule from the category's policy. Waterproofing and masonry
+    # take 50% up front because the provider buys chemicals, cement and sand
+    # before any work happens; standard painting is billed in full.
+    # The quote's own advance_percent wins when set -- it is how "this quote
+    # contains waterproofing" overrides "the painting category bills in full".
+    pct = quote.advance_percent
+    if pct is None:
+        pct = pricing_policy.advance_percent(invoice.service_category)
+    advance, balance = pricing_policy.split_advance_and_balance(
+        invoice.total_amount, invoice.service_category, percent=pct
+    )
+    invoice.advance_percent = pct
+    invoice.advance_amount = advance
+    invoice.balance_amount = balance
+    invoice.advance_due_at = now
+    invoice.balance_due_at = invoice.due_at
     invoice.save()
 
     for item in quote.items.all():
@@ -246,7 +264,20 @@ def record_invoice_payment(
         invoice.paid_at = now
     else:
         invoice.status = WorkforceInvoice.Status.PARTIALLY_PAID
-    invoice.save(update_fields=["amount_paid", "balance_due", "status", "paid_at", "updated_at"])
+
+    # Stamped the moment cumulative payment covers the advance -- this is what
+    # unlocks execution, so it must not depend on the payment arriving in one
+    # instalment of exactly the advance amount.
+    if (
+        invoice.advance_paid_at is None
+        and _money(invoice.amount_paid) >= _money(invoice.advance_amount) > ZERO
+    ):
+        invoice.advance_paid_at = now
+
+    invoice.save(update_fields=[
+        "amount_paid", "balance_due", "status", "paid_at",
+        "advance_paid_at", "updated_at",
+    ])
 
     _sync_job_payment(invoice, payment)
 
@@ -260,7 +291,35 @@ def record_invoice_payment(
         invoice.invoice_number, amount, payment.method, reference or "-",
         invoice.amount_paid, invoice.balance_due, invoice.status,
     )
+    _emit_payment_event(invoice, payment)
     return invoice, payment, True
+
+
+def _emit_payment_event(invoice, payment):
+    """Notification only -- never allowed to unwind a recorded payment."""
+    try:
+        from workforce_api.services.realtime import publish_workforce_event
+
+        publish_workforce_event(
+            "PAYMENT_UPDATED",
+            {
+                "invoice_id": invoice.id,
+                "invoice_number": invoice.invoice_number,
+                "job_id": invoice.job_id,
+                "quote_id": invoice.quote_id,
+                "customer_id": invoice.customer_id,
+                "technician_id": invoice.technician_id,
+                "amount": str(payment.amount),
+                "method": payment.method,
+                "amount_paid": str(invoice.amount_paid),
+                "balance_due": str(invoice.balance_due),
+                "advance_settled": advance_is_settled(invoice),
+                "status": invoice.status,
+            },
+            company=invoice.company,
+        )
+    except Exception as exc:  # pragma: no cover
+        logger.warning("Failed to emit PAYMENT_UPDATED for %s: %s", invoice.invoice_number, exc)
 
 
 def _sync_job_payment(invoice, payment):
@@ -333,3 +392,44 @@ def cancel_invoice(invoice, actor=None, reason=""):
     invoice.save(update_fields=["status", "cancelled_at", "cancellation_reason", "updated_at"])
     logger.info("[INVOICE_CANCELLED] %s by %s: %s", invoice.invoice_number, actor, reason)
     return invoice
+
+
+def advance_is_settled(invoice):
+    """
+    Whether enough has been paid to start work.
+
+    Execution is gated on this rather than on full payment: a 50% advance is
+    exactly the point of the schedule, and waiting for the balance would mean
+    the provider funds materials out of pocket.
+    """
+    if invoice is None:
+        return False
+    if _money(invoice.advance_amount) <= ZERO:
+        return True
+    return _money(invoice.amount_paid) >= _money(invoice.advance_amount)
+
+
+def blocking_reason_for_execution(job):
+    """
+    Why this work booking cannot start yet, or None if it can.
+
+    Returned as a sentence rather than a code because it is shown to a
+    technician standing at a customer's door.
+    """
+    invoice = (
+        WorkforceInvoice.objects
+        .filter(job=job)
+        .exclude(status=WorkforceInvoice.Status.CANCELLED)
+        .order_by("-id")
+        .first()
+    )
+    if invoice is None:
+        return None
+    if advance_is_settled(invoice):
+        return None
+    outstanding = _money(invoice.advance_amount) - _money(invoice.amount_paid)
+    return (
+        f"Advance of {invoice.advance_amount} on invoice {invoice.invoice_number} "
+        f"is not settled ({outstanding} outstanding). Work starts once the "
+        "advance is received."
+    )

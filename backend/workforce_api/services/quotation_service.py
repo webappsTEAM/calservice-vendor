@@ -9,7 +9,7 @@ from django.core.exceptions import ValidationError
 from django.conf import settings
 
 from service_requests.models import ServiceRequest, is_quotation_service
-from workforce_api.services import invoice_service
+from workforce_api.services import invoice_service, pricing_policy
 from workforce_api.models import (
     PreServiceVerification,
     WorkforceQuote,
@@ -22,6 +22,35 @@ from workforce_api.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _emit(event_type, quote, **extra):
+    """
+    Publish a quotation lifecycle event.
+
+    Never allowed to break the transaction it is called from: an event is a
+    notification, and failing to notify must not undo a quote the customer has
+    already accepted. Redis being down is a degraded UI, not a lost commitment.
+    """
+    try:
+        from workforce_api.services.realtime import publish_workforce_event
+
+        payload = {
+            "quote_id": quote.id,
+            "quote_number": quote.quote_number,
+            "quote_version": quote.quote_version,
+            "status": quote.status,
+            "job_id": quote.job_id,
+            "work_job_id": quote.work_job_id,
+            "technician_id": quote.technician_id,
+            "company_id": quote.company_id,
+            "customer_id": quote.customer_id,
+            "net_payable": str(quote.net_payable or quote.total_amount or 0),
+        }
+        payload.update(extra)
+        publish_workforce_event(event_type, payload, company=quote.company)
+    except Exception as exc:  # pragma: no cover - notification must never raise
+        logger.warning("Failed to emit %s for quote %s: %s", event_type, quote.id, exc)
 
 
 def can_create_quote(job, psv=None):
@@ -170,20 +199,49 @@ def send_quote_to_customer(quote_id, actor=None, valid_days=7):
     Sends quotation to customer with cryptographic decision token, freezing amounts and setting expiry.
     Enforces Mason structural clearance gate.
     """
+    # Two pre-send gates, evaluated together: the mason structural clearance and
+    # the category's high-value threshold. Both park the quote in PENDING_REVIEW
+    # and refuse to send.
+    #
+    # The park is committed BEFORE the exception is raised, in its own
+    # transaction. Setting the status and raising inside one atomic block rolls
+    # the status back -- so a quote the caller was told had "gone for review"
+    # stayed DRAFT and never appeared in any queue. The structural gate had that
+    # bug from the start; this restructure fixes it for both gates.
     with transaction.atomic():
         quote = WorkforceQuote.objects.select_for_update().get(id=quote_id)
 
-        # Structural Gate Check
+        recalculate_quote_totals(quote)
+        quote.refresh_from_db()
+
+        held_reason = None
         if quote.requires_structural_clearance and not quote.is_structurally_cleared:
-            quote.status = WorkforceQuote.Status.PENDING_REVIEW
-            quote.save(update_fields=["status", "updated_at"])
-            raise ValidationError(
+            held_reason = (
                 "Quotation involves structural modification or load-bearing demolition. "
                 "Admin or Structural Engineer clearance is required before sending."
             )
+        else:
+            amount = quote.net_payable or quote.total_amount
+            over_threshold, threshold = pricing_policy.needs_pre_send_review(
+                quote.service_category, amount
+            )
+            if over_threshold and not quote.admin_cleared_at:
+                held_reason = (
+                    f"Quotation total {amount} exceeds the {threshold} review threshold "
+                    f"for {quote.service_category}. It has been sent for admin review "
+                    "and will reach the customer once approved."
+                )
 
-        # Authoritative recalculation before freeze
-        recalculate_quote_totals(quote)
+        if held_reason:
+            quote.status = WorkforceQuote.Status.PENDING_REVIEW
+            quote.save(update_fields=["status", "updated_at"])
+
+    if held_reason:
+        _emit("QUOTATION_PENDING_REVIEW", quote, reason=held_reason)
+        raise ValidationError(held_reason)
+
+    with transaction.atomic():
+        quote = WorkforceQuote.objects.select_for_update().get(id=quote_id)
 
         # Generate cryptographic decision token
         if not quote.decision_token:
@@ -203,7 +261,8 @@ def send_quote_to_customer(quote_id, actor=None, valid_days=7):
             "updated_at",
         ])
 
-        logger.info("Quote %s (v%s) sent to customer with token %s", quote.quote_number, quote.quote_version, quote.decision_token)
+        logger.info("Quote %s (v%s) sent to customer", quote.quote_number, quote.quote_version)
+        _emit("QUOTATION_SENT", quote, valid_until=quote.valid_until.isoformat() if quote.valid_until else None)
         return quote
 
 
@@ -242,7 +301,7 @@ def record_customer_decision(quote_id, action, notes="", reason="", token=None, 
             quote.customer_decided_at = now
             quote.customer_notes = notes
 
-            if requires_admin_approval():
+            if requires_admin_approval(quote.service_category):
                 # The customer accepting is a commercial commitment, not an
                 # authorisation to start work. The quote parks here until a
                 # SEVO admin approves it; admin_review_quote() is what
@@ -257,6 +316,7 @@ def record_customer_decision(quote_id, action, notes="", reason="", token=None, 
                     "Quote %s v%s accepted by customer; awaiting SEVO admin approval.",
                     quote.quote_number, quote.quote_version,
                 )
+                _emit("QUOTATION_APPROVED", quote, awaiting_admin_approval=True)
                 return quote, None
 
             quote.status = WorkforceQuote.Status.CUSTOMER_ACCEPTED
@@ -274,6 +334,7 @@ def record_customer_decision(quote_id, action, notes="", reason="", token=None, 
             quote.customer_decline_reason = reason or notes
             quote.customer_decided_at = now
             quote.save(update_fields=["status", "customer_decision", "customer_decline_reason", "customer_decided_at", "updated_at"])
+            _emit("QUOTATION_DECLINED", quote, reason=quote.customer_decline_reason)
             return quote, None
 
         elif clean_action == "REQUEST_CHANGES":
@@ -285,6 +346,7 @@ def record_customer_decision(quote_id, action, notes="", reason="", token=None, 
 
             # Create revised version (V2 draft)
             new_quote = create_revised_quote_version(quote, notes=notes)
+            _emit("QUOTATION_CHANGES_REQUESTED", quote, revised_quote_id=new_quote.id)
             return quote, new_quote
 
 
@@ -558,13 +620,20 @@ def admin_clear_mason_structural(quote_id, admin_user, approved=True, notes=""):
         return quote
 
 
-def requires_admin_approval():
+def requires_admin_approval(category=None):
     """
     Whether a customer-accepted quote must clear a SEVO admin before it
-    becomes a work booking. Read at call time, not import time, so it can be
-    overridden per-test and flipped without a restart-order surprise.
+    becomes a work booking.
+
+    Three levels, most specific first: the category's pricing policy, then the
+    deployment-wide settings flag, then on. Read at call time, not import time,
+    so an admin flipping it in the app takes effect without a restart.
     """
-    return bool(getattr(settings, "SEVO_REQUIRE_ADMIN_QUOTE_APPROVAL", True))
+    if not bool(getattr(settings, "SEVO_REQUIRE_ADMIN_QUOTE_APPROVAL", True)):
+        return False
+    if category is None:
+        return True
+    return pricing_policy.requires_admin_approval(category)
 
 
 def quotes_awaiting_admin_approval():
@@ -629,6 +698,7 @@ def admin_review_quote(quote_id, admin_user, approve=True, notes="", reason=""):
                 "Quote %s v%s REJECTED by SEVO admin %s: %s",
                 quote.quote_number, quote.quote_version, admin_user, quote.admin_rejection_reason,
             )
+            _emit("QUOTATION_ADMIN_REJECTED", quote, reason=quote.admin_rejection_reason)
             return quote, None, None
 
         quote.status = WorkforceQuote.Status.ADMIN_APPROVED
@@ -650,6 +720,13 @@ def admin_review_quote(quote_id, admin_user, approve=True, notes="", reason=""):
             "Quote %s v%s APPROVED by SEVO admin %s -> work job #%s, invoice %s",
             quote.quote_number, quote.quote_version, admin_user,
             getattr(work_job, "id", None), invoice.invoice_number,
+        )
+        _emit(
+            "EXECUTION_JOB_CREATED", quote,
+            execution_job_id=getattr(work_job, "id", None),
+            invoice_id=invoice.id,
+            invoice_number=invoice.invoice_number,
+            advance_amount=str(invoice.advance_amount),
         )
         return quote, work_job, invoice
 
@@ -702,3 +779,55 @@ def _activate_approved_quote(quote, admin_user):
         return quote.job
 
     return convert_accepted_quote_to_work_booking(quote, actor=admin_user)
+
+
+def release_high_value_quote(quote_id, admin_user, approve=True, notes="", valid_days=7):
+    """
+    Admin decision on a quote held by either pre-send gate -- the high-value
+    threshold or the mason structural clearance.
+
+    Approving stamps the clearance and sends the quote; declining cancels it.
+    The clearance is recorded on admin_cleared_at/-by, the same fields the mason
+    structural gate uses -- both are "an admin has looked at this before the
+    customer does", and giving them one audit trail keeps the question
+    "who released this quote" answerable in one place.
+    """
+    with transaction.atomic():
+        quote = WorkforceQuote.objects.select_for_update().get(id=quote_id)
+
+        if quote.status != WorkforceQuote.Status.PENDING_REVIEW:
+            raise ValidationError(
+                f"Quote {quote.quote_number} is {quote.status}, not awaiting pre-send review."
+            )
+
+        if not approve:
+            quote.status = WorkforceQuote.Status.CANCELLED
+            quote.admin_clearance_notes = f"REJECTED: {notes}".strip()
+            quote.admin_cleared_by = admin_user if getattr(admin_user, "is_authenticated", False) else None
+            quote.save(update_fields=[
+                "status", "admin_clearance_notes", "admin_cleared_by", "updated_at",
+            ])
+            logger.info("High-value quote %s rejected pre-send by %s", quote.quote_number, admin_user)
+            return quote
+
+        quote.admin_cleared_by = admin_user if getattr(admin_user, "is_authenticated", False) else None
+        quote.admin_cleared_at = timezone.now()
+        quote.admin_clearance_notes = notes or ""
+        quote.status = WorkforceQuote.Status.DRAFT
+        quote.save(update_fields=[
+            "admin_cleared_by", "admin_cleared_at", "admin_clearance_notes",
+            "status", "updated_at",
+        ])
+
+    logger.info("High-value quote %s released pre-send by %s", quote.quote_number, admin_user)
+    return send_quote_to_customer(quote_id, actor=admin_user, valid_days=valid_days)
+
+
+def quotes_awaiting_pre_send_review():
+    """Quotes held by the high-value gate, oldest first."""
+    return (
+        WorkforceQuote.objects
+        .filter(status=WorkforceQuote.Status.PENDING_REVIEW)
+        .select_related("job", "technician", "company", "customer")
+        .order_by("updated_at", "id")
+    )

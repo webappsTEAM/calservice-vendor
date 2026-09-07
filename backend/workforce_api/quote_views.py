@@ -37,7 +37,7 @@ from workforce_api.models import (
     WorkforceQuoteMeasurement,
 )
 from workforce_api.permissions import IsApprovedTechnician
-from workforce_api.services import quotation_service
+from workforce_api.services import pricing_policy, quotation_service
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +176,8 @@ def _serialize(q, full=False):
                 "unit_price": _money(i.unit_price), "tax_rate": _money(i.tax_rate),
                 "discount_amount": _money(i.discount_amount), "total_amount": _money(i.total_amount),
                 "material_source": i.material_source, "is_customer_supplied": i.is_customer_supplied,
-                "warranty_applicable": i.warranty_applicable, "notes": i.notes,
+                "warranty_applicable": i.warranty_applicable,
+                "warranty_tier": i.warranty_tier, "notes": i.notes,
                 "sort_order": i.sort_order,
             }
             for i in q.items.all().order_by("sort_order", "id")
@@ -432,6 +433,33 @@ class QuoteItemsBulkView(APIView):
                 if not name:
                     return Response({"error": f"items[{n}].name is required."},
                                     status=status.HTTP_400_BAD_REQUEST)
+
+                # Customer-supplied material voids the workmanship warranty --
+                # expired chemicals or poor sand fail, and the claim lands on
+                # SEVO. Rejected unless the category's policy allows it.
+                customer_supplied = bool(raw.get("is_customer_supplied", False))
+                if customer_supplied and not pricing_policy.allows_customer_supplied_materials(
+                    quote.service_category
+                ):
+                    return Response(
+                        {
+                            "error": (
+                                f"items[{n}] is marked customer-supplied. Customer-supplied "
+                                "material is not accepted for this service because it voids "
+                                "the workmanship warranty."
+                            ),
+                            "code": "CUSTOMER_SUPPLIED_NOT_ALLOWED",
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                warranty_tier = str(raw.get("warranty_tier") or "NONE").strip().upper()
+                if warranty_tier not in ("NONE", "5_YEAR", "10_YEAR"):
+                    return Response(
+                        {"error": f"items[{n}].warranty_tier must be NONE, 5_YEAR or 10_YEAR."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
                 rows.append(WorkforceQuoteItem(
                     quote=quote,
                     section=(raw.get("section") or "").strip()[:100],
@@ -445,8 +473,9 @@ class QuoteItemsBulkView(APIView):
                     discount_amount=_dec(raw.get("discount_amount"), f"items[{n}].discount_amount", 0),
                     total_amount=_dec(raw.get("total_amount"), f"items[{n}].total_amount", 0),
                     material_source=(raw.get("material_source") or "").strip()[:50],
-                    is_customer_supplied=bool(raw.get("is_customer_supplied", False)),
-                    warranty_applicable=bool(raw.get("warranty_applicable", False)),
+                    is_customer_supplied=customer_supplied,
+                    warranty_applicable=warranty_tier != "NONE",
+                    warranty_tier=warranty_tier,
                     notes=(raw.get("notes") or "").strip(),
                     sort_order=int(raw.get("sort_order") or n),
                 ))

@@ -12,7 +12,7 @@ REST API ViewSets & endpoints for Vendor AC Inspection & Estimation Workflow:
 - Complete Inspection
 - Build, Preview, & Send Formal Versioned Quotation
 - Revise Quotation
-- Collect or Waive ₹199 Inspection Visit Fee
+- Collect or Waive the Inspection Visit Fee (amount from the category pricing policy)
 - Customer Decision Simulator/Receiver
 - Available Technicians List
 """
@@ -50,6 +50,32 @@ from workforce_api.services import quotation_service
 logger = logging.getLogger("workforce.vendor_estimation")
 
 
+def _consultation_fee_for(sr):
+    """
+    What the site visit costs for this booking.
+
+    Replaces the Rs.199 literal that used to appear in eight places here. The
+    amount now comes from WorkforceServicePricingPolicy, which a SEVO admin
+    edits per category -- flat for AC, distance-banded from the Hosur hub for
+    painting and masonry. The explanation is kept alongside the amount so a
+    customer querying the charge later can be given the actual reason.
+    """
+    from workforce_api.services import pricing_policy
+
+    try:
+        amount, why = pricing_policy.consultation_fee_for(
+            sr.service_category,
+            latitude=getattr(sr, "latitude", None),
+            longitude=getattr(sr, "longitude", None),
+        )
+        return Decimal(amount), why
+    except Exception as exc:
+        logger.warning("Consultation fee lookup failed for SR #%s: %s", sr.pk, exc)
+        return Decimal("0.00"), "Pricing policy unavailable; consultation fee waived."
+
+
+
+
 class StandardResultsSetPagination(PageNumberPagination):
     page_size = 15
     page_size_query_param = "page_size"
@@ -74,7 +100,7 @@ def _serialize_estimation(sr, est=None, full_detail=False):
     fee_obj = est.fees.first() if est else None
     fee_data = {
         "id": fee_obj.id if fee_obj else None,
-        "amount": float(fee_obj.amount) if fee_obj else 199.00,
+        "amount": float(fee_obj.amount) if fee_obj else float(_consultation_fee_for(sr)[0]),
         "currency": fee_obj.currency if fee_obj else "INR",
         "status": fee_obj.status if fee_obj else "PENDING",
         "payment_method": fee_obj.payment_method if fee_obj else "",
@@ -268,10 +294,14 @@ def _get_target_estimation(pk):
                 customer_symptom=sr.issue_title,
                 status=sr.status.upper(),
             )
-            # Ensure ₹199 inspection fee record exists
+            # Ensure the inspection fee record exists, priced by policy
             EstimationFee.objects.get_or_create(
                 estimation=est,
-                defaults={"amount": Decimal("199.00"), "currency": "INR", "status": "PENDING"}
+                defaults={
+                    "amount": _consultation_fee_for(sr)[0],
+                    "currency": "INR",
+                    "status": "PENDING",
+                }
             )
         return sr, est
 
@@ -1121,7 +1151,7 @@ class VendorEstimationFeeCollectView(APIView):
         if not fee:
             fee = EstimationFee.objects.create(
                 estimation=est,
-                amount=Decimal("199.00"),
+                amount=_consultation_fee_for(sr)[0],
                 currency="INR",
                 status="PENDING",
             )
@@ -1166,7 +1196,7 @@ class VendorEstimationFeeWaiveView(APIView):
         if not fee:
             fee = EstimationFee.objects.create(
                 estimation=est,
-                amount=Decimal("199.00"),
+                amount=_consultation_fee_for(sr)[0],
                 currency="INR",
                 status="PENDING",
             )
@@ -1401,12 +1431,12 @@ class VendorEstimationCustomerDecideView(APIView):
             est.status = "CANCELLED"
             est.save(update_fields=["status", "updated_at"])
 
-            # 1. Collect ₹199 estimation visit fee
+            # 1. Collect the estimation visit fee (amount set by policy)
             fee = est.fees.first()
             if not fee:
                 fee = EstimationFee.objects.create(
                     estimation=est,
-                    amount=Decimal("199.00"),
+                    amount=_consultation_fee_for(sr)[0],
                     currency="INR",
                     status="PENDING",
                 )
@@ -1520,7 +1550,7 @@ class VendorEstimationInvoiceView(APIView):
 
         line_items = []
         if is_fee_invoice:
-            amount = float(fee.amount if fee else 199.00)
+            amount = float(fee.amount if fee else _consultation_fee_for(sr)[0])
             line_items.append({
                 "item_name": "AC On-Site Inspection & Estimation Visit Fee",
                 "description": f"Comprehensive multi-point AC diagnosis for {sr.issue_title or 'Air Conditioner'}",
@@ -1558,7 +1588,7 @@ class VendorEstimationInvoiceView(APIView):
             payment_method = sr.payment_method or "COD"
             paid_at = (sr.completed_at or sr.updated_at).isoformat() if sr.payment_status == "collected" else None
         else:
-            amount = float(sr.total_amount or 199.00)
+            amount = float(sr.total_amount or _consultation_fee_for(sr)[0])
             line_items.append({
                 "item_name": "AC Inspection Service",
                 "description": sr.issue_title or "AC Diagnostic Visit",
