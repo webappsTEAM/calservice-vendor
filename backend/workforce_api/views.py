@@ -1556,6 +1556,40 @@ class WorkforceAdminServiceDecideView(APIView):
         emp.bank_details = bank_details
         emp.save()
 
+        # Synchronize relational WorkforceEmployeeService table
+        try:
+            from workforce_api.models import WorkforceEmployeeService
+            from service_requests.models import Service
+            svc_obj = Service.objects.filter(id=int(service_id)).first()
+            if svc_obj:
+                if action == "approve":
+                    if request_type == "remove":
+                        WorkforceEmployeeService.objects.filter(employee=emp, service=svc_obj).delete()
+                    else:
+                        WorkforceEmployeeService.objects.update_or_create(
+                            employee=emp,
+                            service=svc_obj,
+                            defaults={
+                                "status": WorkforceEmployeeService.Status.APPROVED,
+                                "approved_by": request.user,
+                                "approved_at": timezone.now(),
+                                "rejection_reason": "",
+                            }
+                        )
+                else:
+                    if request_type != "remove":
+                        WorkforceEmployeeService.objects.update_or_create(
+                            employee=emp,
+                            service=svc_obj,
+                            defaults={
+                                "status": WorkforceEmployeeService.Status.REJECTED,
+                                "approved_by": request.user,
+                                "rejection_reason": reason or "Qualifications do not meet minimum threshold.",
+                            }
+                        )
+        except Exception as sync_err:
+            logger.warning(f"Could not sync WorkforceEmployeeService for emp {emp.id}, service {service_id}: {sync_err}")
+
         return Response({
             "message": msg,
             "services": services,
@@ -2150,6 +2184,13 @@ class WorkforceJobListView(APIView):
                 status__in=WORKLOAD_OCCUPIED_STATUSES
             ).exists()
 
+            estimation_sr_ids = set()
+            try:
+                from service_requests.models import Estimation
+                estimation_sr_ids = set(Estimation.objects.values_list("service_request_id", flat=True))
+            except Exception:
+                pass
+
             if has_active_job:
                 # When technician is occupied with an active job, no new job offers should appear
                 offered_job_ids = []
@@ -2173,7 +2214,8 @@ class WorkforceJobListView(APIView):
                     Q(job__request_kind__iexact="inspection") |
                     Q(job__service_category__icontains="estimation") |
                     Q(job__issue_title__icontains="estimation") |
-                    Q(job__issue_title__icontains="inspection")
+                    Q(job__issue_title__icontains="inspection") |
+                    Q(job_id__in=estimation_sr_ids)
                 ).values_list("job_id", flat=True))
 
             try:
@@ -2244,7 +2286,9 @@ class WorkforceJobListView(APIView):
                         (getattr(o.job, "request_kind", "") or "").lower() in ["estimation", "inspection"] or
                         "estimation" in (getattr(o.job, "service_category", "") or "").lower() or
                         "estimation" in (getattr(o.job, "issue_title", "") or "").lower() or
-                        "inspection" in (getattr(o.job, "issue_title", "") or "").lower()
+                        "inspection" in (getattr(o.job, "issue_title", "") or "").lower() or
+                        (getattr(o.job, "pricing_mode", "") or "").upper() == "QUOTATION" or
+                        o.job_id in estimation_sr_ids
                     )
                     if o.status == "OFFERED" and (o.expires_at > now or is_est_job):
                         active_offers_map[o.job_id] = o
@@ -3118,6 +3162,58 @@ class WorkforceJobPaymentVerifyOTPView(APIView):
                     job.save(update_fields=["payment_status"])
             else:
                 job.save(update_fields=["payment_status"])
+
+            # Create/update authoritative SettingsHubInvoice idempotently
+            inv_num = job.invoice_id or f"INV-JOB-{job.id}-{job.request_id or f'SR{job.id}'}"
+            job.invoice_id = inv_num
+            job.save(update_fields=["invoice_id"])
+
+            try:
+                from service_requests.models import SettingsHubInvoice
+                SettingsHubInvoice.objects.update_or_create(
+                    invoice_number=inv_num,
+                    defaults={
+                        "amount": pmt.amount_due,
+                        "currency": "INR",
+                        "status": "PAID",
+                        "billing_date": now.date(),
+                        "due_date": now.date(),
+                        "pdf_url": f"/api/vendor/estimations/{job.id}/invoice/",
+                        "company": job.company,
+                    }
+                )
+            except Exception as inv_err:
+                logger.warning(f"Could not persist SettingsHubInvoice: {inv_err}")
+
+            try:
+                from workforce_api.services.realtime import publish_workforce_event
+                publish_workforce_event(
+                    event_type="PAYMENT_UPDATED",
+                    entity_type="payment",
+                    entity_id=job.id,
+                    company_id=job.company_id,
+                    employee_id=emp.id if emp else None,
+                    payload={
+                        "job_id": job.id,
+                        "payment_status": "paid",
+                        "amount": float(pmt.amount_due),
+                    }
+                )
+                publish_workforce_event(
+                    event_type="INVOICE_CREATED",
+                    entity_type="invoice",
+                    entity_id=job.id,
+                    company_id=job.company_id,
+                    employee_id=emp.id if emp else None,
+                    payload={
+                        "job_id": job.id,
+                        "invoice_number": job.invoice_id,
+                        "amount": float(pmt.amount_due),
+                        "status": "PAID",
+                    }
+                )
+            except Exception as ev_err:
+                logger.warning(f"Could not emit payment/invoice events: {ev_err}")
 
             response_payload = {
                 "message": f"Payment of ₹{pmt.amount_due} successfully verified via Customer OTP and marked PAID.",
@@ -7022,12 +7118,11 @@ class WorkforceRealtimeStreamView(APIView):
             finally:
                 connection.close()
 
-        # Step 5: Long-Running Connection-Safe Event Stream Generator
+        # Step 5: Long-Running Lightweight Event Stream Generator (Pure SSE & Heartbeat Only)
         def event_stream():
             last_id = initial_last_id
-            heartbeat_interval_seconds = 15
+            heartbeat_interval_seconds = 12
             last_heartbeat_time = time.time()
-            last_reconcile_time = time.time()
 
             logger.info("[Realtime SSE START] Stream generator running for user_id=%s, start_id=%s.", user_id_val, last_id)
             # Initial connection confirmation event
@@ -7038,24 +7133,11 @@ class WorkforceRealtimeStreamView(APIView):
                     loop_now = time.time()
                     events = []
 
-                    # Periodic Heartbeat (keep stream open, prevent proxy / browser timeout)
+                    # Periodic Lightweight Heartbeat (keep stream open, independent of dispatch)
                     if loop_now - last_heartbeat_time >= heartbeat_interval_seconds:
                         last_heartbeat_time = loop_now
                         logger.debug("[Realtime SSE HEARTBEAT] Sending keepalive ping to user_id=%s.", user_id_val)
                         yield f": heartbeat\n\n"
-
-                    # Periodic Discovery / Reconciliation for connected technician (every 10s)
-                    if not is_admin and (loop_now - last_reconcile_time >= 10):
-                        last_reconcile_time = loop_now
-                        try:
-                            emp_obj = getattr(user, "employee_profile", None)
-                            if emp_obj and emp_obj.is_online and emp_obj.current_availability == "available":
-                                from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
-                                reconsider_jobs_for_employee(emp_obj)
-                        except Exception as rec_err:
-                            logger.debug(f"[Realtime SSE RECONCILE ERR] {rec_err}")
-                        finally:
-                            connection.close()
 
                     # Fetch newly emitted events using pure dictionary projection
                     try:
@@ -7698,6 +7780,12 @@ class WorkforceJobArriveView(APIView):
         try:
             from service_requests.models import EmployeeJob
             EmployeeJob.objects.filter(service_request=job, employee=emp).update(status="ARRIVED")
+        except Exception:
+            pass
+
+        try:
+            from service_requests.models import Estimation
+            Estimation.objects.filter(service_request=job).update(status="TECHNICIAN_ARRIVED")
         except Exception:
             pass
 
@@ -11090,25 +11178,202 @@ class WorkforceQuoteDetailView(APIView):
 class WorkforceQuoteItemBulkView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
+    @transaction.atomic
     def post(self, request, pk):
-        quote = WorkforceQuote.objects.filter(pk=pk).first()
+        from workforce_api.services.quotation_service import recalculate_quote_totals
+        from workforce_api.models import WorkforceQuoteItem
+        quote = WorkforceQuote.objects.select_for_update().filter(pk=pk).first()
         if not quote:
             return Response({"error": "Quote not found."}, status=status.HTTP_404_NOT_FOUND)
-        return Response({"message": "Items saved successfully."}, status=status.HTTP_200_OK)
+
+        raw_items = request.data.get("items") if isinstance(request.data, dict) else request.data
+        if not isinstance(raw_items, list):
+            return Response({"error": "Expected a list of items."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Clear and rebuild items
+        quote.items.all().delete()
+        created_items = []
+        for idx, item in enumerate(raw_items, start=1):
+            raw_type = str(item.get("item_type", "labor")).lower()
+            item_type = "labor" if "labor" in raw_type else ("part" if "part" in raw_type or "gas" in raw_type or "material" in raw_type else "item")
+            qty = Decimal(str(item.get("quantity", 1)))
+            unit_price = Decimal(str(item.get("unit_price", 0)))
+            tax_rate = Decimal(str(item.get("tax_rate", 18)))
+            discount_amount = Decimal(str(item.get("discount_amount", 0)))
+            total_amount = Decimal(str(item.get("total_amount") or ((qty * unit_price - discount_amount) * (1 + tax_rate / Decimal("100")))))
+
+            qi = WorkforceQuoteItem.objects.create(
+                quote=quote,
+                section=item.get("section", "General"),
+                name=item.get("name") or item.get("service_name") or f"Item {idx}",
+                description=item.get("description", ""),
+                item_type=item_type,
+                quantity=qty,
+                unit=item.get("unit", "unit"),
+                unit_price=unit_price,
+                tax_rate=tax_rate,
+                discount_amount=discount_amount,
+                total_amount=total_amount,
+                material_source=item.get("material_source", "company"),
+                is_customer_supplied=item.get("is_customer_supplied", False),
+                warranty_applicable=item.get("warranty_applicable", False),
+                notes=item.get("notes", ""),
+                sort_order=int(item.get("sort_order", idx)),
+            )
+            created_items.append(qi)
+
+        # Recalculate authoritative totals
+        recalculate_quote_totals(quote)
+        quote.refresh_from_db()
+
+        # Synchronize to canonical EstimationQuotation if attached to an estimation
+        try:
+            from service_requests.models import Estimation, EstimationQuotation, EstimationQuotationItem
+            if quote.job:
+                est = Estimation.objects.filter(service_request=quote.job).first()
+                if est:
+                    est_quote, _ = EstimationQuotation.objects.update_or_create(
+                        quote_ref=quote.quote_number,
+                        defaults={
+                            "estimation": est,
+                            "version": quote.quote_version,
+                            "status": "DRAFT" if quote.status == WorkforceQuote.Status.DRAFT else "SENT",
+                            "subtotal": quote.subtotal_amount,
+                            "tax_amount": quote.tax_amount,
+                            "discount_amount": quote.discount_amount,
+                            "total_amount": quote.total_amount,
+                            "notes": quote.description or "",
+                        }
+                    )
+                    est_quote.items.all().delete()
+                    for idx, ci in enumerate(created_items, start=1):
+                        EstimationQuotationItem.objects.create(
+                            quotation=est_quote,
+                            catalog_service_id=f"ITEM-{idx:03d}",
+                            service_name=ci.name,
+                            description=ci.description,
+                            quantity=ci.quantity,
+                            unit=ci.unit,
+                            unit_price=ci.unit_price,
+                            tax_rate=ci.tax_rate,
+                            tax_amount=round((ci.unit_price * ci.quantity - ci.discount_amount) * (ci.tax_rate / Decimal("100")), 2),
+                            discount_amount=ci.discount_amount,
+                            line_total=ci.total_amount,
+                            sort_order=idx,
+                        )
+        except Exception as sync_err:
+            logger.warning(f"Failed to sync canonical EstimationQuotation: {sync_err}")
+
+        summary = _serialize_quote_summary(quote)
+        summary["items"] = [
+            {
+                "id": it.id,
+                "name": it.name,
+                "description": it.description,
+                "item_type": it.item_type,
+                "quantity": float(it.quantity),
+                "unit": it.unit,
+                "unit_price": float(it.unit_price),
+                "tax_rate": float(it.tax_rate),
+                "discount_amount": float(it.discount_amount),
+                "total_amount": float(it.total_amount),
+            }
+            for it in quote.items.all().order_by("sort_order", "id")
+        ]
+        return Response({"message": "Items saved successfully.", "quote": summary}, status=status.HTTP_200_OK)
 
 
 class WorkforceQuoteMeasurementsBulkView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
+    @transaction.atomic
     def post(self, request, pk):
-        return Response({"message": "Measurements saved."}, status=status.HTTP_200_OK)
+        from workforce_api.models import WorkforceQuoteMeasurement
+        quote = WorkforceQuote.objects.filter(pk=pk).first()
+        if not quote:
+            return Response({"error": "Quote not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        raw_m = request.data.get("measurements") if isinstance(request.data, dict) else request.data
+        if not isinstance(raw_m, list):
+            return Response({"error": "Expected a list of measurements."}, status=status.HTTP_400_BAD_REQUEST)
+
+        quote.measurements.all().delete()
+        created = []
+        for m in raw_m:
+            rec = WorkforceQuoteMeasurement.objects.create(
+                quote=quote,
+                name=m.get("name", "Measurement"),
+                measurement_type=m.get("measurement_type", "AREA"),
+                length=Decimal(str(m.get("length", 0))),
+                width=Decimal(str(m.get("width", 0))),
+                height=Decimal(str(m.get("height", 0))),
+                area=Decimal(str(m.get("area", 0))),
+                quantity=Decimal(str(m.get("quantity", 1))),
+                unit=m.get("unit", "sqft"),
+                notes=m.get("notes", ""),
+            )
+            created.append(rec)
+
+        return Response({"message": "Measurements saved.", "count": len(created)}, status=status.HTTP_200_OK)
 
 
 class WorkforceQuoteInspectionView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
+    @transaction.atomic
     def post(self, request, pk):
-        return Response({"message": "Inspection recorded."}, status=status.HTTP_200_OK)
+        from workforce_api.models import WorkforceQuote, WorkforcePaintingQuote, WorkforceMasonQuote
+        from workforce_api.services.realtime import publish_workforce_event
+        quote = WorkforceQuote.objects.filter(pk=pk).first()
+        if not quote:
+            return Response({"error": "Quote not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        data = request.data
+        quote.structural_impact = data.get("structural_impact", False)
+        quote.save(update_fields=["structural_impact", "updated_at"])
+
+        cat = (quote.service_category or "").lower()
+        if "paint" in cat:
+            WorkforcePaintingQuote.objects.update_or_create(
+                quote=quote,
+                defaults={
+                    "property_type": data.get("property_type", "RESIDENTIAL"),
+                    "area_sqft": Decimal(str(data.get("area_sqft", 0))),
+                    "surface_condition": data.get("surface_condition", "GOOD"),
+                    "existing_paint_condition": data.get("existing_paint_condition", "GOOD"),
+                    "paint_type": data.get("paint_type", "EMULSION"),
+                    "number_of_coats": int(data.get("number_of_coats", 2)),
+                    "notes": data.get("notes", ""),
+                }
+            )
+        elif "mason" in cat:
+            WorkforceMasonQuote.objects.update_or_create(
+                quote=quote,
+                defaults={
+                    "work_type": data.get("work_type", "REPAIR"),
+                    "area_sqft": Decimal(str(data.get("area_sqft", 0))),
+                    "structural_impact": data.get("structural_impact", False),
+                    "notes": data.get("notes", ""),
+                }
+            )
+
+        try:
+            publish_workforce_event(
+                event_type="INSPECTION_UPDATED",
+                entity_type="inspection",
+                entity_id=quote.job_id or quote.id,
+                company_id=quote.company_id,
+                employee_id=quote.technician_id,
+                payload={
+                    "quote_id": quote.id,
+                    "job_id": quote.job_id,
+                    "status": "COMPLETED",
+                }
+            )
+        except Exception as ev_err:
+            logger.warning(f"Could not emit INSPECTION_UPDATED: {ev_err}")
+
+        return Response({"message": "Inspection recorded.", "quote_id": quote.id}, status=status.HTTP_200_OK)
 
 
 class WorkforceQuoteSendView(APIView):
@@ -11153,12 +11418,15 @@ class WorkforceCustomerQuoteDecideView(APIView):
         quote = WorkforceQuote.objects.filter(decision_token=token).first()
         if not quote:
             return Response({"error": "Invalid decision token."}, status=status.HTTP_404_NOT_FOUND)
-        dec = request.data.get("decision")
-        reason = request.data.get("decline_reason")
-        notes = request.data.get("notes")
+        dec = request.data.get("decision") or request.data.get("action")
+        reason = request.data.get("decline_reason") or request.data.get("reason", "")
+        notes = request.data.get("notes", "")
         try:
-            res = record_customer_decision(quote.id, dec, decline_reason=reason, notes=notes)
-            return Response({"message": "Decision recorded.", "quote": _serialize_quote_summary(res)}, status=status.HTTP_200_OK)
+            res_quote, work_job = record_customer_decision(quote.id, dec, reason=reason, notes=notes)
+            resp_data = {"message": "Decision recorded.", "quote": _serialize_quote_summary(res_quote)}
+            if work_job:
+                resp_data["work_job_id"] = work_job.id
+            return Response(resp_data, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 

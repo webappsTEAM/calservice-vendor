@@ -165,10 +165,11 @@ def publish_job_location_update(
 
 def publish_workforce_event(
     event_type: str,
-    payload: Dict[str, Any],
+    payload: Optional[Dict[str, Any]] = None,
     user=None,
     company=None,
-    ip_address: str = ""
+    ip_address: str = "",
+    **kwargs
 ) -> Optional[Any]:
     """
     Publishes authoritative workforce lifecycle events:
@@ -178,12 +179,20 @@ def publish_workforce_event(
     """
     from workforce_api.models import WorkforceEventLog
 
+    payload_dict = dict(payload or {})
+    for k, v in kwargs.items():
+        if k not in payload_dict and v is not None:
+            payload_dict[k] = v
+
+    if not company and "company_id" in kwargs:
+        company = kwargs["company_id"]
+
     event_log = None
     try:
         event_log = WorkforceEventLog.objects.create(
             user=user,
             event_type=event_type,
-            payload=payload,
+            payload=payload_dict,
             ip_address=ip_address,
         )
     except Exception as db_err:
@@ -193,10 +202,11 @@ def publish_workforce_event(
     if client:
         try:
             channel = f"workforce_events:{event_type}"
-            message = json.dumps(payload, default=str)
+            message = json.dumps(payload_dict, default=str)
             client.publish(channel, message)
             if company:
-                client.publish(f"company_events:{company.id if hasattr(company, 'id') else company}", message)
+                company_id = company.id if hasattr(company, "id") else company
+                client.publish(f"company_events:{company_id}", message)
         except Exception as r_err:
             logger.debug(f"[REDIS_EVENT_PUBLISH_FAIL] Failed to publish workforce event: {r_err}")
 

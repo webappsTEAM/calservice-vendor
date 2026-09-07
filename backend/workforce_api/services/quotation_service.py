@@ -193,17 +193,38 @@ def send_quote_to_customer(quote_id, actor=None, valid_days=7):
         ])
 
         logger.info("Quote %s (v%s) sent to customer with token %s", quote.quote_number, quote.quote_version, quote.decision_token)
+
+        try:
+            from workforce_api.services.realtime import publish_workforce_event
+            publish_workforce_event(
+                event_type="QUOTATION_SENT",
+                entity_type="quotation",
+                entity_id=quote.id,
+                company_id=quote.company_id,
+                employee_id=quote.technician_id,
+                payload={
+                    "quote_id": quote.id,
+                    "quote_number": quote.quote_number,
+                    "total_amount": float(quote.net_payable or quote.total_amount),
+                    "token": quote.decision_token,
+                    "status": "SENT",
+                }
+            )
+        except Exception as ev_err:
+            logger.warning(f"Could not emit QUOTATION_SENT: {ev_err}")
+
         return quote
 
 
-def record_customer_decision(quote_id, action, notes="", reason="", token=None, actor=None):
+def record_customer_decision(quote_id, action, notes="", reason="", token=None, actor=None, **kwargs):
     """
     Authoritative handler for customer decisions:
       - ACCEPT -> marks CUSTOMER_ACCEPTED -> transitions to CONVERSION_PENDING -> converts to WORK ServiceRequest.
-      - DECLINE -> marks DECLINED with reason.
+      - DECLINE -> marks DECLINED with reason -> sets estimation fee PENDING (due).
       - REQUEST_CHANGES -> marks CHANGES_REQUESTED -> creates V2 draft and marks V1 SUPERSEDED.
     """
     clean_action = str(action).upper().strip()
+    clean_reason = reason or kwargs.get("decline_reason", "")
     if clean_action not in ["ACCEPT", "DECLINE", "REQUEST_CHANGES"]:
         raise ValidationError(f"Unsupported customer action '{action}'. Allowed: ACCEPT, DECLINE, REQUEST_CHANGES.")
 
@@ -241,9 +262,51 @@ def record_customer_decision(quote_id, action, notes="", reason="", token=None, 
         elif clean_action == "DECLINE":
             quote.status = WorkforceQuote.Status.DECLINED
             quote.customer_decision = "DECLINED"
-            quote.customer_decline_reason = reason or notes
+            quote.customer_decline_reason = clean_reason or notes
             quote.customer_decided_at = now
             quote.save(update_fields=["status", "customer_decision", "customer_decline_reason", "customer_decided_at", "updated_at"])
+
+            # Sync decline to Estimation and ensure fee is PENDING (due)
+            insp_job = quote.job
+            if insp_job:
+                from service_requests.models import Estimation, EstimationFee
+                est = Estimation.objects.filter(service_request=insp_job).first()
+                if est:
+                    est.status = "CANCELLED"
+                    est.save(update_fields=["status", "updated_at"])
+                    fee = est.fees.first()
+                    if not fee:
+                        fee_amount = insp_job.total_amount if (insp_job.total_amount is not None) else Decimal("0.00")
+                        fee = EstimationFee.objects.create(
+                            estimation=est,
+                            amount=fee_amount,
+                            currency="INR",
+                            status="PENDING",
+                        )
+                    elif fee.status != "COLLECTED":
+                        fee.status = "PENDING"
+                        fee.save(update_fields=["status", "updated_at"])
+                insp_job.status = "cancelled"
+                insp_job.save(update_fields=["status", "updated_at"])
+
+            try:
+                from workforce_api.services.realtime import publish_workforce_event
+                publish_workforce_event(
+                    event_type="QUOTATION_DECLINED",
+                    entity_type="quotation",
+                    entity_id=quote.id,
+                    company_id=quote.company_id,
+                    employee_id=quote.technician_id,
+                    payload={
+                        "quote_id": quote.id,
+                        "quote_number": quote.quote_number,
+                        "decline_reason": quote.customer_decline_reason,
+                        "status": "DECLINED",
+                    }
+                )
+            except Exception as ev_err:
+                logger.warning(f"Could not emit QUOTATION_DECLINED: {ev_err}")
+
             return quote, None
 
         elif clean_action == "REQUEST_CHANGES":
@@ -401,10 +464,10 @@ def convert_accepted_quote_to_work_booking(quote, actor=None):
                 quote.save(update_fields=["status", "updated_at"])
             return quote.work_job
 
-        # Idempotency Check 2: Existing WORK ServiceRequest with same quote_number
+        # Idempotency Check 2: Existing WORK/QUOTED_EXECUTION ServiceRequest with same quote_number
         existing_work = ServiceRequest.objects.filter(
             quote_number=quote.quote_number,
-            request_kind="WORK"
+            request_kind__in=["quoted_execution", "WORK", "work"]
         ).first()
 
         if existing_work:
@@ -419,8 +482,10 @@ def convert_accepted_quote_to_work_booking(quote, actor=None):
 
         try:
             insp_job = quote.job
+            assigned_tech = quote.technician or (insp_job.assigned_employee if insp_job else None)
+
             work_sr = ServiceRequest.objects.create(
-                request_kind="WORK",
+                request_kind="quoted_execution",
                 parent_request_id=insp_job.id if insp_job else None,
                 quote_number=quote.quote_number,
                 company=quote.company or (insp_job.company if insp_job else None),
@@ -428,7 +493,7 @@ def convert_accepted_quote_to_work_booking(quote, actor=None):
                 customer_name=insp_job.customer_name if insp_job else "",
                 phone=insp_job.phone if insp_job else "",
                 email=insp_job.email if insp_job else "",
-                service_category=quote.service_category or (insp_job.service_category if insp_job else "painting"),
+                service_category=quote.service_category or (insp_job.service_category if insp_job else "general"),
                 issue_title=f"{quote.service_name or quote.title or 'Service Work'} (Execution)",
                 description=f"Approved Work Scope from Quote {quote.quote_number} (v{quote.quote_version}). {quote.description}".strip(),
                 address=insp_job.address if insp_job else "",
@@ -437,16 +502,79 @@ def convert_accepted_quote_to_work_booking(quote, actor=None):
                 preferred_date=insp_job.preferred_date if insp_job and insp_job.preferred_date else timezone.now().date(),
                 preferred_time=insp_job.preferred_time if insp_job else "09:00 AM",
                 total_amount=quote.net_payable or quote.total_amount,
-                status=ServiceRequest.Status.CONFIRMED,
+                status="assigned",
+                assigned_employee=assigned_tech,
+                technician_id=assigned_tech.user_id if (assigned_tech and getattr(assigned_tech, "user_id", None)) else None,
+                technician_name=assigned_tech.user.get_full_name() if (assigned_tech and getattr(assigned_tech, "user", None)) else (insp_job.technician_name if insp_job else ""),
                 payment_method=insp_job.payment_method if insp_job else ServiceRequest.PaymentMethod.COD,
                 payment_status=ServiceRequest.PaymentStatus.PENDING,
             )
+
+            # Assign same technician via EmployeeJob
+            if assigned_tech:
+                from service_requests.models import EmployeeJob
+                EmployeeJob.objects.update_or_create(
+                    service_request=work_sr,
+                    employee=assigned_tech,
+                    defaults={"status": "ASSIGNED", "is_primary": True, "assigned_date": timezone.now()}
+                )
+
+            # Waive parent estimation fee and mark estimation completed
+            if insp_job:
+                from service_requests.models import Estimation, EstimationFee
+                est = Estimation.objects.filter(service_request=insp_job).first()
+                if est:
+                    est.status = "CONVERTED_TO_JOB"
+                    est.save(update_fields=["status", "updated_at"])
+                    fee = est.fees.first()
+                    if fee:
+                        fee.status = "WAIVED"
+                        fee.waived_reason = f"Fee credited towards execution job #{work_sr.id} (Quote #{quote.quote_number})"
+                        fee.waived_at = timezone.now()
+                        fee.save(update_fields=["status", "waived_reason", "waived_at", "updated_at"])
+                insp_job.status = "completed"
+                insp_job.save(update_fields=["status", "updated_at"])
 
             quote.work_job = work_sr
             quote.status = WorkforceQuote.Status.CONVERTED
             quote.save(update_fields=["work_job", "status", "updated_at"])
 
             logger.info("Successfully converted Quote %s to Work ServiceRequest #%s", quote.quote_number, work_sr.id)
+
+            # Emit events
+            try:
+                from workforce_api.services.realtime import publish_workforce_event
+                publish_workforce_event(
+                    event_type="QUOTATION_APPROVED",
+                    entity_type="quotation",
+                    entity_id=quote.id,
+                    company_id=quote.company_id,
+                    employee_id=assigned_tech.id if assigned_tech else None,
+                    payload={
+                        "quote_id": quote.id,
+                        "quote_number": quote.quote_number,
+                        "amount": float(quote.net_payable or quote.total_amount),
+                        "status": "APPROVED",
+                    }
+                )
+                publish_workforce_event(
+                    event_type="EXECUTION_JOB_CREATED",
+                    entity_type="job",
+                    entity_id=work_sr.id,
+                    company_id=work_sr.company_id,
+                    employee_id=assigned_tech.id if assigned_tech else None,
+                    payload={
+                        "job_id": work_sr.id,
+                        "parent_job_id": insp_job.id if insp_job else None,
+                        "quote_number": quote.quote_number,
+                        "amount": float(work_sr.total_amount),
+                        "assigned_employee_id": assigned_tech.id if assigned_tech else None,
+                        "status": work_sr.status,
+                    }
+                )
+            except Exception as ev_err:
+                logger.warning(f"Could not emit approval/conversion events: {ev_err}")
+
             return work_sr
 
         except Exception as ex:

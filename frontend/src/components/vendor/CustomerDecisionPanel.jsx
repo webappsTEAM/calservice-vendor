@@ -47,6 +47,7 @@ export default function CustomerDecisionPanel({
   const quote = estimation?.latest_quotation || (estimation?.quotations && estimation.quotations[0]);
   const status = (quote?.status || estimation?.status || 'DRAFT').toUpperCase();
   const fee = estimation?.fee;
+  const feeAmount = fee?.amount ?? estimation?.total_amount ?? 0;
   const isSameDay = scheduledDate === todayStr;
   const techName = estimation?.inspection?.technician_name || estimation?.technician_name || 'Assigned Technician';
 
@@ -126,7 +127,7 @@ export default function CustomerDecisionPanel({
                 </span>
               </div>
               <p className="text-xs text-emerald-700 leading-relaxed">
-                Accepted total: <strong>₹{quote?.total_amount?.toLocaleString('en-IN')}</strong>. The ₹199 estimation visit fee is waived/credited towards the job. Only the service job payment will be collected upon completion.
+                Accepted total: <strong>₹{quote?.total_amount?.toLocaleString('en-IN')}</strong>. The ₹{feeAmount} estimation visit fee is waived/credited towards the job. Only the service job payment will be collected upon completion.
               </p>
             </div>
           </div>
@@ -164,7 +165,7 @@ export default function CustomerDecisionPanel({
                 {quote?.rejection_note ? ` — "${quote.rejection_note}"` : ''}
               </p>
               <p className="text-[11px] text-zinc-600 mt-1">
-                Diagnostic fee of ₹199 was collected. An official invoice is generated in the database and accessible by the customer.
+                Diagnostic fee of ₹{feeAmount} was collected. An official invoice is generated in the database and accessible by the customer.
               </p>
             </div>
           </div>
@@ -231,7 +232,7 @@ export default function CustomerDecisionPanel({
         </div>
       ) : null}
 
-      {/* ₹199 Inspection Visit Fee Card */}
+      {/* Inspection Visit Fee Card */}
       <div className="p-4 bg-zinc-50 border border-zinc-200 rounded-xl flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center font-bold font-mono">
@@ -240,7 +241,7 @@ export default function CustomerDecisionPanel({
           <div>
             <div className="flex items-center gap-2">
               <span className="text-xs font-bold text-zinc-900">
-                Inspection Visit Fee: ₹{fee?.amount || 199}
+                Inspection Visit Fee: ₹{feeAmount}
               </span>
               <span
                 className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase border ${
@@ -361,7 +362,7 @@ export default function CustomerDecisionPanel({
                     Because this job is scheduled for today, it will be <strong>automatically assigned to the same technician ({techName})</strong> who performed the inspection!
                   </p>
                   <p className="text-[11px] text-emerald-700 font-medium mt-1">
-                    ✓ The ₹199 diagnostic visit fee is waived. Only the actual job total (₹{quote?.total_amount}) will be collected upon job completion.
+                    ✓ The ₹{feeAmount} diagnostic visit fee is waived. Only the actual job total (₹{quote?.total_amount}) will be collected upon job completion.
                   </p>
                 </div>
               ) : (
@@ -374,7 +375,7 @@ export default function CustomerDecisionPanel({
                     Job will be booked for <strong>{new Date(scheduledDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</strong>.
                   </p>
                   <p className="text-[11px] text-blue-700 font-medium mt-1">
-                    ✓ The ₹199 diagnostic visit fee is waived.
+                    ✓ The ₹{feeAmount} diagnostic visit fee is waived.
                   </p>
                 </div>
               )}
@@ -454,10 +455,10 @@ export default function CustomerDecisionPanel({
               <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-2 text-amber-900">
                 <div className="flex items-center justify-between font-bold">
                   <span>Diagnostic Fee to Collect:</span>
-                  <span className="font-mono text-sm">₹199.00</span>
+                  <span className="font-mono text-sm">₹{Number(feeAmount).toFixed(2)}</span>
                 </div>
                 <p className="text-[11px] text-amber-800">
-                  Per policy, when estimation is cancelled, the ₹199 inspection visit fee is collected and a formal downloadable invoice is created in the database for the customer.
+                  Per policy, when estimation is cancelled, the ₹{feeAmount} inspection visit fee is collected and a formal downloadable invoice is created in the database for the customer.
                 </p>
                 <div>
                   <label className="block text-[11px] font-semibold text-amber-950 mb-1">Payment Method</label>
@@ -496,7 +497,7 @@ export default function CustomerDecisionPanel({
                 className="px-4 py-2 text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white rounded-lg shadow-sm flex items-center gap-1.5 transition-colors"
               >
                 {submitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CreditCard className="w-3.5 h-3.5" />}
-                <span>Collect ₹199 & Cancel</span>
+                <span>Collect ₹{feeAmount} & Cancel</span>
               </button>
             </div>
           </div>

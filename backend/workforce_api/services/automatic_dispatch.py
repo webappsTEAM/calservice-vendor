@@ -7,6 +7,8 @@ job reconciliation across Workforce and Marketplace.
 """
 import logging
 from datetime import timedelta
+import threading
+import time
 from typing import List, Dict, Any, Tuple, Optional
 
 from django.db import transaction
@@ -25,6 +27,9 @@ from workforce_api.models import (
     WorkforceEmployeeSkill,
     WorkforceEmployeeCompliance,
     WorkforceEmployeeSchedule,
+    WorkforceEmployeeService,
+    WorkforceServiceConfiguration,
+    WorkforceServiceSkillRequirement,
 )
 from time_tracking.geo import haversine_distance
 from workforce_api.services.workload import get_employee_active_job, ACTIVE_WORKLOAD_STATUSES
@@ -194,7 +199,7 @@ def canonical_service_match(requested_service: str, approved_services: List[str]
     return False, "NO_MATCH", ""
 
 
-def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = None) -> Tuple[bool, str, Dict[str, bool]]:
+def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = None, service_id: Optional[int] = None) -> Tuple[bool, str, Dict[str, bool]]:
     """
     9-Gate Employee Eligibility Engine:
     Authoritative server-side evaluation of 9 mandatory operational gates.
@@ -353,22 +358,71 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
             return False, f"Gate 5: Technician is outside scheduled working hours ({sched.start_time.strftime('%H:%M')}-{sched.end_time.strftime('%H:%M')}).", gate_results
 
     # ── Gate 6: Service / Skill Authorization ─────────────────────────────────
-    approved_svcs = []
-    for s in onboarding.get("services", []):
-        if s.get("status") == "approved":
-            if s.get("name"):
-                approved_svcs.append(s["name"])
-            if s.get("category"):
-                approved_svcs.append(s["category"])
+    target_service_id = service_id
+    if not target_service_id and service_name:
+        try:
+            from service_requests.models import Service
+            svc_obj = Service.objects.filter(name__iexact=str(service_name).strip()).first()
+            if not svc_obj:
+                svc_obj = Service.objects.filter(name__icontains=str(service_name).strip()).first()
+            if svc_obj:
+                target_service_id = svc_obj.id
+        except Exception:
+            pass
 
-    if hasattr(emp, "prefetched_verified_skills"):
-        verified_skills = [es.skill.name for es in emp.prefetched_verified_skills]
-    else:
-        verified_skills = list(
-            WorkforceEmployeeSkill.objects.filter(employee=emp, is_verified=True).values_list("skill__name", flat=True)
-        )
+    if target_service_id:
+        # Strict relational match on database service_id with status=APPROVED
+        has_approved_service = WorkforceEmployeeService.objects.filter(
+            employee=emp,
+            service_id=target_service_id,
+            status=WorkforceEmployeeService.Status.APPROVED,
+        ).exists()
 
-    if service_name:
+        if not has_approved_service:
+            # Check fallback in employee onboarding JSON for exact service ID
+            for s in onboarding.get("services", []):
+                if str(s.get("id")) == str(target_service_id) and str(s.get("status")).lower() == "approved":
+                    has_approved_service = True
+                    break
+
+        if not has_approved_service:
+            gate_results["G6"] = False
+            logger.info(f"[DISPATCH_REJECT] employee={emp.id} service_id={target_service_id} reason=SKILL_NOT_APPROVED")
+            return False, f"Gate 6: Technician #{emp.id} does not have approved authorization for Service #{target_service_id}.", gate_results
+
+        # Check mandatory skill requirements for this service if defined
+        req_skills = list(WorkforceServiceSkillRequirement.objects.filter(
+            service_id=target_service_id,
+            is_mandatory=True,
+        ).values_list("skill_id", flat=True))
+
+        if req_skills:
+            emp_skills = set(WorkforceEmployeeSkill.objects.filter(
+                employee=emp,
+                skill_id__in=req_skills,
+                is_verified=True,
+            ).values_list("skill_id", flat=True))
+            if not set(req_skills).issubset(emp_skills):
+                gate_results["G6"] = False
+                logger.info(f"[DISPATCH_REJECT] employee={emp.id} service_id={target_service_id} reason=MANDATORY_SKILL_UNVERIFIED")
+                return False, f"Gate 6: Technician #{emp.id} lacks verified mandatory skills for Service #{target_service_id}.", gate_results
+
+    elif service_name:
+        approved_svcs = []
+        for s in onboarding.get("services", []):
+            if s.get("status") == "approved":
+                if s.get("name"):
+                    approved_svcs.append(s["name"])
+                if s.get("category"):
+                    approved_svcs.append(s["category"])
+
+        if hasattr(emp, "prefetched_verified_skills"):
+            verified_skills = [es.skill.name for es in emp.prefetched_verified_skills]
+        else:
+            verified_skills = list(
+                WorkforceEmployeeSkill.objects.filter(employee=emp, is_verified=True).values_list("skill__name", flat=True)
+            )
+
         is_match, method, matched = canonical_service_match(service_name, approved_svcs, verified_skills)
         logger.info(f"[DISPATCH_SERVICE_MATCH] job_service=\"{service_name}\" employee_services={approved_svcs} verified_skills={verified_skills} match_method={method} result={'PASS' if is_match else 'FAIL'}")
         if not is_match:
@@ -554,10 +608,12 @@ def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AG
             f"distance_km={f'{dist_km:.2f}km' if dist_km is not None else 'UNKNOWN'}"
         )
 
-        # Check eligibility against service_category, then issue_title
-        is_eligible, reason, gate_results = check_candidate_eligibility(emp, job_obj.service_category)
-        if not is_eligible and job_obj.issue_title:
-            is_eligible, reason, gate_results = check_candidate_eligibility(emp, job_obj.issue_title)
+        target_service_id = getattr(job_obj, "resolved_service_id", None)
+        is_eligible, reason, gate_results = check_candidate_eligibility(
+            emp,
+            service_name=job_obj.issue_title or job_obj.service_category,
+            service_id=target_service_id,
+        )
 
         g_str = " ".join(f"{k}={'PASS' if v else 'FAIL'}" for k, v in gate_results.items())
         logger.info(f"[9GATE_RESULT] employee={emp.id} {g_str}")
@@ -841,6 +897,28 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
         failed_cycle_count = _count_failed_offer_cycles(job_obj)
         effective_radius_km = get_effective_radius_km(failed_cycle_count)
 
+        # Resolve target service_id for Gate 6 matching
+        target_service_id = None
+        if hasattr(job_obj, "service_id") and job_obj.service_id:
+            target_service_id = job_obj.service_id
+        elif job_obj.cart_data and isinstance(job_obj.cart_data, list) and len(job_obj.cart_data) > 0:
+            first_cart = job_obj.cart_data[0]
+            if isinstance(first_cart, dict) and first_cart.get("service_id"):
+                try:
+                    target_service_id = int(first_cart["service_id"])
+                except (ValueError, TypeError):
+                    pass
+        if not target_service_id:
+            from service_requests.models import Service
+            svc_name = job_obj.issue_title or job_obj.service_category
+            if svc_name:
+                svc_obj = Service.objects.filter(name__iexact=str(svc_name).strip()).first()
+                if not svc_obj:
+                    svc_obj = Service.objects.filter(name__icontains=str(svc_name).strip()).first()
+                if svc_obj:
+                    target_service_id = svc_obj.id
+        job_obj.resolved_service_id = target_service_id
+
         # Find eligible candidate technicians
         candidates = get_eligible_candidates(
             job_obj,
@@ -918,15 +996,28 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
         # actually is, and service-category sparsity, instead of a fixed
         # five minutes for every job everywhere.
         # Estimations do NOT expire on a short timer: they remain active until the technician explicitly accepts or declines.
+        from service_requests.models import Estimation
+        try:
+            has_linked_estimation = (
+                Estimation.objects.filter(service_request=job_obj).exists() or
+                Estimation.objects.filter(request_id=job_obj.id).exists()
+            )
+        except Exception:
+            has_linked_estimation = False
+
         is_estimation = bool(
             (job_obj.job_type or "").upper() == "ESTIMATION" or
             (job_obj.request_kind or "").lower() in ["estimation", "inspection"] or
+            getattr(job_obj, "pricing_mode", "") == "QUOTATION" or
+            getattr(job_obj, "is_estimation", False) or
             "estimation" in (job_obj.service_category or "").lower() or
             "estimation" in (job_obj.issue_title or "").lower() or
-            "inspection" in (job_obj.issue_title or "").lower()
+            "inspection" in (job_obj.issue_title or "").lower() or
+            has_linked_estimation
         )
         if is_estimation:
-            expires_at = now + timedelta(days=365)
+            estimation_window_days = int(getattr(settings, "DISPATCH_ESTIMATION_OFFER_WINDOW_DAYS", 30))
+            expires_at = now + timedelta(days=estimation_window_days)
         else:
             offer_window_minutes = compute_offer_window_minutes(job_obj, len(candidates))
             expires_at = now + timedelta(minutes=offer_window_minutes)
@@ -959,10 +1050,27 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
         except Exception as webhook_err:
             logger.info(f"Could not notify Customer app of offer for Job #{job_obj.id}: {webhook_err}")
 
-        WorkforceEventLog.objects.create(
+        from workforce_api.services.realtime import publish_workforce_event
+        offer_payload = {
+            "job_id": job_obj.id,
+            "offer_id": offer.id,
+            "employee_id": top_emp.id,
+            "distance_km": round(top_dist_km, 2),
+            "is_estimation": is_estimation,
+            "job_type": "ESTIMATION" if is_estimation else "SERVICE",
+            "request_kind": getattr(job_obj, "request_kind", "standard"),
+        }
+        publish_workforce_event(
+            event_type="JOB_OFFER_CREATED",
+            payload=offer_payload,
             user=top_emp.user,
+            company=job_obj.company,
+        )
+        publish_workforce_event(
             event_type="OFFER_CREATED",
-            payload={"job_id": job_obj.id, "offer_id": offer.id, "employee_id": top_emp.id, "distance_km": round(top_dist_km, 2)}
+            payload=offer_payload,
+            user=top_emp.user,
+            company=job_obj.company,
         )
 
         loc_str = f" at {job_obj.address}" if job_obj.address else ""
@@ -1003,6 +1111,12 @@ def expire_and_reassign_offers() -> int:
     Returns the count of expired offers handled.
     """
     now = timezone.now()
+    from service_requests.models import Estimation
+    try:
+        est_sr_ids = set(Estimation.objects.values_list("service_request_id", flat=True))
+    except Exception:
+        est_sr_ids = set()
+
     expired_offers = list(
         WorkforceJobOffer.objects.filter(
             status=WorkforceJobOffer.Status.OFFERED,
@@ -1013,12 +1127,15 @@ def expire_and_reassign_offers() -> int:
             Q(job__request_kind__iexact="inspection") |
             Q(job__service_category__icontains="estimation") |
             Q(job__issue_title__icontains="estimation") |
-            Q(job__issue_title__icontains="inspection")
+            Q(job__issue_title__icontains="inspection") |
+            Q(job_id__in=est_sr_ids)
         ).select_related("job")
     )
 
     count = 0
     for offer in expired_offers:
+        if (getattr(offer.job, "pricing_mode", "") or "").upper() == "QUOTATION":
+            continue
         with transaction.atomic():
             off_locked = WorkforceJobOffer.objects.select_for_update().filter(pk=offer.pk, status=WorkforceJobOffer.Status.OFFERED).first()
             if not off_locked:
@@ -1084,42 +1201,71 @@ def dispatch_pending_jobs(company_id=None, limit: int = 50) -> Dict[str, Any]:
     return results
 
 
+_RECONSIDER_LOCKS = set()
+_RECONSIDER_LOCK_MUTEX = threading.Lock()
+_RECONSIDER_LAST_RUN = {}
+RECONSIDER_COOLDOWN_SECONDS = 30
+
+
 def reconsider_jobs_for_employee(employee_or_id) -> int:
     """
     Triggered when an employee transmits fresh GPS coordinates:
     Finds pending unassigned/dispatchable jobs within the employee's company
-    and evaluates dispatch immediately.
+    and evaluates dispatch safely with single-flight locking and throttling.
     """
     emp_id = employee_or_id.pk if hasattr(employee_or_id, "pk") else employee_or_id
-    emp = Employee.objects.filter(pk=emp_id).first()
-    if not emp or not emp.is_active or not emp.is_online or emp.current_availability != "available" or get_employee_active_job(emp):
+    if not emp_id:
         return 0
 
-    now = timezone.now()
-    if emp.company_id and emp.company_id > 1:
-        company_filter = Q(company_id=emp.company_id)
-    else:
-        company_filter = Q(company_id=1) | Q(company__isnull=True)
+    now_ts = time.time()
+    with _RECONSIDER_LOCK_MUTEX:
+        if emp_id in _RECONSIDER_LOCKS:
+            logger.debug(f"[RECONSIDER_SKIPPED] Employee #{emp_id} evaluation already in progress.")
+            return 0
+        last_run = _RECONSIDER_LAST_RUN.get(emp_id, 0)
+        if (now_ts - last_run) < RECONSIDER_COOLDOWN_SECONDS:
+            logger.debug(f"[RECONSIDER_SKIPPED] Employee #{emp_id} within cooldown ({now_ts - last_run:.1f}s < {RECONSIDER_COOLDOWN_SECONDS}s).")
+            return 0
+        _RECONSIDER_LOCKS.add(emp_id)
 
-    pending_jobs = ServiceRequest.objects.filter(
-        company_filter,
-        status__in=DISPATCHABLE_STATUSES,
-        assigned_employee__isnull=True,
-        latitude__isnull=False,
-        longitude__isnull=False,
-    ).exclude(
-        job_offers__status=WorkforceJobOffer.Status.OFFERED,
-        job_offers__expires_at__gt=now,
-    ).exclude(
-        # Don't reconsider jobs the employee already declined/received
-        job_offers__employee_id=emp.id,
-    ).distinct()
+    try:
+        from django.db import connection
+        try:
+            emp = Employee.objects.filter(pk=emp_id).first()
+            if not emp or not emp.is_active or not emp.is_online or emp.current_availability != "available" or get_employee_active_job(emp):
+                return 0
 
-    dispatched_count = 0
-    for job in pending_jobs:
-        logger.info(f"[DISPATCH_GPS_TRIGGER] Fresh GPS for Employee #{emp.id} triggered evaluation for Job #{job.id}.")
-        success, msg = dispatch_job(job)
-        if success:
-            dispatched_count += 1
+            now = timezone.now()
+            if emp.company_id and emp.company_id > 1:
+                company_filter = Q(company_id=emp.company_id)
+            else:
+                company_filter = Q(company_id=1) | Q(company__isnull=True)
 
-    return dispatched_count
+            pending_jobs = list(ServiceRequest.objects.filter(
+                company_filter,
+                status__in=DISPATCHABLE_STATUSES,
+                assigned_employee__isnull=True,
+                latitude__isnull=False,
+                longitude__isnull=False,
+            ).exclude(
+                job_offers__status=WorkforceJobOffer.Status.OFFERED,
+                job_offers__expires_at__gt=now,
+            ).exclude(
+                # Don't reconsider jobs the employee already declined/received
+                job_offers__employee_id=emp.id,
+            ).distinct()[:10])
+
+            dispatched_count = 0
+            for job in pending_jobs:
+                logger.info(f"[DISPATCH_GPS_TRIGGER] Fresh GPS for Employee #{emp.id} triggered evaluation for Job #{job.id}.")
+                success, msg = dispatch_job(job)
+                if success:
+                    dispatched_count += 1
+
+            return dispatched_count
+        finally:
+            connection.close()
+    finally:
+        with _RECONSIDER_LOCK_MUTEX:
+            _RECONSIDER_LOCKS.discard(emp_id)
+            _RECONSIDER_LAST_RUN[emp_id] = time.time()

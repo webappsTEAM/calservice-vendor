@@ -70,9 +70,10 @@ def _serialize_estimation(sr, est=None, full_detail=False):
 
     # Fee details
     fee_obj = est.fees.first() if est else None
+    default_fee_amt = float(sr.total_amount) if (sr and sr.total_amount is not None) else 0.0
     fee_data = {
         "id": fee_obj.id if fee_obj else None,
-        "amount": float(fee_obj.amount) if fee_obj else 199.00,
+        "amount": float(fee_obj.amount) if fee_obj else default_fee_amt,
         "currency": fee_obj.currency if fee_obj else "INR",
         "status": fee_obj.status if fee_obj else "PENDING",
         "payment_method": fee_obj.payment_method if fee_obj else "",
@@ -279,10 +280,11 @@ def _get_target_estimation(pk):
                 customer_symptom=sr.issue_title or sr.description or "Service Inspection",
                 status=sr.status.upper(),
             )
-        # Ensure ₹199 inspection fee record exists
+        # Ensure inspection fee record exists using authoritative booking amount
+        fee_amount = sr.total_amount if (sr and sr.total_amount is not None) else Decimal("0.00")
         EstimationFee.objects.get_or_create(
             estimation=est,
-            defaults={"amount": Decimal("199.00"), "currency": "INR", "status": "PENDING"}
+            defaults={"amount": fee_amount, "currency": "INR", "status": "PENDING"}
         )
         return sr, est
 
@@ -294,9 +296,10 @@ def _get_target_estimation(pk):
         est = Estimation.objects.filter(service_request__request_id=str(pk)).select_related("service_request").first()
 
     if est:
+        fee_amount = est.service_request.total_amount if (est.service_request and est.service_request.total_amount is not None) else Decimal("0.00")
         EstimationFee.objects.get_or_create(
             estimation=est,
-            defaults={"amount": Decimal("199.00"), "currency": "INR", "status": "PENDING"}
+            defaults={"amount": fee_amount, "currency": "INR", "status": "PENDING"}
         )
         return est.service_request, est
 
@@ -708,6 +711,19 @@ class VendorEstimationArrivedView(APIView):
         except Exception:
             pass
 
+        try:
+            from workforce_api.models import PreServiceVerification
+            PreServiceVerification.objects.update_or_create(
+                job=sr,
+                defaults={
+                    "geofence_passed": True,
+                    "arrived_at": timezone.now(),
+                    "employee": sr.assigned_employee,
+                }
+            )
+        except Exception:
+            pass
+
         return Response({
             "success": True,
             "message": "Technician arrived on-site.",
@@ -755,6 +771,19 @@ class VendorEstimationVerifyOtpView(APIView):
         try:
             from service_requests.models import EmployeeJob
             EmployeeJob.objects.filter(service_request=sr).update(status="IN_PROGRESS")
+        except Exception:
+            pass
+
+        try:
+            from workforce_api.models import PreServiceVerification
+            PreServiceVerification.objects.update_or_create(
+                job=sr,
+                defaults={
+                    "otp_verified": True,
+                    "otp_verified_at": now,
+                    "employee": sr.assigned_employee,
+                }
+            )
         except Exception:
             pass
 
@@ -926,6 +955,25 @@ class VendorEstimationInspectionCompleteView(APIView):
         est.status = "INSPECTION_COMPLETED"
         est.save(update_fields=["status", "updated_at"])
 
+        try:
+            from workforce_api.services.realtime import publish_workforce_event
+            publish_workforce_event(
+                event_type="INSPECTION_UPDATED",
+                entity_type="inspection",
+                entity_id=sr.id,
+                company_id=sr.company_id,
+                employee_id=sr.assigned_employee_id,
+                payload={
+                    "service_request_id": sr.id,
+                    "estimation_id": est.id,
+                    "inspection_id": inspection.id,
+                    "status": "COMPLETED",
+                    "diagnosis": inspection.diagnosis,
+                }
+            )
+        except Exception as ev_err:
+            logger.warning(f"Could not emit INSPECTION_UPDATED: {ev_err}")
+
         logger.info(f"[VENDOR_ESTIMATION] Inspection completed for #{sr.id}")
         return Response({
             "success": True,
@@ -1084,6 +1132,26 @@ class VendorEstimationQuotationSendView(APIView):
 
         _sync_workforce_quote(sr, quote)
 
+        try:
+            from workforce_api.services.realtime import publish_workforce_event
+            publish_workforce_event(
+                event_type="QUOTATION_SENT",
+                entity_type="quotation",
+                entity_id=quote.id,
+                company_id=sr.company_id,
+                employee_id=sr.assigned_employee_id,
+                payload={
+                    "service_request_id": sr.id,
+                    "estimation_id": est.id,
+                    "quote_id": quote.id,
+                    "quote_ref": quote.quote_ref,
+                    "total_amount": float(quote.total_amount),
+                    "status": "SENT",
+                }
+            )
+        except Exception as ev_err:
+            logger.warning(f"Could not emit QUOTATION_SENT: {ev_err}")
+
         logger.info(f"[VENDOR_ESTIMATION] Quotation {quote.quote_ref} sent to customer for Estimation #{sr.id}")
         return Response({
             "success": True,
@@ -1175,25 +1243,109 @@ class VendorEstimationFeeCollectView(APIView):
 
         fee = est.fees.first()
         if not fee:
+            fee_amount = sr.total_amount if (sr and sr.total_amount is not None) else Decimal("0.00")
             fee = EstimationFee.objects.create(
                 estimation=est,
-                amount=Decimal("199.00"),
+                amount=fee_amount,
                 currency="INR",
                 status="PENDING",
             )
 
+        now = timezone.now()
         method = request.data.get("payment_method", "CASH").upper()
-        ref = request.data.get("payment_reference", "")
+        ref = request.data.get("payment_reference", "") or f"FEE_{sr.id}_{now.strftime('%Y%m%d%H%M%S')}"
 
         fee.status = "COLLECTED"
         fee.payment_method = method
         fee.payment_reference = ref
-        fee.collected_at = timezone.now()
+        fee.collected_at = now
         fee.save()
+
+        # Update ServiceRequest payment status and invoice reference
+        inv_num = sr.invoice_id or f"INV-EST-{sr.id}-{sr.request_id or f'AC{sr.id}'}"
+        sr.invoice_id = inv_num
+        sr.payment_status = "collected"
+        sr.payment_method = method
+        sr.payment_collected_at = now
+        sr.transaction_id = ref
+        sr.save(update_fields=["invoice_id", "payment_status", "payment_method", "payment_collected_at", "transaction_id", "updated_at"])
+
+        # Persist ServiceRequestPayment record idempotently
+        try:
+            from service_requests.models import ServiceRequestPayment
+            ServiceRequestPayment.objects.get_or_create(
+                service_request=sr,
+                razorpay_payment_id=ref,
+                defaults={
+                    "customer": sr.customer,
+                    "customer_id_snapshot": f"CUS{sr.customer_id or '0000'}",
+                    "service_request_id_snapshot": sr.request_id or f"SR{sr.id}",
+                    "amount": fee.amount,
+                    "currency": "INR",
+                    "status": "paid",
+                    "method": method,
+                    "gateway": "razorpay" if method == "ONLINE" else "cash",
+                    "razorpay_order_id": f"order_est_{sr.id}",
+                }
+            )
+        except Exception as pay_err:
+            logger.warning(f"Could not create ServiceRequestPayment in fee collect: {pay_err}")
+
+        # Persist SettingsHubInvoice record idempotently
+        try:
+            from service_requests.models import SettingsHubInvoice
+            SettingsHubInvoice.objects.update_or_create(
+                invoice_number=inv_num,
+                defaults={
+                    "amount": fee.amount,
+                    "currency": "INR",
+                    "status": "PAID",
+                    "billing_date": now.date(),
+                    "due_date": now.date(),
+                    "pdf_url": f"/api/vendor/estimations/{sr.id}/invoice/",
+                    "company": sr.company,
+                }
+            )
+        except Exception as inv_err:
+            logger.warning(f"Could not create SettingsHubInvoice in fee collect: {inv_err}")
+
+        # Emit realtime events
+        try:
+            from workforce_api.services.realtime import publish_workforce_event
+            publish_workforce_event(
+                event_type="PAYMENT_UPDATED",
+                entity_type="payment",
+                entity_id=sr.id,
+                company_id=sr.company_id,
+                employee_id=sr.assigned_employee_id,
+                payload={
+                    "service_request_id": sr.id,
+                    "amount": float(fee.amount),
+                    "payment_status": "collected",
+                    "payment_method": method,
+                    "transaction_id": ref,
+                }
+            )
+            publish_workforce_event(
+                event_type="INVOICE_CREATED",
+                entity_type="invoice",
+                entity_id=sr.id,
+                company_id=sr.company_id,
+                employee_id=sr.assigned_employee_id,
+                payload={
+                    "service_request_id": sr.id,
+                    "invoice_number": inv_num,
+                    "amount": float(fee.amount),
+                    "status": "PAID",
+                }
+            )
+        except Exception as ev_err:
+            logger.warning(f"Could not emit fee collect events: {ev_err}")
 
         return Response({
             "success": True,
             "message": f"Inspection fee of ₹{fee.amount} marked COLLECTED ({method}).",
+            "invoice_id": inv_num,
             "fee": {
                 "id": fee.id,
                 "amount": float(fee.amount),
@@ -1220,9 +1372,10 @@ class VendorEstimationFeeWaiveView(APIView):
 
         fee = est.fees.first()
         if not fee:
+            fee_amount = sr.total_amount if (sr and sr.total_amount is not None) else Decimal("0.00")
             fee = EstimationFee.objects.create(
                 estimation=est,
-                amount=Decimal("199.00"),
+                amount=fee_amount,
                 currency="INR",
                 status="PENDING",
             )
@@ -1278,6 +1431,25 @@ class VendorEstimationCustomerDecideView(APIView):
 
         quote = est.quotations.order_by("-version").first()
         if not quote:
+            from workforce_api.models import WorkforceQuote
+            wf_q = WorkforceQuote.objects.filter(job=sr).order_by("-quote_version").first()
+            if wf_q:
+                from service_requests.models import EstimationQuotation
+                quote, _ = EstimationQuotation.objects.get_or_create(
+                    quote_ref=wf_q.quote_number,
+                    defaults={
+                        "estimation": est,
+                        "version": wf_q.quote_version,
+                        "status": "DRAFT" if wf_q.status == WorkforceQuote.Status.DRAFT else "SENT",
+                        "subtotal": wf_q.subtotal_amount,
+                        "tax_amount": wf_q.tax_amount,
+                        "discount_amount": wf_q.discount_amount,
+                        "total_amount": wf_q.total_amount,
+                        "notes": wf_q.description or "",
+                    }
+                )
+
+        if decision == "APPROVE" and not quote:
             return Response({"error": "No quotation exists for this estimation to decide upon.", "code": "NO_QUOTE"}, status=status.HTTP_400_BAD_REQUEST)
 
         now = timezone.now()
@@ -1384,25 +1556,60 @@ class VendorEstimationCustomerDecideView(APIView):
                 wf_quote.work_job = sr
                 wf_quote.save(update_fields=["status", "work_job", "updated_at"])
 
+            try:
+                from workforce_api.services.realtime import publish_workforce_event
+                publish_workforce_event(
+                    event_type="QUOTATION_APPROVED",
+                    entity_type="quotation",
+                    entity_id=quote.id,
+                    company_id=sr.company_id,
+                    employee_id=sr.assigned_employee_id,
+                    payload={
+                        "service_request_id": sr.id,
+                        "estimation_id": est.id,
+                        "quote_id": quote.id,
+                        "quote_ref": quote.quote_ref,
+                        "total_amount": float(quote.total_amount),
+                        "status": "APPROVED",
+                    }
+                )
+                publish_workforce_event(
+                    event_type="EXECUTION_JOB_CREATED",
+                    entity_type="job",
+                    entity_id=sr.id,
+                    company_id=sr.company_id,
+                    employee_id=sr.assigned_employee_id,
+                    payload={
+                        "job_id": sr.id,
+                        "quote_number": quote.quote_ref,
+                        "amount": float(sr.total_amount),
+                        "status": sr.status,
+                    }
+                )
+            except Exception as ev_err:
+                logger.warning(f"Could not emit approval events: {ev_err}")
+
             logger.info(f"[VENDOR_ESTIMATION] Quotation {quote.quote_ref} converted into Service Job #{sr.id}. Same-day: {is_same_day}")
 
         else:
             # Customer rejected quotation / cancelled estimation
-            quote.status = "REJECTED"
-            quote.customer_rejected_at = now
-            quote.rejection_reason = rejection_reason
-            quote.rejection_note = rejection_note
-            quote.save(update_fields=["status", "customer_rejected_at", "rejection_reason", "rejection_note", "updated_at"])
+            if quote:
+                quote.status = "REJECTED"
+                quote.customer_rejected_at = now
+                quote.rejection_reason = rejection_reason
+                quote.rejection_note = rejection_note
+                quote.save(update_fields=["status", "customer_rejected_at", "rejection_reason", "rejection_note", "updated_at"])
 
             est.status = "CANCELLED"
             est.save(update_fields=["status", "updated_at"])
 
-            # 1. Collect ₹199 estimation visit fee
+            # 1. Collect estimation visit fee from authoritative record
             fee = est.fees.first()
             if not fee:
+                fee_amount = sr.total_amount if (sr and sr.total_amount is not None) else Decimal("0.00")
                 fee = EstimationFee.objects.create(
                     estimation=est,
-                    amount=Decimal("199.00"),
+                    amount=fee_amount,
                     currency="INR",
                     status="PENDING",
                 )
@@ -1479,7 +1686,76 @@ class VendorEstimationCustomerDecideView(APIView):
                 logger.warning(f"Could not create SettingsHubInvoice: {inv_err}")
 
             # 5. Synchronize WorkforceQuote status
-            _sync_workforce_quote(sr, quote)
+            if quote:
+                _sync_workforce_quote(sr, quote)
+
+            # 6. Reconcile technician EmployeeJob completion
+            if sr.assigned_employee:
+                try:
+                    from service_requests.models import EmployeeJob
+                    EmployeeJob.objects.filter(service_request=sr, employee=sr.assigned_employee).update(
+                        status="COMPLETED",
+                        completed_date=now
+                    )
+                except Exception as ej_comp_err:
+                    logger.warning(f"Could not complete EmployeeJob: {ej_comp_err}")
+
+            # 7. Emit durable events
+            try:
+                from workforce_api.services.realtime import publish_workforce_event
+                publish_workforce_event(
+                    event_type="PAYMENT_UPDATED",
+                    entity_type="payment",
+                    entity_id=sr.id,
+                    company_id=sr.company_id,
+                    employee_id=sr.assigned_employee_id,
+                    payload={
+                        "service_request_id": sr.id,
+                        "amount": float(fee.amount),
+                        "payment_status": "collected",
+                        "payment_method": method,
+                        "transaction_id": txn_ref,
+                    }
+                )
+                publish_workforce_event(
+                    event_type="INVOICE_CREATED",
+                    entity_type="invoice",
+                    entity_id=sr.id,
+                    company_id=sr.company_id,
+                    employee_id=sr.assigned_employee_id,
+                    payload={
+                        "service_request_id": sr.id,
+                        "invoice_number": inv_num,
+                        "amount": float(fee.amount),
+                        "status": "PAID",
+                    }
+                )
+                publish_workforce_event(
+                    event_type="QUOTATION_DECLINED",
+                    entity_type="quotation",
+                    entity_id=quote.id,
+                    company_id=sr.company_id,
+                    employee_id=sr.assigned_employee_id,
+                    payload={
+                        "service_request_id": sr.id,
+                        "quote_id": quote.id,
+                        "decline_reason": rejection_reason,
+                        "status": "DECLINED",
+                    }
+                )
+                publish_workforce_event(
+                    event_type="JOB_COMPLETED",
+                    entity_type="job",
+                    entity_id=sr.id,
+                    company_id=sr.company_id,
+                    employee_id=sr.assigned_employee_id,
+                    payload={
+                        "job_id": sr.id,
+                        "status": "cancelled",
+                    }
+                )
+            except Exception as ev_err:
+                logger.warning(f"Could not emit decline events: {ev_err}")
 
             message = f"Estimation cancelled. Inspection visit fee of ₹{fee.amount} collected. Invoice #{inv_num} generated for customer reference."
 
@@ -1516,7 +1792,7 @@ class VendorEstimationInvoiceView(APIView):
 
         line_items = []
         if is_fee_invoice:
-            amount = float(fee.amount if fee else 199.00)
+            amount = float(fee.amount if fee else (sr.total_amount if (sr and sr.total_amount is not None) else Decimal("0.00")))
             line_items.append({
                 "item_name": "AC On-Site Inspection & Estimation Visit Fee",
                 "description": f"Comprehensive multi-point AC diagnosis for {sr.issue_title or 'Air Conditioner'}",
@@ -1554,7 +1830,7 @@ class VendorEstimationInvoiceView(APIView):
             payment_method = sr.payment_method or "COD"
             paid_at = (sr.completed_at or sr.updated_at).isoformat() if sr.payment_status == "collected" else None
         else:
-            amount = float(sr.total_amount or 199.00)
+            amount = float(sr.total_amount if (sr and sr.total_amount is not None) else Decimal("0.00"))
             line_items.append({
                 "item_name": "AC Inspection Service",
                 "description": sr.issue_title or "AC Diagnostic Visit",

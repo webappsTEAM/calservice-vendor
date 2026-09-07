@@ -462,7 +462,7 @@ export default function VendorEstimationsPage() {
                               : 'bg-amber-50 text-amber-700 border-amber-200'
                           }`}
                         >
-                          ₹{lead.fee?.amount || 199} {feeStatus}
+                          ₹{lead.fee?.amount ?? lead.total_amount ?? 0} {feeStatus}
                         </span>
                       </div>
                     </div>

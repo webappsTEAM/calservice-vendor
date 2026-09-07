@@ -466,6 +466,11 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
     settlement_channel = serializers.SerializerMethodField()
     earnings_wallet_owner = serializers.SerializerMethodField()
     estimation_details = serializers.SerializerMethodField()
+    is_estimation = serializers.SerializerMethodField()
+    pricing_mode = serializers.SerializerMethodField()
+    active_quote_number = serializers.SerializerMethodField()
+    active_quote_id = serializers.SerializerMethodField()
+    can_create_quote = serializers.SerializerMethodField()
 
     class Meta:
         model = ServiceRequest
@@ -518,6 +523,11 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             "start_otp",
             "invoice_id",
             "estimation_details",
+            "is_estimation",
+            "pricing_mode",
+            "active_quote_number",
+            "active_quote_id",
+            "can_create_quote",
         ]
 
     def _get_context_emp(self):
@@ -586,15 +596,18 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             return True
         if hasattr(obj, "estimation_booking") and obj.estimation_booking is not None:
             return True
-        if obj.service_type and "estimation" in str(obj.service_type).lower():
+        svc_type = getattr(obj, "service_type", None)
+        if svc_type and "estimation" in str(svc_type).lower():
             return True
-        if obj.service_category and "estimation" in str(obj.service_category).lower():
+        if getattr(obj, "service_category", None) and "estimation" in str(obj.service_category).lower():
             return True
-        if obj.issue_title and ("estimation" in str(obj.issue_title).lower() or "inspection" in str(obj.issue_title).lower()):
+        if getattr(obj, "issue_title", None) and ("estimation" in str(obj.issue_title).lower() or "inspection" in str(obj.issue_title).lower()):
+            return True
+        if getattr(obj, "pricing_mode", None) and str(obj.pricing_mode).upper() == "QUOTATION":
             return True
         try:
             from service_requests.models import Estimation
-            return Estimation.objects.filter(request_id=obj.id).exists()
+            return Estimation.objects.filter(service_request=obj).exists()
         except Exception:
             return False
 
@@ -890,10 +903,10 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
                 "ac_quantity": est.ac_quantity,
                 "fee": {
                     "id": fee.id if fee else None,
-                    "amount": float(fee.amount) if fee else 199.0,
+                    "amount": float(fee.amount) if fee else (float(obj.total_amount) if (obj and obj.total_amount is not None) else 0.0),
                     "status": fee.status if fee else "PENDING",
                     "waived_reason": fee.waived_reason if fee else "",
-                } if fee else None,
+                } if (fee or (obj and obj.total_amount is not None)) else None,
                 "inspection_status": insp.status if insp else "PENDING",
                 "latest_quote": {
                     "id": quote.id,
@@ -905,6 +918,56 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             }
         except Exception:
             return None
+
+    def get_is_estimation(self, obj):
+        return self._is_estimation_job(obj)
+
+    def get_pricing_mode(self, obj):
+        if self._is_estimation_job(obj):
+            return "QUOTATION"
+        return getattr(obj, "pricing_mode", "FIXED")
+
+    def get_active_quote_number(self, obj):
+        try:
+            from workforce_api.models import WorkforceQuote
+            q = WorkforceQuote.objects.filter(job=obj).exclude(status__in=["SUPERSEDED", "CANCELLED"]).order_by("-quote_version").first()
+            if q and q.quote_number:
+                return q.quote_number
+            from service_requests.models import Estimation
+            est = Estimation.objects.filter(service_request=obj).first()
+            if est:
+                eq = est.quotations.order_by("-version").first()
+                if eq and eq.quote_ref:
+                    return eq.quote_ref
+        except Exception:
+            pass
+        return getattr(obj, "quote_number", None) or None
+
+    def get_active_quote_id(self, obj):
+        try:
+            from workforce_api.models import WorkforceQuote
+            q = WorkforceQuote.objects.filter(job=obj).exclude(status__in=["SUPERSEDED", "CANCELLED"]).order_by("-quote_version").first()
+            if q:
+                return q.id
+            from service_requests.models import Estimation
+            est = Estimation.objects.filter(service_request=obj).first()
+            if est:
+                eq = est.quotations.order_by("-version").first()
+                if eq:
+                    return eq.id
+        except Exception:
+            pass
+        return None
+
+    def get_can_create_quote(self, obj):
+        if not self._is_estimation_job(obj):
+            return False
+        try:
+            from workforce_api.services.quotation_service import can_create_quote
+            allowed, _ = can_create_quote(obj)
+            return allowed
+        except Exception:
+            return False
 
 
 

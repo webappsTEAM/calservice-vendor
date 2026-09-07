@@ -12,6 +12,8 @@ export default function FeeActionModal({ estimation, isOpen, onClose, onSuccess 
 
   if (!isOpen) return null;
 
+  const feeAmount = estimation?.fee?.amount ?? estimation?.total_amount ?? 0;
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -47,7 +49,7 @@ export default function FeeActionModal({ estimation, isOpen, onClose, onSuccess 
               <IndianRupee className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-zinc-900">Inspection Fee: ₹199</h3>
+              <h3 className="text-sm font-bold text-zinc-900">Inspection Fee: ₹{feeAmount}</h3>
               <p className="text-[11px] text-zinc-500">Job #{estimation?.request_id || estimation?.id}</p>
             </div>
           </div>
@@ -144,7 +146,7 @@ export default function FeeActionModal({ estimation, isOpen, onClose, onSuccess 
           ) : (
             <div>
               <label className="block text-xs font-semibold text-zinc-700 mb-1">
-                Reason for Waiving ₹199 Fee <span className="text-red-500">*</span>
+                Reason for Waiving Inspection Fee (₹{feeAmount}) <span className="text-red-500">*</span>
               </label>
               <textarea
                 rows={3}

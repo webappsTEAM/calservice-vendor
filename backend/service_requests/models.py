@@ -94,11 +94,12 @@ def is_quotation_service(service_or_id=None, name=None, category=None, **kwargs)
 
 
 class RequestKind(models.TextChoices):
-    STANDARD     = "standard",     "Standard"
-    INSPECTION   = "inspection",   "Inspection"
-    QUOTED_WORK  = "quoted_work",  "Quoted Work"
-    ESTIMATION   = "estimation",   "Estimation"
-    WORK         = "work",         "Work"
+    STANDARD         = "standard",         "Standard"
+    INSPECTION       = "inspection",       "Inspection"
+    QUOTED_WORK      = "quoted_work",      "Quoted Work"
+    ESTIMATION       = "estimation",       "Estimation"
+    WORK             = "work",             "Work"
+    QUOTED_EXECUTION = "quoted_execution", "Quoted Execution"
 
 
 class Service(models.Model):
@@ -237,6 +238,7 @@ class ServiceRequest(models.Model):
     photo = models.ImageField(upload_to="service_requests/photos/", null=True, blank=True)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     cart_data = models.JSONField(default=list, blank=True)
+    fare_breakdown = models.JSONField(default=dict, blank=True)
 
     drop_address = models.TextField(blank=True, default="")
     # X-04: these were all missing from this mirror even though they exist
@@ -285,8 +287,10 @@ class ServiceRequest(models.Model):
                                               ("inspection", "Inspection"),
                                               ("quoted_work", "Quoted Work"),
                                               ("estimation", "Estimation"),
-                                              ("work", "Work")])
+                                              ("work", "Work"),
+                                              ("quoted_execution", "Quoted Execution")])
     quote_number = models.CharField(max_length=100, blank=True, null=True, unique=True, db_index=True)
+    parent_request_id = models.BigIntegerField(null=True, blank=True, db_index=True)
 
     # X-04: pricing snapshot fields, all missing from this mirror -- a
     # technician-facing payslip/earnings view that wants to show what a
@@ -389,15 +393,50 @@ class ServiceRequest(models.Model):
             self.request_id = _generate_request_id()
         super().save(*args, **kwargs)
 
-        if is_new and self.status in ["new_request", "confirmed", "draft"]:
+        if self.request_kind == "estimation" or getattr(self, "job_type", "").upper() == "ESTIMATION":
             try:
-                from workforce_api.services.automatic_dispatch import dispatch_job
-                dispatch_job(self)
-            except Exception as e:
-                import logging
-                logging.getLogger("workforce.dispatch").exception(
-                    f"[AUTO_DISPATCH_TRIGGER_FAILED] Failed to trigger automatic dispatch for Job #{self.id}: {e}"
+                from decimal import Decimal
+                est, _ = Estimation.objects.get_or_create(
+                    service_request=self,
+                    defaults={
+                        "ac_type": "SPLIT",
+                        "ac_brand": "General",
+                        "ac_capacity": "1.5_TON",
+                        "ac_quantity": 1,
+                        "customer_symptom": self.issue_title or self.description or "Service Inspection",
+                        "status": "REQUESTED" if self.status in ["new_request", "draft", "confirmed"] else self.status.upper(),
+                    }
                 )
+                fee_amount = self.total_amount if (self.total_amount and self.total_amount > 0) else Decimal("0.00")
+                EstimationFee.objects.get_or_create(
+                    estimation=est,
+                    defaults={
+                        "amount": fee_amount,
+                        "currency": "INR",
+                        "status": "PENDING",
+                    }
+                )
+            except Exception as est_init_err:
+                import logging
+                logging.getLogger("service_requests.estimation").warning(
+                    f"[ESTIMATION_AUTO_INIT_ERR] Could not auto-init Estimation for SR #{self.id}: {est_init_err}"
+                )
+
+        if is_new and self.status in ["new_request", "confirmed", "draft"]:
+            if self.assigned_employee_id or self.request_kind == "quoted_execution":
+                import logging
+                logging.getLogger("workforce.dispatch").info(
+                    f"[AUTO_DISPATCH_SKIPPED] Job #{self.id} already assigned to Employee #{self.assigned_employee_id} (kind={self.request_kind})."
+                )
+            else:
+                try:
+                    from workforce_api.services.automatic_dispatch import dispatch_job
+                    dispatch_job(self)
+                except Exception as e:
+                    import logging
+                    logging.getLogger("workforce.dispatch").exception(
+                        f"[AUTO_DISPATCH_TRIGGER_FAILED] Failed to trigger automatic dispatch for Job #{self.id}: {e}"
+                    )
         elif self.status in ["cancelled", "completed", "unable_to_complete"]:
             try:
                 from service_requests.models import EmployeeJob
@@ -518,6 +557,40 @@ class ServiceRequest(models.Model):
     @property
     def pricing_mode(self):
         return "QUOTATION" if self.is_estimation else "FIXED"
+
+    @property
+    def resolved_service_id(self):
+        """
+        Authoritative database service_id resolution for ServiceRequest.
+        Reads cart_data, issue_title, or category.
+        """
+        if getattr(self, "_resolved_service_id", None) is not None:
+            return self._resolved_service_id
+        if self.cart_data and isinstance(self.cart_data, list):
+            for item in self.cart_data:
+                if isinstance(item, dict):
+                    sid = item.get("id") or item.get("service_id")
+                    if sid:
+                        try:
+                            return int(sid)
+                        except (ValueError, TypeError):
+                            pass
+        if self.issue_title:
+            try:
+                from service_requests.models import Service
+                svc = Service.objects.filter(name__iexact=self.issue_title.strip()).first()
+                if svc:
+                    return svc.id
+                svc = Service.objects.filter(name__icontains=self.issue_title.strip()).first()
+                if svc:
+                    return svc.id
+            except Exception:
+                pass
+        return None
+
+    @resolved_service_id.setter
+    def resolved_service_id(self, val):
+        self._resolved_service_id = val
 
 
 class EmployeeJob(models.Model):

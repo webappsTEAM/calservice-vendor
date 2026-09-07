@@ -120,6 +120,100 @@ class WorkforceEmployeeSkill(models.Model):
         return f"{self.employee} - {self.skill.name} ({self.proficiency_level})"
 
 
+class WorkforceServiceSkillRequirement(models.Model):
+    service = models.ForeignKey(
+        "service_requests.Service",
+        on_delete=models.CASCADE,
+        related_name="skill_requirements",
+    )
+    skill = models.ForeignKey(
+        WorkforceSkill,
+        on_delete=models.CASCADE,
+        related_name="service_requirements",
+    )
+    is_mandatory = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "workforce_service_skill_requirement"
+        unique_together = ("service", "skill")
+
+    def __str__(self):
+        return f"Service {self.service_id} requires {self.skill.name} (mandatory={self.is_mandatory})"
+
+
+class WorkforceServiceConfiguration(models.Model):
+    class BookingFlow(models.TextChoices):
+        STANDARD = "STANDARD", "Standard Booking"
+        ESTIMATION = "ESTIMATION", "Estimation Required"
+
+    class PricingMode(models.TextChoices):
+        FIXED = "FIXED", "Fixed / Standard Price"
+        RATE_CARD = "RATE_CARD", "Rate Card Based"
+        MEASUREMENT = "MEASUREMENT", "Measurement / Area Based"
+        FLAT_TIER = "FLAT_TIER", "Tiered Flat Slab"
+
+    service = models.OneToOneField(
+        "service_requests.Service",
+        on_delete=models.CASCADE,
+        related_name="workflow_config",
+        primary_key=True,
+    )
+    booking_flow = models.CharField(max_length=30, choices=BookingFlow.choices, default=BookingFlow.STANDARD)
+    estimation_required = models.BooleanField(default=False)
+    quotation_required = models.BooleanField(default=False)
+    estimation_form_type = models.CharField(max_length=50, blank=True, default="")
+    quotation_form_type = models.CharField(max_length=50, blank=True, default="")
+    pricing_mode = models.CharField(max_length=30, choices=PricingMode.choices, default=PricingMode.FIXED)
+    consultation_fee_policy = models.JSONField(default=dict, blank=True)
+    payment_policy = models.JSONField(default=dict, blank=True)
+    approval_policy = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_service_configuration"
+
+    def __str__(self):
+        return f"ServiceConfig #{self.service_id}: flow={self.booking_flow}, est={self.estimation_required}"
+
+
+class WorkforceEmployeeService(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending Review"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+        SUSPENDED = "SUSPENDED", "Suspended"
+
+    employee = models.ForeignKey(
+        "employees.Employee",
+        on_delete=models.CASCADE,
+        related_name="authorized_services",
+    )
+    service = models.ForeignKey(
+        "service_requests.Service",
+        on_delete=models.CASCADE,
+        related_name="authorized_employees",
+    )
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True)
+    approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    rejection_reason = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_employee_service"
+        unique_together = ("employee", "service")
+        indexes = [
+            models.Index(fields=["service", "status"]),
+            models.Index(fields=["employee", "status"]),
+        ]
+
+    def __str__(self):
+        return f"Employee #{self.employee_id} - Service #{self.service_id} ({self.status})"
+
+
 class WorkforceRequiredDocument(models.Model):
     company = models.ForeignKey(
         "companies.Company",
@@ -2127,6 +2221,7 @@ class WorkforceQuote(models.Model):
         STRUCTURAL            = "STRUCTURAL",            "Structural Demolition / Load-Bearing (Clearance Required)"
 
     job = models.ForeignKey("service_requests.ServiceRequest", on_delete=models.CASCADE, related_name="quotes")
+    estimation_quotation = models.ForeignKey("service_requests.EstimationQuotation", on_delete=models.SET_NULL, null=True, blank=True, related_name="workforce_quotes")
     quote_number = models.CharField(max_length=50, unique=True, db_index=True)
     quote_version = models.IntegerField(default=1, db_index=True)
     work_job = models.ForeignKey("service_requests.ServiceRequest", on_delete=models.SET_NULL, null=True, blank=True, related_name="converted_from_quote")
@@ -2176,6 +2271,14 @@ class WorkforceQuote(models.Model):
             models.Index(fields=["company", "status"], name="wf_quote_comp_status_idx"),
             models.Index(fields=["decision_token"], name="wf_quote_dec_token_idx"),
         ]
+
+    @property
+    def requires_structural_clearance(self):
+        return self.structural_impact in [self.StructuralImpact.SUSPECTED_STRUCTURAL, self.StructuralImpact.STRUCTURAL]
+
+    @property
+    def is_structurally_cleared(self):
+        return bool(self.admin_cleared_at and self.admin_cleared_by)
 
     def __str__(self):
         return f"Quote {self.quote_number} v{self.quote_version} ({self.status}) - ₹{self.total_amount}"

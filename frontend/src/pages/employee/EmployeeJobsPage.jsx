@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthProvider.jsx';
+import { useEmployeeRuntime } from '../../context/EmployeeRuntimeContext.jsx';
 import {
   apiGetWorkforceJobs,
   apiTransitionJob,
@@ -234,6 +235,13 @@ function getStatusTag(jobOrStatus) {
 export function EmployeeJobsPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const {
+    activeJobs: runtimeActiveJobs,
+    incomingOffers: runtimeIncomingOffers,
+    refreshActiveJobs: runtimeRefreshActiveJobs,
+    reconcileJobAccepted: runtimeReconcileJobAccepted,
+  } = useEmployeeRuntime();
+
   const [jobs, setJobs] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
@@ -267,8 +275,22 @@ export function EmployeeJobsPage() {
     }
   };
 
+  // Synchronize with backend on mount and whenever central runtime detects changes
   useEffect(() => {
     loadJobs();
+  }, [runtimeActiveJobs, runtimeIncomingOffers]);
+
+  // Immediately reload if a new offer realtime event is received
+  useEffect(() => {
+    const handleOfferReceived = () => {
+      loadJobs();
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('workforce:offer-received', handleOfferReceived);
+      return () => {
+        window.removeEventListener('workforce:offer-received', handleOfferReceived);
+      };
+    }
   }, []);
 
   const handleCopyId = (id, e) => {
@@ -287,6 +309,9 @@ export function EmployeeJobsPage() {
     try {
       setActionLoadingId(jobId);
       await apiAcceptJobOffer(jobId);
+      if (runtimeReconcileJobAccepted) {
+        runtimeReconcileJobAccepted(jobId);
+      }
       // Auto-start transit for immediate live first-person navigation
       try {
         await apiTransitionJob(jobId, 'ON_THE_WAY');
@@ -295,6 +320,9 @@ export function EmployeeJobsPage() {
       }
       if (selectedJobForDetails?.id === jobId) setSelectedJobForDetails(null);
       await loadJobs();
+      if (runtimeRefreshActiveJobs) {
+        runtimeRefreshActiveJobs({ force: true });
+      }
       // Immediately place into active navigation cockpit
       navigate(`/workforce/employee/dashboard?job_id=${jobId}&nav=1`);
     } catch (err) {
@@ -385,10 +413,15 @@ export function EmployeeJobsPage() {
   const counts = useMemo(() => {
     const offers = jobs.filter((j) =>
       Boolean(j.is_offer) ||
+      (j.offer_status || '').toUpperCase() === 'OFFERED' ||
+      (j.active_offer && (j.active_offer.status || '').toUpperCase() === 'OFFERED') ||
       ['OFFERED', 'PENDING', 'UNASSIGNED', 'REQUESTED', 'DISPATCHING', 'REDISPATCHING'].includes((j.status || '').toUpperCase())
     ).length;
     const active = jobs.filter((j) => {
-      const isOff = Boolean(j.is_offer) || ['OFFERED', 'PENDING', 'UNASSIGNED', 'REQUESTED', 'DISPATCHING', 'REDISPATCHING'].includes((j.status || '').toUpperCase());
+      const isOff = Boolean(j.is_offer) ||
+        (j.offer_status || '').toUpperCase() === 'OFFERED' ||
+        (j.active_offer && (j.active_offer.status || '').toUpperCase() === 'OFFERED') ||
+        ['OFFERED', 'PENDING', 'UNASSIGNED', 'REQUESTED', 'DISPATCHING', 'REDISPATCHING'].includes((j.status || '').toUpperCase());
       return !isOff && [
         'ASSIGNED', 'ACCEPTED', 'TECHNICIAN_ASSIGNED', 'VENDOR_CONFIRMED',
         'ON_THE_WAY', 'EN_ROUTE', 'TECHNICIAN_ON_THE_WAY', 'ARRIVED', 'TECHNICIAN_ARRIVED',
@@ -414,7 +447,10 @@ export function EmployeeJobsPage() {
   const filteredJobs = useMemo(() => {
     return jobs.filter((job) => {
       const status = (job.status || '').toUpperCase();
-      const isOffer = Boolean(job.is_offer) || ['OFFERED', 'PENDING', 'UNASSIGNED', 'REQUESTED', 'DISPATCHING', 'REDISPATCHING'].includes(status);
+      const isOffer = Boolean(job.is_offer) ||
+        (job.offer_status || '').toUpperCase() === 'OFFERED' ||
+        (job.active_offer && (j => (j?.status || '').toUpperCase() === 'OFFERED')(job.active_offer)) ||
+        ['OFFERED', 'PENDING', 'UNASSIGNED', 'REQUESTED', 'DISPATCHING', 'REDISPATCHING'].includes(status);
       const term = searchTerm.toLowerCase().trim();
       const meta = getServiceCategoryMeta(job.service_category, job.service_title);
 
@@ -572,6 +608,32 @@ export function EmployeeJobsPage() {
           })}
         </div>
 
+        {/* ── ACTIONABLE OFFERS WAITING BANNER (When on ACTIVE tab) ── */}
+        {counts.OFFERS > 0 && activeTab === 'ACTIVE' && (
+          <div className="bg-gradient-to-r from-amber-500/15 via-amber-50 to-amber-100/60 border-2 border-amber-300 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center font-bold text-lg shrink-0 shadow-xs">
+                ⚡
+              </div>
+              <div>
+                <h4 className="text-sm font-black text-amber-950">
+                  You have {counts.OFFERS} exclusive job offer{counts.OFFERS > 1 ? 's' : ''} waiting!
+                </h4>
+                <p className="text-xs text-amber-800 font-medium">
+                  Direct customer requests are assigned for your review. Accept to start navigation.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setActiveTab('OFFERS')}
+              className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl shadow-xs cursor-pointer inline-flex items-center gap-1.5 shrink-0 transition-all"
+            >
+              <span>View Offers ({counts.OFFERS})</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
         {/* ── CLEAN SWIGGY-STYLE JOB CARDS GRID ── */}
         {isLoading ? (
           <div className="bg-white border border-slate-200/80 rounded-2xl p-16 text-center shadow-xs">
@@ -588,6 +650,15 @@ export function EmployeeJobsPage() {
                 ? 'Try clearing your search or category filter.'
                 : 'You have no customer service requests matching this section.'}
             </p>
+            {counts.OFFERS > 0 && activeTab === 'ACTIVE' && (
+              <button
+                onClick={() => setActiveTab('OFFERS')}
+                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl shadow-xs cursor-pointer inline-flex items-center gap-1.5"
+              >
+                <Zap className="w-3.5 h-3.5" />
+                <span>Review {counts.OFFERS} Waiting Offer{counts.OFFERS > 1 ? 's' : ''}</span>
+              </button>
+            )}
             {(searchTerm || selectedCategory !== 'ALL' || activeTab !== 'ALL') && (
               <button
                 onClick={() => {
@@ -617,6 +688,9 @@ export function EmployeeJobsPage() {
 
               const isEstimation = (job.job_type || '').toUpperCase() === 'ESTIMATION' ||
                                   (job.request_kind || '').toLowerCase() === 'estimation' ||
+                                  (job.request_kind || '').toLowerCase() === 'inspection' ||
+                                  (job.pricing_mode || '').toUpperCase() === 'QUOTATION' ||
+                                  Boolean(job.is_estimation) ||
                                   Boolean(job.estimation_details);
 
               const catMeta = getServiceCategoryMeta(job.service_category, job.service_title);
@@ -629,7 +703,7 @@ export function EmployeeJobsPage() {
 
               const payoutAmount = isConverted
                 ? (job.total_amount || 0)
-                : (isEstimation ? (job.estimation_details?.fee?.amount || 199) : (job.payment?.amount_due || job.total_amount || 0));
+                : (isEstimation ? (job.estimation_details?.fee?.amount ?? job.total_amount ?? 0) : (job.payment?.amount_due || job.total_amount || 0));
 
               return (
                 <div
@@ -898,7 +972,7 @@ export function EmployeeJobsPage() {
                     {selectedJobForDetails.job_type === 'ESTIMATION' ? 'Inspection Visit Fee' : 'Payout Amount'}
                   </span>
                   <span className="text-base font-black text-slate-900 font-mono">
-                    ₹{Number(selectedJobForDetails.job_type === 'ESTIMATION' ? (selectedJobForDetails.estimation_details?.fee?.amount || 199) : (selectedJobForDetails.payment?.amount_due || selectedJobForDetails.total_amount || 0)).toLocaleString('en-IN')}
+                    ₹{Number(selectedJobForDetails.job_type === 'ESTIMATION' ? (selectedJobForDetails.estimation_details?.fee?.amount ?? selectedJobForDetails.total_amount ?? 0) : (selectedJobForDetails.payment?.amount_due || selectedJobForDetails.total_amount || 0)).toLocaleString('en-IN')}
                   </span>
                 </div>
               </div>

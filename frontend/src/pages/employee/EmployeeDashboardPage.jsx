@@ -2739,10 +2739,10 @@ export function EmployeeDashboardPage() {
                             <span className="font-mono font-bold text-blue-600">
                               {job.request_id || `SR-${job.id}`}
                             </span>
-                            {(job.is_estimation || job.pricing_mode === 'QUOTATION') && (
+                            {(job.is_estimation || job.pricing_mode === 'QUOTATION' || (job.job_type || '').toUpperCase() === 'ESTIMATION' || (job.request_kind || '').toLowerCase() === 'estimation') && (
                               <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-800 flex items-center gap-1">
                                 <Calculator className="w-2.5 h-2.5" />
-                                <span>ESTIMATION REQUIRED</span>
+                                <span>Job Type: ESTIMATION</span>
                               </span>
                             )}
                           </div>
@@ -3266,7 +3266,7 @@ export function EmployeeDashboardPage() {
                           ) : null}
 
                           {/* ── COMMERCIAL ESTIMATION & QUOTATION WORKFLOW CARD ── */}
-                          {(selectedJob.is_estimation || selectedJob.pricing_mode === 'QUOTATION') && (
+                          {(selectedJob.is_estimation || selectedJob.pricing_mode === 'QUOTATION' || (selectedJob.job_type || '').toUpperCase() === 'ESTIMATION' || (selectedJob.request_kind || '').toLowerCase() === 'estimation') && (
                             <div className="p-4 bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/60 rounded-xl space-y-3">
                               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                                 <div className="flex items-start gap-2.5">

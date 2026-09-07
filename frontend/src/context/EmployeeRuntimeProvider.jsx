@@ -24,6 +24,31 @@ import {
 import { useLocationTracker, getGPSPosition } from '../hooks/useGPSPosition.js';
 import { useRealtimeStream } from '../hooks/useRealtimeStream.js';
 
+export const isJobOffer = (j) => {
+  if (!j) return false;
+  if (j.is_accepted_by_current_employee || j.is_assigned_to_current_employee) {
+    return false;
+  }
+  if (j.is_offer === true) return true;
+  const offerStatus = (j.offer_status || '').toUpperCase();
+  if (offerStatus === 'OFFERED') return true;
+  if (j.active_offer && (j.active_offer.status || '').toUpperCase() === 'OFFERED') {
+    const isEst = Boolean(
+      j.is_estimation ||
+      (j.pricing_mode || '').toUpperCase() === 'QUOTATION' ||
+      (j.job_type || '').toUpperCase() === 'ESTIMATION' ||
+      (j.request_kind || '').toLowerCase() === 'estimation' ||
+      (j.request_kind || '').toLowerCase() === 'inspection' ||
+      j.estimation_details
+    );
+    if (isEst) return true;
+    return !j.active_offer.is_expired;
+  }
+  const status = (j.status || j.job_status || '').toUpperCase();
+  if (['OFFERED'].includes(status)) return true;
+  return false;
+};
+
 export function EmployeeRuntimeProvider({ children }) {
   const { user, isEmployee, registrationStatus, togglePresence: authTogglePresence, logout, isAuthenticated } = useAuth();
 
@@ -84,16 +109,13 @@ export function EmployeeRuntimeProvider({ children }) {
     });
   }, [activeJobs, user?.id]);
 
-  const incomingOffer = useMemo(() => {
-    return (
-      activeJobs.find(
-        (j) =>
-          (j.is_offer === true || j.active_offer?.status === 'OFFERED') &&
-          !j.active_offer?.is_expired &&
-          !j.is_assigned_to_current_employee
-      ) || null
-    );
+  const incomingOffers = useMemo(() => {
+    return activeJobs.filter(isJobOffer);
   }, [activeJobs]);
+
+  const incomingOffer = useMemo(() => {
+    return incomingOffers[0] || null;
+  }, [incomingOffers]);
 
   // ── 3. Notification Deduplication ──────────────────────────────────────────
   const knownOfferIdsRef = useRef(new Set());
@@ -167,23 +189,17 @@ export function EmployeeRuntimeProvider({ children }) {
             setActiveJobs(jobsData);
 
             // Seed initial offer IDs so historical offers do not trigger browser alerts
-            const currentOffer = jobsData.find(
-              (j) =>
-                (j.is_offer === true || j.active_offer?.status === 'OFFERED') &&
-                !j.active_offer?.is_expired &&
-                !j.is_assigned_to_current_employee
-            );
-
-            if (currentOffer) {
-              const offerId = currentOffer.active_offer?.id || currentOffer.offer_id || `job_${currentOffer.id}`;
-              if (!isInitialOffersLoadedRef.current) {
-                // Initial load -> mark as known without alerting
-                knownOfferIdsRef.current.add(offerId);
-                isInitialOffersLoadedRef.current = true;
-              } else {
-                // Subsequent load -> trigger deduplicated notification
-                triggerOfferBrowserNotification(currentOffer);
-              }
+            const currentOffers = jobsData.filter(isJobOffer);
+            if (currentOffers.length > 0) {
+              currentOffers.forEach((offer) => {
+                const offerId = offer.active_offer?.id || offer.offer_id || `job_${offer.id}`;
+                if (!isInitialOffersLoadedRef.current) {
+                  knownOfferIdsRef.current.add(offerId);
+                } else {
+                  triggerOfferBrowserNotification(offer);
+                }
+              });
+              isInitialOffersLoadedRef.current = true;
             } else {
               isInitialOffersLoadedRef.current = true;
             }
@@ -191,14 +207,14 @@ export function EmployeeRuntimeProvider({ children }) {
             // Smart reconciliation of selectedJob without resetting selection
             setSelectedJob((prev) => {
               if (!prev) {
-                if (currentOffer) return currentOffer;
+                if (currentOffers[0]) return currentOffers[0];
                 const active = jobsData.find((j) =>
                   ACTIVE_QUEUE_STATUSES.includes((j.status || j.job_status || '').toLowerCase())
                 );
-                return active || jobsData[0] || null;
+                return active || null;
               }
               const updated = jobsData.find((j) => j.id === prev.id);
-              return updated || prev;
+              return updated || null;
             });
             return jobsData;
           }
@@ -369,6 +385,10 @@ export function EmployeeRuntimeProvider({ children }) {
     console.warn('[EmployeeRuntime] Location tracker warning:', err);
     // If location fails, we remain online but location is pending
     setPresenceState((prev) => (prev === 'OFFLINE' ? 'OFFLINE' : 'ONLINE_LOCATION_PENDING'));
+    // If transient timeout and cached location already exists, do not clear or set error
+    if (err?.code === 'TIMEOUT') {
+      return;
+    }
     setLocationError(err?.message || 'Unable to access your location. Please check your device location settings.');
   }, []);
 
@@ -412,21 +432,38 @@ export function EmployeeRuntimeProvider({ children }) {
       const type = eventData.event_type;
       console.info(`[EmployeeRuntime SSE Event] ${type}`, eventData);
 
-      if (type === 'OFFER_CREATED' || type === 'JOB_OFFER') {
+      if (
+        type === 'OFFER_CREATED' ||
+        type === 'JOB_OFFER' ||
+        type === 'JOB_OFFER_CREATED'
+      ) {
         const payload = eventData.payload || {};
         if (payload.offer_id || payload.id) {
           triggerOfferBrowserNotification(payload);
         }
-        scheduleCoalescedRefresh(150);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('workforce:offer-received', { detail: eventData }));
+        }
+        scheduleCoalescedRefresh(50);
       } else if (
         [
           'JOB_ASSIGNED',
+          'JOB_ACCEPTED',
           'ARRIVAL_DETECTED',
+          'JOB_ARRIVED',
+          'INSPECTION_UPDATED',
+          'QUOTATION_CREATED',
+          'QUOTATION_SENT',
+          'QUOTATION_APPROVED',
+          'QUOTATION_DECLINED',
+          'EXECUTION_JOB_CREATED',
+          'PAYMENT_UPDATED',
+          'PAYMENT_COLLECTED',
+          'INVOICE_CREATED',
           'JOB_COMPLETED',
           'JOB_LOCATION_UPDATE',
           'STATUS_CHANGE',
           'EXTENSION_DECIDED',
-          'PAYMENT_COLLECTED',
         ].includes(type)
       ) {
         scheduleCoalescedRefresh(300);
@@ -519,7 +556,7 @@ export function EmployeeRuntimeProvider({ children }) {
       selectedJob,
       setSelectedJob,
       incomingOffer,
-      incomingOffers: incomingOffer ? [incomingOffer] : [],
+      incomingOffers,
       hasActiveJob,
       activeAssignedJob,
       isJobsLoading,
@@ -558,6 +595,7 @@ export function EmployeeRuntimeProvider({ children }) {
       completedJobs,
       selectedJob,
       incomingOffer,
+      incomingOffers,
       hasActiveJob,
       activeAssignedJob,
       isJobsLoading,
@@ -587,3 +625,5 @@ export function EmployeeRuntimeProvider({ children }) {
 
   return <EmployeeRuntimeContext.Provider value={value}>{children}</EmployeeRuntimeContext.Provider>;
 }
+
+export { useEmployeeRuntime } from './EmployeeRuntimeContext.jsx';
