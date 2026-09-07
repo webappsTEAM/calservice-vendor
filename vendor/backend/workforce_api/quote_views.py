@@ -231,15 +231,17 @@ class QuoteListCreateView(APIView):
                 | Q(job__request_id__icontains=search)
             )
 
-        quotes = list(qs[:500])
-        counts = {
-            "total": _visible_quotes(request).count(),
-            "drafts": _visible_quotes(request).filter(status=WorkforceQuote.Status.DRAFT).count(),
-            "sent": _visible_quotes(request).filter(status=WorkforceQuote.Status.SENT_TO_CUSTOMER).count(),
-            "accepted": _visible_quotes(request).filter(status=WorkforceQuote.Status.CUSTOMER_ACCEPTED).count(),
-        }
-        return Response({"results": [_serialize(q) for q in quotes], "counts": counts},
-                        status=status.HTTP_200_OK)
+        # A bare JSON array, deliberately. EmployeeEstimatesPage does
+        # `setQuotes(data || [])` and then `quotes.filter(...)`, so an envelope
+        # such as {"results": [...]} makes the page throw
+        # "quotes.filter is not a function". It also derives its own counts from
+        # the array, so returning server-side totals would only add four COUNT
+        # queries per page load for numbers nobody reads.
+        #
+        # Capped at 500. If a vendor ever exceeds that this needs pagination, and
+        # that means changing the frontend at the same time -- the current shape
+        # cannot carry a cursor.
+        return Response([_serialize(q) for q in qs[:500]], status=status.HTTP_200_OK)
 
     @transaction.atomic
     def post(self, request):
