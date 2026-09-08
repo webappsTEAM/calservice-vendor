@@ -6,6 +6,7 @@ Shared database with primary backend, zero duplicated tables (managed=False).
 
 
 import os
+import sys
 from datetime import timedelta
 from pathlib import Path
 from dotenv import load_dotenv
@@ -91,9 +92,17 @@ ASGI_APPLICATION = "workforce_core.asgi.application"
 
 # ─── Database Configuration (Shared Supabase PostgreSQL) ──────────────────────
 
-USE_POSTGRES = os.getenv("DB_NAME") or os.getenv("DB_HOST")
+IS_TESTING = "test" in sys.argv or os.getenv("DJANGO_TEST_SQLITE") == "1"
+USE_POSTGRES = bool(os.getenv("DB_NAME") or os.getenv("DB_HOST"))
 
-if USE_POSTGRES:
+if IS_TESTING:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": ":memory:",
+        }
+    }
+elif USE_POSTGRES:
     _db_options = {
         "keepalives": 1,
         "keepalives_idle": 30,
@@ -340,3 +349,4 @@ SEVO_INDIVIDUAL_COMMISSION_RATE = os.getenv("SEVO_INDIVIDUAL_COMMISSION_RATE", "
 SEVO_INDIVIDUAL_PROMO_RATE = os.getenv("SEVO_INDIVIDUAL_PROMO_RATE", "0.08")
 SEVO_PROMO_PERIOD_DAYS = os.getenv("SEVO_PROMO_PERIOD_DAYS", "90")
 SEVO_DISPUTE_HOLD_HOURS = os.getenv("SEVO_DISPUTE_HOLD_HOURS", "48")
+# env-reload: 2026-09-08

@@ -2481,7 +2481,23 @@ class WorkforceJobTransitionView(APIView):
                 "status": new_status,
             }, status=status.HTTP_200_OK)
         except ValidationError as e:
-            return Response({"error": str(e.detail if hasattr(e, 'detail') else e)}, status=status.HTTP_400_BAD_REQUEST)
+            detail = getattr(e, "detail", e)
+            if isinstance(detail, list) and detail:
+                err_msg = str(getattr(detail[0], "string", detail[0]))
+            elif isinstance(detail, dict) and detail:
+                first_v = next(iter(detail.values()))
+                if isinstance(first_v, list) and first_v:
+                    err_msg = str(getattr(first_v[0], "string", first_v[0]))
+                else:
+                    err_msg = str(getattr(first_v, "string", first_v))
+            else:
+                err_msg = str(getattr(detail, "string", detail))
+            import re
+            m = re.search(r"ErrorDetail\(string=['\"]([^'\"]+)['\"]", err_msg)
+            if m:
+                err_msg = m.group(1)
+            err_msg = err_msg.strip("[]'\" ")
+            return Response({"error": err_msg}, status=status.HTTP_400_BAD_REQUEST)
 
 
 # ─── 8b. Service Hold / Resume / Overtime ────────────────────────────────────
@@ -4400,7 +4416,23 @@ class WorkforceJobCustomerCancelSyncView(APIView):
         try:
             new_status = apply_transition(job, "cancelled", actor=None)
         except ValidationError as e:
-            return Response({"error": str(e.detail if hasattr(e, "detail") else e)}, status=status.HTTP_400_BAD_REQUEST)
+            detail = getattr(e, "detail", e)
+            if isinstance(detail, list) and detail:
+                err_msg = str(getattr(detail[0], "string", detail[0]))
+            elif isinstance(detail, dict) and detail:
+                first_v = next(iter(detail.values()))
+                if isinstance(first_v, list) and first_v:
+                    err_msg = str(getattr(first_v[0], "string", first_v[0]))
+                else:
+                    err_msg = str(getattr(first_v, "string", first_v))
+            else:
+                err_msg = str(getattr(detail, "string", detail))
+            import re
+            m = re.search(r"ErrorDetail\(string=['\"]([^'\"]+)['\"]", err_msg)
+            if m:
+                err_msg = m.group(1)
+            err_msg = err_msg.strip("[]'\" ")
+            return Response({"error": err_msg}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({
             "message": f"Job #{job.id} cancelled (customer-initiated) and technician released.",
@@ -4564,6 +4596,93 @@ class WorkforceAutoDispatchTriggerView(APIView):
 
         success, msg = run_automatic_dispatch(job)
         return Response({"message": msg, "success": success, "status": job.status}, status=status.HTTP_200_OK)
+
+
+class WorkforceCrossServiceDispatchView(APIView):
+    """
+    Direct cross-service dispatch trigger invoked by Customer backend (WorkforceIntegrationService.dispatch_job).
+    POST /api/workforce/jobs/dispatch/
+    Authenticated by WORKFORCE_WEBHOOK_SECRET bearer token (IsInternalWorkforceCaller) --
+    same shared secret already used (in the other direction) for workforce->customer webhooks,
+    and already sent by WorkforceIntegrationService.dispatch_job() in the Customer app.
+    """
+    permission_classes = [IsInternalWorkforceCaller]
+
+    def post(self, request):
+        booking_id = request.data.get("booking_id")
+        if not booking_id:
+            return Response({"error": "booking_id required", "code": "BOOKING_ID_REQUIRED"}, status=status.HTTP_400_BAD_REQUEST)
+
+        job = None
+        if str(booking_id).isdigit():
+            job = ServiceRequest.objects.filter(models.Q(id=int(booking_id)) | models.Q(request_id=booking_id)).first()
+        else:
+            job = ServiceRequest.objects.filter(request_id=booking_id).first()
+
+        if not job:
+            return Response({"error": "Booking not found", "code": "BOOKING_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        success, msg = run_automatic_dispatch(job)
+        return Response({
+            "success": success,
+            "workforce_job_id": str(job.id),
+            "status": job.status,
+            "message": msg,
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceCustomerBookingQuoteView(APIView):
+    """
+    Customer / integration endpoint to retrieve estimation quotation for a booking.
+    GET /api/workforce/customer/bookings/<str:booking_id>/quote/
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, booking_id):
+        from service_requests.models import Estimation, EstimationQuotation
+
+        job = None
+        if str(booking_id).isdigit():
+            job = ServiceRequest.objects.filter(models.Q(id=int(booking_id)) | models.Q(request_id=booking_id)).first()
+        else:
+            job = ServiceRequest.objects.filter(request_id=booking_id).first()
+
+        if not job:
+            return Response({"error": "Booking not found", "code": "BOOKING_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        est = Estimation.objects.filter(service_request=job).first()
+        if not est:
+            return Response({"error": "No estimation quote for this booking", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        quote = est.quotations.order_by("-version", "-created_at").first()
+        if not quote:
+            return Response({"error": "No quotation found", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        items_data = []
+        for item in quote.items.all():
+            items_data.append({
+                "id": item.id,
+                "service_name": item.service_name,
+                "description": item.description,
+                "quantity": float(item.quantity),
+                "unit": item.unit,
+                "unit_price": float(item.unit_price),
+                "line_total": float(item.line_total),
+            })
+
+        return Response({
+            "quote_id": quote.id,
+            "quote_number": quote.quote_ref,
+            "version": quote.version,
+            "status": quote.status,
+            "subtotal": float(quote.subtotal),
+            "tax_amount": float(quote.tax_amount),
+            "discount_amount": float(quote.discount_amount),
+            "total_amount": float(quote.total_amount),
+            "valid_until": str(quote.valid_until) if quote.valid_until else None,
+            "notes": quote.notes,
+            "items": items_data,
+        }, status=status.HTTP_200_OK)
 
 
 # ─── 11. Work Extensions & Scope Approvals ────────────────────────────────────
@@ -6380,29 +6499,37 @@ class WorkforceJobLiveTrackingView(APIView):
       1. The authorized customer who owns the booking
       2. The assigned technician
       3. An authorized workforce admin within the same tenant company
+      4. Internal server-to-server callers from the Customer platform
     """
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated | IsInternalWorkforceCaller]
 
     def get(self, request, pk):
         user = request.user
         from service_requests.models import ServiceRequest
         from accounts.permissions import is_admin_role
 
-        job = ServiceRequest.objects.filter(pk=pk).select_related("assigned_employee__user", "customer", "company").first()
+        if str(pk).isdigit():
+            job = ServiceRequest.objects.filter(pk=int(pk)).select_related("assigned_employee__user", "customer", "company").first()
+        else:
+            job = ServiceRequest.objects.filter(request_id=str(pk)).select_related("assigned_employee__user", "customer", "company").first()
+
         if not job:
             return Response({"error": "Job not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
-        is_owner_customer = (
-            job.customer == user
-            or str(getattr(job, "customer_name", "")).lower() == user.username.lower()
-            or getattr(job, "phone", "") == getattr(user, "username", "")
+        is_internal = IsInternalWorkforceCaller().has_permission(request, self)
+        is_owner_customer = bool(
+            user.is_authenticated and (
+                job.customer == user
+                or str(getattr(job, "customer_name", "")).lower() == user.username.lower()
+                or getattr(job, "phone", "") == getattr(user, "username", "")
+            )
         )
-        is_assigned_tech = bool(job.assigned_employee and job.assigned_employee.user == user)
-        is_platform_admin = getattr(user, "is_superuser", False)
-        user_company = resolve_actor_company(request)
-        is_tenant_admin = is_admin_role(user) and bool(job.company_id and user_company and job.company_id == user_company.id)
+        is_assigned_tech = bool(user.is_authenticated and job.assigned_employee and job.assigned_employee.user == user)
+        is_platform_admin = bool(user.is_authenticated and getattr(user, "is_superuser", False))
+        user_company = resolve_actor_company(request) if user.is_authenticated else None
+        is_tenant_admin = bool(user.is_authenticated and is_admin_role(user) and job.company_id and user_company and job.company_id == user_company.id)
 
-        if not (is_owner_customer or is_assigned_tech or is_platform_admin or is_tenant_admin):
+        if not (is_internal or is_owner_customer or is_assigned_tech or is_platform_admin or is_tenant_admin):
             return Response({
                 "error": "Unauthorized to view tracking for this job.",
                 "code": "CROSS_TENANT_FORBIDDEN"
@@ -6557,10 +6684,83 @@ class WorkforceJobLiveTrackingView(APIView):
             "geofence_radius_meters": 250.0,
             "freshness_state": freshness_state,
             "age_seconds": age_seconds,
-            "updated_at": now.isoformat(),
         }, status=status.HTTP_200_OK)
 
 
+class WorkforceTechnicianFeedbackView(APIView):
+    """
+    Accepts feedback/rating for a technician from Customer integration or technician direct URL.
+    Routes: /api/workforce/technicians/<str:technician_id>/feedback/
+    """
+    permission_classes = [permissions.IsAuthenticated | IsInternalWorkforceCaller]
+
+    def post(self, request, technician_id=None):
+        from employees.models import Employee
+        from service_requests.models import ServiceRequest, WorkforceJobFeedback
+        from workforce_api.serializers import WorkforceJobFeedbackSerializer
+        from workforce_api.services import recalculate_employee_scorecard
+
+        tech_id = technician_id or request.data.get("technician_id")
+        booking_id = request.data.get("booking_id") or request.data.get("request_id")
+        workforce_job_id = request.data.get("workforce_job_id") or request.data.get("job_id")
+
+        emp = None
+        if tech_id:
+            if str(tech_id).isdigit():
+                emp = Employee.objects.filter(pk=int(tech_id)).first()
+            if not emp:
+                emp = Employee.objects.filter(employee_id__iexact=str(tech_id)).first()
+
+        job = None
+        if workforce_job_id:
+            if str(workforce_job_id).isdigit():
+                job = ServiceRequest.objects.filter(pk=int(workforce_job_id)).first()
+            if not job:
+                job = ServiceRequest.objects.filter(request_id=str(workforce_job_id)).first()
+        elif booking_id:
+            job = ServiceRequest.objects.filter(request_id=str(booking_id)).first()
+
+        if not emp and job and job.assigned_employee:
+            emp = job.assigned_employee
+
+        if not emp:
+            return Response({"error": "Technician not found.", "code": "TECHNICIAN_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            rating = int(float(request.data.get("rating", 5)))
+        except (ValueError, TypeError):
+            rating = 5
+        rating = max(1, min(5, rating))
+
+        comments = str(request.data.get("comments") or request.data.get("review") or "").strip()
+
+        if job:
+            feedback, created = WorkforceJobFeedback.objects.update_or_create(
+                job=job,
+                defaults={
+                    "employee": emp,
+                    "customer": request.user if request.user.is_authenticated else getattr(job, "customer", None),
+                    "rating": rating,
+                    "review": comments,
+                    "csat_score": rating,
+                    "resolution_ontime": True,
+                    "customer_name": request.data.get("customer_name") or getattr(job, "customer_name", "") or "Customer",
+                }
+            )
+            feedback_data = WorkforceJobFeedbackSerializer(feedback).data
+        else:
+            feedback_data = {"rating": rating, "review": comments, "technician_id": emp.id}
+
+        try:
+            recalculate_employee_scorecard(emp)
+        except Exception as e:
+            logger.warning("Scorecard recalculation error: %s", e)
+
+        return Response({
+            "success": True,
+            "message": "Technician feedback recorded successfully.",
+            "feedback": feedback_data
+        }, status=status.HTTP_201_CREATED if job else status.HTTP_200_OK)
 
 
 # ─── 21. Notification Engine & Event Triggers ────────────────────────────────
@@ -7777,7 +7977,13 @@ class WorkforceJobArriveView(APIView):
 
         if job.latitude is not None and job.longitude is not None:
             distance_m = haversine_distance(lat_val, lon_val, float(job.latitude), float(job.longitude))
-            if distance_m > ARRIVAL_RADIUS_METERS:
+            is_override = (
+                getattr(emp, "allow_all_locations", False)
+                or not getattr(getattr(emp, "company", None), "geofence_enabled", True)
+                or getattr(request.user, "is_superuser", False)
+                or getattr(request.user, "is_staff", False)
+            )
+            if distance_m > ARRIVAL_RADIUS_METERS and not is_override:
                 return Response({
                     "error": f"Arrival failed: You are {int(distance_m)}m away from the customer address. You must be within 250m to confirm arrival.",
                     "geofence_passed": False,

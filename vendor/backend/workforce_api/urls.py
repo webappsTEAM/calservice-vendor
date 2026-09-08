@@ -91,6 +91,8 @@ from .views import (
     WorkforceJobCustomerCancelSyncView,
     WorkforceJobClawbackSyncView,
     WorkforceAutoDispatchTriggerView,
+    WorkforceCrossServiceDispatchView,
+    WorkforceCustomerBookingQuoteView,
     WorkforceJobArriveView,
     WorkforceJobLogisticsLegView,
     WorkforceJobTripStopsView,
@@ -103,6 +105,7 @@ from .views import (
     WorkforceJobResumeView,
     WorkforceJobPreServiceStatusView,
     WorkforceJobLiveTrackingView,
+    WorkforceTechnicianFeedbackView,
     WorkforceJobTimelineView,
     WorkforceReportsView,
     WorkforceLatencyAuditView,
@@ -218,6 +221,7 @@ urlpatterns = [
     path("dispatch/eligible-technicians/", WorkforceDispatchEligibleListView.as_view(), name="workforce-dispatch-eligible"),
     path("dispatch/assign/", WorkforceDispatchAssignView.as_view(), name="workforce-dispatch-assign"),
     path("dispatch/auto-dispatch/<int:pk>/", WorkforceAutoDispatchTriggerView.as_view(), name="workforce-auto-dispatch-trigger"),
+    path("jobs/dispatch/", WorkforceCrossServiceDispatchView.as_view(), name="workforce-cross-service-dispatch"),
     path("jobs/<int:pk>/accept-offer/", WorkforceJobAcceptOfferView.as_view(), name="workforce-job-accept-offer"),
     path("jobs/<int:pk>/cancel-assignment/", WorkforceJobCancelAssignmentView.as_view(), name="workforce-job-cancel-assignment"),
     path("jobs/<int:pk>/reject-offer/", WorkforceJobRejectOfferView.as_view(), name="workforce-job-reject-offer"),
@@ -235,9 +239,9 @@ urlpatterns = [
     path("jobs/<int:pk>/hold/", WorkforceJobHoldView.as_view(), name="workforce-job-hold"),
     path("jobs/<int:pk>/resume/", WorkforceJobResumeView.as_view(), name="workforce-job-resume"),
     path("jobs/<int:pk>/pre-service-status/", WorkforceJobPreServiceStatusView.as_view(), name="workforce-job-pre-service-status"),
-    path("jobs/<int:pk>/live-tracking/", WorkforceJobLiveTrackingView.as_view(), name="workforce-job-live-tracking"),
+    path("jobs/<str:pk>/live-tracking/", WorkforceJobLiveTrackingView.as_view(), name="workforce-job-live-tracking"),
     path("jobs/<int:pk>/timeline/", WorkforceJobTimelineView.as_view(), name="workforce-job-timeline"),
-    path("customer/jobs/<int:pk>/tracking/", WorkforceJobLiveTrackingView.as_view(), name="workforce-customer-job-tracking"),
+    path("customer/jobs/<str:pk>/tracking/", WorkforceJobLiveTrackingView.as_view(), name="workforce-customer-job-tracking"),
 
     # Work Extensions & Scope Approvals
     path("jobs/<int:pk>/extension/", WorkforceJobExtensionView.as_view(), name="workforce-job-extension"),
@@ -256,6 +260,7 @@ urlpatterns = [
     path("customer/jobs/<int:pk>/extension/<int:ext_id>/decide/", WorkforceCustomerExtensionDecideView.as_view(), name="workforce-customer-extension-decide-dedicated"),
     path("customer/extension-token/<str:token>/", WorkforceCustomerExtensionDetailView.as_view(), name="workforce-customer-token-extension-detail"),
     path("customer/extension-token/<str:token>/decide/", WorkforceTokenExtensionDecideView.as_view(), name="workforce-customer-token-extension-decide"),
+    path("customer/bookings/<str:booking_id>/quote/", WorkforceCustomerBookingQuoteView.as_view(), name="workforce-customer-booking-quote"),
 
     # Supplemental Billing & Invoices
     path("jobs/<int:pk>/extension/<int:ext_id>/create-supplemental-invoice/", WorkforceCreateSupplementalInvoiceView.as_view(), name="workforce-create-supplemental-invoice"),
@@ -350,6 +355,7 @@ urlpatterns = [
     # My Feedback & Performance
     path("performance/me/", WorkforcePerformanceMeView.as_view(), name="workforce-performance-me"),
     path("jobs/<int:job_id>/feedback/", WorkforceJobFeedbackSubmitView.as_view(), name="workforce-job-feedback-submit"),
+    path("technicians/<str:technician_id>/feedback/", WorkforceTechnicianFeedbackView.as_view(), name="workforce-technician-feedback"),
     path("feedback/submit/", WorkforceJobFeedbackSubmitView.as_view(), name="workforce-feedback-submit"),
 
     # Employee Services Self-Service
