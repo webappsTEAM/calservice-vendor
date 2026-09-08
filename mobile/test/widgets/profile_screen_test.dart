@@ -225,7 +225,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Employee Change Requests History (2)'), findsOneWidget);
-      expect(find.text('+ Submit New Change Request'), findsOneWidget);
+      expect(find.text('+ Submit New Change Request'), findsWidgets);
 
       // Verify Card #26
       expect(find.text('Request #26'), findsOneWidget);

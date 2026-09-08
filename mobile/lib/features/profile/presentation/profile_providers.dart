@@ -111,7 +111,7 @@ class AvailabilityController extends StateNotifier<AvailabilityState> {
 
   final Ref _ref;
 
-  /// Toggles technician availability between ONLINE and OFFLINE.
+  /// Sets technician availability explicitly to ONLINE (`targetOnline == true`) or OFFLINE (`targetOnline == false`).
   ///
   /// Strictly enforces:
   /// 1. An employee who is actively working on a job (`hasActiveJob == true`)
@@ -119,46 +119,62 @@ class AvailabilityController extends StateNotifier<AvailabilityState> {
   /// 2. Disables the control and shows loading while API runs.
   /// 3. Updates state upon confirmed response.
   /// 4. Reverts and exposes error on failure.
-  Future<bool?> toggleAvailability({
-    required bool currentOnline,
+  Future<bool?> setAvailability({
+    required bool targetOnline,
     required bool hasActiveJob,
     String? activeJobRef,
   }) async {
     if (state.isLoading) return null;
 
     // Check restriction: cannot go offline while on active job
-    if (currentOnline && hasActiveJob) {
+    if (!targetOnline && hasActiveJob) {
       final jobLabel = activeJobRef != null && activeJobRef.isNotEmpty
           ? activeJobRef
           : 'your active assignment';
       state = state.copyWith(
-        errorMessage: 'Cannot go offline while actively working on $jobLabel. Please complete or cancel the active job first.',
+        errorMessage:
+            'Cannot go offline while actively working on $jobLabel. Please complete or cancel the active job first.',
       );
       return null;
     }
 
     state = state.copyWith(isLoading: true, errorMessage: null);
 
-    final desiredOnline = !currentOnline;
-
     try {
-      final res = await _ref.read(profileRepositoryProvider).togglePresence(isOnline: desiredOnline);
-      final newOnline = res['is_online'] is bool ? (res['is_online'] as bool) : desiredOnline;
+      final res = await _ref
+          .read(profileRepositoryProvider)
+          .togglePresence(isOnline: targetOnline);
+      final newOnline = res['is_online'] is bool
+          ? (res['is_online'] as bool)
+          : targetOnline;
 
-      // Invalidate profile and active jobs so all widgets reflect fresh DB state
+      // Invalidate profile, shift status, and jobs so all widgets reflect fresh DB state
       _ref.invalidate(employeeProfileProvider);
+      _ref.invalidate(shiftStatusProvider);
 
       state = const AvailabilityState(isLoading: false, errorMessage: null);
       return newOnline;
     } catch (e) {
       String msg = 'Unable to update availability. Please try again.';
       if (e is Exception) {
-        // Check for specific backend error messages if available
         msg = e.toString().replaceAll('Exception: ', '');
       }
       state = AvailabilityState(isLoading: false, errorMessage: msg);
       return null;
     }
+  }
+
+  /// Toggles technician availability between ONLINE and OFFLINE.
+  Future<bool?> toggleAvailability({
+    required bool currentOnline,
+    required bool hasActiveJob,
+    String? activeJobRef,
+  }) {
+    return setAvailability(
+      targetOnline: !currentOnline,
+      hasActiveJob: hasActiveJob,
+      activeJobRef: activeJobRef,
+    );
   }
 
   void clearError() {
@@ -172,3 +188,4 @@ final availabilityControllerProvider =
     StateNotifierProvider<AvailabilityController, AvailabilityState>((ref) {
   return AvailabilityController(ref);
 });
+

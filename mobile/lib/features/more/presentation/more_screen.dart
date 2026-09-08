@@ -28,14 +28,36 @@ class MoreScreen extends ConsumerWidget {
     final activeJobsAsync = ref.watch(activeJobsProvider);
     final completedJobsAsync = ref.watch(completedJobsProvider);
 
-    final displayName = user?.displayName ?? 'Technician';
+    final profile = profileAsync.valueOrNull;
+    final displayName = profile?.fullName.trim().isNotEmpty == true
+        ? profile!.fullName
+        : (user?.displayName.trim().isNotEmpty == true
+            ? user!.displayName
+            : 'Technician');
     final initial = displayName.isNotEmpty ? displayName[0].toUpperCase() : 'T';
-    final photoUrl = profileAsync.valueOrNull?.avatar ?? user?.avatar;
-    final email = user?.email ?? '';
-    final phone = profileAsync.valueOrNull?.displayPhone ?? '';
-    final isOnline = profileAsync.valueOrNull?.isOnline ?? false;
+    final photoUrl = profile?.avatar ?? user?.avatar;
+
+    final String roleTitle;
+    if (profile?.title != null && profile!.title!.trim().isNotEmpty) {
+      roleTitle = profile.title!.trim();
+    } else if (user?.role != null && user!.role.isNotEmpty) {
+      roleTitle = user.role == 'employee' ? 'Senior Technician' : user.role.toUpperCase();
+    } else {
+      roleTitle = 'Technician';
+    }
+
+    final String companyName;
+    if (profile?.companyName != null && profile!.companyName!.trim().isNotEmpty) {
+      companyName = profile.companyName!.trim();
+    } else if (user?.companyName != null && user!.companyName!.trim().isNotEmpty) {
+      companyName = user.companyName!.trim();
+    } else {
+      companyName = 'SEVO Workforce Partner';
+    }
+
+    final isOnline = profile?.isOnline ?? false;
     final hasActiveJob = ref.watch(hasActiveJobProvider);
-    final servicesCount = profileAsync.valueOrNull?.approvedServices.length ?? 0;
+    final servicesCount = profile?.approvedServices.length ?? 0;
 
     final statusText = hasActiveJob
         ? 'ON JOB'
@@ -66,7 +88,7 @@ class MoreScreen extends ConsumerWidget {
             AppSpacing.xxl,
           ),
           children: [
-            // ── 1. Peacock Gradient Profile Hero ───────────────────────────
+            // ── 1. Peacock Gradient Employee Profile Header ────────────────
             Container(
               decoration: BoxDecoration(
                 gradient: const LinearGradient(
@@ -107,18 +129,19 @@ class MoreScreen extends ConsumerWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             WorkforceAvatar(
                               imageUrl: photoUrl,
                               name: displayName,
                               initial: initial,
-                              radius: 28,
+                              radius: 30,
                               fontSize: 22,
                               backgroundColor: Colors.white.withValues(alpha: 0.2),
                               foregroundColor: Colors.white,
                               showPresence: true,
                               isOnline: isOnline,
-                              availability: profileAsync.valueOrNull?.liveAvailability,
+                              availability: profile?.liveAvailability,
                             ),
                             const SizedBox(width: AppSpacing.md),
                             Expanded(
@@ -137,65 +160,167 @@ class MoreScreen extends ConsumerWidget {
                                   ),
                                   const SizedBox(height: 2),
                                   Text(
-                                    email.isNotEmpty ? email : phone,
+                                    roleTitle,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                     style: TextStyle(
                                       fontSize: 12.5,
-                                      color: Colors.white.withValues(alpha: 0.8),
+                                      fontWeight: FontWeight.w600,
+                                      color: const Color(0xFF6EE7B7),
                                     ),
                                   ),
-                                  const SizedBox(height: 6),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 8,
-                                      vertical: 2,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: statusColor.withValues(alpha: 0.25),
-                                      borderRadius: BorderRadius.circular(999),
-                                      border: Border.all(
-                                        color: statusColor.withValues(alpha: 0.6),
-                                        width: 0.8,
+                                  const SizedBox(height: 3),
+                                  Row(
+                                    children: [
+                                      Icon(
+                                        Icons.business_rounded,
+                                        size: 13,
+                                        color: Colors.white.withValues(alpha: 0.75),
                                       ),
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Container(
-                                          width: 6,
-                                          height: 6,
-                                          decoration: BoxDecoration(
-                                            color: statusColor,
-                                            shape: BoxShape.circle,
-                                          ),
-                                        ),
-                                        const SizedBox(width: 5),
-                                        Text(
-                                          statusText,
+                                      const SizedBox(width: 4),
+                                      Expanded(
+                                        child: Text(
+                                          companyName,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
                                           style: TextStyle(
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.w800,
-                                            letterSpacing: 0.6,
-                                            color: Colors.white,
+                                            fontSize: 11.5,
+                                            color: Colors.white.withValues(alpha: 0.8),
                                           ),
                                         ),
-                                      ],
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 6),
+                                  InkWell(
+                                    onTap: () async {
+                                      final res = await ref.read(availabilityControllerProvider.notifier).toggleAvailability(
+                                        currentOnline: isOnline,
+                                        hasActiveJob: hasActiveJob,
+                                        activeJobRef: ref.read(currentActiveJobProvider)?.requestId,
+                                      );
+                                      if (res != null && context.mounted) {
+                                        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(
+                                            content: Row(
+                                              children: [
+                                                Icon(
+                                                  res ? Icons.check_circle_rounded : Icons.power_settings_new_rounded,
+                                                  color: res ? const Color(0xFF34D399) : Colors.white,
+                                                  size: 18,
+                                                ),
+                                                const SizedBox(width: AppSpacing.sm),
+                                                Expanded(
+                                                  child: Text(
+                                                    res
+                                                        ? 'You are now online and available for jobs.'
+                                                        : 'You are now offline.',
+                                                    style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            backgroundColor: const Color(0xFF0F172A),
+                                            behavior: SnackBarBehavior.floating,
+                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.chip)),
+                                            duration: const Duration(milliseconds: 3000),
+                                          ),
+                                        );
+                                      }
+                                    },
+                                    borderRadius: BorderRadius.circular(999),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 2.5,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: statusColor.withValues(alpha: 0.25),
+                                        borderRadius: BorderRadius.circular(999),
+                                        border: Border.all(
+                                          color: statusColor.withValues(alpha: 0.6),
+                                          width: 0.8,
+                                        ),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Container(
+                                            width: 6,
+                                            height: 6,
+                                            decoration: BoxDecoration(
+                                              color: statusColor,
+                                              shape: BoxShape.circle,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 5),
+                                          Text(
+                                            statusText,
+                                            style: const TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.w800,
+                                              letterSpacing: 0.6,
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
                                     ),
                                   ),
                                 ],
                               ),
                             ),
-                            IconButton(
-                              onPressed: () => context.push('/more/profile'),
-                              icon: const Icon(
-                                Icons.edit_note_rounded,
-                                color: Colors.white,
-                                size: 22,
-                              ),
-                              tooltip: 'Edit Profile',
-                            ),
                           ],
+                        ),
+                        const SizedBox(height: AppSpacing.md),
+                        // "View My Profile" Action Bar
+                        InkWell(
+                          onTap: () => context.push(AppRoutes.moreProfile),
+                          borderRadius: BorderRadius.circular(10),
+                          child: Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.2),
+                                width: 0.8,
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Row(
+                                  children: [
+                                    Icon(
+                                      Icons.person_outline_rounded,
+                                      size: 16,
+                                      color: Colors.white.withValues(alpha: 0.9),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    const Text(
+                                      'View My Profile',
+                                      style: TextStyle(
+                                        fontSize: 12.5,
+                                        fontWeight: FontWeight.w700,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const Icon(
+                                  Icons.arrow_forward_ios_rounded,
+                                  size: 13,
+                                  color: Colors.white70,
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
                         const SizedBox(height: AppSpacing.md),
                         Divider(
@@ -241,7 +366,7 @@ class MoreScreen extends ConsumerWidget {
             ),
             const SizedBox(height: AppSpacing.lg),
 
-            // ── 2. My Work Section ─────────────────────────────────────────
+            // ── 2. MY WORK Section ─────────────────────────────────────────
             _SectionHeader(title: 'MY WORK'),
             const SizedBox(height: 6),
             AppCard(
@@ -251,23 +376,84 @@ class MoreScreen extends ConsumerWidget {
                   _NavRow(
                     icon: Icons.work_outline_rounded,
                     iconBg: const Color(0xFF004E89),
-                    title: 'Jobs Workspace',
+                    title: 'Jobs',
                     subtitle: 'Manage active, completed, and assigned jobs',
-                    onTap: () => context.go('/jobs'),
+                    onTap: () => context.go(AppRoutes.jobs),
+                  ),
+                  Divider(color: AppColors.border, height: 1),
+                  _NavRow(
+                    icon: Icons.calculate_outlined,
+                    iconBg: const Color(0xFF0284C7),
+                    title: 'Estimates',
+                    subtitle: 'Quotes, pricing calculations & proposals',
+                    onTap: () => context.push(AppRoutes.estimates),
                   ),
                   Divider(color: AppColors.border, height: 1),
                   _NavRow(
                     icon: Icons.insights_rounded,
                     iconBg: const Color(0xFF0D9488),
-                    title: 'Performance & Statistics',
-                    subtitle: 'Track completion rate, ratings, and stats',
-                    onTap: () => context.push('/more/performance'),
+                    title: 'Performance',
+                    subtitle: 'Track completion rate, CSAT ratings, and stats',
+                    onTap: () => context.push(AppRoutes.performance),
+                  ),
+                  Divider(color: AppColors.border, height: 1),
+                  _NavRow(
+                    icon: Icons.mail_outline_rounded,
+                    iconBg: const Color(0xFF7C3AED),
+                    title: 'Vendor Invitations',
+                    subtitle: 'Private invitations & vendor partnerships',
+                    onTap: () => context.push(AppRoutes.invitations),
                   ),
                 ],
               ),
             ),
-            // ── 3. Earnings Section ────────────────────────────────────────
-            _SectionHeader(title: 'EARNINGS'),
+            const SizedBox(height: AppSpacing.lg),
+
+            // ── 3. CREDENTIALS Section ─────────────────────────────────────
+            _SectionHeader(title: 'CREDENTIALS'),
+            const SizedBox(height: 6),
+            AppCard(
+              padding: EdgeInsets.zero,
+              child: Column(
+                children: [
+                  _NavRow(
+                    icon: Icons.person_outline_rounded,
+                    iconBg: const Color(0xFF2563EB),
+                    title: 'My Profile',
+                    subtitle: 'Personal details, bio, language & contact',
+                    onTap: () => context.push(AppRoutes.moreProfile),
+                  ),
+                  Divider(color: AppColors.border, height: 1),
+                  _NavRow(
+                    icon: Icons.shield_outlined,
+                    iconBg: const Color(0xFF059669),
+                    title: 'Documents',
+                    subtitle: 'Identity verification, trade licenses & proof',
+                    onTap: () => context.push(AppRoutes.moreDocuments),
+                  ),
+                  Divider(color: AppColors.border, height: 1),
+                  _NavRow(
+                    icon: Icons.handyman_outlined,
+                    iconBg: const Color(0xFFD97706),
+                    title: 'Services & Skills',
+                    subtitle: 'Authorized service catalog & skill badges',
+                    onTap: () => context.push(AppRoutes.moreServices),
+                  ),
+                  Divider(color: AppColors.border, height: 1),
+                  _NavRow(
+                    icon: Icons.location_on_outlined,
+                    iconBg: const Color(0xFF6366F1),
+                    title: 'Locations',
+                    subtitle: 'Territory coverage, home base & job sites',
+                    onTap: () => context.push(AppRoutes.moreLocations),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: AppSpacing.lg),
+
+            // ── 4. EARNINGS & WALLET Section ───────────────────────────────
+            _SectionHeader(title: 'EARNINGS & WALLET'),
             const SizedBox(height: 6),
             AppCard(
               padding: EdgeInsets.zero,
@@ -276,8 +462,8 @@ class MoreScreen extends ConsumerWidget {
                   _NavRow(
                     icon: Icons.account_balance_wallet_outlined,
                     iconBg: const Color(0xFF004E89), // Peacock Blue
-                    title: 'My Wallet',
-                    subtitle: 'Balances, T+7 hold, eligibility & payouts',
+                    title: 'Wallet',
+                    subtitle: 'Balances, hold, eligibility & payouts',
                     onTap: () => context.push(AppRoutes.earningsWallet),
                   ),
                   Divider(color: AppColors.border, height: 1),
@@ -300,7 +486,7 @@ class MoreScreen extends ConsumerWidget {
                   _NavRow(
                     icon: Icons.account_balance_outlined,
                     iconBg: const Color(0xFF6366F1), // Indigo
-                    title: 'Bank Account',
+                    title: 'Bank Accounts',
                     subtitle: 'Manage linked payout destination accounts',
                     onTap: () => context.push(AppRoutes.earningsBankAccount),
                   ),
@@ -309,77 +495,26 @@ class MoreScreen extends ConsumerWidget {
             ),
             const SizedBox(height: AppSpacing.lg),
 
-            // ── 4. Profile & Credentials Section ───────────────────────────
-            _SectionHeader(title: 'PROFILE & CREDENTIALS'),
+            // ── 5. APP Section ─────────────────────────────────────────────
+            _SectionHeader(title: 'APP'),
             const SizedBox(height: 6),
             AppCard(
               padding: EdgeInsets.zero,
               child: Column(
                 children: [
-                  _NavRow(
-                    icon: Icons.person_outline_rounded,
-                    iconBg: const Color(0xFF2563EB),
-                    title: 'My Profile',
-                    subtitle: 'Personal details, bio, language & contact',
-                    onTap: () => context.push('/more/profile'),
-                  ),
-                  Divider(color: AppColors.border, height: 1),
-                  _NavRow(
-                    icon: Icons.shield_outlined,
-                    iconBg: const Color(0xFF059669),
-                    title: 'Documents & Verification',
-                    subtitle: 'Identity verification, trade licenses & proof',
-                    onTap: () => context.push('/more/documents'),
-                  ),
-                  Divider(color: AppColors.border, height: 1),
-                  _NavRow(
-                    icon: Icons.handyman_outlined,
-                    iconBg: const Color(0xFFD97706),
-                    title: 'Authorized Services',
-                    subtitle: 'Catalog permissions & requested categories',
-                    onTap: () => context.push('/more/services'),
-                  ),
-                  Divider(color: AppColors.border, height: 1),
-                  _NavRow(
-                    icon: Icons.location_on_outlined,
-                    iconBg: const Color(0xFF6366F1),
-                    title: 'Saved Locations',
-                    subtitle: 'Dispatch territory, home base & job sites',
-                    onTap: () => context.push('/more/locations'),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: AppSpacing.lg),
-
-            // ── 4. System & Preferences Section ────────────────────────────
-            _SectionHeader(title: 'SYSTEM & PREFERENCES'),
-            const SizedBox(height: 6),
-            AppCard(
-              padding: EdgeInsets.zero,
-              child: Column(
-                children: [
-                  _NavRow(
-                    icon: Icons.notifications_none_rounded,
-                    iconBg: const Color(0xFF3B82F6),
-                    title: 'Notifications',
-                    subtitle: 'Dispatch alerts, reminders & updates',
-                    onTap: () => context.push('/notifications'),
-                  ),
-                  Divider(color: AppColors.border, height: 1),
                   _NavRow(
                     icon: Icons.tune_rounded,
                     iconBg: const Color(0xFF64748B),
-                    title: 'Settings & Appearance',
-                    subtitle: 'Theme, density, motion & preferences',
-                    onTap: () => context.push('/more/settings'),
+                    title: 'Settings',
+                    subtitle: 'Theme, security, notifications & privacy',
+                    onTap: () => context.push(AppRoutes.moreSettings),
                   ),
                 ],
               ),
             ),
             const SizedBox(height: AppSpacing.xl),
 
-            // ── 5. Logout Action ───────────────────────────────────────────
+            // ── 6. Logout Action ───────────────────────────────────────────
             OutlinedButton.icon(
               onPressed: () async {
                 final confirmed = await showDialog<bool>(

@@ -16,6 +16,7 @@ import '../features/auth/presentation/employee_only_screen.dart';
 import '../features/auth/presentation/login_screen.dart';
 import '../features/dashboard/presentation/home_screen.dart';
 import '../features/documents/presentation/documents_screen.dart';
+import '../features/estimates/presentation/estimates_screen.dart';
 import '../features/finance/presentation/bank_accounts_screen.dart';
 import '../features/finance/presentation/transactions_screen.dart';
 import '../features/finance/presentation/wallet_screen.dart';
@@ -25,6 +26,7 @@ import '../features/admin/presentation/finance/admin_transactions_screen.dart';
 import '../features/admin/presentation/finance/admin_wallets_screen.dart';
 import '../features/admin/presentation/finance/admin_withdrawals_screen.dart';
 import '../features/admin/presentation/monitoring/admin_database_egress_screen.dart';
+import '../features/invitations/presentation/technician_invitations_screen.dart';
 import '../features/jobs/presentation/job_detail_screen.dart';
 import '../features/jobs/presentation/jobs_screen.dart';
 import '../features/locations/presentation/locations_screen.dart';
@@ -75,6 +77,9 @@ class CompositeGoRouterRefreshStream extends ChangeNotifier {
 bool _isEmployeeAppPath(String location) {
   return location.startsWith(AppRoutes.home) ||
       location.startsWith(AppRoutes.jobs) ||
+      location.startsWith(AppRoutes.performance) ||
+      location.startsWith(AppRoutes.estimates) ||
+      location.startsWith(AppRoutes.invitations) ||
       location.startsWith(AppRoutes.notifications) ||
       location.startsWith(AppRoutes.more) ||
       location.startsWith(AppRoutes.earnings);
@@ -366,6 +371,16 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: AppRoutes.notifications,
         builder: (context, state) => const NotificationsScreen(),
       ),
+      // Employee Estimates & Quotes Route
+      GoRoute(
+        path: AppRoutes.estimates,
+        builder: (context, state) => const EstimatesScreen(),
+      ),
+      // Employee Vendor Invitations Route
+      GoRoute(
+        path: AppRoutes.invitations,
+        builder: (context, state) => const TechnicianInvitationsScreen(),
+      ),
       // Employee Earnings Routes
       GoRoute(
         path: AppRoutes.earnings,
@@ -383,7 +398,55 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: AppRoutes.earningsBankAccount,
         builder: (context, state) => const BankAccountsScreen(),
       ),
-      // Aliases
+      // Aliases & Direct Shortcuts
+      GoRoute(
+        path: '/more/estimates',
+        redirect: (context, state) => AppRoutes.estimates,
+      ),
+      GoRoute(
+        path: '/more/invitations',
+        redirect: (context, state) => AppRoutes.invitations,
+      ),
+      GoRoute(
+        path: '/more/performance',
+        redirect: (context, state) => AppRoutes.performance,
+      ),
+      GoRoute(
+        path: '/profile',
+        redirect: (context, state) => AppRoutes.moreProfile,
+      ),
+      GoRoute(
+        path: '/documents',
+        redirect: (context, state) => AppRoutes.moreDocuments,
+      ),
+      GoRoute(
+        path: '/services',
+        redirect: (context, state) => AppRoutes.moreServices,
+      ),
+      GoRoute(
+        path: '/locations',
+        redirect: (context, state) => AppRoutes.moreLocations,
+      ),
+      GoRoute(
+        path: '/settings',
+        redirect: (context, state) => AppRoutes.moreSettings,
+      ),
+      GoRoute(
+        path: '/wallet',
+        redirect: (context, state) => AppRoutes.earningsWallet,
+      ),
+      GoRoute(
+        path: '/transactions',
+        redirect: (context, state) => AppRoutes.earningsTransactions,
+      ),
+      GoRoute(
+        path: '/withdrawals',
+        redirect: (context, state) => AppRoutes.earningsWithdrawals,
+      ),
+      GoRoute(
+        path: '/bank-accounts',
+        redirect: (context, state) => AppRoutes.earningsBankAccount,
+      ),
       GoRoute(
         path: '/more/finance',
         redirect: (context, state) => AppRoutes.earningsWallet,
@@ -432,6 +495,14 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           StatefulShellBranch(
             routes: [
               GoRoute(
+                path: AppRoutes.performance,
+                builder: (context, state) => const PerformanceScreen(),
+              ),
+            ],
+          ),
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
                 path: AppRoutes.earningsWallet,
                 builder: (context, state) => const WalletScreen(),
               ),
@@ -443,10 +514,6 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                 path: AppRoutes.more,
                 builder: (context, state) => const MoreScreen(),
                 routes: [
-                  GoRoute(
-                    path: 'performance',
-                    builder: (context, state) => const PerformanceScreen(),
-                  ),
                   GoRoute(
                     path: 'profile',
                     builder: (context, state) => const ProfileScreen(),

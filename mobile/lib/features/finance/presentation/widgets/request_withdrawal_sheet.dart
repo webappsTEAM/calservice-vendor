@@ -81,6 +81,87 @@ class _RequestWithdrawalSheetState extends ConsumerState<RequestWithdrawalSheet>
     }
 
     final payoutAccountId = _selectedPayoutAccountId ?? accounts.firstOrNull?.id;
+    final selectedAccount = accounts.firstWhere(
+      (a) => a.id == payoutAccountId,
+      orElse: () => accounts.first,
+    );
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Confirm Payout Request', style: TextStyle(fontWeight: FontWeight.w800)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Are you sure you want to request a bank payout for:'),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFEFF6FF),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFBFDBFE)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('Payout Amount:', style: TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+                      Text(
+                        '₹${amount.toStringAsFixed(2)}',
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontFamily: 'monospace',
+                          fontWeight: FontWeight.w900,
+                          color: Color(0xFF004E89),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('Destination:', style: TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+                      Flexible(
+                        child: Text(
+                          '${selectedAccount.bankName} (${selectedAccount.maskedAccountNumber})',
+                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Funds will be transferred via NEFT/IMPS after approval.',
+              style: TextStyle(fontSize: 11, color: AppColors.textMuted),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF004E89),
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Confirm Payout'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
 
     setState(() {
       _isSubmitting = true;

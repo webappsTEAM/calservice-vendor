@@ -15,10 +15,15 @@ class AppRoutes {
   static const employeeOnly = '/employee-only';
   static const home = '/home';
   static const jobs = '/jobs';
+  static const performance = '/performance';
+  static const estimates = '/estimates';
+  static const invitations = '/invitations';
   static const notifications = '/notifications';
   static const more = '/more';
   static const moreProfile = '/more/profile';
   static const morePerformance = '/more/performance';
+  static const moreEstimates = '/more/estimates';
+  static const moreInvitations = '/more/invitations';
   static const moreDocuments = '/more/documents';
   static const moreServices = '/more/services';
   static const moreLocations = '/more/locations';

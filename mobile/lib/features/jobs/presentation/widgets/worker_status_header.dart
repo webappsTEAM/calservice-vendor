@@ -172,11 +172,14 @@ class WorkerStatusHeader extends ConsumerWidget {
                     ),
                   ),
                   const SizedBox(width: AppSpacing.sm),
-                  EmployeeAvailabilityToggle(
-                    isOnline: isOnline,
-                    hasActiveJob: hasActiveJob,
-                    activeJobRef: activeJobRef,
-                    dense: isCompact,
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: EmployeeAvailabilityToggle(
+                      isOnline: isOnline,
+                      hasActiveJob: hasActiveJob,
+                      activeJobRef: activeJobRef,
+                      dense: isCompact,
+                    ),
                   ),
                 ],
               ),

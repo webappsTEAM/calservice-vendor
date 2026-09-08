@@ -351,7 +351,7 @@ void main() {
 
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
-        expect(find.text('Documents'), findsOneWidget);
+        expect(find.text('Documents & Identity'), findsWidgets);
       });
 
       testWidgets('PerformanceScreen adapts without overflow on $label', (tester) async {

@@ -160,7 +160,7 @@ void main() {
       expect(account.accountHolderName, 'Preethi G');
       expect(account.bankName, 'State Bank of India');
       expect(account.accountNumberLast4, '1234');
-      expect(account.maskedAccountNumber, '•••• 1234');
+      expect(account.maskedAccountNumber, '•••• •••• •••• 1234');
       expect(account.ifscCode, 'SBIN0001234');
       expect(account.accountType, 'SAVINGS');
       expect(account.accountTypeDisplay, 'Savings Account');

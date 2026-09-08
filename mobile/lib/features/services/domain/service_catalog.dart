@@ -42,6 +42,8 @@ class CatalogCategory {
     required this.slug,
     this.description,
     this.icon,
+    this.group,
+    this.categoryType,
     required this.services,
   });
 
@@ -53,6 +55,8 @@ class CatalogCategory {
       slug: parseString(json['slug']) ?? '',
       description: parseString(json['description']),
       icon: parseString(json['icon']) ?? 'Wrench',
+      group: parseString(json['group']) ?? parseString(json['category_group']) ?? parseString(json['type']),
+      categoryType: parseString(json['category_type']) ?? parseString(json['type']),
       services: svcsJson is List
           ? svcsJson.whereType<Map<String, dynamic>>().map(CatalogService.fromJson).toList()
           : const [],
@@ -64,7 +68,44 @@ class CatalogCategory {
   final String slug;
   final String? description;
   final String? icon;
+  final String? group;
+  final String? categoryType;
   final List<CatalogService> services;
+
+  CatalogCategory copyWith({
+    dynamic id,
+    String? name,
+    String? slug,
+    String? description,
+    String? icon,
+    String? group,
+    String? categoryType,
+    List<CatalogService>? services,
+  }) {
+    return CatalogCategory(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      slug: slug ?? this.slug,
+      description: description ?? this.description,
+      icon: icon ?? this.icon,
+      group: group ?? this.group,
+      categoryType: categoryType ?? this.categoryType,
+      services: services ?? this.services,
+    );
+  }
+
+  String get displayTag {
+    if (group != null && group!.trim().isNotEmpty) {
+      return group!.trim().toUpperCase();
+    }
+    if (categoryType != null && categoryType!.trim().isNotEmpty) {
+      return categoryType!.trim().toUpperCase();
+    }
+    if (slug.isNotEmpty && slug != 'general') {
+      return slug.replaceAll('-', ' ').replaceAll('_', ' ').toUpperCase();
+    }
+    return name.toUpperCase();
+  }
 }
 
 class EmployeeSkill {

@@ -64,7 +64,7 @@ class _TransactionsScreenState extends ConsumerState<TransactionsScreen> {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: const WorkforceAppBar(
-        titleText: 'Financial Ledger & Transactions',
+        titleText: 'Ledger & Transactions',
         showBrand: false,
         showStatusSubBar: false,
       ),
@@ -172,6 +172,64 @@ class _TransactionsScreenState extends ConsumerState<TransactionsScreen> {
                       ],
                     ),
                   ],
+                ),
+                const SizedBox(height: 6),
+
+                // Horizontal Quick Filter Chips
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      _QuickFilterChip(
+                        label: 'All Types',
+                        isSelected: filter.type == 'ALL',
+                        onSelected: () => ref.read(transactionFilterProvider.notifier).state =
+                            filter.copyWith(type: 'ALL', page: 1),
+                      ),
+                      const SizedBox(width: 6),
+                      _QuickFilterChip(
+                        label: 'Service Earnings (60%)',
+                        isSelected: filter.type == 'SERVICE_EARNING',
+                        onSelected: () => ref.read(transactionFilterProvider.notifier).state =
+                            filter.copyWith(type: 'SERVICE_EARNING', page: 1),
+                      ),
+                      const SizedBox(width: 6),
+                      _QuickFilterChip(
+                        label: 'Settlement Release (T+7)',
+                        isSelected: filter.type == 'SETTLEMENT_RELEASE',
+                        onSelected: () => ref.read(transactionFilterProvider.notifier).state =
+                            filter.copyWith(type: 'SETTLEMENT_RELEASE', page: 1),
+                      ),
+                      const SizedBox(width: 6),
+                      _QuickFilterChip(
+                        label: 'Withdrawals',
+                        isSelected: filter.type == 'WITHDRAWAL',
+                        onSelected: () => ref.read(transactionFilterProvider.notifier).state =
+                            filter.copyWith(type: 'WITHDRAWAL', page: 1),
+                      ),
+                      const SizedBox(width: 6),
+                      _QuickFilterChip(
+                        label: 'Withdrawal Reversals',
+                        isSelected: filter.type == 'WITHDRAWAL_REVERSAL',
+                        onSelected: () => ref.read(transactionFilterProvider.notifier).state =
+                            filter.copyWith(type: 'WITHDRAWAL_REVERSAL', page: 1),
+                      ),
+                      const SizedBox(width: 6),
+                      _QuickFilterChip(
+                        label: 'Admin Credits',
+                        isSelected: filter.type == 'ADJUSTMENT_CREDIT',
+                        onSelected: () => ref.read(transactionFilterProvider.notifier).state =
+                            filter.copyWith(type: 'ADJUSTMENT_CREDIT', page: 1),
+                      ),
+                      const SizedBox(width: 6),
+                      _QuickFilterChip(
+                        label: 'Admin Debits',
+                        isSelected: filter.type == 'ADJUSTMENT_DEBIT',
+                        onSelected: () => ref.read(transactionFilterProvider.notifier).state =
+                            filter.copyWith(type: 'ADJUSTMENT_DEBIT', page: 1),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -641,6 +699,45 @@ class _TransactionFilterSheetState extends ConsumerState<_TransactionFilterSheet
               ],
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _QuickFilterChip extends StatelessWidget {
+  const _QuickFilterChip({
+    required this.label,
+    required this.isSelected,
+    required this.onSelected,
+  });
+
+  final String label;
+  final bool isSelected;
+  final VoidCallback onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onSelected,
+      borderRadius: BorderRadius.circular(20),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF004E89) : Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: isSelected ? const Color(0xFF004E89) : const Color(0xFFE2E8F0),
+            width: 1,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
+            color: isSelected ? Colors.white : const Color(0xFF475569),
+          ),
         ),
       ),
     );

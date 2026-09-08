@@ -9,6 +9,7 @@ import '../../../shared/widgets/status_chip.dart';
 import '../../../shared/widgets/workforce_app_bar.dart';
 import '../../../shared/widgets/workforce_avatar.dart';
 import '../../auth/presentation/auth_controller.dart';
+import '../../jobs/presentation/jobs_providers.dart';
 import '../domain/employee_profile.dart';
 import 'profile_providers.dart';
 
@@ -302,7 +303,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
 // ── 1. Profile Header ─────────────────────────────────────────────────────────
 
-class _ProfileHeader extends StatelessWidget {
+class _ProfileHeader extends ConsumerWidget {
   const _ProfileHeader({
     required this.profile,
     required this.onAvatarTap,
@@ -312,7 +313,10 @@ class _ProfileHeader extends StatelessWidget {
   final VoidCallback onAvatarTap;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final hasActiveJob = ref.watch(hasActiveJobProvider);
+    final activeJob = ref.watch(currentActiveJobProvider);
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(AppSpacing.lg),
@@ -380,9 +384,53 @@ class _ProfileHeader extends StatelessWidget {
                             status: profile.registrationStatus,
                             dense: true,
                           ),
-                          StatusChip(
-                            status: profile.isOnline ? 'online' : 'offline',
-                            dense: true,
+                          InkWell(
+                            onTap: () async {
+                              final res = await ref.read(availabilityControllerProvider.notifier).toggleAvailability(
+                                currentOnline: profile.isOnline,
+                                hasActiveJob: hasActiveJob,
+                                activeJobRef: activeJob?.requestId,
+                              );
+                              if (res != null && context.mounted) {
+                                ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Row(
+                                      children: [
+                                        Icon(
+                                          res ? Icons.check_circle_rounded : Icons.power_settings_new_rounded,
+                                          color: res ? const Color(0xFF34D399) : Colors.white,
+                                          size: 18,
+                                        ),
+                                        const SizedBox(width: AppSpacing.sm),
+                                        Expanded(
+                                          child: Text(
+                                            res
+                                                ? 'You are now online and available for jobs.'
+                                                : 'You are now offline.',
+                                            style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    backgroundColor: const Color(0xFF0F172A),
+                                    behavior: SnackBarBehavior.floating,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.chip)),
+                                    duration: const Duration(milliseconds: 3000),
+                                  ),
+                                );
+                              }
+                            },
+                            borderRadius: BorderRadius.circular(AppRadius.chip),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                StatusChip(
+                                  status: profile.isOnline ? 'online' : 'offline',
+                                  dense: true,
+                                ),
+                              ],
+                            ),
                           ),
                         ],
                       ),
@@ -875,6 +923,29 @@ class _ProtectedIdentityCard extends StatelessWidget {
                   label: 'State / Territory',
                   value: profile.state?.isNotEmpty == true ? profile.state! : 'Tamil Nadu',
                   onRequestEdit: () => onRequestEdit('state', 'State / Territory'),
+                ),
+                const SizedBox(height: AppSpacing.md),
+                SizedBox(
+                  width: double.infinity,
+                  height: 46,
+                  child: FilledButton.icon(
+                    onPressed: () => onRequestEdit('', 'Personal Profile'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF004E89), // Peacock Blue
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(AppRadius.button),
+                      ),
+                    ),
+                    icon: const Icon(Icons.edit_note_rounded, size: 18, color: Colors.white),
+                    label: const Text(
+                      '+ Submit New Change Request',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
                 ),
               ],
             ),

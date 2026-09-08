@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobile/features/auth/domain/auth_user.dart';
 import 'package:mobile/features/auth/presentation/auth_controller.dart';
+import 'package:mobile/features/dashboard/presentation/widgets/dashboard_status_card.dart';
 import 'package:mobile/features/jobs/domain/job.dart';
 import 'package:mobile/features/jobs/presentation/jobs_providers.dart';
 import 'package:mobile/features/jobs/presentation/widgets/worker_status_header.dart';
@@ -232,10 +233,10 @@ void main() {
       expect(fakeRepo.lastRequestedOnline, isTrue);
 
       // Verify success snackbar notification
-      expect(find.text('You are now ONLINE and ready to receive dispatches.'), findsOneWidget);
+      expect(find.text('You are now online and available for jobs.'), findsOneWidget);
     });
 
-    testWidgets('5. Toggle ONLINE -> OFFLINE success flow', (tester) async {
+    testWidgets('5. Toggle ONLINE -> OFFLINE direct toggle flow', (tester) async {
       final fakeRepo = FakeProfileRepository(initialOnline: true);
 
       await tester.pumpWidget(
@@ -258,13 +259,54 @@ void main() {
 
       expect(find.text('● ONLINE'), findsOneWidget);
 
-      // Tap ONLINE to go OFFLINE
+      // Tap ONLINE to trigger going OFFLINE directly
       await tester.tap(find.byType(EmployeeAvailabilityToggle));
       await tester.pumpAndSettle();
 
       expect(fakeRepo.toggleCallCount, equals(1));
       expect(fakeRepo.lastRequestedOnline, isFalse);
-      expect(find.text('You are now OFFLINE.'), findsOneWidget);
+      expect(find.text('You are now offline.'), findsOneWidget);
+    });
+
+    testWidgets('5b. Optional confirmation dialog when showConfirmation is true', (tester) async {
+      final fakeRepo = FakeProfileRepository(initialOnline: true);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            authControllerProvider.overrideWith((ref) => FakeAuthController(testUser)),
+            profileRepositoryProvider.overrideWithValue(fakeRepo),
+            employeeProfileProvider.overrideWith((ref) => Future.value(onlineProfile)),
+            activeJobsProvider.overrideWith((ref) => Future.value([])),
+            completedJobsProvider.overrideWith((ref) => Future.value([])),
+          ],
+          child: const MaterialApp(
+            home: Scaffold(
+              body: EmployeeAvailabilityToggle(
+                isOnline: true,
+                showConfirmation: true,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('● ONLINE'), findsOneWidget);
+
+      // Tap ONLINE
+      await tester.tap(find.byType(EmployeeAvailabilityToggle));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Going Offline?'), findsOneWidget);
+
+      // Tap Cancel
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+
+      // Repository must NOT have been called
+      expect(fakeRepo.toggleCallCount, equals(0));
+      expect(find.text('● ONLINE'), findsOneWidget);
     });
 
     testWidgets('6. Loading state: button displays UPDATING... and ignores duplicate taps', (tester) async {
@@ -420,5 +462,117 @@ void main() {
         expect(find.text('● ONLINE'), findsOneWidget);
       });
     }
+  });
+
+  group('Availability Selector Sheet & DashboardStatusCard', () {
+    testWidgets('Availability Selector Sheet renders both Online and Offline options with descriptions', (tester) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            authControllerProvider.overrideWith((ref) => FakeAuthController(testUser)),
+            employeeProfileProvider.overrideWith((ref) => Future.value(onlineProfile)),
+            activeJobsProvider.overrideWith((ref) => Future.value([])),
+            completedJobsProvider.overrideWith((ref) => Future.value([])),
+          ],
+          child: MaterialApp(
+            home: Scaffold(
+              body: Consumer(
+                builder: (context, ref, _) => ElevatedButton(
+                  onPressed: () => showAvailabilitySelectorSheet(
+                    context,
+                    ref,
+                    isOnline: true,
+                    hasActiveJob: false,
+                  ),
+                  child: const Text('Open Sheet'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Open Sheet'));
+      await tester.pumpAndSettle();
+
+      // Verify bottom sheet title and options
+      expect(find.text('Update Availability Status'), findsOneWidget);
+      expect(find.text('Online / Available'), findsOneWidget);
+      expect(find.text('Available to receive new service requests'), findsOneWidget);
+      expect(find.text('Offline / Unavailable'), findsOneWidget);
+      expect(find.text('Currently unavailable for new service requests'), findsOneWidget);
+    });
+
+    testWidgets('DashboardStatusCard renders ONLINE state and triggers selector sheet', (tester) async {
+      final fakeRepo = FakeProfileRepository(initialOnline: true);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            authControllerProvider.overrideWith((ref) => FakeAuthController(testUser)),
+            profileRepositoryProvider.overrideWithValue(fakeRepo),
+            employeeProfileProvider.overrideWith((ref) => Future.value(onlineProfile)),
+            activeJobsProvider.overrideWith((ref) => Future.value([])),
+            completedJobsProvider.overrideWith((ref) => Future.value([])),
+          ],
+          child: MaterialApp(
+            home: Scaffold(
+              body: DashboardStatusCard(
+                isOnline: true,
+                hasActiveJob: false,
+                shiftStatusLabel: 'Standby',
+                isClockedIn: false,
+                completedJobsCount: 3,
+                onTapCompletedJobs: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Online — Available for Jobs'), findsOneWidget);
+      expect(find.text('ONLINE • READY FOR DISPATCH'), findsOneWidget);
+      expect(find.text('Available to receive new service requests. You will be alerted instantly when a booking is dispatched.'), findsOneWidget);
+
+      // Tap status badge to directly toggle availability
+      await tester.tap(find.text('ONLINE • READY FOR DISPATCH'));
+      await tester.pumpAndSettle();
+
+      expect(fakeRepo.toggleCallCount, equals(1));
+      expect(fakeRepo.lastRequestedOnline, isFalse);
+      expect(find.text('You are now offline.'), findsOneWidget);
+    });
+
+    testWidgets('DashboardStatusCard renders OFFLINE state', (tester) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            authControllerProvider.overrideWith((ref) => FakeAuthController(testUser)),
+            employeeProfileProvider.overrideWith((ref) => Future.value(offlineProfile)),
+            activeJobsProvider.overrideWith((ref) => Future.value([])),
+            completedJobsProvider.overrideWith((ref) => Future.value([])),
+          ],
+          child: MaterialApp(
+            home: Scaffold(
+              body: DashboardStatusCard(
+                isOnline: false,
+                hasActiveJob: false,
+                shiftStatusLabel: 'Standby',
+                isClockedIn: false,
+                completedJobsCount: 0,
+                onTapCompletedJobs: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Offline — Currently Unavailable'), findsOneWidget);
+      expect(find.text('OFFLINE'), findsWidgets);
+      expect(find.text('Currently unavailable for new service requests. Switch online when ready for dispatch offers.'), findsOneWidget);
+    });
   });
 }
