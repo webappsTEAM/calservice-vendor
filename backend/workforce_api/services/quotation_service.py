@@ -24,6 +24,22 @@ from workforce_api.models import (
 logger = logging.getLogger(__name__)
 
 
+def _project(quote):
+    """
+    Refresh the customer-facing EstimationQuotation copy of this quote.
+
+    Never allowed to raise: the projection is a convenience for the customer
+    app, and failing to write it must not undo a quote the technician has just
+    built or a decision the customer has just made.
+    """
+    try:
+        from workforce_api.services import estimation_projection
+
+        estimation_projection.project_quote(quote)
+    except Exception as exc:  # pragma: no cover
+        logger.warning("Projection failed for quote %s: %s", getattr(quote, "id", "?"), exc)
+
+
 def _emit(event_type, quote, **extra):
     """
     Publish a quotation lifecycle event.
@@ -263,6 +279,7 @@ def send_quote_to_customer(quote_id, actor=None, valid_days=7):
 
         logger.info("Quote %s (v%s) sent to customer", quote.quote_number, quote.quote_version)
         _emit("QUOTATION_SENT", quote, valid_until=quote.valid_until.isoformat() if quote.valid_until else None)
+        _project(quote)
         return quote
 
 
@@ -317,6 +334,7 @@ def record_customer_decision(quote_id, action, notes="", reason="", token=None, 
                     quote.quote_number, quote.quote_version,
                 )
                 _emit("QUOTATION_APPROVED", quote, awaiting_admin_approval=True)
+                _project(quote)
                 return quote, None
 
             quote.status = WorkforceQuote.Status.CUSTOMER_ACCEPTED
@@ -335,6 +353,7 @@ def record_customer_decision(quote_id, action, notes="", reason="", token=None, 
             quote.customer_decided_at = now
             quote.save(update_fields=["status", "customer_decision", "customer_decline_reason", "customer_decided_at", "updated_at"])
             _emit("QUOTATION_DECLINED", quote, reason=quote.customer_decline_reason)
+            _project(quote)
             return quote, None
 
         elif clean_action == "REQUEST_CHANGES":
@@ -347,6 +366,8 @@ def record_customer_decision(quote_id, action, notes="", reason="", token=None, 
             # Create revised version (V2 draft)
             new_quote = create_revised_quote_version(quote, notes=notes)
             _emit("QUOTATION_CHANGES_REQUESTED", quote, revised_quote_id=new_quote.id)
+            _project(quote)
+            _project(new_quote)
             return quote, new_quote
 
 
@@ -699,6 +720,7 @@ def admin_review_quote(quote_id, admin_user, approve=True, notes="", reason=""):
                 quote.quote_number, quote.quote_version, admin_user, quote.admin_rejection_reason,
             )
             _emit("QUOTATION_ADMIN_REJECTED", quote, reason=quote.admin_rejection_reason)
+            _project(quote)
             return quote, None, None
 
         quote.status = WorkforceQuote.Status.ADMIN_APPROVED
@@ -728,6 +750,7 @@ def admin_review_quote(quote_id, admin_user, approve=True, notes="", reason=""):
             invoice_number=invoice.invoice_number,
             advance_amount=str(invoice.advance_amount),
         )
+        _project(quote)
         return quote, work_job, invoice
 
 
