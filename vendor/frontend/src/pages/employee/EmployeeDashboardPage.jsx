@@ -431,8 +431,8 @@ export function EmployeeDashboardPage() {
     };
   }, [selectedJob?.id, selectedJob?.status, preServiceState.geofence_passed]);
 
-  // Centralized Auto Clock-In Effect: Triggers automatically only when ALL 4 mandatory fields are complete:
-  // geofence_passed && otp_verified && presence_photo && work_area_photo.
+  // Centralized Auto Clock-In Effect: Triggers automatically when mandatory pre-service gates are complete:
+  // geofence_passed && otp_verified && presence_photo.
   useEffect(() => {
     if (!selectedJob?.id) return;
     const st = (selectedJob.status || '').toLowerCase();
@@ -442,19 +442,17 @@ export function EmployeeDashboardPage() {
     const isAllReady = Boolean(
       preServiceState.geofence_passed &&
       preServiceState.otp_verified &&
-      preServiceState.presence_photo &&
-      preServiceState.work_area_photo
+      preServiceState.presence_photo
     );
 
     if (isAllReady) {
-      console.info(`[EmployeeDashboard] All 4 mandatory gates satisfied for Job #${selectedJob.id}. Executing auto clock-in...`);
+      console.info(`[EmployeeDashboard] Mandatory gates satisfied for Job #${selectedJob.id}. Executing auto clock-in...`);
       handleDirectJobClockIn();
     }
   }, [
     preServiceState.geofence_passed,
     preServiceState.otp_verified,
     preServiceState.presence_photo,
-    preServiceState.work_area_photo,
     selectedJob?.id,
     selectedJob?.status,
     isClockedIn,
@@ -470,9 +468,9 @@ export function EmployeeDashboardPage() {
       const updatedState = { ...preServiceState, otp_verified: true, is_complete: res.is_complete };
       setPreServiceState(updatedState);
       await loadDashboard();
-      // Auto Clock-In Trigger: only if ALL 4 mandatory gates are now satisfied
-      if (updatedState.geofence_passed && updatedState.presence_photo && updatedState.work_area_photo) {
-        console.info('[EmployeeDashboard] All 4 mandatory pre-checks complete after OTP verification. Triggering auto clock-in...');
+      // Auto Clock-In Trigger: if mandatory gates are now satisfied
+      if (updatedState.geofence_passed && updatedState.presence_photo) {
+        console.info('[EmployeeDashboard] Mandatory pre-checks complete after OTP verification. Triggering auto clock-in...');
         await handleDirectJobClockIn(targetJob);
       }
       setTimeout(() => setSuccessMsg(''), 4000);
@@ -512,15 +510,14 @@ export function EmployeeDashboardPage() {
       };
       setPreServiceState(updatedState);
       await loadDashboard();
-      // Auto Clock-In Trigger: only if ALL 4 mandatory gates are now satisfied
-      const allFourSatisfied =
+      // Auto Clock-In Trigger: when mandatory gates are satisfied
+      const allSatisfied =
         updatedState.geofence_passed &&
         updatedState.otp_verified &&
-        (photoType === 'presence' || updatedState.presence_photo) &&
-        (photoType === 'work_area' || updatedState.work_area_photo);
+        (photoType === 'presence' || updatedState.presence_photo);
 
-      if (allFourSatisfied) {
-        console.info('[EmployeeDashboard] All 4 mandatory pre-checks complete after photo upload. Triggering auto clock-in...');
+      if (allSatisfied) {
+        console.info('[EmployeeDashboard] Mandatory pre-checks complete after photo upload. Triggering auto clock-in...');
         await handleDirectJobClockIn(targetJob);
       }
       setTimeout(() => setSuccessMsg(''), 4000);
@@ -1251,8 +1248,8 @@ export function EmployeeDashboardPage() {
             completedJobs={completedJobs}
             allJobs={allJobs}
             incomingOffers={incomingOffers}
-            activeAssignedJob={activeAssignedJob}
-            hasActiveJob={hasActiveJob}
+            activeAssignedJob={activeAssignedJob || selectedJob}
+            hasActiveJob={hasActiveJob || Boolean(selectedJob)}
             liveLocation={liveLocation}
             locationError={locationError}
             actionLoading={actionLoading}

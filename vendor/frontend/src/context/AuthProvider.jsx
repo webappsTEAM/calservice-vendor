@@ -40,10 +40,7 @@ export function AuthProvider({ children }) {
           return null;
         }
 
-        const [me, empDataCandidate] = await Promise.all([
-          apiFetchMe(),
-          apiGetOnboardingProfile().catch(() => null),
-        ]);
+        const me = await apiFetchMe();
 
         if (me && me.username) {
           const isPlatformAdmin = Boolean(me.is_superuser || me.is_platform_admin);
@@ -52,7 +49,7 @@ export function AuthProvider({ children }) {
             (!isPlatformAdmin && ['admin', 'manager'].includes((me.role || '').toLowerCase()))
           );
           const isAdmin = isPlatformAdmin || isVendorAdmin;
-          const empData = isAdmin ? null : empDataCandidate;
+          const empData = isAdmin ? null : await apiGetOnboardingProfile().catch(() => null);
 
           const isEmployee = Boolean(empData) || (!isAdmin && (me.role || '').toLowerCase() === 'employee');
           const isTiedWorker = isEmployee && Boolean(me.is_tied_worker || empData?.is_tied || empData?.workforce_type === 'TIED');

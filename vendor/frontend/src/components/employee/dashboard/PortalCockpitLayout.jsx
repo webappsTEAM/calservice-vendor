@@ -149,14 +149,14 @@ export function PortalCockpitLayout({
     activeJob?.payment?.payment_status === 'CASH_PENDING'
   );
 
-  // Verification Gate Statuses (All 4 are strictly mandatory for assigned active job)
+  // Verification Gate Statuses (Mandatory gates: Geofence, Customer OTP, Presence Selfie)
   const isGeofencePassed = Boolean(preServiceState?.geofence_passed || isArrived || isInProgress || isProofSubmitted || isCompleted);
-  const isOtpVerified = Boolean(preServiceState?.otp_verified || isInProgress || isProofSubmitted || isCompleted);
+  const isOtpVerified = Boolean(preServiceState?.otp_verified || activeJob?.otp_verified || job?.otp_verified || isInProgress || isProofSubmitted || isCompleted);
   const isPresencePhotoDone = Boolean(preServiceState?.presence_photo || isInProgress || isProofSubmitted || isCompleted);
-  const isWorkAreaPhotoDone = Boolean(preServiceState?.work_area_photo || isInProgress || isProofSubmitted || isCompleted);
+  const isWorkAreaPhotoDone = Boolean(preServiceState?.work_area_photo || preServiceState?.appliance_photo || isInProgress || isProofSubmitted || isCompleted);
 
-  // All 4 required gates must be satisfied to unlock work execution
-  const isAllPrerequisitesDone = isGeofencePassed && isOtpVerified && isPresencePhotoDone && isWorkAreaPhotoDone;
+  // Mandatory gates satisfied to unlock work execution (geofence + customer OTP + presence selfie)
+  const isAllPrerequisitesDone = isGeofencePassed && isOtpVerified && isPresencePhotoDone;
 
   // Shift elapsed timer calculation (Active only after customer OTP is verified / when clocked in)
   useEffect(() => {
@@ -671,9 +671,9 @@ export function PortalCockpitLayout({
                       )}
                     </div>
 
-                    {/* 3. Pre-Service Diagnostic Photos * (Both Required) */}
+                    {/* 3. Pre-Service Diagnostic Photos */}
                     <div className={`p-3.5 rounded-xl border space-y-2.5 transition-all ${
-                      isPresencePhotoDone && isWorkAreaPhotoDone ? 'bg-emerald-50/40 border-emerald-300' : 'bg-white border-slate-200'
+                      isPresencePhotoDone ? 'bg-emerald-50/40 border-emerald-300' : 'bg-white border-slate-200'
                     }`}>
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-bold text-slate-900 flex items-center gap-1">
@@ -681,7 +681,7 @@ export function PortalCockpitLayout({
                           <span className="text-rose-600">*</span>
                         </span>
                         <span className="text-[10px] text-slate-400 font-bold">
-                          {isPresencePhotoDone && isWorkAreaPhotoDone ? '2/2 Uploaded ✓' : `${(isPresencePhotoDone ? 1 : 0) + (isWorkAreaPhotoDone ? 1 : 0)}/2 Complete`}
+                          {isPresencePhotoDone ? 'Selfie Verified ✓' : 'Selfie Required *'}
                         </span>
                       </div>
 
@@ -706,7 +706,7 @@ export function PortalCockpitLayout({
                           </span>
                         </button>
 
-                        {/* Box 2: Work Area Photo * (Required) */}
+                        {/* Box 2: Work Area Photo (Optional) */}
                         <button
                           type="button"
                           onClick={() => {
@@ -722,7 +722,7 @@ export function PortalCockpitLayout({
                         >
                           <Camera className="w-5 h-5 text-slate-500" />
                           <span className="font-mono text-[10px] font-bold">
-                            {isWorkAreaPhotoDone ? 'Work Area Uploaded ✓' : 'Work Area *'}
+                            {isWorkAreaPhotoDone ? 'Work Area Uploaded ✓' : 'Work Area (Optional)'}
                           </span>
                         </button>
                       </div>
@@ -797,7 +797,11 @@ export function PortalCockpitLayout({
                   <span>
                     {isAllPrerequisitesDone
                       ? 'Start Service Execution'
-                      : 'Start Service Execution (Fill All 4 Required Gates Above)'}
+                      : !isOtpVerified
+                      ? 'Start Service Execution (Verify Customer OTP)'
+                      : !isPresencePhotoDone
+                      ? 'Start Service Execution (Capture Tech Selfie Above)'
+                      : 'Start Service Execution (Complete Prerequisites)'}
                   </span>
                 </button>
               )}

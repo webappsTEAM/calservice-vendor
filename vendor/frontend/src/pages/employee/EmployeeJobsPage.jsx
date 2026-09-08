@@ -41,6 +41,7 @@ import {
   Eye,
   Check,
   Copy,
+  Camera,
 } from 'lucide-react';
 
 /**
@@ -349,10 +350,12 @@ export function EmployeeJobsPage() {
     try {
       setIsVerifyingOtp(true);
       setOtpError('');
-      await apiVerifyOTP(otpModalJob.id, cleanOtp);
+      const res = await apiVerifyOTP(otpModalJob.id, cleanOtp);
       setOtpModalJob(null);
       setEnteredOtp('');
       await loadJobs();
+      // Navigate to the Job Cockpit so technician can complete the live selfie
+      navigate('/workforce/employee/dashboard');
     } catch (err) {
       setOtpError(err.message || 'Invalid OTP code. Please check with customer.');
     } finally {
@@ -775,29 +778,48 @@ export function EmployeeJobsPage() {
                         </button>
                       )}
 
-                      {/* ARRIVED -> VERIFY OTP */}
+                      {/* ARRIVED -> VERIFY OTP or OTP ALREADY VERIFIED */}
                       {isArrived && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setOtpModalJob(job);
-                            setEnteredOtp('');
-                            setOtpError('');
-                          }}
-                          className="px-5 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-2"
-                        >
-                          <ShieldCheck className="w-3.5 h-3.5" />
-                          <span>Enter Start OTP</span>
-                        </button>
+                        <>
+                          {job.otp_verified ? (
+                            <div className="flex items-center gap-2">
+                              <span className="px-3 py-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold rounded-xl flex items-center gap-1">
+                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                                <span>OTP Verified</span>
+                              </span>
+                              <Link
+                                to="/workforce/employee/dashboard"
+                                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
+                              >
+                                <Camera className="w-3.5 h-3.5" />
+                                <span>Complete Selfie in Cockpit</span>
+                                <ArrowRight className="w-3.5 h-3.5" />
+                              </Link>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOtpModalJob(job);
+                                setEnteredOtp('');
+                                setOtpError('');
+                              }}
+                              className="px-5 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-2"
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5" />
+                              <span>Enter Start OTP</span>
+                            </button>
+                          )}
+                        </>
                       )}
 
-                      {/* IN PROGRESS -> COCKPIT */}
-                      {isInProgress && (
+                      {/* IN PROGRESS OR ACTIVE ARRIVED -> COCKPIT */}
+                      {(isInProgress || isOnTheWay || (isArrived && !job.otp_verified)) && (
                         <Link
                           to="/workforce/employee/dashboard"
-                          className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-2"
+                          className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
                         >
-                          <span>Open Job Cockpit</span>
+                          <span>Job Cockpit</span>
                           <ArrowRight className="w-3.5 h-3.5" />
                         </Link>
                       )}
