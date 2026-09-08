@@ -315,6 +315,53 @@ class ServiceRequest(models.Model):
 
     objects = CompanyScopedManager()
 
+
+    class LogisticsLeg(models.TextChoices):
+        EN_ROUTE_PICKUP = "EN_ROUTE_PICKUP", "En Route to Pickup"
+        LOADING         = "LOADING",         "Loading"
+        EN_ROUTE_DROP   = "EN_ROUTE_DROP",   "En Route to Drop"
+        UNLOADING       = "UNLOADING",       "Unloading"
+        DELIVERED       = "DELIVERED",       "Delivered"
+
+    class CancellationReason(models.TextChoices):
+        CHANGE_OF_PLANS   = "CHANGE_OF_PLANS",   "Change of plans / Booked by mistake"
+        EXPECTED_FASTER    = "EXPECTED_FASTER",    "Expected faster service / Partner too far"
+        WRONG_SERVICE      = "WRONG_SERVICE",      "Selected wrong service, date, or address"
+        FOUND_ALTERNATIVE  = "FOUND_ALTERNATIVE",  "Found alternative service / Solved myself"
+        PRICE_OR_PAYMENT   = "PRICE_OR_PAYMENT",   "Price or payment issue"
+        OTHER              = "OTHER",              "Other reason"
+
+
+    # ------------------------------------------------------------------
+    # Fields declared in backend/service_requests/models.py but absent here.
+    #
+    # This model is managed = False -- the table is shared, and a column a
+    # copy does not declare is a column that copy cannot read or write.
+    # Django sets an undeclared attribute happily and then saves nothing, so
+    # service_requests/vendor_views.py was assigning subtotal_amount,
+    # discount_amount, final_amount and payment_collected_at on quote
+    # approval and none of them ever reached the database.
+    #
+    # Merged in so both copies describe the same table.
+    # ------------------------------------------------------------------
+    customer_code = models.CharField(max_length=30, blank=True, null=True, db_index=True)
+    declared_value = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    insurance_premium = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    insurance_liability_cap = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    logistics_leg_updated_at = models.DateTimeField(null=True, blank=True)
+    payment_collected_at = models.DateTimeField(null=True, blank=True)
+    coupon_code_snapshot = models.CharField(max_length=50, blank=True, default="")
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    subtotal_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    final_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    cancelled_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    cancelled_by_persona = models.CharField(max_length=30, blank=True, choices=[("customer", "Customer"), ("admin", "Admin"), ("employee", "Employee")])
+    cancellation_reason = models.CharField(max_length=50, blank=True, choices=CancellationReason.choices)
+    cancellation_note = models.TextField(blank=True)
+    cancelled_at_status = models.CharField(max_length=30, blank=True)
+    service_zone_id_snapshot = models.IntegerField(null=True, blank=True, db_index=False)
+    otp_expires_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         managed = False
         db_table = "service_requests_servicerequest"

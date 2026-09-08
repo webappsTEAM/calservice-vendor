@@ -87,13 +87,25 @@ export function EmployeeRuntimeProvider({ children }) {
   }, [selectedJob]);
 
   // Derived active workload state
-  const hasActiveJob = useMemo(() => {
-    return activeJobs.some((j) => {
-      const st = (j.status || j.job_status || '').toLowerCase();
-      const isAssigned = Boolean(j.is_assigned_to_current_employee || j.assigned_employee_id === user?.id);
-      return isAssigned && ACTIVE_QUEUE_STATUSES.includes(st);
-    });
+  const activeAssignedJob = useMemo(() => {
+    return (
+      activeJobs.find((j) => {
+        const st = (j.status || j.job_status || '').toLowerCase();
+        const isAssigned = Boolean(
+          j.is_assigned_to_current_employee ||
+          j.assigned_employee === user?.id ||
+          j.assigned_employee?.id === user?.id ||
+          j.assigned_employee_id === user?.id ||
+          !j.is_offer
+        );
+        return isAssigned && ACTIVE_QUEUE_STATUSES.includes(st);
+      }) || null
+    );
   }, [activeJobs, user?.id]);
+
+  const hasActiveJob = useMemo(() => {
+    return Boolean(activeAssignedJob);
+  }, [activeAssignedJob]);
 
   const incomingOffer = useMemo(() => {
     return (
@@ -558,6 +570,7 @@ export function EmployeeRuntimeProvider({ children }) {
       selectedJob,
       setSelectedJob,
       incomingOffer,
+      activeAssignedJob,
       hasActiveJob,
       isJobsLoading,
       isCompletedLoading,
@@ -595,6 +608,7 @@ export function EmployeeRuntimeProvider({ children }) {
       completedJobs,
       selectedJob,
       incomingOffer,
+      activeAssignedJob,
       hasActiveJob,
       isJobsLoading,
       isCompletedLoading,

@@ -1103,3 +1103,8 @@ def reconsider_jobs_for_employee(employee_or_id) -> int:
             dispatched_count += 1
 
     return dispatched_count
+
+
+def reconcile_booking_for_dispatch(job_id_or_obj, use_redis_geo=False):
+    """Fallback entry point for post-commit dispatch triggers."""
+    return dispatch_job(job_id_or_obj)

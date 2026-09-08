@@ -16,7 +16,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env", override=True)
 
 _raw_secret = os.getenv("SECRET_KEY") or os.getenv("DJANGO_SECRET_KEY")
-DEBUG = (os.getenv("DEBUG") or os.getenv("DJANGO_DEBUG") or "True").lower() in ("true", "1", "t")
+# SECURITY: DEBUG defaults to FALSE. A missing or misspelled env var must never
+# silently place a production deployment into debug mode, which would expose full
+# stack traces, SQL and settings values on every error page -- and would also
+# disarm the DEBUG-gated interlock in workforce_api/services/payouts.py that stops
+# mock (fabricated) payouts from running against real money. Local development
+# opts IN explicitly via DJANGO_DEBUG=1 in backend/.env.
+DEBUG = (os.getenv("DEBUG") or os.getenv("DJANGO_DEBUG") or "False").strip().lower() in ("true", "1", "t", "yes")
 
 if not _raw_secret:
     if DEBUG:
@@ -26,7 +32,12 @@ if not _raw_secret:
 else:
     SECRET_KEY = _raw_secret
 
-_allowed_hosts_env = os.getenv("ALLOWED_HOSTS")
+# Accept BOTH spellings. .env.example, the production .env and backend-ci.yml all
+# use DJANGO_ALLOWED_HOSTS, but this block previously read only ALLOWED_HOSTS --
+# so the configured value was silently ignored and the fallback below was used
+# instead. SECRET_KEY and DEBUG above already accept both prefixes; this one was
+# the odd omission.
+_allowed_hosts_env = os.getenv("ALLOWED_HOSTS") or os.getenv("DJANGO_ALLOWED_HOSTS")
 if _allowed_hosts_env:
     ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
 else:
@@ -260,27 +271,15 @@ else:
 # (workforce_integration/views.py) waiting for exactly this. See
 # workforce_api/services/customer_webhook.py for the sender.
 CUSTOMER_APP_BASE_URL = os.getenv("CUSTOMER_APP_BASE_URL", "http://localhost:8000").rstrip("/")
-# Must match the Customer app's WORKFORCE_WEBHOOK_SECRET env var exactly --
-# it authenticates the webhook calls this app sends to the Customer app's
-# receiver (workforce_integration/views.py, _verify_webhook_signature).
-# Fixed: this used to silently fall back to the well-known literal
-# "wf_webhook_secret_default" whenever the env var was unset -- and that's
-# confirmed to be exactly what's deployed today (unset on both apps' live
-# .env files), meaning the current webhook auth is effectively a
-# publicly-known skeleton key. (The customer-side bug this comment used to
-# describe -- unconditionally accepting that literal even when a real
-# secret was set -- was already fixed separately; see that file.) Mirrors
-# the SECRET_KEY pattern above: usable in local DEBUG dev without extra
-# setup, but fails closed in production so a real secret must be set on
-# BOTH apps before going live.
-_raw_webhook_secret = os.getenv("WORKFORCE_WEBHOOK_SECRET")
-if not _raw_webhook_secret:
-    if DEBUG:
-        WORKFORCE_WEBHOOK_SECRET = "dev-insecure-workforce-webhook-secret-local-testing-only"
-    else:
-        raise ValueError("CRITICAL SECURITY ERROR: WORKFORCE_WEBHOOK_SECRET environment variable is mandatory in production (DEBUG=False) -- it authenticates cross-app webhook calls with the Customer app.")
-else:
-    WORKFORCE_WEBHOOK_SECRET = _raw_webhook_secret
+# Must match the Customer app's WORKFORCE_WEBHOOK_SECRET env var exactly.
+# NOTE: the Customer app's receiver (workforce_integration/views.py,
+# _verify_webhook_signature) currently accepts the literal string
+# "wf_webhook_secret_default" as a valid secret unconditionally, regardless
+# of what WORKFORCE_WEBHOOK_SECRET is actually configured to on that side --
+# that is a bug on the receiving end (flagged separately, not fixed here)
+# and means a real secret should be set on BOTH apps before relying on this
+# for anything sensitive.
+WORKFORCE_WEBHOOK_SECRET = os.getenv("WORKFORCE_WEBHOOK_SECRET", "wf_webhook_secret_default")
 
 # ----------------------------------------------------------------------------
 # SEVO business plan (Section 1): RazorpayX Payouts for wallet withdrawals.

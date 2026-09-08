@@ -1,0 +1,46 @@
+# Normalise line endings in the repository.
+#
+# Without this file (and with core.autocrlf unset on the team's machines),
+# every checkout on Windows rewrote CRLF/LF inconsistently, so `git status`
+# routinely showed ~850 "modified" files that contained no actual change.
+# That hides real edits and generates avoidable merge conflicts across the
+# team. Git now stores LF in the repository for all text files and leaves
+# the working copy alone.
+
+* text=auto
+
+# Explicit rules for the file types in this project
+*.py    text
+*.js    text
+*.jsx   text
+*.ts    text
+*.tsx   text
+*.json  text
+*.md    text
+*.yml   text
+*.yaml  text
+*.html  text
+*.css   text
+*.txt   text
+*.sh    text eol=lf
+*.dart  text
+*.gradle text
+
+# Windows-only scripts must keep CRLF
+*.bat   text eol=crlf
+*.ps1   text eol=crlf
+
+# Never touch binaries
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.zip   binary
+*.jar   binary
+*.keystore binary
+*.apk   binary
+*.docx  binary
+*.xlsx  binary
+*.pptx  binary

@@ -4,7 +4,8 @@ Relational database models for Workforce Scheduling, Skills, Compliance, Notific
 """
 import uuid
 from django.conf import settings
-from django.db import models
+from django.db import IntegrityError, models, transaction
+from django.utils import timezone
 
 
 class WorkforceEmployeeSchedule(models.Model):
@@ -431,13 +432,34 @@ class WorkforceJobOffer(models.Model):
     rank_score = models.FloatField(default=0.0)
     wave_id = models.UUIDField(default=uuid.uuid4, db_index=True)
     wave_number = models.IntegerField(default=1, db_index=True)
-    offered_at = models.DateTimeField(auto_now_add=True)
-    expires_at = models.DateTimeField()
+    offered_at = models.DateTimeField(db_index=True, default=timezone.now)
+    expires_at = models.DateTimeField(db_index=True)
     rejection_reason = models.TextField(blank=True, default="")
 
     class Meta:
         db_table = "workforce_job_offer"
         ordering = ["-offered_at"]
+        # Declared in migration 0013 but absent from this model, so every
+        # makemigrations run proposed DROPPING them -- including the
+        # constraint that stops one technician holding two live offers for
+        # the same job. Re-declared here to match what is actually in the
+        # database.
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(wave_number__gte=1, wave_number__lte=6),
+                name="valid_wave_number_1_to_6",
+            ),
+            models.UniqueConstraint(
+                fields=("job", "employee"),
+                condition=models.Q(status="OFFERED"),
+                name="unique_active_job_offer_per_employee",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["job", "status", "expires_at"], name="wf_offer_job_st_exp_idx"),
+            models.Index(fields=["job", "wave_id", "status", "expires_at"], name="wf_offer_job_wave_idx"),
+            models.Index(fields=["employee", "status", "expires_at"], name="wf_offer_emp_st_exp_idx"),
+        ]
 
     def __str__(self):
         return f"Offer Job #{self.job_id} to {self.employee} ({self.status})"
@@ -536,6 +558,8 @@ class PreServiceVerification(models.Model):
         db_table = "workforce_pre_service_verification"
 
     def check_completion(self):
+        # Work area photo and appliance photo are optional evidence.
+        # Mandatory gates: arrival geofence check-in, customer OTP verification, and technician presence selfie.
         ready = bool(
             self.geofence_passed
             and self.otp_verified
@@ -2071,3 +2095,946 @@ class VendorRelievingRequest(models.Model):
         return f"Relieving Request #{self.id}: {self.technician} from {self.vendor.company_name} [{self.status}]"
 
 
+# ============================================================================
+# RESTORED 2026-09-07 -- see commit message for the full account.
+#
+# Removed from this file by commit 7204699 on 2 September while their database
+# tables, their migrations (0014/0019/0020) and quotation_service.py -- which
+# imports several of them -- all remained. The estimation/quotation feature has
+# been dead since, and `makemigrations` would have dropped the tables.
+#
+# Recovered verbatim from 7204699^ and verified against the live schema.
+# ============================================================================
+
+class WorkforceServiceSkillRequirement(models.Model):
+    service = models.ForeignKey(
+        "service_requests.Service",
+        on_delete=models.CASCADE,
+        related_name="skill_requirements",
+    )
+    skill = models.ForeignKey(
+        WorkforceSkill,
+        on_delete=models.CASCADE,
+        related_name="service_requirements",
+    )
+    is_mandatory = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "workforce_service_skill_requirement"
+        unique_together = ("service", "skill")
+
+    def __str__(self):
+        return f"{self.service.name} requires {self.skill.name}"
+
+
+class WorkforceRateCard(models.Model):
+    """
+    Authoritative Rate Card configuration for Quotation Calculation.
+    Defines approved unit rates, standard costs, and discount ceilings per service section.
+    """
+    class Section(models.TextChoices):
+        MATERIAL = "MATERIAL", "Material"
+        LABOUR = "LABOUR", "Labour"
+        SURFACE_PREP = "SURFACE_PREP", "Surface Preparation"
+        EQUIPMENT = "EQUIPMENT", "Equipment & Scaffolding"
+        TRANSPORT = "TRANSPORT", "Transport & Logistics"
+        OTHER = "OTHER", "Other"
+
+    service_id = models.IntegerField(null=True, blank=True, db_index=True)
+    service_category = models.CharField(max_length=100, db_index=True)
+    service_name = models.CharField(max_length=150, db_index=True)
+    section = models.CharField(max_length=50, choices=Section.choices, default=Section.MATERIAL)
+    item_name = models.CharField(max_length=200)
+    description = models.TextField(blank=True, default="")
+    unit = models.CharField(max_length=50, default="sqft")
+
+    # How default_rate is applied. A single rate column cannot express slab
+    # pricing (epoxy 1/2/3 mm), capacity bands (water tank by litres) or size
+    # bands (bathroom small/medium/large), so those carry their thresholds in
+    # pricing_config and are evaluated by services/rate_card_pricing.py.
+    class PricingModel(models.TextChoices):
+        PER_UNIT      = "PER_UNIT",      "Rate per unit"
+        FLAT          = "FLAT",          "Flat price regardless of quantity"
+        TIERED        = "TIERED",        "Rate chosen by a specification tier"
+        CAPACITY_BAND = "CAPACITY_BAND", "Rate or flat price by capacity band"
+        SIZE_BAND     = "SIZE_BAND",     "Flat price by size band"
+        QUOTE_ONLY    = "QUOTE_ONLY",    "No standard rate; priced per site"
+
+    class WarrantyTier(models.TextChoices):
+        NONE     = "NONE",     "No warranty"
+        FIVE_YEAR = "5_YEAR",  "5-Year Warranty"
+        TEN_YEAR  = "10_YEAR", "10-Year Warranty"
+
+    pricing_model = models.CharField(
+        max_length=20, choices=PricingModel.choices, default=PricingModel.PER_UNIT
+    )
+    pricing_config = models.JSONField(
+        default=dict, blank=True,
+        help_text="Bands for TIERED / CAPACITY_BAND / SIZE_BAND. See "
+                  "services/rate_card_pricing.py for the accepted shape.",
+    )
+    minimum_quantity = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0.00,
+        help_text="Quotes below this quantity are rejected -- e.g. Minor Masonry "
+                  "is not viable under 500 sq.ft.",
+    )
+    warranty_tier = models.CharField(
+        max_length=10, choices=WarrantyTier.choices, default=WarrantyTier.NONE
+    )
+    advance_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="Overrides the category's advance_percent for quotes containing "
+                  "this item. Waterproofing needs 50% up front while ordinary "
+                  "painting does not, and both sit in the painting category -- so "
+                  "the rule cannot live on the category alone.",
+    )
+
+    default_rate = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    default_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=18.00)
+    max_discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=20.00)
+    is_active = models.BooleanField(default=True, db_index=True)
+    sort_order = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "workforce_rate_card"
+        ordering = ["service_category", "section", "sort_order", "id"]
+
+    def __str__(self):
+        return f"[{self.service_category}] {self.section}: {self.item_name} (₹{self.default_rate}/{self.unit})"
+
+
+def generate_quote_number():
+    """
+    Allocate a commercial quotation number: PQ-YYYYMMDD-NNNN.
+
+    The dated format is a commercial requirement, so the sequence used
+    previously is not enough on its own -- the suffix has to count within the
+    day. next_document_number() does that atomically; see its comment.
+    """
+    return _dated_number("PQ", "QUOTE")
+
+
+class WorkforceQuote(models.Model):
+    """
+    Central Commercial Quotation Model for CalTrack Workforce.
+    Maintains a strict state machine, cryptographic decision token, and conversion to actual Work ServiceRequests.
+    """
+    class Status(models.TextChoices):
+        DRAFT               = "DRAFT",               "Draft"
+        PENDING_REVIEW      = "PENDING_REVIEW",      "Pending Admin Review"
+        SENT_TO_CUSTOMER    = "SENT_TO_CUSTOMER",    "Sent to Customer"
+        CUSTOMER_ACCEPTED   = "CUSTOMER_ACCEPTED",   "Customer Accepted"
+        # SEVO back-office gate. A quote the customer accepted is a commercial
+        # commitment but not yet an authorised job: it waits here until a SEVO
+        # admin approves it, and only then is it converted and invoiced.
+        PENDING_ADMIN_APPROVAL = "PENDING_ADMIN_APPROVAL", "Pending SEVO Admin Approval"
+        ADMIN_APPROVED      = "ADMIN_APPROVED",      "Approved by SEVO Admin"
+        ADMIN_REJECTED      = "ADMIN_REJECTED",      "Rejected by SEVO Admin"
+        CHANGES_REQUESTED   = "CHANGES_REQUESTED",   "Changes Requested"
+        DECLINED            = "DECLINED",            "Declined"
+        EXPIRED             = "EXPIRED",             "Expired"
+        SUPERSEDED          = "SUPERSEDED",          "Superseded"
+        CONVERSION_PENDING  = "CONVERSION_PENDING",  "Conversion Pending"
+        CONVERTED           = "CONVERTED",           "Converted to Work Booking"
+        CANCELLED           = "CANCELLED",           "Cancelled"
+
+    class StructuralImpact(models.TextChoices):
+        NONE                 = "NONE",                 "No Structural Impact"
+        SUSPECTED_STRUCTURAL = "SUSPECTED_STRUCTURAL", "Suspected Structural (Clearance Required)"
+        STRUCTURAL           = "STRUCTURAL",           "Structural Demolition / Load-Bearing (Clearance Required)"
+
+    # NOT unique on its own: a revision (v2, v3 ...) deliberately keeps the
+    # same quote_number so the customer sees one document evolving. The
+    # uniqueness that matters is (quote_number, quote_version) -- see Meta.
+    quote_number = models.CharField(max_length=50, db_index=True)
+    quote_version = models.IntegerField(default=1, db_index=True)
+    job = models.ForeignKey(
+        "service_requests.ServiceRequest",
+        on_delete=models.CASCADE,
+        related_name="quotes",
+        db_index=True,
+    )
+    work_job = models.ForeignKey(
+        "service_requests.ServiceRequest",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="converted_from_quote",
+    )
+    technician = models.ForeignKey(
+        "employees.Employee",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="quotes_created",
+    )
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="quotes",
+    )
+    customer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="customer_quotes",
+    )
+    title = models.CharField(max_length=200, default="Quotation")
+    description = models.TextField(blank=True, default="")
+    service_category = models.CharField(max_length=150, blank=True, default="")
+    service_name = models.CharField(max_length=200, blank=True, default="")
+
+    estimated_labor_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    estimated_materials_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    subtotal_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    inspection_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    inspection_fee_adjusted = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    net_payable = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    # Null means "use the category policy". Set when the quote contains an item
+    # whose rate card demands a larger advance (waterproofing, masonry), or when
+    # an admin overrides it for this specific job.
+    advance_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True
+    )
+
+    status = models.CharField(
+        max_length=30,
+        choices=Status.choices,
+        default=Status.DRAFT,
+        db_index=True,
+    )
+    valid_until = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    # Cryptographic decision token for customer verification
+    decision_token = models.CharField(max_length=64, unique=True, null=True, blank=True, db_index=True)
+    decision_expires_at = models.DateTimeField(null=True, blank=True)
+    customer_decision = models.CharField(max_length=30, blank=True, default="")
+    customer_decided_at = models.DateTimeField(null=True, blank=True)
+    customer_decline_reason = models.TextField(blank=True, default="")
+    customer_notes = models.TextField(blank=True, default="")
+
+    # Mason Structural Clearance Gate
+    structural_impact = models.CharField(
+        max_length=30,
+        choices=StructuralImpact.choices,
+        default=StructuralImpact.NONE,
+    )
+    admin_cleared_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="cleared_quotes",
+    )
+    admin_cleared_at = models.DateTimeField(null=True, blank=True)
+    admin_clearance_notes = models.TextField(blank=True, default="")
+
+    # SEVO admin approval of the accepted quote (distinct from the structural
+    # clearance above, which gates SENDING a mason quote to the customer).
+    admin_approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="approved_quotes",
+    )
+    admin_approved_at = models.DateTimeField(null=True, blank=True)
+    admin_approval_notes = models.TextField(blank=True, default="")
+    admin_rejection_reason = models.TextField(blank=True, default="")
+    submitted_for_approval_at = models.DateTimeField(null=True, blank=True)
+
+    sent_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_quote"
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["quote_number", "quote_version"],
+                name="workforce_quote_number_version_unique",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["job", "status"], name="wf_quote_job_status_idx"),
+            models.Index(fields=["technician", "status"], name="wf_quote_tech_status_idx"),
+            models.Index(fields=["company", "status"], name="wf_quote_comp_status_idx"),
+            models.Index(fields=["decision_token"], name="wf_quote_dec_token_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.quote_number} (v{self.quote_version}) - {self.title} [₹{self.net_payable or self.total_amount}] - {self.status}"
+
+    @property
+    def requires_structural_clearance(self):
+        return self.structural_impact in [
+            self.StructuralImpact.SUSPECTED_STRUCTURAL,
+            self.StructuralImpact.STRUCTURAL,
+        ]
+
+    @property
+    def is_structurally_cleared(self):
+        if not self.requires_structural_clearance:
+            return True
+        return self.admin_cleared_at is not None
+
+    def save(self, *args, **kwargs):
+        """
+        Assign a quote number on first save, retrying if the unique
+        constraint is hit. The inner atomic() is what makes the retry
+        legal: after an IntegrityError the surrounding transaction is
+        unusable unless the failed statement was rolled back to a
+        savepoint first.
+        """
+        if self.quote_number:
+            return super().save(*args, **kwargs)
+
+        last_error = None
+        for _attempt in range(5):
+            self.quote_number = generate_quote_number()
+            try:
+                with transaction.atomic():
+                    return super().save(*args, **kwargs)
+            except IntegrityError as exc:
+                if "quote_number" not in str(exc):
+                    raise
+                last_error = exc
+                self.quote_number = ""
+        raise last_error
+
+
+class WorkforceQuoteItem(models.Model):
+    """
+    Individual Line Item within a Workforce Quotation.
+    """
+    quote = models.ForeignKey(
+        WorkforceQuote,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+    section = models.CharField(max_length=50, default="OTHER")
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True, default="")
+    item_type = models.CharField(max_length=50, default="item")
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1.00)
+    unit = models.CharField(max_length=50, default="unit")
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=18.00)
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    material_source = models.CharField(max_length=50, default="CALTRACK")
+    is_customer_supplied = models.BooleanField(default=False)
+    # Legacy boolean, kept so existing readers do not break. warranty_tier is
+    # the field that carries meaning now: the business offers exactly two
+    # tiers, and "true" could not say which one applied.
+    warranty_applicable = models.BooleanField(default=True)
+    warranty_tier = models.CharField(
+        max_length=10,
+        choices=[("NONE", "No warranty"), ("5_YEAR", "5-Year Warranty"), ("10_YEAR", "10-Year Warranty")],
+        default="NONE",
+    )
+    notes = models.TextField(blank=True, default="")
+    sort_order = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_quote_item"
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return f"{self.name} ({self.quantity} {self.unit} @ ₹{self.unit_price} = ₹{self.total_amount})"
+
+
+class WorkforceQuoteMeasurement(models.Model):
+    """
+    Dimensional & area measurement collected during physical site inspection.
+    """
+    quote = models.ForeignKey(
+        WorkforceQuote,
+        on_delete=models.CASCADE,
+        related_name="measurements",
+    )
+    name = models.CharField(max_length=200)
+    measurement_type = models.CharField(max_length=50, default="area")
+    length = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    width = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    height = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    area = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1.00)
+    unit = models.CharField(max_length=50, default="sqft")
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_quote_measurement"
+        ordering = ["id"]
+
+    def __str__(self):
+        return f"{self.name}: {self.area or self.length or self.quantity} {self.unit}"
+
+
+class WorkforceQuotePhoto(models.Model):
+    """
+    Inspection evidence photos captured on-site during quotation inspection.
+    """
+    quote = models.ForeignKey(
+        WorkforceQuote,
+        on_delete=models.CASCADE,
+        related_name="photos",
+    )
+    photo_url = models.CharField(max_length=500)
+    photo_type = models.CharField(max_length=50, null=True, blank=True)
+    caption = models.CharField(max_length=255, blank=True, default="")
+    sort_order = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "workforce_quote_photo"
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return f"Quote Photo #{self.id} for {self.quote.quote_number} ({self.photo_type})"
+
+
+class WorkforcePaintingQuote(models.Model):
+    """
+    Painting-specific structured inspection & scope parameters.
+    """
+    quote = models.OneToOneField(
+        WorkforceQuote,
+        on_delete=models.CASCADE,
+        related_name="painting_details",
+    )
+    property_type = models.CharField(max_length=100, default="Apartment")
+    rooms_detail = models.JSONField(default=list, blank=True)
+    area_sqft = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    surface_condition = models.CharField(max_length=100, default="Good")
+    existing_paint_condition = models.CharField(max_length=100, default="Old Emulsion")
+    paint_type = models.CharField(max_length=100, null=True, blank=True)
+    brand_grade = models.CharField(max_length=100, blank=True, default="Asian Paints / Berger")
+    number_of_coats = models.IntegerField(default=2)
+    requires_putty = models.BooleanField(default=False)
+    requires_priming = models.BooleanField(default=False)
+    crack_treatment = models.BooleanField(default=False)
+    waterproofing_needed = models.BooleanField(default=False)
+    scaffolding_required = models.BooleanField(default=False)
+    color_code = models.CharField(max_length=100, null=True, blank=True)
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_painting_quote"
+
+    def __str__(self):
+        return f"Painting Details for {self.quote.quote_number} ({self.area_sqft} sqft, {self.paint_type})"
+
+
+class WorkforceMasonQuote(models.Model):
+    """
+    Masonry & Civil structured inspection & scope parameters.
+    """
+    quote = models.OneToOneField(
+        WorkforceQuote,
+        on_delete=models.CASCADE,
+        related_name="mason_details",
+    )
+    work_type = models.CharField(max_length=100, null=True, blank=True)
+    length = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    width = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    height = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    area_sqft = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    estimated_duration_days = models.IntegerField(default=1)
+    requires_demolition = models.BooleanField(default=False)
+    debris_disposal_included = models.BooleanField(default=False)
+    structural_impact = models.CharField(max_length=50, default="NONE")
+    access_difficulty = models.CharField(max_length=50, default="Standard")
+    labour_count = models.IntegerField(default=2)
+    materials_needed = models.JSONField(default=list, blank=True)
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_mason_quote"
+
+    def __str__(self):
+        return f"Mason Details for {self.quote.quote_number} ({self.work_type}, Demolition: {self.requires_demolition})"
+
+
+class WorkforceProviderJoinRequest(models.Model):
+    """
+    Tracks a technician's request to join an existing Service Provider organization during signup.
+    Selecting a Service Provider during signup does NOT grant immediate company membership.
+    The join request remains in status=PENDING until approved by the Service Provider Admin or Superadmin.
+    """
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+
+    technician = models.ForeignKey(
+        "employees.Employee",
+        on_delete=models.CASCADE,
+        related_name="provider_join_requests",
+    )
+    provider = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="technician_join_requests",
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    requested_at = models.DateTimeField(auto_now_add=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    rejection_reason = models.TextField(blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        db_table = "workforce_provider_join_request"
+        ordering = ["-requested_at"]
+
+    def __str__(self):
+        return f"JoinRequest #{self.id}: Tech #{self.technician_id} -> Provider #{self.provider_id} ({self.status})"
+
+
+class WorkforceSystemSetting(models.Model):
+    """
+    Persistent global key-value configuration for CalTrack Workforce.
+    SuperAdmin managed settings (e.g. DISPATCH_RADIUS_KM).
+    """
+    key = models.CharField(max_length=100, unique=True, db_index=True)
+    value = models.CharField(max_length=255)
+    description = models.TextField(blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_system_setting"
+
+    def __str__(self):
+        return f"{self.key} = {self.value}"
+
+
+# =============================================================================
+# Commercial Invoicing
+#
+# An approved quotation becomes an invoice. The invoice is the document the
+# customer pays against; the payment is what eventually reaches the provider's
+# wallet (via services/commission.settle_completed_job at job completion).
+#
+# Amounts are FROZEN onto the invoice at issue time. They are deliberately not
+# read back through the quote: a quote can be revised after the fact, and an
+# issued invoice must not silently change value underneath a customer who has
+# already paid it.
+# =============================================================================
+
+def generate_invoice_number():
+    """
+    Allocate an invoice number: INV-YYYYMMDD-NNNN.
+
+    Matched to the quote format deliberately -- a quote and the invoice that
+    follows it are one document family, and two numbering schemes inside it
+    make reconciliation harder than it needs to be.
+    """
+    return _dated_number("INV", "INVOICE")
+
+
+class WorkforceInvoice(models.Model):
+    class Status(models.TextChoices):
+        DRAFT          = "DRAFT",          "Draft"
+        ISSUED         = "ISSUED",         "Issued"
+        PARTIALLY_PAID = "PARTIALLY_PAID", "Partially Paid"
+        PAID           = "PAID",           "Paid"
+        CANCELLED      = "CANCELLED",      "Cancelled"
+        REFUNDED       = "REFUNDED",       "Refunded"
+
+    invoice_number = models.CharField(max_length=50, unique=True, db_index=True)
+
+    # PROTECT: an invoice outlives the quote it came from. Deleting a quoted
+    # job must not silently delete the customer's financial record.
+    quote = models.ForeignKey(
+        "workforce_api.WorkforceQuote",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="invoices",
+    )
+    # The WORK ServiceRequest this invoice bills for (not the inspection job).
+    job = models.ForeignKey(
+        "service_requests.ServiceRequest",
+        on_delete=models.CASCADE,
+        related_name="workforce_invoices",
+        db_index=True,
+    )
+    customer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="workforce_invoices",
+    )
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="workforce_invoices",
+    )
+    technician = models.ForeignKey(
+        "employees.Employee",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="workforce_invoices",
+    )
+
+    # Billing snapshot, frozen at issue. The customer's profile can change
+    # later; the invoice must keep saying who it was billed to.
+    bill_to_name = models.CharField(max_length=200, blank=True, default="")
+    bill_to_phone = models.CharField(max_length=30, blank=True, default="")
+    bill_to_email = models.EmailField(blank=True, default="")
+    bill_to_address = models.TextField(blank=True, default="")
+
+    service_category = models.CharField(max_length=150, blank=True, default="")
+    service_name = models.CharField(max_length=200, blank=True, default="")
+
+    subtotal_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    inspection_fee_adjusted = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    balance_due = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    currency = models.CharField(max_length=10, default="INR")
+
+    # Payment schedule, from the category's advance_percent. Waterproofing and
+    # masonry need half up front to buy chemicals, cement and sand before any
+    # work starts; standard painting is billed in full. advance_amount equals
+    # total_amount when the category takes 100% up front.
+    advance_percent = models.DecimalField(max_digits=5, decimal_places=2, default=100.00)
+    advance_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    balance_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    advance_due_at = models.DateTimeField(null=True, blank=True)
+    advance_paid_at = models.DateTimeField(null=True, blank=True)
+    balance_due_at = models.DateTimeField(null=True, blank=True)
+
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.DRAFT, db_index=True
+    )
+    issued_at = models.DateTimeField(null=True, blank=True)
+    due_at = models.DateTimeField(null=True, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancellation_reason = models.TextField(blank=True, default="")
+
+    notes = models.TextField(blank=True, default="")
+    metadata = models.JSONField(default=dict, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_invoice"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["job", "status"]),
+            models.Index(fields=["company", "status"]),
+            models.Index(fields=["customer", "status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.invoice_number} - Rs.{self.total_amount} [{self.status}]"
+
+    def save(self, *args, **kwargs):
+        if self.invoice_number:
+            return super().save(*args, **kwargs)
+
+        last_error = None
+        for _attempt in range(5):
+            self.invoice_number = generate_invoice_number()
+            try:
+                with transaction.atomic():
+                    return super().save(*args, **kwargs)
+            except IntegrityError as exc:
+                if "invoice_number" not in str(exc):
+                    raise
+                last_error = exc
+                self.invoice_number = ""
+        raise last_error
+
+
+class WorkforceInvoiceItem(models.Model):
+    """
+    Frozen copy of the quote's line items at the moment the invoice was issued.
+    Copied rather than referenced so a later quote revision cannot rewrite the
+    contents of an invoice the customer has already received.
+    """
+    invoice = models.ForeignKey(
+        WorkforceInvoice, on_delete=models.CASCADE, related_name="items"
+    )
+    section = models.CharField(max_length=50, default="OTHER")
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True, default="")
+    item_type = models.CharField(max_length=50, default="item")
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1.00)
+    unit = models.CharField(max_length=50, default="unit")
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=18.00)
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    line_total = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    sort_order = models.IntegerField(default=0)
+
+    class Meta:
+        db_table = "workforce_invoice_item"
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return f"{self.name} x {self.quantity} = Rs.{self.line_total}"
+
+
+class WorkforceInvoicePayment(models.Model):
+    """
+    One customer payment against an invoice.
+
+    `reference` is unique per invoice: a payment gateway callback is
+    at-least-once, so the same transaction id can arrive twice. The unique
+    constraint is what makes recording a payment idempotent at the database
+    level rather than only in application code.
+    """
+    class Method(models.TextChoices):
+        ONLINE = "ONLINE", "Online / Gateway"
+        UPI    = "UPI",    "UPI"
+        CARD   = "CARD",   "Card"
+        CASH   = "CASH",   "Cash on Service"
+        WALLET = "WALLET", "Customer Wallet"
+        OTHER  = "OTHER",  "Other"
+
+    class Status(models.TextChoices):
+        PENDING  = "PENDING",  "Pending"
+        SUCCESS  = "SUCCESS",  "Success"
+        FAILED   = "FAILED",   "Failed"
+        REFUNDED = "REFUNDED", "Refunded"
+
+    invoice = models.ForeignKey(
+        WorkforceInvoice, on_delete=models.CASCADE, related_name="payments"
+    )
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    method = models.CharField(max_length=20, choices=Method.choices, default=Method.ONLINE)
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.SUCCESS, db_index=True
+    )
+    reference = models.CharField(max_length=200, blank=True, default="")
+    gateway = models.CharField(max_length=50, blank=True, default="")
+    paid_at = models.DateTimeField(null=True, blank=True)
+
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="recorded_invoice_payments",
+    )
+    # Set once this payment has reached the provider's wallet, so the link
+    # from "customer paid" to "provider credited" is inspectable in one hop.
+    ledger_entry = models.ForeignKey(
+        "workforce_api.WalletLedgerEntry",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="source_invoice_payments",
+    )
+    notes = models.CharField(max_length=255, blank=True, default="")
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = "workforce_invoice_payment"
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["invoice", "reference"],
+                condition=models.Q(reference__gt=""),
+                name="workforce_invoice_payment_reference_unique",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["invoice", "status"]),
+        ]
+
+    def __str__(self):
+        return f"Payment Rs.{self.amount} ({self.method}) on {self.invoice_id}"
+
+
+# =============================================================================
+# Document numbering
+#
+# Quote and invoice numbers are dated and sequential within the day:
+#   PQ-20260907-0001, INV-20260907-0001
+#
+# The counter row below is what makes that safe under concurrency. A dated
+# format needs a per-day count, and computing that by reading MAX() and
+# inserting is exactly the race that made quote numbering unreliable before.
+# Here the read and the increment are ONE statement -- an upsert that returns
+# the incremented value -- so two technicians pressing "create quote" in the
+# same millisecond get different numbers without either of them blocking on a
+# table lock.
+# =============================================================================
+
+class WorkforceDocumentCounter(models.Model):
+    scope = models.CharField(max_length=40, db_index=True)   # "QUOTE" | "INVOICE"
+    period = models.CharField(max_length=16, db_index=True)  # "20260907"
+    last_value = models.BigIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_document_counter"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["scope", "period"], name="workforce_document_counter_unique"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.scope} {self.period}: {self.last_value}"
+
+
+def next_document_number(scope, period):
+    """Atomically claim the next number in (scope, period)."""
+    from django.db import connection
+
+    if connection.vendor == "postgresql":
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO workforce_document_counter (scope, period, last_value, updated_at)
+                VALUES (%s, %s, 1, NOW())
+                ON CONFLICT (scope, period)
+                DO UPDATE SET last_value = workforce_document_counter.last_value + 1,
+                              updated_at = NOW()
+                RETURNING last_value
+                """,
+                [scope, period],
+            )
+            return cursor.fetchone()[0]
+
+    # Non-PostgreSQL (SQLite under some test setups): row lock instead. Slower
+    # and serialising, but correct; callers still retry on unique violation.
+    with transaction.atomic():
+        row, _ = WorkforceDocumentCounter.objects.select_for_update().get_or_create(
+            scope=scope, period=period
+        )
+        row.last_value += 1
+        row.save(update_fields=["last_value", "updated_at"])
+        return row.last_value
+
+
+def _dated_number(prefix, scope, when=None):
+    when = when or timezone.localtime()
+    period = when.strftime("%Y%m%d")
+    return "%s-%s-%04d" % (prefix, period, next_document_number(scope, period))
+
+
+# =============================================================================
+# Commercial policy, editable by the SEVO admin
+#
+# Everything here used to be a constant somewhere in the code: the Rs.199
+# inspection fee (four separate literals in service_requests/vendor_views.py),
+# the 15 km / Rs.300 consultation rule, the Rs.30,000 high-value review
+# threshold, the 50% advance on waterproofing and masonry.
+#
+# Money rules change more often than code ships, so they live in a table with
+# an audit trail instead. One row per service category; the seed migration
+# reproduces today's behaviour exactly so nothing moves on deploy.
+# =============================================================================
+
+class WorkforceServicePricingPolicy(models.Model):
+    class ConsultationFeeMode(models.TextChoices):
+        FREE          = "FREE",          "Always free"
+        FLAT          = "FLAT",          "Flat fee"
+        DISTANCE_BAND = "DISTANCE_BAND", "Free within radius, flat fee beyond"
+
+    service_category = models.CharField(max_length=150, unique=True, db_index=True)
+    display_name = models.CharField(max_length=200, blank=True, default="")
+
+    consultation_fee_mode = models.CharField(
+        max_length=20,
+        choices=ConsultationFeeMode.choices,
+        default=ConsultationFeeMode.FLAT,
+    )
+    consultation_fee_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0.00,
+        help_text="Charged when mode is FLAT.",
+    )
+    free_radius_km = models.DecimalField(
+        max_digits=6, decimal_places=2, default=15.00,
+        help_text="DISTANCE_BAND: consultation is free within this radius of the hub.",
+    )
+    beyond_radius_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, default=300.00,
+        help_text="DISTANCE_BAND: charged when the site is beyond free_radius_km.",
+    )
+    # Hosur central hub by default.
+    hub_latitude = models.FloatField(default=12.7409)
+    hub_longitude = models.FloatField(default=77.8253)
+
+    high_value_review_threshold = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+        help_text="Quotes above this are held for admin review BEFORE the customer "
+                  "sees them. Null disables the pre-send gate for this category.",
+    )
+    requires_admin_approval = models.BooleanField(
+        default=True,
+        help_text="Whether a customer-accepted quote waits for SEVO approval "
+                  "before becoming a work booking.",
+    )
+    advance_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=100.00,
+        help_text="Share of the invoice payable up front. 50 for waterproofing "
+                  "and masonry; 100 for standard painting.",
+    )
+    allow_customer_supplied_materials = models.BooleanField(
+        default=False,
+        help_text="Off by default: customer-supplied material voids the "
+                  "workmanship warranty, so quote items claiming it are rejected.",
+    )
+
+    is_active = models.BooleanField(default=True, db_index=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_pricing_policies",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_service_pricing_policy"
+        ordering = ["service_category"]
+        verbose_name_plural = "Workforce service pricing policies"
+
+    def __str__(self):
+        return f"{self.display_name or self.service_category} pricing policy"

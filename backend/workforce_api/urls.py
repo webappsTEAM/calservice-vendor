@@ -3,6 +3,8 @@ workforce-app/backend/workforce_api/urls.py
 Route registrations for Workforce API (/api/workforce/*).
 """
 from django.urls import include, path
+from . import quote_views
+from . import invoice_views
 from .views import (
     WorkforceDispatchHealthView,
     WorkforceSignupView,
@@ -88,6 +90,8 @@ from .views import (
     WorkforceJobCancelAssignmentView,
     WorkforceJobRejectOfferView,
     WorkforceJobTechnicianCancelView,
+    WorkforceJobCustomerCancelSyncView,
+    WorkforceJobClawbackSyncView,
     WorkforceAutoDispatchTriggerView,
     WorkforceJobArriveView,
     WorkforceJobLogisticsLegView,
@@ -96,6 +100,8 @@ from .views import (
     WorkforceJobResendOTPView,
     WorkforceCustomerJobOTPView,
     WorkforceJobPreServicePhotoView,
+    WorkforceJobHoldView,
+    WorkforceJobResumeView,
     WorkforceJobPreServiceStatusView,
     WorkforceJobLiveTrackingView,
     WorkforceJobTimelineView,
@@ -217,6 +223,8 @@ urlpatterns = [
     path("jobs/<int:pk>/cancel-assignment/", WorkforceJobCancelAssignmentView.as_view(), name="workforce-job-cancel-assignment"),
     path("jobs/<int:pk>/reject-offer/", WorkforceJobRejectOfferView.as_view(), name="workforce-job-reject-offer"),
     path("jobs/<int:pk>/cancel/", WorkforceJobTechnicianCancelView.as_view(), name="workforce-job-technician-cancel"),
+    path("jobs/<int:pk>/customer-cancel-sync/", WorkforceJobCustomerCancelSyncView.as_view(), name="workforce-job-customer-cancel-sync"),
+    path("jobs/<int:pk>/clawback-sync/", WorkforceJobClawbackSyncView.as_view(), name="workforce-job-clawback-sync"),
     path("jobs/<int:pk>/arrive/", WorkforceJobArriveView.as_view(), name="workforce-job-arrive"),
     path("jobs/<int:pk>/logistics-leg/", WorkforceJobLogisticsLegView.as_view(), name="workforce-job-logistics-leg"),
     path("jobs/<int:pk>/messages/", WorkforceJobMessagesView.as_view(), name="workforce-job-messages"),
@@ -224,6 +232,8 @@ urlpatterns = [
     path("jobs/<int:pk>/resend-otp/", WorkforceJobResendOTPView.as_view(), name="workforce-job-resend-otp"),
     path("jobs/<int:pk>/customer-otp/", WorkforceCustomerJobOTPView.as_view(), name="workforce-job-customer-otp"),
     path("jobs/<int:pk>/pre-service-photo/", WorkforceJobPreServicePhotoView.as_view(), name="workforce-job-pre-service-photo"),
+    path("jobs/<int:pk>/hold/", WorkforceJobHoldView.as_view(), name="workforce-job-hold"),
+    path("jobs/<int:pk>/resume/", WorkforceJobResumeView.as_view(), name="workforce-job-resume"),
     path("jobs/<int:pk>/pre-service-status/", WorkforceJobPreServiceStatusView.as_view(), name="workforce-job-pre-service-status"),
     path("jobs/<int:pk>/live-tracking/", WorkforceJobLiveTrackingView.as_view(), name="workforce-job-live-tracking"),
     path("jobs/<int:pk>/timeline/", WorkforceJobTimelineView.as_view(), name="workforce-job-timeline"),
@@ -390,6 +400,53 @@ urlpatterns = [
     path("platform/relieving-requests/", PlatformRelievingRequestsView.as_view(), name="platform-relieving-requests"),
     path("platform/relieving-requests/<int:pk>/approve/", PlatformApproveRelievingView.as_view(), name="platform-approve-relieving"),
     path("relieving-requests/<int:pk>/signoff/", RelievingLegalSignoffView.as_view(), name="relieving-legal-signoff"),
+
+    # -- Estimation / Quotation routes -----------------------------------------
+    # The models behind these were deleted by 7204699 and restored in dade298;
+    # the HTTP layer had never been written, so the vendor Estimates screen was
+    # calling ten endpoints that did not exist. Views live in quote_views.py.
+    path("quotes/", quote_views.QuoteListCreateView.as_view(), name="workforce-quotes"),
+    path("quotes/<int:pk>/", quote_views.QuoteDetailView.as_view(), name="workforce-quote-detail"),
+    path("quotes/<int:pk>/items/bulk/", quote_views.QuoteItemsBulkView.as_view(), name="workforce-quote-items-bulk"),
+    path("quotes/<int:pk>/measurements/bulk/", quote_views.QuoteMeasurementsBulkView.as_view(), name="workforce-quote-measurements-bulk"),
+    path("quotes/<int:pk>/inspection/", quote_views.QuoteInspectionView.as_view(), name="workforce-quote-inspection"),
+    path("quotes/<int:pk>/send/", quote_views.QuoteSendView.as_view(), name="workforce-quote-send"),
+    path("quotes/<int:pk>/revise/", quote_views.QuoteReviseView.as_view(), name="workforce-quote-revise"),
+
+    # --- estimation workflow: customer decision -> SEVO admin -> invoice ---
+    # NB: the literal "pending-approval" route must precede "<int:pk>" style
+    # patterns it could otherwise be swallowed by; it is distinct here, but the
+    # decision route is deliberately namespaced under quotes/decision/ so a
+    # token can never be mistaken for a primary key.
+    path("quotes/pending-approval/", invoice_views.QuotePendingApprovalView.as_view(), name="workforce-quotes-pending-approval"),
+    path("quotes/decision/<str:token>/", invoice_views.QuoteCustomerDecisionView.as_view(), name="workforce-quote-decision"),
+    path("quotes/<int:pk>/admin-review/", invoice_views.QuoteAdminReviewView.as_view(), name="workforce-quote-admin-review"),
+
+    path("invoices/", invoice_views.InvoiceListView.as_view(), name="workforce-invoices"),
+    path("invoices/<int:pk>/", invoice_views.InvoiceDetailView.as_view(), name="workforce-invoice-detail"),
+    path("invoices/<int:pk>/payments/", invoice_views.InvoicePaymentView.as_view(), name="workforce-invoice-payments"),
+    path("invoices/<int:pk>/cancel/", invoice_views.InvoiceCancelView.as_view(), name="workforce-invoice-cancel"),
+    path("invoices/<int:pk>/pdf/", invoice_views.InvoicePdfView.as_view(), name="workforce-invoice-pdf"),
+
+    # --- SEVO commercial settings and the pre-send review queue ---
+    path("quotes/pending-review/", invoice_views.QuotePendingPreSendReviewView.as_view(), name="workforce-quotes-pending-review"),
+    path("quotes/<int:pk>/pre-send-review/", invoice_views.QuotePreSendReleaseView.as_view(), name="workforce-quote-pre-send-review"),
+    path("settings/pricing-policies/", invoice_views.PricingPolicyListView.as_view(), name="workforce-pricing-policies"),
+    path("settings/pricing-policies/<int:pk>/", invoice_views.PricingPolicyDetailView.as_view(), name="workforce-pricing-policy-detail"),
+    path("rate-cards/", invoice_views.RateCardListView.as_view(), name="workforce-rate-cards"),
+    path("rate-cards/price/", invoice_views.RateCardPriceView.as_view(), name="workforce-rate-card-price"),
+
+    # --- aliases the vendor frontend already calls (api/workforceService.js) ---
+    # The customer opens the same view whether the link carries a token or the
+    # quote id; the view decides what the value is, so one page serves both.
+    path("customer/quotes/<str:token>/", invoice_views.QuoteCustomerDecisionView.as_view(), name="workforce-customer-quote"),
+    path("customer/quote-token/<str:token>/", invoice_views.QuoteCustomerDecisionView.as_view(), name="workforce-customer-quote-token"),
+    path("customer/quotes/<str:token>/decide/", invoice_views.QuoteCustomerDecisionView.as_view(), name="workforce-customer-quote-decide"),
+    path("customer/quote-token/<str:token>/decide/", invoice_views.QuoteCustomerDecisionView.as_view(), name="workforce-customer-quote-token-decide"),
+
+    path("admin/quotes/metrics/", invoice_views.AdminQuoteMetricsView.as_view(), name="workforce-admin-quote-metrics"),
+    path("admin/quotes/<int:pk>/clear-structural/", invoice_views.AdminClearStructuralView.as_view(), name="workforce-admin-clear-structural"),
+    path("admin/quotes/<int:pk>/retry-conversion/", invoice_views.AdminRetryQuoteConversionView.as_view(), name="workforce-admin-retry-conversion"),
 ]
 
 

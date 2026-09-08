@@ -158,6 +158,17 @@ export async function apiRequest(path, options = {}) {
     return null;
   }
 
+  // Binary responses (invoice PDFs) must not be read as text first -- doing so
+  // corrupts the bytes. Callers that want the raw body ask for it explicitly.
+  if (options.raw) {
+    if (!response.ok) {
+      const error = new Error('Request failed');
+      error.status = response.status;
+      throw error;
+    }
+    return await response.blob();
+  }
+
   const contentType = response.headers.get('content-type');
   const isJson = contentType && contentType.includes('application/json');
   const data = isJson ? await response.json() : await response.text();

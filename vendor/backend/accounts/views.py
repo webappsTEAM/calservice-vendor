@@ -453,26 +453,32 @@ class MeView(APIView):
                     user.save(update_fields=["company"])
             if is_solo_worker and emp:
                 try:
-                    from workforce_api.models import WalletAccount
-                    WalletAccount.objects.get_or_create(
-                        employee=emp,
-                        account_type=WalletAccount.AccountType.INDIVIDUAL_WORKER,
-                        defaults={"company": None, "is_active": True},
-                    )
-                    from vendor_wallet.models import EmployeeWallet
-                    from vendor_wallet.constants import WALLET_ACTIVE
-                    target_company = emp.company or getattr(user, "company", None)
-                    if not target_company and getattr(emp, "company_id", None):
-                        from companies.models import Company
-                        target_company = Company.objects.filter(id=emp.company_id).first()
-                    if not target_company:
-                        from companies.models import Company
-                        target_company = Company.objects.order_by("id").first()
-                    if target_company:
-                        EmployeeWallet.objects.get_or_create(
+                    has_wallet = False
+                    try:
+                        has_wallet = bool(emp.individual_wallet)
+                    except Exception:
+                        has_wallet = False
+                    if not has_wallet:
+                        from workforce_api.models import WalletAccount
+                        WalletAccount.objects.get_or_create(
                             employee=emp,
-                            defaults={"company": target_company, "currency": "INR", "status": WALLET_ACTIVE},
+                            account_type=WalletAccount.AccountType.INDIVIDUAL_WORKER,
+                            defaults={"company": None, "is_active": True},
                         )
+                        from vendor_wallet.models import EmployeeWallet
+                        from vendor_wallet.constants import WALLET_ACTIVE
+                        target_company = emp.company or getattr(user, "company", None)
+                        if not target_company and getattr(emp, "company_id", None):
+                            from companies.models import Company
+                            target_company = Company.objects.filter(id=emp.company_id).first()
+                        if not target_company:
+                            from companies.models import Company
+                            target_company = Company.objects.order_by("id").first()
+                        if target_company:
+                            EmployeeWallet.objects.get_or_create(
+                                employee=emp,
+                                defaults={"company": target_company, "currency": "INR", "status": WALLET_ACTIVE},
+                            )
                 except Exception as _w_err:
                     logger.warning("Could not ensure individual wallet: %s", str(_w_err))
 
@@ -483,7 +489,7 @@ class MeView(APIView):
             )
 
             from workforce_api.services.registration import get_employee_registration_status
-            reg_status = get_employee_registration_status(user)
+            reg_status = get_employee_registration_status(emp or user)
 
             return Response({
                 "id": user.id,

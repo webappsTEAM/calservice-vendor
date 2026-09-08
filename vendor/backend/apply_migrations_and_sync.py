@@ -28,7 +28,19 @@ with connection.cursor() as cursor:
             ADD COLUMN IF NOT EXISTS otp_expires_at TIMESTAMP WITH TIME ZONE,
             ADD COLUMN IF NOT EXISTS otp_attempts INTEGER DEFAULT 0;
         """)
-        print("PreServiceVerification columns verified in PostgreSQL.")
+        cursor.execute("""
+            ALTER TABLE service_requests_servicerequest
+            ADD COLUMN IF NOT EXISTS technician_id BIGINT,
+            ADD COLUMN IF NOT EXISTS technician_heading DOUBLE PRECISION DEFAULT 0.0,
+            ADD COLUMN IF NOT EXISTS technician_speed DOUBLE PRECISION DEFAULT 0.0,
+            ADD COLUMN IF NOT EXISTS technician_accuracy DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS technician_location_updated_at TIMESTAMP WITH TIME ZONE,
+            ADD COLUMN IF NOT EXISTS technician_arrived_at TIMESTAMP WITH TIME ZONE,
+            ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMP WITH TIME ZONE,
+            ADD COLUMN IF NOT EXISTS started_at TIMESTAMP WITH TIME ZONE,
+            ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP WITH TIME ZONE;
+        """)
+        print("ServiceRequest columns verified in PostgreSQL.")
     except Exception as e:
         print("PreServiceVerification alter table notice:", e)
 
