@@ -7809,9 +7809,14 @@ class WorkforceLatencyAuditView(APIView):
 
 
 class WorkforceVerificationSuiteView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
+        if not getattr(settings, "DEBUG", False) and not getattr(request.user, "is_superuser", False):
+            return Response(
+                {"error": "Verification suite is disabled in production", "code": "DISABLED_IN_PRODUCTION"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         try:
             suite_name = request.query_params.get("suite", "master")
             if suite_name == "employee_platform":

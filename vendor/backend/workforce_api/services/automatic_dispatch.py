@@ -6,6 +6,7 @@ proximity evaluation, offer creation, fallback re-assignment, and cross-applicat
 job reconciliation across Workforce and Marketplace.
 """
 import logging
+import datetime
 from datetime import timedelta
 from decimal import Decimal
 from typing import List, Dict, Any, Tuple, Optional
@@ -193,6 +194,91 @@ EXPLICIT_SERVICE_ALIASES = {
     "goods_transport_truck": {"goods_transport_truck", "truck", "mini truck", "goods & transport", "goods and transport", "goods transport", "logistics", "packer & mover", "packers & movers"},
     "goods_transport_two_wheeler": {"goods_transport_two_wheeler", "two wheeler", "bike", "scooter", "goods & transport", "goods and transport", "goods transport", "logistics"},
 }
+
+
+def normalize_service_category(cat: str) -> str:
+    """Normalizes service category into canonical lowercase slug."""
+    raw = str(cat or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if raw in ("truck", "mini_truck", "goods_transport_truck"):
+        return "goods_transport_truck"
+    if raw in ("two_wheeler", "2_wheeler", "goods_transport_two_wheeler"):
+        return "goods_transport_two_wheeler"
+    if raw in ("packers_movers", "packer_mover", "packers_and_movers", "shifting"):
+        return "packers_movers"
+    if raw in ("goods_transport", "goods_and_transport"):
+        return "goods_transport"
+    return raw
+
+
+def parse_preferred_slot_time(preferred_time):
+    """Best-effort parse of slot time into a datetime.time object."""
+    if not preferred_time:
+        return None
+    if isinstance(preferred_time, datetime.time):
+        return preferred_time
+    raw = str(preferred_time).strip()
+    if not raw or raw.lower() in ("asap", "immediate", "none"):
+        return None
+    for sep in ("-", "–", "to "):
+        if sep in raw:
+            raw = raw.split(sep)[0].strip()
+            break
+    for fmt in ("%H:%M", "%H:%M:%S", "%I:%M %p", "%I %p", "%I:%M%p", "%I:%M %P", "%I %P"):
+        try:
+            return datetime.datetime.strptime(raw.upper().replace(".", ""), fmt).time()
+        except ValueError:
+            continue
+    return None
+
+
+def get_scheduled_dispatch_window(job_obj, now=None) -> Tuple[bool, Optional[datetime.datetime], Optional[datetime.datetime]]:
+    """
+    Evaluates whether a ServiceRequest is scheduled for a future window.
+    Only holds future-scheduled bookings when they are outside their pre-service lead time.
+    Returns:
+        (is_future_scheduled: bool, scheduled_start_dt: Optional[datetime], dispatch_window_open_dt: Optional[datetime])
+    """
+    pref_date = getattr(job_obj, "preferred_date", None)
+    if not pref_date:
+        return False, None, None
+
+    now = now or timezone.localtime()
+    current_tz = timezone.get_current_timezone()
+    today = now.date()
+
+    if pref_date < today:
+        # Date in the past -> immediate
+        return False, None, None
+
+    category = normalize_service_category(getattr(job_obj, "service_category", "") or "")
+    if category == "packers_movers":
+        lead_minutes = getattr(settings, "PM_SCHEDULED_DISPATCH_LEAD_MINUTES", 120)
+    else:
+        lead_minutes = getattr(settings, "GT_SCHEDULED_DISPATCH_LEAD_MINUTES", 45)
+
+    slot_time = parse_preferred_slot_time(getattr(job_obj, "preferred_time", None))
+
+    if pref_date == today:
+        if slot_time is None:
+            # Same day without a specific future time slot -> immediate booking
+            return False, None, None
+        naive_dt = datetime.datetime.combine(today, slot_time)
+        scheduled_dt = timezone.make_aware(naive_dt, current_tz) if timezone.is_naive(naive_dt) else naive_dt
+        window_open = scheduled_dt - timedelta(minutes=lead_minutes)
+        if now < window_open:
+            return True, scheduled_dt, window_open
+        return False, scheduled_dt, window_open
+
+    # Future date (pref_date > today)
+    if slot_time is None:
+        # Default to 09:00 AM local time on future date
+        slot_time = datetime.time(9, 0)
+    naive_dt = datetime.datetime.combine(pref_date, slot_time)
+    scheduled_dt = timezone.make_aware(naive_dt, current_tz) if timezone.is_naive(naive_dt) else naive_dt
+    window_open = scheduled_dt - timedelta(minutes=lead_minutes)
+    if now < window_open:
+        return True, scheduled_dt, window_open
+    return False, scheduled_dt, window_open
 
 
 def canonical_service_match(requested_service: str, approved_services: List[str], verified_skills: List[str]) -> Tuple[bool, str, str]:
@@ -1030,6 +1116,15 @@ def _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids):
 
         now = timezone.now()
 
+        # Gate: Scheduled Job Hold (Safety Gate against premature dispatch)
+        is_future, scheduled_dt, window_open = get_scheduled_dispatch_window(job_obj, now=now)
+        if is_future:
+            logger.info(
+                f"[DISPATCH_SCHEDULED_HOLD] Job #{job_id} is scheduled for {scheduled_dt.isoformat()}. "
+                f"Dispatch window opens at {window_open.isoformat()}. Holding job."
+            )
+            return True, f"Scheduled job held: service is at {scheduled_dt.strftime('%Y-%m-%d %H:%M')}; dispatch window opens at {window_open.strftime('%H:%M')}."
+
         logger.info(
             f"[DISPATCH_EVALUATION] job_id={job_obj.id} "
             f"service=\"{job_obj.service_category or job_obj.issue_title}\" "
@@ -1358,6 +1453,10 @@ def dispatch_pending_jobs(company_id=None, limit: int = 50) -> Dict[str, Any]:
     }
 
     for job in pending_jobs:
+        is_future, _, _ = get_scheduled_dispatch_window(job, now=now)
+        if is_future:
+            logger.info(f"[DISPATCH_PENDING_SCHEDULED_HELD] Job #{job.id} held outside scheduled dispatch window.")
+            continue
         logger.info(f"[DISPATCH_JOB_FOUND] Reconciling pending Job #{job.id} ({job.request_id}, status={job.status}).")
         success, msg = dispatch_job(job)
         results["details"].append({"job_id": job.id, "success": success, "message": msg})

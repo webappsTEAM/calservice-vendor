@@ -409,10 +409,16 @@ class ServiceRequest(models.Model):
         pending_dependencies = []
 
         # 1. Check post-service proof
-        proof = getattr(self, "post_service_proof", None)
+        try:
+            proof = getattr(self, "post_service_proof", None)
+        except Exception:
+            proof = None
         if not proof:
             from workforce_api.models import PostServiceProof
-            proof = PostServiceProof.objects.filter(job=self).first()
+            try:
+                proof = PostServiceProof.objects.filter(job=self).first()
+            except Exception:
+                proof = None
 
         if not proof or not proof.is_submitted:
             pending_dependencies.append("Post-service proof (photos and completion notes) has not been submitted.")
@@ -466,6 +472,21 @@ class ServiceRequest(models.Model):
                     pending_dependencies.append(f"Payment status is '{self.payment_status}' (must be PAID before closing job).")
         except Exception as e:
             pending_dependencies.append(f"Payment verification failed: {str(e)}")
+
+        # 5. Check TripStops (Multi-Stop GT deliveries)
+        # A booking with TripStops cannot become COMPLETED until every required stop has completed_at.
+        try:
+            from service_requests.models import TripStop
+            stops = TripStop.objects.filter(service_request=self)
+            if stops.exists():
+                incomplete_stops = [s for s in stops if s.completed_at is None]
+                if incomplete_stops:
+                    stop_descs = [f"Stop #{getattr(s, 'sequence', '?')} ({getattr(s, 'stop_type', 'STOP')})" for s in incomplete_stops]
+                    pending_dependencies.append(
+                        f"Required trip stops have not been completed: {', '.join(stop_descs)}."
+                    )
+        except Exception as e:
+            pass
 
         is_ready = len(pending_dependencies) == 0
         reason = "Ready for completion." if is_ready else f"Cannot complete ServiceRequest: {'; '.join(pending_dependencies)}"
