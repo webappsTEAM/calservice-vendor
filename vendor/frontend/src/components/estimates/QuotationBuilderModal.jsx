@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Plus,
@@ -11,6 +11,7 @@ import {
   FileText,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   Clock,
   Sparkles,
   ShieldCheck,
@@ -21,6 +22,7 @@ import PaintingInspectionForm from './PaintingInspectionForm.jsx';
 import MasonInspectionForm from './MasonInspectionForm.jsx';
 import {
   apiGetRateCards,
+  apiPriceRateCardLine,
   apiGetQuoteDetail,
   apiCreateQuote,
   apiUpdateQuoteDraft,
@@ -29,6 +31,30 @@ import {
   apiSaveQuoteInspection,
   apiSendQuoteToCustomer,
 } from '../../api/workforceService.js';
+
+/**
+ * How a rate card prices, in the dropdown. "₹0/sqft" was shown for every flat,
+ * banded, tiered and quote-only item, which is not what any of them cost.
+ */
+function describeRate(rc) {
+  switch (rc.pricing_model) {
+    case 'PER_UNIT':
+      return `₹${rc.default_rate}/${rc.unit}`;
+    case 'FLAT':
+      return `₹${rc.default_rate} flat`;
+    case 'TIERED': {
+      const rates = Object.values(rc.pricing_config?.tiers || {});
+      return rates.length ? `₹${Math.min(...rates)}–₹${Math.max(...rates)}/${rc.unit}` : 'tiered';
+    }
+    case 'CAPACITY_BAND':
+    case 'SIZE_BAND':
+      return 'priced by size';
+    case 'QUOTE_ONLY':
+      return 'priced on site';
+    default:
+      return `₹${rc.default_rate}/${rc.unit}`;
+  }
+}
 
 export default function QuotationBuilderModal({
   job,
@@ -57,6 +83,9 @@ export default function QuotationBuilderModal({
   const [measurements, setMeasurements] = useState([]);
   const [items, setItems] = useState([]);
   const [rateCards, setRateCards] = useState([]);
+  // Line indexes currently being re-priced by the server, so the UI can say
+  // "working" instead of showing a stale figure as if it were final.
+  const [pricingIndexes, setPricingIndexes] = useState([]);
 
   const isPainting =
     job?.service_category?.toLowerCase().includes('painting') ||
@@ -101,22 +130,12 @@ export default function QuotationBuilderModal({
           setTitle(`Quotation for ${job.issue_title || job.service_category}`);
           setDescription(`Site inspection and estimation for ${job.customer_name || 'Customer'}.`);
 
-          // Pre-populate initial item suggestions from rate cards if empty
-          if (rCards && rCards.length > 0) {
-            const defaults = rCards.slice(0, 3).map((rc, idx) => ({
-              id: `temp_${idx}`,
-              section: rc.section,
-              name: rc.item_name,
-              description: rc.description || '',
-              quantity: 1,
-              unit: rc.unit,
-              unit_price: parseFloat(rc.default_rate) || 0,
-              tax_rate: parseFloat(rc.tax_rate) || 18,
-              discount_amount: 0,
-              material_source: 'CALTRACK',
-            }));
-            setItems(defaults);
-          }
+          // Deliberately no pre-populated line items. Seeding the first three
+          // rate cards put work on the quote that the technician had not
+          // chosen and the customer had not been shown -- and for banded or
+          // quote-only items, default_rate is not the price at all, so the
+          // suggested figures were wrong as well as unasked for.
+          setItems([]);
         }
       } catch (err) {
         console.error('Failed to load quotation builder data:', err);
@@ -197,28 +216,136 @@ export default function QuotationBuilderModal({
   const handleSelectRateCardItem = (rcId) => {
     const rc = rateCards.find((r) => r.id === parseInt(rcId));
     if (!rc) return;
-    setItems([
-      ...items,
-      {
-        id: `temp_${Date.now()}`,
-        section: rc.section,
-        name: rc.item_name,
-        description: rc.description || '',
-        quantity: 1,
-        unit: rc.unit,
-        unit_price: parseFloat(rc.default_rate) || 0,
-        tax_rate: parseFloat(rc.tax_rate) || 18,
-        discount_amount: 0,
-        material_source: 'CALTRACK',
-      },
-    ]);
+
+    const tiers = Object.keys(rc.pricing_config?.tiers || {});
+    const next = {
+      id: `temp_${Date.now()}`,
+      rate_card_id: rc.id,
+      pricing_model: rc.pricing_model,
+      pricing_tiers: tiers,
+      pricing_tier: tiers.length === 1 ? tiers[0] : '',
+      minimum_quantity: parseFloat(rc.minimum_quantity) || 0,
+      pricing_note: '',
+      pricing_error: '',
+      section: rc.section,
+      name: rc.item_name,
+      description: rc.description || '',
+      quantity: rc.minimum_quantity > 0 ? parseFloat(rc.minimum_quantity) : 1,
+      unit: rc.unit,
+      // Left at zero until the server prices it. Showing default_rate here
+      // would be a lie for every banded, tiered, flat or quote-only item.
+      unit_price: 0,
+      total_amount: 0,
+      tax_rate: parseFloat(rc.tax_rate) || 18,
+      discount_amount: 0,
+      material_source: 'CALTRACK',
+      warranty_tier: rc.warranty_tier || 'NONE',
+      advance_percent: rc.advance_percent,
+    };
+
+    const nextIndex = items.length;
+    setItems([...items, next]);
+
+    if (rc.pricing_model === 'QUOTE_ONLY') {
+      // No standard rate exists; the technician sets the price.
+      handleUpdateItem(nextIndex, 'pricing_note', 'No standard rate — enter the price for this site.');
+    } else if (rc.pricing_model === 'TIERED' && !next.pricing_tier) {
+      handleUpdateItem(nextIndex, 'pricing_note', 'Choose a specification to price this line.');
+    } else {
+      repriceLine(nextIndex, next);
+    }
+  };
+
+  /**
+   * Ask the backend what this line costs.
+   *
+   * Slab, capacity-band, size-band and minimum-quantity rules live in one
+   * place on the server (services/rate_card_pricing.py). Reimplementing them
+   * in the browser would mean two sets of prices that drift apart, and the
+   * customer would be shown whichever one the UI happened to compute.
+   */
+  const repriceLine = async (index, itemOverride = null) => {
+    const item = itemOverride || items[index];
+    if (!item?.rate_card_id || item.pricing_model === 'QUOTE_ONLY') return;
+
+    setPricingIndexes((prev) => [...new Set([...prev, index])]);
+    try {
+      const priced = await apiPriceRateCardLine(
+        item.rate_card_id,
+        item.quantity,
+        item.pricing_tier || null
+      );
+      setItems((prev) => {
+        const updated = [...prev];
+        if (!updated[index]) return prev;
+        updated[index] = {
+          ...updated[index],
+          unit_price: priced.unit_price,
+          total_amount: priced.line_total,
+          tax_rate: priced.tax_rate,
+          warranty_tier: priced.warranty_tier || updated[index].warranty_tier,
+          pricing_note: priced.note || '',
+          pricing_error: '',
+        };
+        return updated;
+      });
+    } catch (err) {
+      // The refusal message is the useful part -- "minimum 500 sqft", "choose a
+      // specification" -- so it is shown on the line rather than swallowed.
+      setItems((prev) => {
+        const updated = [...prev];
+        if (!updated[index]) return prev;
+        updated[index] = {
+          ...updated[index],
+          unit_price: 0,
+          total_amount: 0,
+          pricing_error: err?.message || 'Could not price this line.',
+          pricing_note: '',
+        };
+        return updated;
+      });
+    } finally {
+      setPricingIndexes((prev) => prev.filter((i) => i !== index));
+    }
   };
 
   const handleUpdateItem = (index, field, value) => {
-    const updated = [...items];
-    updated[index] = { ...updated[index], [field]: value };
-    setItems(updated);
+    setItems((prev) => {
+      const updated = [...prev];
+      if (!updated[index]) return prev;
+      updated[index] = { ...updated[index], [field]: value };
+      return updated;
+    });
   };
+
+  // Quantity and specification are the two inputs that change the price, so
+  // both re-ask the server. Debounced: a technician typing "450" should cause
+  // one request, not three.
+  const repriceTimersRef = useRef({});
+  const handlePricedFieldChange = (index, field, value) => {
+    handleUpdateItem(index, field, value);
+    const timers = repriceTimersRef.current;
+    if (timers[index]) clearTimeout(timers[index]);
+    timers[index] = setTimeout(() => {
+      setItems((current) => {
+        const item = current[index];
+        if (item?.rate_card_id && item.pricing_model !== 'QUOTE_ONLY') {
+          repriceLine(index, { ...item, [field]: value });
+        }
+        return current;
+      });
+    }, 400);
+  };
+
+  // The advance the customer must pay up front is the largest any line demands:
+  // one waterproofing line in an otherwise ordinary painting quote still needs
+  // materials bought before work starts.
+  const suggestedAdvancePercent = items.reduce((highest, item) => {
+    const pct = parseFloat(item.advance_percent);
+    return Number.isFinite(pct) && pct > highest ? pct : highest;
+  }, 0) || null;
+
+  const pricingProblems = items.filter((i) => i.pricing_error);
 
   const handleRemoveItem = (index) => {
     setItems(items.filter((_, idx) => idx !== index));
@@ -267,6 +394,17 @@ export default function QuotationBuilderModal({
 
   // Save Draft to Backend
   const handleSaveDraft = async () => {
+    // A line the rate card refused has no price. Saving it would send the
+    // customer a quotation with a zero on it, so the refusal is surfaced here
+    // instead of being discovered after the quote has gone out.
+    if (pricingProblems.length > 0) {
+      setError(
+        `${pricingProblems.length} line item${pricingProblems.length > 1 ? 's have' : ' has'} `
+        + `an unresolved pricing problem: ${pricingProblems[0].pricing_error}`
+      );
+      return;
+    }
+
     setSaving(true);
     setError(null);
     setSuccessMsg(null);
@@ -285,6 +423,9 @@ export default function QuotationBuilderModal({
           inspection_fee: job.total_amount || 0,
           painting_details: isPainting ? inspectionData : undefined,
           mason_details: isMason ? inspectionData : undefined,
+          // Highest advance any selected item demands. Null leaves the
+          // category's own policy in charge.
+          advance_percent: suggestedAdvancePercent,
         });
         currentId = created.id;
         setActiveQuoteId(created.id);
@@ -295,12 +436,35 @@ export default function QuotationBuilderModal({
           description,
           inspection_fee_adjusted: inspectionFeeAdjusted,
           structural_impact: inspectionData.structural_impact || 'NONE',
+          advance_percent: suggestedAdvancePercent,
         });
       }
 
       // Save Line Items in bulk
+      // Only the fields the API accepts are sent -- the pricing_* keys are
+      // builder state for showing the technician why a line costs what it
+      // does, not part of the quotation.
       if (items.length > 0) {
-        await apiBulkSaveQuoteItems(currentId, items);
+        await apiBulkSaveQuoteItems(
+          currentId,
+          items.map((i) => ({
+            section: i.section,
+            name: i.name,
+            description: i.description,
+            item_type: i.item_type || 'item',
+            quantity: i.quantity,
+            unit: i.unit,
+            unit_price: i.unit_price,
+            tax_rate: i.tax_rate,
+            discount_amount: i.discount_amount,
+            total_amount: i.total_amount,
+            material_source: i.material_source,
+            is_customer_supplied: Boolean(i.is_customer_supplied),
+            warranty_tier: i.warranty_tier || 'NONE',
+            notes: i.notes || '',
+            sort_order: i.sort_order,
+          }))
+        );
       }
 
       // Save Measurements
@@ -629,7 +793,7 @@ export default function QuotationBuilderModal({
                       </option>
                       {rateCards.map((rc) => (
                         <option key={rc.id} value={rc.id}>
-                          [{rc.section}] {rc.item_name} — ₹{rc.default_rate}/{rc.unit}
+                          [{rc.section}] {rc.item_name} — {describeRate(rc)}
                         </option>
                       ))}
                     </select>
@@ -674,6 +838,26 @@ export default function QuotationBuilderModal({
                             />
                           </div>
 
+                          {item.pricing_tiers?.length > 0 && (
+                            <div className="sm:col-span-3">
+                              <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">
+                                Specification
+                              </label>
+                              <select
+                                value={item.pricing_tier || ''}
+                                onChange={(e) =>
+                                  handlePricedFieldChange(idx, 'pricing_tier', e.target.value)
+                                }
+                                className="w-full text-xs rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2"
+                              >
+                                <option value="">Choose…</option>
+                                {item.pricing_tiers.map((t) => (
+                                  <option key={t} value={t}>{t}</option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+
                           <div className="sm:col-span-2">
                             <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">
                               Quantity
@@ -683,7 +867,7 @@ export default function QuotationBuilderModal({
                               step="0.1"
                               value={item.quantity || ''}
                               onChange={(e) =>
-                                handleUpdateItem(idx, 'quantity', parseFloat(e.target.value) || 0)
+                                handlePricedFieldChange(idx, 'quantity', parseFloat(e.target.value) || 0)
                               }
                               className="w-full text-xs font-medium rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2"
                             />
@@ -706,15 +890,21 @@ export default function QuotationBuilderModal({
                           <div className="sm:col-span-3">
                             <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">
                               Rate (₹)
+                              {item.rate_card_id && item.pricing_model !== 'QUOTE_ONLY' && (
+                                <span className="ml-1 font-normal normal-case text-gray-400">
+                                  set by rate card
+                                </span>
+                              )}
                             </label>
                             <input
                               type="number"
                               step="0.1"
                               value={item.unit_price || ''}
+                              disabled={Boolean(item.rate_card_id) && item.pricing_model !== 'QUOTE_ONLY'}
                               onChange={(e) =>
                                 handleUpdateItem(idx, 'unit_price', parseFloat(e.target.value) || 0)
                               }
-                              className="w-full text-xs font-medium rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2"
+                              className="w-full text-xs font-medium rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2 disabled:bg-gray-100 disabled:text-gray-500 dark:disabled:bg-gray-900"
                             />
                           </div>
 
@@ -752,10 +942,16 @@ export default function QuotationBuilderModal({
                               Net Total
                             </span>
                             <span className="text-xs font-extrabold text-gray-900 dark:text-gray-100">
-                              ₹
-                              {(
-                                Math.max(0, (item.quantity || 1) * (item.unit_price || 0) - (item.discount_amount || 0))
-                              ).toLocaleString()}
+                              {pricingIndexes.includes(idx) ? (
+                                <span className="text-gray-400 font-medium">pricing…</span>
+                              ) : (
+                                <>
+                                  ₹
+                                  {(
+                                    Math.max(0, (item.quantity || 1) * (item.unit_price || 0) - (item.discount_amount || 0))
+                                  ).toLocaleString()}
+                                </>
+                              )}
                             </span>
                           </div>
 
@@ -768,6 +964,30 @@ export default function QuotationBuilderModal({
                             </button>
                           </div>
                         </div>
+
+                        {/* What the rate card decided about this line, or why it
+                            refused. Shown here rather than on save so the
+                            technician finds out while they can still change it. */}
+                        {(item.pricing_error || item.pricing_note || item.warranty_tier !== 'NONE') && (
+                          <div className="pt-2 border-t border-gray-100 dark:border-gray-700/60 space-y-1.5">
+                            {item.pricing_error && (
+                              <p className="text-[11px] text-red-600 dark:text-red-400 font-medium flex items-start gap-1.5">
+                                <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
+                                {item.pricing_error}
+                              </p>
+                            )}
+                            {!item.pricing_error && item.pricing_note && (
+                              <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                                {item.pricing_note}
+                              </p>
+                            )}
+                            {item.warranty_tier && item.warranty_tier !== 'NONE' && (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded-full">
+                                {item.warranty_tier === '10_YEAR' ? '10-Year Warranty' : '5-Year Warranty'}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
