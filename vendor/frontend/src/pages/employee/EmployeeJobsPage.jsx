@@ -218,6 +218,13 @@ export function EmployeeJobsPage() {
   // Job Details Modal
   const [selectedJobForDetails, setSelectedJobForDetails] = useState(null);
 
+  // Per-job inline action errors — replaces alert() entirely.
+  // Maps jobId → { code, message, isExpired, isAlreadyAccepted }
+  const [actionErrors, setActionErrors] = useState({});
+
+  const clearJobError = (jobId) =>
+    setActionErrors(prev => { const n = { ...prev }; delete n[jobId]; return n; });
+
   // Customer Start OTP Modal
   const [otpModalJob, setOtpModalJob] = useState(null);
   const [enteredOtp, setEnteredOtp] = useState('');
@@ -252,20 +259,37 @@ export function EmployeeJobsPage() {
 
   const handleAcceptOffer = async (jobId, e) => {
     e?.stopPropagation?.();
+    // Clear any stale error for this card before retrying
+    clearJobError(jobId);
     try {
       setActionLoadingId(jobId);
       await apiAcceptJobOffer(jobId);
       // Auto-start transit for immediate live first-person navigation
       try {
         await apiTransitionJob(jobId, 'ON_THE_WAY');
-      } catch (err) {
-        // Continue if transition already initiated
+      } catch (_) {
+        // Continue — transition may have already been initiated
       }
       if (selectedJobForDetails?.id === jobId) setSelectedJobForDetails(null);
-      // Immediately place into active navigation cockpit
       navigate(`/workforce/employee/dashboard?job_id=${jobId}&nav=1`);
     } catch (err) {
-      alert(err.message || 'Could not accept job offer.');
+      const msg = err?.message || 'Could not accept job offer.';
+      const code = err?.code || '';
+      // Classify the error so the card can show the right inline state
+      const isExpired =
+        code === 'OFFER_EXPIRED' ||
+        code === 'NO_ACTIVE_OFFER' ||
+        msg.toLowerCase().includes('expired') ||
+        msg.toLowerCase().includes('no active job offer');
+      const isAlreadyAccepted =
+        code === 'JOB_ALREADY_ACCEPTED' ||
+        msg.toLowerCase().includes('already been accepted');
+      setActionErrors(prev => ({
+        ...prev,
+        [jobId]: { code, message: msg, isExpired, isAlreadyAccepted },
+      }));
+      // Refresh the list so the card reflects server reality (may disappear if reassigned)
+      loadJobs();
     } finally {
       setActionLoadingId(null);
     }
@@ -274,13 +298,19 @@ export function EmployeeJobsPage() {
   const handleRejectOffer = async (jobId, e) => {
     e?.stopPropagation?.();
     if (!window.confirm('Decline this job offer? It will be reassigned to another nearby technician.')) return;
+    clearJobError(jobId);
     try {
       setActionLoadingId(jobId);
       await apiRejectJobOffer(jobId, 'Technician declined');
       await loadJobs();
       if (selectedJobForDetails?.id === jobId) setSelectedJobForDetails(null);
     } catch (err) {
-      alert(err.message || 'Could not decline job offer.');
+      const msg = err?.message || 'Could not decline job offer.';
+      const code = err?.code || '';
+      setActionErrors(prev => ({
+        ...prev,
+        [jobId]: { code, message: msg, isExpired: false, isAlreadyAccepted: false },
+      }));
     } finally {
       setActionLoadingId(null);
     }
@@ -288,14 +318,19 @@ export function EmployeeJobsPage() {
 
   const handleStartTrip = async (jobId, e) => {
     e?.stopPropagation?.();
+    clearJobError(jobId);
     try {
       setActionLoadingId(jobId);
       await apiTransitionJob(jobId, 'ON_THE_WAY');
       if (selectedJobForDetails?.id === jobId) setSelectedJobForDetails(null);
-      // Immediately place into active navigation cockpit
       navigate(`/workforce/employee/dashboard?job_id=${jobId}&nav=1`);
     } catch (err) {
-      alert(err.message || 'Failed to update status.');
+      const msg = err?.message || 'Failed to update status.';
+      const code = err?.code || '';
+      setActionErrors(prev => ({
+        ...prev,
+        [jobId]: { code, message: msg, isExpired: false, isAlreadyAccepted: false },
+      }));
     } finally {
       setActionLoadingId(null);
     }
@@ -303,13 +338,19 @@ export function EmployeeJobsPage() {
 
   const handleArrived = async (jobId, e) => {
     e?.stopPropagation?.();
+    clearJobError(jobId);
     try {
       setActionLoadingId(jobId);
       await apiTransitionJob(jobId, 'ARRIVED');
       await loadJobs();
       if (selectedJobForDetails?.id === jobId) setSelectedJobForDetails(null);
     } catch (err) {
-      alert(err.message || 'Failed to update status.');
+      const msg = err?.message || 'Failed to update status.';
+      const code = err?.code || '';
+      setActionErrors(prev => ({
+        ...prev,
+        [jobId]: { code, message: msg, isExpired: false, isAlreadyAccepted: false },
+      }));
     } finally {
       setActionLoadingId(null);
     }
@@ -702,27 +743,81 @@ export function EmployeeJobsPage() {
                     </button>
 
                     <div className="flex items-center gap-2">
-                      {/* OFFER ACTIONS */}
-                      {isOffer && (
-                        <>
-                          <button
-                            type="button"
-                            onClick={(e) => handleRejectOffer(job.id, e)}
-                            disabled={actionLoadingId === job.id}
-                            className="px-3.5 py-2 bg-white hover:bg-rose-50 text-slate-700 hover:text-rose-700 border border-slate-200 text-xs font-bold rounded-xl transition-all cursor-pointer"
-                          >
-                            Decline
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => handleAcceptOffer(job.id, e)}
-                            disabled={actionLoadingId === job.id}
-                            className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-black rounded-xl shadow-sm transition-all cursor-pointer flex items-center gap-1.5"
-                          >
-                            <Zap className="w-4 h-4 fill-current" />
-                            <span>Accept • ₹{payoutAmount}</span>
-                          </button>
-                        </>
+                      {/* OFFER ACTIONS — or inline error state when accept/decline fails */}
+                      {isOffer && (() => {
+                        const jobErr = actionErrors[job.id];
+                        if (jobErr) {
+                          // Offer expired / no longer active → subdued pill + refresh
+                          if (jobErr.isExpired || jobErr.isAlreadyAccepted) {
+                            return (
+                              <>
+                                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 text-slate-500 border border-slate-200 text-xs font-bold rounded-xl">
+                                  <AlertCircle className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                  <span>
+                                    {jobErr.isAlreadyAccepted
+                                      ? 'Taken by another'
+                                      : 'Offer expired'}
+                                  </span>
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => { clearJobError(job.id); loadJobs(); }}
+                                  className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-600 border border-slate-200 text-xs font-bold rounded-xl transition-all cursor-pointer inline-flex items-center gap-1"
+                                >
+                                  <RotateCcw className="w-3 h-3" />
+                                  <span>Refresh</span>
+                                </button>
+                              </>
+                            );
+                          }
+                          // Other action error → rose pill + dismiss
+                          return (
+                            <>
+                              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 text-rose-700 border border-rose-200 text-xs font-semibold rounded-xl max-w-[200px]">
+                                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                <span className="truncate">{jobErr.message}</span>
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => clearJobError(job.id)}
+                                className="p-1.5 bg-white hover:bg-slate-100 text-slate-500 border border-slate-200 rounded-lg transition-all cursor-pointer"
+                                title="Dismiss"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </>
+                          );
+                        }
+                        // Normal offer state — Decline + Accept buttons
+                        return (
+                          <>
+                            <button
+                              type="button"
+                              onClick={(e) => handleRejectOffer(job.id, e)}
+                              disabled={actionLoadingId === job.id}
+                              className="px-3.5 py-2 bg-white hover:bg-rose-50 text-slate-700 hover:text-rose-700 border border-slate-200 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                            >
+                              Decline
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => handleAcceptOffer(job.id, e)}
+                              disabled={actionLoadingId === job.id}
+                              className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-black rounded-xl shadow-sm transition-all cursor-pointer flex items-center gap-1.5"
+                            >
+                              <Zap className="w-4 h-4 fill-current" />
+                              <span>Accept • ₹{payoutAmount}</span>
+                            </button>
+                          </>
+                        );
+                      })()}
+
+                      {/* Non-offer action errors (start trip / arrived) */}
+                      {!isOffer && actionErrors[job.id] && (
+                        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 text-rose-700 border border-rose-200 text-xs font-semibold rounded-xl">
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                          <span>{actionErrors[job.id].message}</span>
+                        </span>
                       )}
 
                       {/* ASSIGNED -> START TRIP */}

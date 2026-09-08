@@ -36,7 +36,7 @@ from accounts.authentication import set_auth_cookies
 from companies.models import Company, Region
 from employees.models import Employee, PresenceLog
 from employees.utils import generate_next_employee_id
-from service_requests.models import ServiceRequest
+from service_requests.models import ServiceRequest, CatalogCategory, Service
 from service_requests.state_machine import apply_transition
 from time_tracking.models import Location, TimeLog
 from time_tracking.geo import evaluate
@@ -71,6 +71,7 @@ from .serializers import (
 from .models import (
     WorkforceEmployeeSchedule,
     WorkforceSkill,
+    WorkforceServiceCatalog,
     WorkforceEmployeeSkill,
     WorkforceComplianceRequirement,
     WorkforceEmployeeCompliance,
@@ -1333,11 +1334,12 @@ class WorkforceEmployeeServiceRequestView(APIView):
                 return Response({"error": "service_id or service_ids is required."}, status=status.HTTP_400_BAD_REQUEST)
             raw_ids = [single_id]
 
-        from service_requests.models import Service
+        from service_requests.models import CatalogCategory, Service
         from workforce_api.models import WorkforceServiceCatalog
 
-        # Query services from DB
+        # Query services and categories from DB
         db_services = {s.id: s for s in Service.objects.filter(pk__in=raw_ids, is_active=True).select_related("category")}
+        db_categories = {c.id: c for c in CatalogCategory.objects.filter(pk__in=raw_ids, is_active=True).prefetch_related("services")}
         wf_services = {s.id: s for s in WorkforceServiceCatalog.objects.filter(pk__in=raw_ids, is_active=True)}
 
         bank_details = emp.bank_details or {}
@@ -1348,37 +1350,46 @@ class WorkforceEmployeeServiceRequestView(APIView):
         requested_count = 0
         last_name = ""
 
+        # Normalize raw_ids to process both specific services and categories
+        items_to_process = []
         for sid in raw_ids:
             try:
                 sid_int = int(sid)
             except (ValueError, TypeError):
                 sid_int = sid
 
-            svc = db_services.get(sid_int)
-            if svc:
-                s_name = svc.name
-                c_name = svc.category.name if svc.category else "General"
+            if sid_int in db_categories:
+                cat = db_categories[sid_int]
+                # Include the category itself
+                items_to_process.append((sid_int, cat.name, cat.name))
+                # Also include its active child services so dispatch matching succeeds
+                for child_svc in cat.services.filter(is_active=True):
+                    items_to_process.append((child_svc.id, child_svc.name, cat.name))
+            elif sid_int in db_services:
+                svc = db_services[sid_int]
+                items_to_process.append((sid_int, svc.name, svc.category.name if svc.category else "General"))
             elif sid_int in wf_services:
                 wf_s = wf_services[sid_int]
-                s_name = wf_s.name
-                c_name = wf_s.category or "General"
+                items_to_process.append((sid_int, wf_s.name, wf_s.category or "General"))
             else:
-                s_name = request.data.get("name", "").strip() or f"Service #{sid}"
-                c_name = "General"
+                custom_name = request.data.get("name", "").strip() or f"Service #{sid}"
+                items_to_process.append((sid_int, custom_name, "General"))
 
-            existing = next((s for s in services if str(s.get("id")) == str(sid)), None)
+        for sid_val, s_name, c_name in items_to_process:
+            existing = next((s for s in services if str(s.get("id")) == str(sid_val)), None)
             if existing:
                 if existing.get("status") == "approved" and existing.get("request_type") != "remove":
-                    if len(raw_ids) == 1:
+                    if len(raw_ids) == 1 and str(sid_val) == str(raw_ids[0]):
                         return Response({"error": f"Service '{s_name}' is already approved for dispatch."}, status=status.HTTP_400_BAD_REQUEST)
                     continue
                 if existing.get("status") == "pending":
-                    if len(raw_ids) == 1:
+                    if len(raw_ids) == 1 and str(sid_val) == str(raw_ids[0]):
                         return Response({"error": f"Authorization request for '{s_name}' is already pending review."}, status=status.HTTP_400_BAD_REQUEST)
                     continue
                 existing["status"] = "pending"
                 existing["request_type"] = "add"
                 existing["name"] = s_name
+                existing["category"] = c_name
                 existing["category_name"] = c_name
                 existing["requested_at"] = now_iso
                 existing["rejection_reason"] = ""
@@ -1386,8 +1397,9 @@ class WorkforceEmployeeServiceRequestView(APIView):
                 last_name = s_name
             else:
                 services.append({
-                    "id": sid_int if isinstance(sid_int, int) else sid,
+                    "id": sid_val if isinstance(sid_val, int) else sid_val,
                     "name": s_name,
+                    "category": c_name,
                     "category_name": c_name,
                     "status": "pending",
                     "request_type": "add",
@@ -1477,12 +1489,25 @@ class WorkforceAdminPendingServicesListView(APIView):
             services = onboarding.get("services", [])
             for s in services:
                 if s.get("status") == "pending":
+                    s_name = s.get("name")
+                    if not s_name or str(s_name).startswith("Service #"):
+                        try:
+                            cat = CatalogCategory.objects.filter(pk=int(s.get("id"))).first()
+                            if cat:
+                                s_name = cat.name
+                            else:
+                                svc = Service.objects.filter(pk=int(s.get("id"))).first()
+                                if svc:
+                                    s_name = svc.name
+                        except (ValueError, TypeError):
+                            pass
+
                     pending_requests.append({
                         "employee_id": emp.id,
                         "employee_code": emp.employee_id,
                         "employee_name": emp.user.get_full_name() or emp.user.username,
                         "service_id": s.get("id"),
-                        "service_name": s.get("name"),
+                        "service_name": s_name,
                         "request_type": s.get("request_type", "add"),
                         "requested_at": s.get("requested_at") or s.get("removal_requested_at") or timezone.now().isoformat(),
                     })
@@ -1537,6 +1562,48 @@ class WorkforceAdminServiceDecideView(APIView):
                 target_svc["approved_at"] = timezone.now().isoformat()
                 target_svc["approved_by"] = request.user.username
                 msg = f"Service '{target_svc.get('name')}' authorized & approved."
+
+                # If target_svc corresponds to a CatalogCategory, dynamically ensure canonical metadata
+                # and approve its active child services directly from the database catalog.
+                try:
+                    cat_obj = CatalogCategory.objects.filter(pk=int(service_id), is_active=True).prefetch_related("services").first()
+                except (ValueError, TypeError):
+                    cat_obj = None
+
+                if cat_obj:
+                    target_svc["name"] = cat_obj.name
+                    target_svc["category"] = cat_obj.name
+                    target_svc["category_name"] = cat_obj.name
+                    for child_svc in cat_obj.services.filter(is_active=True):
+                        exist_child = next((s for s in services if str(s.get("id")) == str(child_svc.id) or s.get("name") == child_svc.name), None)
+                        if exist_child:
+                            exist_child["status"] = "approved"
+                            exist_child["name"] = child_svc.name
+                            exist_child["category"] = cat_obj.name
+                            exist_child["category_name"] = cat_obj.name
+                            exist_child["approved_at"] = target_svc.get("approved_at")
+                            exist_child["approved_by"] = target_svc.get("approved_by")
+                            exist_child.pop("request_type", None)
+                        else:
+                            services.append({
+                                "id": child_svc.id,
+                                "name": child_svc.name,
+                                "category": cat_obj.name,
+                                "category_name": cat_obj.name,
+                                "status": "approved",
+                                "approved_at": target_svc.get("approved_at"),
+                                "approved_by": target_svc.get("approved_by"),
+                            })
+                else:
+                    try:
+                        svc_obj = Service.objects.filter(pk=int(service_id), is_active=True).select_related("category").first()
+                    except (ValueError, TypeError):
+                        svc_obj = None
+                    if svc_obj:
+                        target_svc["name"] = svc_obj.name
+                        if svc_obj.category:
+                            target_svc["category"] = svc_obj.category.name
+                            target_svc["category_name"] = svc_obj.category.name
         else:
             if request_type == "remove":
                 target_svc["status"] = "approved"
@@ -1627,6 +1694,46 @@ class WorkforceAdminBulkServiceDecideView(APIView):
                     svc.pop("request_type", None)
                     svc["approved_at"] = now_iso
                     svc["approved_by"] = current_username
+
+                    try:
+                        cat_obj = CatalogCategory.objects.filter(pk=int(svc.get("id")), is_active=True).prefetch_related("services").first()
+                    except (ValueError, TypeError):
+                        cat_obj = None
+
+                    if cat_obj:
+                        svc["name"] = cat_obj.name
+                        svc["category"] = cat_obj.name
+                        svc["category_name"] = cat_obj.name
+                        for child_svc in cat_obj.services.filter(is_active=True):
+                            exist_child = next((s for s in services if str(s.get("id")) == str(child_svc.id) or s.get("name") == child_svc.name), None)
+                            if exist_child:
+                                exist_child["status"] = "approved"
+                                exist_child["name"] = child_svc.name
+                                exist_child["category"] = cat_obj.name
+                                exist_child["category_name"] = cat_obj.name
+                                exist_child["approved_at"] = now_iso
+                                exist_child["approved_by"] = current_username
+                                exist_child.pop("request_type", None)
+                            else:
+                                services.append({
+                                    "id": child_svc.id,
+                                    "name": child_svc.name,
+                                    "category": cat_obj.name,
+                                    "category_name": cat_obj.name,
+                                    "status": "approved",
+                                    "approved_at": now_iso,
+                                    "approved_by": current_username,
+                                })
+                    else:
+                        try:
+                            svc_obj = Service.objects.filter(pk=int(svc.get("id")), is_active=True).select_related("category").first()
+                        except (ValueError, TypeError):
+                            svc_obj = None
+                        if svc_obj:
+                            svc["name"] = svc_obj.name
+                            if svc_obj.category:
+                                svc["category"] = svc_obj.category.name
+                                svc["category_name"] = svc_obj.category.name
                 updated_count += 1
         else:
             for svc in target_svcs:
@@ -3958,6 +4065,11 @@ class WorkforceJobCancelAssignmentView(APIView):
 
             # State check: Allowed only from 'accepted' or 'on_the_way'
             if job_obj.status not in ["accepted", "on_the_way"]:
+                if getattr(job_obj, "otp_verified", False) or job_obj.status in ["in_progress", "proof_submitted", "completed"]:
+                    return Response({
+                        "error": "Cancellation is locked because customer OTP has been verified.",
+                        "code": "CANCELLATION_LOCKED_AFTER_OTP",
+                    }, status=status.HTTP_409_CONFLICT)
                 return Response({
                     "error": f"Cannot cancel job in status '{job_obj.status}'. Cancellation is only allowed while 'accepted' or 'on_the_way'.",
                     "code": "CANCELLATION_NOT_ALLOWED_IN_CURRENT_STATE",
@@ -4169,6 +4281,11 @@ class WorkforceJobTechnicianCancelView(APIView):
 
             # State check: ONLY allow cancellation during ACCEPTED or ON_THE_WAY
             if job.status not in ["accepted", "on_the_way", "en_route"]:
+                if getattr(job, "otp_verified", False) or job.status in ["in_progress", "proof_submitted", "completed"]:
+                    return Response({
+                        "error": "Cancellation is locked because customer OTP has been verified.",
+                        "code": "CANCELLATION_LOCKED_AFTER_OTP",
+                    }, status=status.HTTP_409_CONFLICT)
                 return Response({
                     "error": f"Cancellation is not allowed in current job state '{job.status}'. Cancellation window is only open prior to arrival.",
                     "code": "CANCELLATION_NOT_ALLOWED_IN_CURRENT_STATE",

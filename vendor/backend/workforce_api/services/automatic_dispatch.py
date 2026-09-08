@@ -180,8 +180,18 @@ EXPLICIT_SERVICE_ALIASES = {
     "full house cleaning": {"full house cleaning", "cleaning", "deep cleaning", "house cleaning"},
     "sofa cleaning": {"sofa cleaning", "cleaning", "couch cleaning"},
     "two wheeler": {"two wheeler", "bike", "scooter", "motorcycle", "bike repair", "two wheeler repair"},
-    "truck": {"truck", "packer & mover", "packers & movers", "logistics", "shifting"},
-    "packer & mover": {"packer & mover", "packers & movers", "truck", "shifting", "relocation"},
+    "truck": {"truck", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation"},
+    "packer & mover": {"packer & mover", "packers & movers", "truck", "shifting", "relocation", "packers_movers"},
+    "packers & movers": {"packer & mover", "packers & movers", "truck", "shifting", "relocation", "packers_movers"},
+    "packers_movers": {"packer & mover", "packers & movers", "truck", "shifting", "relocation", "packers_movers"},
+    "shifting": {"packer & mover", "packers & movers", "truck", "shifting", "relocation", "packers_movers"},
+    "relocation": {"packer & mover", "packers & movers", "truck", "shifting", "relocation", "packers_movers"},
+    "goods transport": {"goods_transport", "goods & transport", "goods and transport", "goods transport", "truck", "two wheeler", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation", "goods_transport_truck", "goods_transport_two_wheeler"},
+    "goods & transport": {"goods_transport", "goods & transport", "goods and transport", "goods transport", "truck", "two wheeler", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation", "goods_transport_truck", "goods_transport_two_wheeler"},
+    "goods and transport": {"goods_transport", "goods & transport", "goods and transport", "goods transport", "truck", "two wheeler", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation", "goods_transport_truck", "goods_transport_two_wheeler"},
+    "goods_transport": {"goods_transport", "goods & transport", "goods and transport", "goods transport", "truck", "two wheeler", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation", "goods_transport_truck", "goods_transport_two_wheeler"},
+    "goods_transport_truck": {"goods_transport_truck", "truck", "mini truck", "goods & transport", "goods and transport", "goods transport", "logistics", "packer & mover", "packers & movers"},
+    "goods_transport_two_wheeler": {"goods_transport_two_wheeler", "two wheeler", "bike", "scooter", "goods & transport", "goods and transport", "goods transport", "logistics"},
 }
 
 
@@ -193,37 +203,56 @@ def canonical_service_match(requested_service: str, approved_services: List[str]
     if not requested_service:
         return True, "EMPTY_SERVICE_BYPASS", ""
 
-    req_clean = requested_service.lower().replace("—", " ").replace("-", " ").strip()
+    def normalize_term(t):
+        return (
+            str(t or "")
+            .lower()
+            .replace("—", " ")
+            .replace("-", " ")
+            .replace("_", " ")
+            .replace("&", "and")
+            .strip()
+        )
+
+    req_clean = normalize_term(requested_service)
     req_words = set(w for w in req_clean.split() if len(w) >= 2)
 
     # 1. Check exact or direct match against approved employee services
     for it in approved_services:
         if not it:
             continue
-        it_clean = it.lower().replace("—", " ").replace("-", " ").strip()
+        it_clean = normalize_term(it)
         if req_clean == it_clean or req_clean in it_clean or it_clean in req_clean:
             return True, "EXACT_OR_SUBSTRING_SERVICE", it
+        it_words = set(w for w in it_clean.split() if len(w) >= 2)
+        if ("goods" in req_words and "transport" in req_words) and ("goods" in it_words and "transport" in it_words):
+            return True, "GOODS_TRANSPORT_CATEGORY_MATCH", it
 
     # 2. Check verified skills
     for sk in verified_skills:
         if not sk:
             continue
-        sk_clean = sk.lower().replace("—", " ").replace("-", " ").strip()
+        sk_clean = normalize_term(sk)
         if req_clean == sk_clean or req_clean in sk_clean or sk_clean in req_clean:
             return True, "VERIFIED_SKILL_MATCH", sk
+        sk_words = set(w for w in sk_clean.split() if len(w) >= 2)
+        if ("goods" in req_words and "transport" in req_words) and ("goods" in sk_words and "transport" in sk_words):
+            return True, "GOODS_TRANSPORT_SKILL_MATCH", sk
 
     # 3. Check explicit canonical alias table
     for alias_key, alias_group in EXPLICIT_SERVICE_ALIASES.items():
+        alias_key_clean = normalize_term(alias_key)
+        alias_group_clean = {normalize_term(a) for a in alias_group}
         # If requested service matches this alias key/group
-        if req_clean == alias_key or req_clean in alias_group or any(req_word in alias_group for req_word in req_words):
+        if req_clean == alias_key_clean or req_clean in alias_group_clean or any(req_word in alias_group_clean for req_word in req_words):
             # Check if employee has any matching service in that alias group
             for it in approved_services:
-                it_clean = it.lower().replace("—", " ").replace("-", " ").strip()
-                if it_clean in alias_group or any(w in alias_group for w in it_clean.split() if len(w) >= 2):
+                it_clean = normalize_term(it)
+                if it_clean in alias_group_clean or any(w in alias_group_clean for w in it_clean.split() if len(w) >= 2):
                     return True, "EXPLICIT_ALIAS_SERVICE", it
             for sk in verified_skills:
-                sk_clean = sk.lower().replace("—", " ").replace("-", " ").strip()
-                if sk_clean in alias_group or any(w in alias_group for w in sk_clean.split() if len(w) >= 2):
+                sk_clean = normalize_term(sk)
+                if sk_clean in alias_group_clean or any(w in alias_group_clean for w in sk_clean.split() if len(w) >= 2):
                     return True, "EXPLICIT_ALIAS_SKILL", sk
 
     return False, "NO_MATCH", ""
@@ -436,6 +465,8 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
                 approved_svcs.append(s["name"])
             if s.get("category"):
                 approved_svcs.append(s["category"])
+            if s.get("category_name"):
+                approved_svcs.append(s["category_name"])
 
     if hasattr(emp, "prefetched_verified_skills"):
         verified_skills = [es.skill.name for es in emp.prefetched_verified_skills]

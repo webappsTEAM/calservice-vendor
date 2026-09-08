@@ -47,29 +47,66 @@ LEG_SEQUENCE = [
     "DELIVERED",
 ]
 
+PM_LEG_SEQUENCE = [
+    "ASSIGNED",
+    "TEAM_EN_ROUTE",
+    "ARRIVED_PICKUP",
+    "PACKING",
+    "DISMANTLING",
+    "LOADING",
+    "IN_TRANSIT",
+    "ARRIVED_DROP",
+    "UNLOADING",
+    "REASSEMBLY",
+    "UNPACKING",
+    "DELIVERED",
+    "COMPLETED",
+]
 
-def leg_rank(leg):
+ALL_VALID_LEGS = set(LEG_SEQUENCE) | set(PM_LEG_SEQUENCE)
+
+
+PM_SPECIFIC_LEGS = {
+    "ASSIGNED", "TEAM_EN_ROUTE", "ARRIVED_PICKUP", "PACKING", "DISMANTLING",
+    "IN_TRANSIT", "ARRIVED_DROP", "REASSEMBLY", "UNPACKING", "COMPLETED"
+}
+
+def get_sequence_for_job(service_category=None, current_leg=None, target_leg=None):
+    """Determines whether to use standard goods transport sequence or relocation sequence."""
+    cat = (service_category or "").strip().lower()
+    if cat == "packers_movers" or current_leg in PM_SPECIFIC_LEGS or target_leg in PM_SPECIFIC_LEGS:
+        return PM_LEG_SEQUENCE
+    return LEG_SEQUENCE
+
+
+def leg_rank(leg, sequence=None):
     """Position of `leg` in the trip, or -1 for a blank/unknown value."""
+    seq = sequence or LEG_SEQUENCE
     try:
-        return LEG_SEQUENCE.index(leg)
+        return seq.index(leg)
     except ValueError:
         return -1
 
 
-def can_advance_to(current_leg, target_leg):
+def can_advance_to(current_leg, target_leg, service_category=None):
     """
     (allowed, reason). Forward-only; repeats are allowed and handled as
     no-ops by the caller so a retried request stays idempotent.
     """
-    if target_leg not in LEG_SEQUENCE:
-        return False, f"Invalid leg '{target_leg}'. Choose one of: {', '.join(LEG_SEQUENCE)}"
+    seq = get_sequence_for_job(service_category, current_leg, target_leg)
+    if target_leg not in ALL_VALID_LEGS or target_leg not in seq:
+        return False, f"Invalid leg '{target_leg}'. Choose one of: {', '.join(seq)}"
     if not current_leg:
         return True, ""
-    if leg_rank(target_leg) < leg_rank(current_leg):
+    
+    curr_rank = leg_rank(current_leg, seq)
+    tgt_rank = leg_rank(target_leg, seq)
+    if curr_rank != -1 and tgt_rank != -1 and tgt_rank < curr_rank:
         return False, (
             f"Cannot move the trip backwards from '{current_leg}' to '{target_leg}'."
         )
     return True, ""
+
 
 
 def set_logistics_leg(job, leg, actor=None):
@@ -88,7 +125,7 @@ def set_logistics_leg(job, leg, actor=None):
     established pattern for every shared table here.
     """
     leg = (leg or "").strip().upper()
-    allowed, reason = can_advance_to(job.logistics_leg, leg)
+    allowed, reason = can_advance_to(job.logistics_leg, leg, service_category=job.service_category)
     if not allowed:
         return False, reason
 

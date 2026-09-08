@@ -1128,12 +1128,15 @@ export function EmployeeDashboardPage() {
         await loadDashboard({ force: true });
         setTimeout(() => setSuccessMsg(''), 4000);
       } catch (err) {
-        if (err.code === 'CANCELLATION_LOCKED_AFTER_OTP' || err.status === 409) {
-          setError('Cancellation is locked once Customer OTP is verified.');
-        } else if (err.code === 'CANCELLATION_NOT_ALLOWED_IN_CURRENT_STATE') {
-          setError('Cancellation is not allowed in the current state.');
+        const errorCode = err.code || err.data?.code || (err.response && err.response.data && err.response.data.code);
+        if (errorCode === 'CANCELLATION_LOCKED_AFTER_OTP') {
+          setError('Cancellation is locked because customer OTP has been verified.');
+        } else if (errorCode === 'CANCELLATION_WINDOW_EXPIRED') {
+          setError('The 5-minute cancellation window for this job has expired. Please contact dispatch support.');
+        } else if (errorCode === 'CANCELLATION_NOT_ALLOWED_IN_CURRENT_STATE') {
+          setError('Cancellation is not permitted in the current job state.');
         } else {
-          setError(err.message || 'Failed to cancel job assignment.');
+          setError(err.message || err.error || 'Failed to cancel job assignment.');
         }
       } finally {
         setIsCancellingJob(false);

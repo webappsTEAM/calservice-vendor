@@ -95,7 +95,7 @@ export function EmployeeServicesPage() {
         map.set(key, {
           id: svc.id || svc.service_id,
           name: svc.name || svc.title,
-          category: svc.category || 'General',
+          category: svc.category_name || svc.category || 'General',
           status: svc.status || 'APPROVED',
           price: svc.base_price || svc.price,
           isSkill: false,
@@ -106,18 +106,47 @@ export function EmployeeServicesPage() {
     return Array.from(map.values());
   }, [skills, requestedServices]);
 
+  // Flatten catalog so that services within categories are properly displayed and selectable
+  const catalogServices = useMemo(() => {
+    const list = [];
+    (catalog || []).forEach((cat) => {
+      if (Array.isArray(cat.services) && cat.services.length > 0) {
+        cat.services.forEach((svc) => {
+          list.push({
+            id: svc.id,
+            name: svc.name || svc.title,
+            category: cat.name || svc.category_name || 'General',
+            categoryId: cat.id,
+            base_price: svc.price || svc.base_price,
+            description: svc.description || '',
+          });
+        });
+      } else {
+        list.push({
+          id: cat.id,
+          name: cat.name || cat.title,
+          category: cat.category || 'General',
+          categoryId: cat.id,
+          base_price: cat.price || cat.base_price,
+          description: cat.description || '',
+        });
+      }
+    });
+    return list;
+  }, [catalog]);
+
   // Catalog categories
   const categories = useMemo(() => {
     const set = new Set();
-    catalog.forEach((item) => {
+    catalogServices.forEach((item) => {
       if (item.category) set.add(item.category);
     });
     return ['ALL', ...Array.from(set)];
-  }, [catalog]);
+  }, [catalogServices]);
 
   const filteredCatalog = useMemo(() => {
     const existingNames = new Set(myServiceList.map((s) => s.name?.toLowerCase()));
-    return catalog.filter((item) => {
+    return catalogServices.filter((item) => {
       // Don't show already approved/requested services
       if (existingNames.has((item.name || item.title || '').toLowerCase())) return false;
 
@@ -136,7 +165,7 @@ export function EmployeeServicesPage() {
 
       return true;
     });
-  }, [catalog, myServiceList, selectedCategory, catalogSearch]);
+  }, [catalogServices, myServiceList, selectedCategory, catalogSearch]);
 
   const handleRequestSubmit = async (e) => {
     e.preventDefault();

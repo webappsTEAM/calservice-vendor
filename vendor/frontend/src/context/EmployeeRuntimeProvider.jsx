@@ -111,6 +111,9 @@ export function EmployeeRuntimeProvider({ children }) {
   const isInitialOffersLoadedRef = useRef(false);
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  // In-flight deduplication: prevents React StrictMode double-mount from firing
+  // two concurrent /notifications/ requests (same pattern as inFlightActiveJobsPromiseRef).
+  const inFlightNotificationsPromiseRef = useRef(null);
 
   // Request browser notification permission once when online
   useEffect(() => {
@@ -277,13 +280,25 @@ export function EmployeeRuntimeProvider({ children }) {
   // ── 6. Centralized Notification Synchronization ────────────────────────────
   const syncNotifications = useCallback(async () => {
     if (!isAuthenticated) return;
-    try {
-      const res = await apiGetNotifications();
-      if (res) {
-        setNotifications(res.notifications || []);
-        setUnreadCount(res.unread_count || 0);
-      }
-    } catch (_) {}
+    // Coalesce concurrent calls: if a fetch is already in-flight, reuse it.
+    // This prevents React StrictMode double-mount from sending two requests.
+    if (inFlightNotificationsPromiseRef.current) {
+      return inFlightNotificationsPromiseRef.current;
+    }
+    const fetchPromise = (async () => {
+      try {
+        const res = await apiGetNotifications();
+        if (res) {
+          setNotifications(res.notifications || []);
+          setUnreadCount(res.unread_count || 0);
+        }
+      } catch (_) {}
+    })();
+    inFlightNotificationsPromiseRef.current = fetchPromise;
+    fetchPromise.finally(() => {
+      inFlightNotificationsPromiseRef.current = null;
+    });
+    return fetchPromise;
   }, [isAuthenticated]);
 
   const markNotificationAsRead = useCallback(

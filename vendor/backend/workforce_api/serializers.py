@@ -415,6 +415,7 @@ class JobPaymentSerializer(serializers.ModelSerializer):
             "currency",
             "gateway_transaction_id",
             "cash_collected_at",
+            "is_cash_collected",
             "customer_confirmed_at",
             "customer_confirmation_method",
             "created_at",
