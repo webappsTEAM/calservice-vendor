@@ -138,22 +138,20 @@ RATE_CARDS = [
          pricing_config={"bands": [
              {"max": 1000, "flat": 1700, "label": "Up to 1,000 L - flat Rs.1,700"},
              {"max": 5000, "rate": 1.5, "label": "1,000-5,000 L - Rs.1.50 per litre"},
-             {"max": None, "flat": 17000, "label": "Above 5,000 L - flat Rs.17,000"},
+             {"max": 10000, "flat": 17000, "label": "5,000-10,000 L - flat Rs.17,000"},
+             {"max": None, "flat": 17000, "label": "Above 10,000 L - flat Rs.17,000"},
          ]},
          advance_percent=Decimal("50.00"), sort_order=120,
-         description="The plan prices <=1 kL, 1-5 kL and 10 kL. The band above "
-                     "5,000 L carries the 10 kL flat price; split it if 5-10 kL "
-                     "should be cheaper."),
+         description="10,000 L water sump priced at flat Rs.17,000. 1-5 kL priced at Rs.1.50/L."),
     dict(service_category=PAINT, service_name="Waterproofing", section="MATERIAL",
          item_name="Bathroom Waterproofing", unit="sqft",
          pricing_model="SIZE_BAND",
          pricing_config={"bands": [
-             {"max": 80, "flat": 3500, "label": "Small / Medium - flat Rs.3,500"},
-             {"max": None, "flat": 8000, "label": "Large - flat Rs.8,000"},
+             {"max": 50, "flat": 3500, "label": "Small / Medium (4x4 to 5x5, up to 50 sq.ft) - flat Rs.3,500"},
+             {"max": None, "flat": 8000, "label": "Large (10x10, above 50 sq.ft) - flat Rs.8,000"},
          ]},
          advance_percent=Decimal("50.00"), sort_order=130,
-         description="The plan gives no sq.ft boundary for small/medium vs large; "
-                     "80 sq.ft is used to match the tile-fixing bands. Adjust if wrong."),
+         description="Small/Medium (4x4 to 5x5) flat Rs.3,500; Large (10x10) flat Rs.8,000."),
 
     # ---- Masonry: the two from the plan (section 4) --------------------------
     dict(service_category=MASON, service_name="Bathroom Tile Fixing", section="LABOUR",
