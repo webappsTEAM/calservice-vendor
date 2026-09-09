@@ -36,7 +36,7 @@ from accounts.authentication import set_auth_cookies
 from companies.models import Company, Region
 from employees.models import Employee, PresenceLog
 from employees.utils import generate_next_employee_id
-from service_requests.models import ServiceRequest
+from service_requests.models import ServiceRequest, CatalogCategory, Service
 from service_requests.state_machine import apply_transition
 from time_tracking.models import Location, TimeLog
 from time_tracking.geo import evaluate
@@ -71,6 +71,7 @@ from .serializers import (
 from .models import (
     WorkforceEmployeeSchedule,
     WorkforceSkill,
+    WorkforceServiceCatalog,
     WorkforceEmployeeSkill,
     WorkforceComplianceRequirement,
     WorkforceEmployeeCompliance,
@@ -1333,11 +1334,12 @@ class WorkforceEmployeeServiceRequestView(APIView):
                 return Response({"error": "service_id or service_ids is required."}, status=status.HTTP_400_BAD_REQUEST)
             raw_ids = [single_id]
 
-        from service_requests.models import Service
+        from service_requests.models import CatalogCategory, Service
         from workforce_api.models import WorkforceServiceCatalog
 
-        # Query services from DB
+        # Query services and categories from DB
         db_services = {s.id: s for s in Service.objects.filter(pk__in=raw_ids, is_active=True).select_related("category")}
+        db_categories = {c.id: c for c in CatalogCategory.objects.filter(pk__in=raw_ids, is_active=True).prefetch_related("services")}
         wf_services = {s.id: s for s in WorkforceServiceCatalog.objects.filter(pk__in=raw_ids, is_active=True)}
 
         bank_details = emp.bank_details or {}
@@ -1348,37 +1350,46 @@ class WorkforceEmployeeServiceRequestView(APIView):
         requested_count = 0
         last_name = ""
 
+        # Normalize raw_ids to process both specific services and categories
+        items_to_process = []
         for sid in raw_ids:
             try:
                 sid_int = int(sid)
             except (ValueError, TypeError):
                 sid_int = sid
 
-            svc = db_services.get(sid_int)
-            if svc:
-                s_name = svc.name
-                c_name = svc.category.name if svc.category else "General"
+            if sid_int in db_categories:
+                cat = db_categories[sid_int]
+                # Include the category itself
+                items_to_process.append((sid_int, cat.name, cat.name))
+                # Also include its active child services so dispatch matching succeeds
+                for child_svc in cat.services.filter(is_active=True):
+                    items_to_process.append((child_svc.id, child_svc.name, cat.name))
+            elif sid_int in db_services:
+                svc = db_services[sid_int]
+                items_to_process.append((sid_int, svc.name, svc.category.name if svc.category else "General"))
             elif sid_int in wf_services:
                 wf_s = wf_services[sid_int]
-                s_name = wf_s.name
-                c_name = wf_s.category or "General"
+                items_to_process.append((sid_int, wf_s.name, wf_s.category or "General"))
             else:
-                s_name = request.data.get("name", "").strip() or f"Service #{sid}"
-                c_name = "General"
+                custom_name = request.data.get("name", "").strip() or f"Service #{sid}"
+                items_to_process.append((sid_int, custom_name, "General"))
 
-            existing = next((s for s in services if str(s.get("id")) == str(sid)), None)
+        for sid_val, s_name, c_name in items_to_process:
+            existing = next((s for s in services if str(s.get("id")) == str(sid_val)), None)
             if existing:
                 if existing.get("status") == "approved" and existing.get("request_type") != "remove":
-                    if len(raw_ids) == 1:
+                    if len(raw_ids) == 1 and str(sid_val) == str(raw_ids[0]):
                         return Response({"error": f"Service '{s_name}' is already approved for dispatch."}, status=status.HTTP_400_BAD_REQUEST)
                     continue
                 if existing.get("status") == "pending":
-                    if len(raw_ids) == 1:
+                    if len(raw_ids) == 1 and str(sid_val) == str(raw_ids[0]):
                         return Response({"error": f"Authorization request for '{s_name}' is already pending review."}, status=status.HTTP_400_BAD_REQUEST)
                     continue
                 existing["status"] = "pending"
                 existing["request_type"] = "add"
                 existing["name"] = s_name
+                existing["category"] = c_name
                 existing["category_name"] = c_name
                 existing["requested_at"] = now_iso
                 existing["rejection_reason"] = ""
@@ -1386,8 +1397,9 @@ class WorkforceEmployeeServiceRequestView(APIView):
                 last_name = s_name
             else:
                 services.append({
-                    "id": sid_int if isinstance(sid_int, int) else sid,
+                    "id": sid_val if isinstance(sid_val, int) else sid_val,
                     "name": s_name,
+                    "category": c_name,
                     "category_name": c_name,
                     "status": "pending",
                     "request_type": "add",
@@ -1477,12 +1489,25 @@ class WorkforceAdminPendingServicesListView(APIView):
             services = onboarding.get("services", [])
             for s in services:
                 if s.get("status") == "pending":
+                    s_name = s.get("name")
+                    if not s_name or str(s_name).startswith("Service #"):
+                        try:
+                            cat = CatalogCategory.objects.filter(pk=int(s.get("id"))).first()
+                            if cat:
+                                s_name = cat.name
+                            else:
+                                svc = Service.objects.filter(pk=int(s.get("id"))).first()
+                                if svc:
+                                    s_name = svc.name
+                        except (ValueError, TypeError):
+                            pass
+
                     pending_requests.append({
                         "employee_id": emp.id,
                         "employee_code": emp.employee_id,
                         "employee_name": emp.user.get_full_name() or emp.user.username,
                         "service_id": s.get("id"),
-                        "service_name": s.get("name"),
+                        "service_name": s_name,
                         "request_type": s.get("request_type", "add"),
                         "requested_at": s.get("requested_at") or s.get("removal_requested_at") or timezone.now().isoformat(),
                     })
@@ -1537,6 +1562,48 @@ class WorkforceAdminServiceDecideView(APIView):
                 target_svc["approved_at"] = timezone.now().isoformat()
                 target_svc["approved_by"] = request.user.username
                 msg = f"Service '{target_svc.get('name')}' authorized & approved."
+
+                # If target_svc corresponds to a CatalogCategory, dynamically ensure canonical metadata
+                # and approve its active child services directly from the database catalog.
+                try:
+                    cat_obj = CatalogCategory.objects.filter(pk=int(service_id), is_active=True).prefetch_related("services").first()
+                except (ValueError, TypeError):
+                    cat_obj = None
+
+                if cat_obj:
+                    target_svc["name"] = cat_obj.name
+                    target_svc["category"] = cat_obj.name
+                    target_svc["category_name"] = cat_obj.name
+                    for child_svc in cat_obj.services.filter(is_active=True):
+                        exist_child = next((s for s in services if str(s.get("id")) == str(child_svc.id) or s.get("name") == child_svc.name), None)
+                        if exist_child:
+                            exist_child["status"] = "approved"
+                            exist_child["name"] = child_svc.name
+                            exist_child["category"] = cat_obj.name
+                            exist_child["category_name"] = cat_obj.name
+                            exist_child["approved_at"] = target_svc.get("approved_at")
+                            exist_child["approved_by"] = target_svc.get("approved_by")
+                            exist_child.pop("request_type", None)
+                        else:
+                            services.append({
+                                "id": child_svc.id,
+                                "name": child_svc.name,
+                                "category": cat_obj.name,
+                                "category_name": cat_obj.name,
+                                "status": "approved",
+                                "approved_at": target_svc.get("approved_at"),
+                                "approved_by": target_svc.get("approved_by"),
+                            })
+                else:
+                    try:
+                        svc_obj = Service.objects.filter(pk=int(service_id), is_active=True).select_related("category").first()
+                    except (ValueError, TypeError):
+                        svc_obj = None
+                    if svc_obj:
+                        target_svc["name"] = svc_obj.name
+                        if svc_obj.category:
+                            target_svc["category"] = svc_obj.category.name
+                            target_svc["category_name"] = svc_obj.category.name
         else:
             if request_type == "remove":
                 target_svc["status"] = "approved"
@@ -1627,6 +1694,46 @@ class WorkforceAdminBulkServiceDecideView(APIView):
                     svc.pop("request_type", None)
                     svc["approved_at"] = now_iso
                     svc["approved_by"] = current_username
+
+                    try:
+                        cat_obj = CatalogCategory.objects.filter(pk=int(svc.get("id")), is_active=True).prefetch_related("services").first()
+                    except (ValueError, TypeError):
+                        cat_obj = None
+
+                    if cat_obj:
+                        svc["name"] = cat_obj.name
+                        svc["category"] = cat_obj.name
+                        svc["category_name"] = cat_obj.name
+                        for child_svc in cat_obj.services.filter(is_active=True):
+                            exist_child = next((s for s in services if str(s.get("id")) == str(child_svc.id) or s.get("name") == child_svc.name), None)
+                            if exist_child:
+                                exist_child["status"] = "approved"
+                                exist_child["name"] = child_svc.name
+                                exist_child["category"] = cat_obj.name
+                                exist_child["category_name"] = cat_obj.name
+                                exist_child["approved_at"] = now_iso
+                                exist_child["approved_by"] = current_username
+                                exist_child.pop("request_type", None)
+                            else:
+                                services.append({
+                                    "id": child_svc.id,
+                                    "name": child_svc.name,
+                                    "category": cat_obj.name,
+                                    "category_name": cat_obj.name,
+                                    "status": "approved",
+                                    "approved_at": now_iso,
+                                    "approved_by": current_username,
+                                })
+                    else:
+                        try:
+                            svc_obj = Service.objects.filter(pk=int(svc.get("id")), is_active=True).select_related("category").first()
+                        except (ValueError, TypeError):
+                            svc_obj = None
+                        if svc_obj:
+                            svc["name"] = svc_obj.name
+                            if svc_obj.category:
+                                svc["category"] = svc_obj.category.name
+                                svc["category_name"] = svc_obj.category.name
                 updated_count += 1
         else:
             for svc in target_svcs:
@@ -2090,6 +2197,46 @@ class WorkforcePresenceStatusView(APIView):
 
 # ─── 8. Field Jobs & State Machine Execution ─────────────────────────────────
 
+def sync_payment_amount_due(pmt, job):
+    """
+    Keep an UNPAID JobPayment's amount_due in step with the job's fare.
+
+    JobPayment rows are created by get_or_create, and `defaults` only apply
+    on creation -- so amount_due froze at whatever job.total_amount was the
+    first time ANY of three endpoints ran: the driver opening the payment
+    screen, the customer viewing payment, or cash collection. Nothing
+    anywhere updated it afterwards.
+
+    That was fine while the fare never changed after booking. It stopped
+    being fine when fare reconciliation started running at DELIVERED: a trip
+    that ran longer, visited an extra stop, or picked up approved extra work
+    has its total_amount raised, and the driver's collection screen would
+    still show the amount from before the trip. The customer pays the old
+    number and the books say the new one -- or the reverse, if the
+    reconciliation went down and the customer is overcharged.
+
+    Only ever touches a PENDING row. A payment already PAID or COLLECTED is
+    history and is never rewritten; if a fare changes after money has moved,
+    that is a refund or a follow-up charge, not an edit.
+
+    Returns True when it changed something.
+    """
+    if pmt is None or job is None:
+        return False
+    if pmt.payment_status != JobPayment.PaymentStatus.PENDING:
+        return False
+    expected = job.total_amount or Decimal("0.00")
+    if pmt.amount_due == expected:
+        return False
+    logger.info(
+        "Job #%s fare changed after the payment row was created (%s -> %s); "
+        "refreshing amount_due.", job.id, pmt.amount_due, expected,
+    )
+    pmt.amount_due = expected
+    pmt.save(update_fields=["amount_due", "updated_at"])
+    return True
+
+
 def is_employee_authorized_for_job(emp, job) -> bool:
     """
     Validates tenant compatibility between an employee and a job:
@@ -2177,7 +2324,7 @@ class WorkforceJobListView(APIView):
             assigned_active_qs = Q(
                 status__in=ACTIVE_QUEUE_STATUSES
             ) & (
-                Q(assigned_employee=emp) | Q(technician_id=user.id)
+                Q(assigned_employee=emp) | Q(assigned_employee__user=user)
             )
             completed_qs = Q(
                 assigned_employee=emp,
@@ -2334,7 +2481,23 @@ class WorkforceJobTransitionView(APIView):
                 "status": new_status,
             }, status=status.HTTP_200_OK)
         except ValidationError as e:
-            return Response({"error": str(e.detail if hasattr(e, 'detail') else e)}, status=status.HTTP_400_BAD_REQUEST)
+            detail = getattr(e, "detail", e)
+            if isinstance(detail, list) and detail:
+                err_msg = str(getattr(detail[0], "string", detail[0]))
+            elif isinstance(detail, dict) and detail:
+                first_v = next(iter(detail.values()))
+                if isinstance(first_v, list) and first_v:
+                    err_msg = str(getattr(first_v[0], "string", first_v[0]))
+                else:
+                    err_msg = str(getattr(first_v, "string", first_v))
+            else:
+                err_msg = str(getattr(detail, "string", detail))
+            import re
+            m = re.search(r"ErrorDetail\(string=['\"]([^'\"]+)['\"]", err_msg)
+            if m:
+                err_msg = m.group(1)
+            err_msg = err_msg.strip("[]'\" ")
+            return Response({"error": err_msg}, status=status.HTTP_400_BAD_REQUEST)
 
 
 # ─── 8b. Service Hold / Resume / Overtime ────────────────────────────────────
@@ -2701,6 +2864,54 @@ class WorkforceJobProofView(APIView):
         else:
             msg = "After-service proof submitted! Service completed. Payment collection/confirmation required before closing job."
 
+        # GT-D-01: tell the Customer app what was actually captured. This
+        # event previously carried only free-text remarks, so the receiver
+        # could do nothing with it but append them to the booking
+        # description -- no photo, no signature, no recipient, no stop.
+        # Fire-and-forget, after the state change is already persisted, so a
+        # webhook problem can never undo a submitted proof.
+        try:
+            from workforce_api.services.logistics_events import (
+                absolute_media_url, emit_completion_proof, set_logistics_leg,
+            )
+            from workforce_api.services.automatic_dispatch import LOGISTICS_SERVICE_CATEGORIES
+
+            _service_name = (job.service_category or "").strip().lower()
+            if _service_name in LOGISTICS_SERVICE_CATEGORIES:
+                _stop = None
+                _stop_ref = request.data.get("stop_id") or request.data.get("stop_sequence")
+                if _stop_ref:
+                    from service_requests.models import TripStop
+                    _stop = (
+                        TripStop.objects.filter(booking=job, id=_stop_ref).first()
+                        or TripStop.objects.filter(booking=job, sequence=_stop_ref).first()
+                    )
+                _lat = request.data.get("latitude")
+                _lng = request.data.get("longitude")
+                emit_completion_proof(
+                    job,
+                    notes=completion_notes,
+                    photo_url=absolute_media_url(request, proof.after_appliance_photo)
+                              or absolute_media_url(request, proof.after_work_area_photo),
+                    signature_url=absolute_media_url(request, getattr(proof, "signature_photo", None)),
+                    recipient_name=(request.data.get("recipient_name") or "").strip(),
+                    recipient_phone=(request.data.get("recipient_phone") or "").strip(),
+                    stop=_stop,
+                    otp_verified=bool(pmt and pmt.payment_status == JobPayment.PaymentStatus.PAID),
+                    technician_name=(emp.user.get_full_name() if getattr(emp, "user", None) else "") or "",
+                    workforce_employee_id=getattr(emp, "id", "") or "",
+                    location={"latitude": _lat, "longitude": _lng} if _lat and _lng else None,
+                )
+                # Proof of delivery is the last thing that happens on a
+                # trip, so this is the moment the trip is DELIVERED. Set it
+                # here rather than relying on the driver app to send one
+                # more request it might never send.
+                set_logistics_leg(job, "DELIVERED", actor=request.user)
+        except Exception as proof_evt_err:
+            logger.info(
+                "Could not emit completion proof event for Job #%s: %s", job.id, proof_evt_err
+            )
+
         return Response({
             "message": msg,
             "job_id": job.id,
@@ -2748,6 +2959,9 @@ class WorkforceJobPaymentDetailView(APIView):
                 "amount_paid": job.total_amount if job.payment_status in ["paid", "collected"] else Decimal("0.00"),
             }
         )
+        # An existing row keeps the amount it was created with; refresh it if
+        # the fare has since been reconciled.
+        sync_payment_amount_due(pmt, job)
 
         events = PaymentCollectionEvent.objects.filter(job_payment=pmt).order_by("-created_at")
 
@@ -2810,6 +3024,11 @@ class WorkforceJobCashCollectView(APIView):
                     "reconciled": False,
                 }
             )
+            # Under select_for_update, so this cannot race a concurrent
+            # collection. Refreshing BEFORE the amount checks below is the
+            # point: the driver must be asked for the reconciled fare, not
+            # the one quoted before the trip ran.
+            sync_payment_amount_due(pmt, job)
 
             # Rule: Cannot collect cash for Online payment booking
             if pmt.payment_method == JobPayment.PaymentMethod.ONLINE:
@@ -3148,6 +3367,7 @@ class WorkforceCustomerJobPaymentView(APIView):
                 "amount_paid": job.total_amount if job.payment_status in ["paid", "collected"] else Decimal("0.00"),
             }
         )
+        sync_payment_amount_due(pmt, job)
 
         return Response({
             "job_id": job.id,
@@ -3861,6 +4081,11 @@ class WorkforceJobCancelAssignmentView(APIView):
 
             # State check: Allowed only from 'accepted' or 'on_the_way'
             if job_obj.status not in ["accepted", "on_the_way"]:
+                if getattr(job_obj, "otp_verified", False) or job_obj.status in ["in_progress", "proof_submitted", "completed"]:
+                    return Response({
+                        "error": "Cancellation is locked because customer OTP has been verified.",
+                        "code": "CANCELLATION_LOCKED_AFTER_OTP",
+                    }, status=status.HTTP_409_CONFLICT)
                 return Response({
                     "error": f"Cannot cancel job in status '{job_obj.status}'. Cancellation is only allowed while 'accepted' or 'on_the_way'.",
                     "code": "CANCELLATION_NOT_ALLOWED_IN_CURRENT_STATE",
@@ -4070,6 +4295,18 @@ class WorkforceJobTechnicianCancelView(APIView):
             if not is_assigned_direct and not is_assigned_via_empjob:
                 return Response({"error": "You are not the assigned technician for this job.", "code": "NOT_ASSIGNED_TECHNICIAN"}, status=status.HTTP_403_FORBIDDEN)
 
+            # OTP verification lock check: once customer OTP is verified, cancellation is locked
+            from workforce_api.models import PreServiceVerification
+            has_verified_otp = (
+                getattr(job, "otp_verified", False)
+                or PreServiceVerification.objects.filter(job=job, otp_verified=True).exists()
+            )
+            if has_verified_otp or job.status in ["in_progress", "proof_submitted", "completed"]:
+                return Response({
+                    "error": "Cancellation is locked because customer OTP has been verified.",
+                    "code": "CANCELLATION_LOCKED_AFTER_OTP",
+                }, status=status.HTTP_409_CONFLICT)
+
             # State check: ONLY allow cancellation during ACCEPTED or ON_THE_WAY
             if job.status not in ["accepted", "on_the_way", "en_route"]:
                 return Response({
@@ -4186,7 +4423,23 @@ class WorkforceJobCustomerCancelSyncView(APIView):
         try:
             new_status = apply_transition(job, "cancelled", actor=None)
         except ValidationError as e:
-            return Response({"error": str(e.detail if hasattr(e, "detail") else e)}, status=status.HTTP_400_BAD_REQUEST)
+            detail = getattr(e, "detail", e)
+            if isinstance(detail, list) and detail:
+                err_msg = str(getattr(detail[0], "string", detail[0]))
+            elif isinstance(detail, dict) and detail:
+                first_v = next(iter(detail.values()))
+                if isinstance(first_v, list) and first_v:
+                    err_msg = str(getattr(first_v[0], "string", first_v[0]))
+                else:
+                    err_msg = str(getattr(first_v, "string", first_v))
+            else:
+                err_msg = str(getattr(detail, "string", detail))
+            import re
+            m = re.search(r"ErrorDetail\(string=['\"]([^'\"]+)['\"]", err_msg)
+            if m:
+                err_msg = m.group(1)
+            err_msg = err_msg.strip("[]'\" ")
+            return Response({"error": err_msg}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({
             "message": f"Job #{job.id} cancelled (customer-initiated) and technician released.",
@@ -4350,6 +4603,134 @@ class WorkforceAutoDispatchTriggerView(APIView):
 
         success, msg = run_automatic_dispatch(job)
         return Response({"message": msg, "success": success, "status": job.status}, status=status.HTTP_200_OK)
+
+
+class WorkforceCrossServiceDispatchView(APIView):
+    """
+    Direct cross-service dispatch trigger invoked by Customer backend (WorkforceIntegrationService.dispatch_job).
+    POST /api/workforce/jobs/dispatch/
+    Authenticated by WORKFORCE_WEBHOOK_SECRET bearer token (IsInternalWorkforceCaller) --
+    same shared secret already used (in the other direction) for workforce->customer webhooks,
+    and already sent by WorkforceIntegrationService.dispatch_job() in the Customer app.
+    """
+    permission_classes = [IsInternalWorkforceCaller]
+
+    def post(self, request):
+        booking_id = request.data.get("booking_id")
+        if not booking_id:
+            return Response({"error": "booking_id required", "code": "BOOKING_ID_REQUIRED"}, status=status.HTTP_400_BAD_REQUEST)
+
+        job = None
+        if str(booking_id).isdigit():
+            job = ServiceRequest.objects.filter(models.Q(id=int(booking_id)) | models.Q(request_id=booking_id)).first()
+        else:
+            job = ServiceRequest.objects.filter(request_id=booking_id).first()
+
+        if not job:
+            return Response({"error": "Booking not found", "code": "BOOKING_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        success, msg = run_automatic_dispatch(job)
+        return Response({
+            "success": success,
+            "workforce_job_id": str(job.id),
+            "status": job.status,
+            "message": msg,
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceCustomerBookingQuoteView(APIView):
+    """
+    Customer / integration endpoint to retrieve estimation quotation for a booking.
+    GET /api/workforce/customer/bookings/<str:booking_id>/quote/
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, booking_id):
+        from service_requests.models import Estimation, EstimationQuotation
+
+        job = None
+        if str(booking_id).isdigit():
+            job = ServiceRequest.objects.filter(models.Q(id=int(booking_id)) | models.Q(request_id=booking_id)).first()
+        else:
+            job = ServiceRequest.objects.filter(request_id=booking_id).first()
+
+        if not job:
+            return Response({"error": "Booking not found", "code": "BOOKING_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Access control: tracking token matching booking OR booking owner OR assigned technician OR admin OR internal caller
+        from accounts.permissions import is_admin_role
+        from workforce_api.permissions import IsInternalWorkforceCaller
+
+        user = request.user
+        provided_token = request.query_params.get("token") or request.headers.get("X-Tracking-Token")
+        token_matches = bool(
+            provided_token and
+            job.tracking_token and
+            str(job.tracking_token).lower() == str(provided_token).strip().lower()
+        )
+        is_internal = IsInternalWorkforceCaller().has_permission(request, self)
+        is_owner = bool(
+            user and user.is_authenticated and (
+                job.customer_id == user.id
+                or getattr(job, "customer", None) == user
+                or (getattr(job, "phone", None) and getattr(job, "phone", "") == getattr(user, "username", ""))
+            )
+        )
+        is_assigned_tech = bool(
+            user and user.is_authenticated and
+            hasattr(user, "employee_profile") and
+            job.assigned_employee_id == user.employee_profile.id
+        )
+        user_company = resolve_actor_company(request) if (user and user.is_authenticated) else None
+        is_admin_user = bool(
+            user and user.is_authenticated and (
+                getattr(user, "is_superuser", False)
+                or (is_admin_role(user) and job.company_id and user_company and job.company_id == user_company.id)
+            )
+        )
+
+        if provided_token and not token_matches and not (is_admin_user or is_internal):
+            return Response({"error": "Invalid tracking token.", "code": "FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
+        if user and user.is_authenticated and not (is_owner or is_assigned_tech or is_admin_user or is_internal or token_matches):
+            return Response({"error": "You are not authorized to view this quote.", "code": "FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
+        if not (token_matches or is_owner or is_assigned_tech or is_admin_user or is_internal):
+            return Response({"error": "Valid tracking token or authentication required.", "code": "UNAUTHORIZED"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        est = Estimation.objects.filter(service_request=job).first()
+        if not est:
+            return Response({"error": "No estimation quote for this booking", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        quote = est.quotations.order_by("-version", "-created_at").first()
+        if not quote:
+            return Response({"error": "No quotation found", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        items_data = []
+        for item in quote.items.all():
+            items_data.append({
+                "id": item.id,
+                "service_name": item.service_name,
+                "description": item.description,
+                "quantity": float(item.quantity),
+                "unit": item.unit,
+                "unit_price": float(item.unit_price),
+                "line_total": float(item.line_total),
+            })
+
+        return Response({
+            "quote_id": quote.id,
+            "quote_number": quote.quote_ref,
+            "version": quote.version,
+            "status": quote.status,
+            "subtotal": float(quote.subtotal),
+            "tax_amount": float(quote.tax_amount),
+            "discount_amount": float(quote.discount_amount),
+            "total_amount": float(quote.total_amount),
+            "valid_until": str(quote.valid_until) if quote.valid_until else None,
+            "notes": quote.notes,
+            "items": items_data,
+        }, status=status.HTTP_200_OK)
 
 
 # ─── 11. Work Extensions & Scope Approvals ────────────────────────────────────
@@ -6166,29 +6547,37 @@ class WorkforceJobLiveTrackingView(APIView):
       1. The authorized customer who owns the booking
       2. The assigned technician
       3. An authorized workforce admin within the same tenant company
+      4. Internal server-to-server callers from the Customer platform
     """
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated | IsInternalWorkforceCaller]
 
     def get(self, request, pk):
         user = request.user
         from service_requests.models import ServiceRequest
         from accounts.permissions import is_admin_role
 
-        job = ServiceRequest.objects.filter(pk=pk).select_related("assigned_employee__user", "customer", "company").first()
+        if str(pk).isdigit():
+            job = ServiceRequest.objects.filter(pk=int(pk)).select_related("assigned_employee__user", "customer", "company").first()
+        else:
+            job = ServiceRequest.objects.filter(request_id=str(pk)).select_related("assigned_employee__user", "customer", "company").first()
+
         if not job:
             return Response({"error": "Job not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
-        is_owner_customer = (
-            job.customer == user
-            or str(getattr(job, "customer_name", "")).lower() == user.username.lower()
-            or getattr(job, "phone", "") == getattr(user, "username", "")
+        is_internal = IsInternalWorkforceCaller().has_permission(request, self)
+        is_owner_customer = bool(
+            user.is_authenticated and (
+                job.customer == user
+                or str(getattr(job, "customer_name", "")).lower() == user.username.lower()
+                or getattr(job, "phone", "") == getattr(user, "username", "")
+            )
         )
-        is_assigned_tech = bool(job.assigned_employee and job.assigned_employee.user == user)
-        is_platform_admin = getattr(user, "is_superuser", False)
-        user_company = resolve_actor_company(request)
-        is_tenant_admin = is_admin_role(user) and bool(job.company_id and user_company and job.company_id == user_company.id)
+        is_assigned_tech = bool(user.is_authenticated and job.assigned_employee and job.assigned_employee.user == user)
+        is_platform_admin = bool(user.is_authenticated and getattr(user, "is_superuser", False))
+        user_company = resolve_actor_company(request) if user.is_authenticated else None
+        is_tenant_admin = bool(user.is_authenticated and is_admin_role(user) and job.company_id and user_company and job.company_id == user_company.id)
 
-        if not (is_owner_customer or is_assigned_tech or is_platform_admin or is_tenant_admin):
+        if not (is_internal or is_owner_customer or is_assigned_tech or is_platform_admin or is_tenant_admin):
             return Response({
                 "error": "Unauthorized to view tracking for this job.",
                 "code": "CROSS_TENANT_FORBIDDEN"
@@ -6343,10 +6732,83 @@ class WorkforceJobLiveTrackingView(APIView):
             "geofence_radius_meters": 250.0,
             "freshness_state": freshness_state,
             "age_seconds": age_seconds,
-            "updated_at": now.isoformat(),
         }, status=status.HTTP_200_OK)
 
 
+class WorkforceTechnicianFeedbackView(APIView):
+    """
+    Accepts feedback/rating for a technician from Customer integration or technician direct URL.
+    Routes: /api/workforce/technicians/<str:technician_id>/feedback/
+    """
+    permission_classes = [permissions.IsAuthenticated | IsInternalWorkforceCaller]
+
+    def post(self, request, technician_id=None):
+        from employees.models import Employee
+        from service_requests.models import ServiceRequest, WorkforceJobFeedback
+        from workforce_api.serializers import WorkforceJobFeedbackSerializer
+        from workforce_api.services import recalculate_employee_scorecard
+
+        tech_id = technician_id or request.data.get("technician_id")
+        booking_id = request.data.get("booking_id") or request.data.get("request_id")
+        workforce_job_id = request.data.get("workforce_job_id") or request.data.get("job_id")
+
+        emp = None
+        if tech_id:
+            if str(tech_id).isdigit():
+                emp = Employee.objects.filter(pk=int(tech_id)).first()
+            if not emp:
+                emp = Employee.objects.filter(employee_id__iexact=str(tech_id)).first()
+
+        job = None
+        if workforce_job_id:
+            if str(workforce_job_id).isdigit():
+                job = ServiceRequest.objects.filter(pk=int(workforce_job_id)).first()
+            if not job:
+                job = ServiceRequest.objects.filter(request_id=str(workforce_job_id)).first()
+        elif booking_id:
+            job = ServiceRequest.objects.filter(request_id=str(booking_id)).first()
+
+        if not emp and job and job.assigned_employee:
+            emp = job.assigned_employee
+
+        if not emp:
+            return Response({"error": "Technician not found.", "code": "TECHNICIAN_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            rating = int(float(request.data.get("rating", 5)))
+        except (ValueError, TypeError):
+            rating = 5
+        rating = max(1, min(5, rating))
+
+        comments = str(request.data.get("comments") or request.data.get("review") or "").strip()
+
+        if job:
+            feedback, created = WorkforceJobFeedback.objects.update_or_create(
+                job=job,
+                defaults={
+                    "employee": emp,
+                    "customer": request.user if request.user.is_authenticated else getattr(job, "customer", None),
+                    "rating": rating,
+                    "review": comments,
+                    "csat_score": rating,
+                    "resolution_ontime": True,
+                    "customer_name": request.data.get("customer_name") or getattr(job, "customer_name", "") or "Customer",
+                }
+            )
+            feedback_data = WorkforceJobFeedbackSerializer(feedback).data
+        else:
+            feedback_data = {"rating": rating, "review": comments, "technician_id": emp.id}
+
+        try:
+            recalculate_employee_scorecard(emp)
+        except Exception as e:
+            logger.warning("Scorecard recalculation error: %s", e)
+
+        return Response({
+            "success": True,
+            "message": "Technician feedback recorded successfully.",
+            "feedback": feedback_data
+        }, status=status.HTTP_201_CREATED if job else status.HTTP_200_OK)
 
 
 # ─── 21. Notification Engine & Event Triggers ────────────────────────────────
@@ -7395,9 +7857,14 @@ class WorkforceLatencyAuditView(APIView):
 
 
 class WorkforceVerificationSuiteView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
+        if not getattr(settings, "DEBUG", False) and not getattr(request.user, "is_superuser", False):
+            return Response(
+                {"error": "Verification suite is disabled in production", "code": "DISABLED_IN_PRODUCTION"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         try:
             suite_name = request.query_params.get("suite", "master")
             if suite_name == "employee_platform":
@@ -7563,7 +8030,13 @@ class WorkforceJobArriveView(APIView):
 
         if job.latitude is not None and job.longitude is not None:
             distance_m = haversine_distance(lat_val, lon_val, float(job.latitude), float(job.longitude))
-            if distance_m > ARRIVAL_RADIUS_METERS:
+            is_override = (
+                getattr(emp, "allow_all_locations", False)
+                or not getattr(getattr(emp, "company", None), "geofence_enabled", True)
+                or getattr(request.user, "is_superuser", False)
+                or getattr(request.user, "is_staff", False)
+            )
+            if distance_m > ARRIVAL_RADIUS_METERS and not is_override:
                 return Response({
                     "error": f"Arrival failed: You are {int(distance_m)}m away from the customer address. You must be within 250m to confirm arrival.",
                     "geofence_passed": False,
@@ -7599,12 +8072,11 @@ class WorkforceJobArriveView(APIView):
 
         verification, _ = PreServiceVerification.objects.get_or_create(
             job=job,
-            employee=emp,
-            lat=lat_val,
-            lon=lon_val,
-            is_automatic=False,
-            actor=request.user
+            defaults={"employee": emp}
         )
+        # Ensure employee is up-to-date on existing records (e.g. re-assignment)
+        if verification.employee_id != emp.pk:
+            verification.employee = emp
 
         # ── Authoritative Single OTP Resolution ──────────────────────────────
         # Priority: start_otp on ServiceRequest (set during booking) > existing
@@ -9486,6 +9958,18 @@ class WorkforceJobLogisticsLegView(APIView):
         if not emp or job.assigned_employee != emp:
             return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
 
+        # Being the assigned employee is not by itself a tenant check -- an
+        # assignment can outlive a technician moving between companies, and
+        # WorkforceJobProofView (the sibling endpoint on the same trip)
+        # verifies both. Advancing a leg writes to the shared booking row
+        # and fires a customer-facing event, so it gets the same guard.
+        if not is_employee_authorized_for_job(emp, job):
+            return Response(
+                {"error": "Unauthorized access to job belonging to another company.",
+                 "code": "CROSS_TENANT_FORBIDDEN"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         service_name = (job.service_category or "").strip().lower()
         if service_name not in LOGISTICS_SERVICE_CATEGORIES:
             return Response({
@@ -9504,18 +9988,142 @@ class WorkforceJobLogisticsLegView(APIView):
                 "error": f"Invalid leg. Choose one of: {valid_legs}"
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        now = timezone.now()
-        job.logistics_leg = leg
-        job.logistics_leg_updated_at = now
-        history = job.logistics_leg_history or []
-        history.append({"leg": leg, "at": now.isoformat(), "by": request.user.id})
-        job.logistics_leg_history = history
-        job.save(update_fields=["logistics_leg", "logistics_leg_updated_at", "logistics_leg_history", "updated_at"])
+        # Delegates to services/logistics_events.set_logistics_leg, which
+        # adds three things this endpoint previously lacked: forward-only
+        # ordering (a trip cannot move backwards from DELIVERED to
+        # EN_ROUTE_PICKUP and corrupt the customer's tracking view),
+        # idempotency on a retried request (no duplicate history entry, no
+        # moved timestamp), and emission of `logistics.leg_changed` so a
+        # customer watching the map sees the change immediately instead of
+        # on their next poll.
+        from workforce_api.services.logistics_events import set_logistics_leg
+
+        changed, error = set_logistics_leg(job, leg, actor=request.user)
+        if error:
+            return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({
             "logistics_leg": job.logistics_leg,
             "logistics_leg_updated_at": job.logistics_leg_updated_at,
             "logistics_leg_history": job.logistics_leg_history,
+            "changed": changed,
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceJobTripStopsView(APIView):
+    """
+    GT-D-01: the driver's view of a multi-stop trip, and how they advance
+    it.
+
+    Until now the vendor side had zero references to TripStop anywhere:
+    multi-stop routes were customer-side-only data that no technician could
+    see and nothing on this side could advance. A driver had no way to say
+    "I have reached stop 2" and the customer had no way to find out.
+
+    GET  /workforce/jobs/<pk>/stops/                     -- the stop list
+    POST /workforce/jobs/<pk>/stops/  {"stop_id"|"stop_sequence", "completed"}
+         -- mark a stop arrived, and completed when the driver is done there
+    """
+    permission_classes = [IsApprovedTechnician]
+
+    _TERMINAL_STATUSES = {"completed", "cancelled", "unable_to_complete"}
+
+    def _resolve_job(self, request, pk):
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return None, Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp or job.assigned_employee != emp:
+            return None, Response(
+                {"error": "Unauthorized: Job is not assigned to you."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        # Same reasoning as WorkforceJobLogisticsLegView: assignment is not
+        # tenancy, and marking a stop writes to the shared table and emits a
+        # customer event.
+        if not is_employee_authorized_for_job(emp, job):
+            return None, Response(
+                {"error": "Unauthorized access to job belonging to another company.",
+                 "code": "CROSS_TENANT_FORBIDDEN"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        # Stops only exist on logistics bookings, so a non-logistics job
+        # would fail later with a confusing 404 "stop not found". Refuse it
+        # here for the same reason and with the same message as the leg
+        # endpoint.
+        from workforce_api.services.automatic_dispatch import LOGISTICS_SERVICE_CATEGORIES
+
+        if (job.service_category or "").strip().lower() not in LOGISTICS_SERVICE_CATEGORIES:
+            return None, Response(
+                {"error": f"Trip stops are only available for logistics jobs, "
+                          f"not '{job.service_category}'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return job, None
+
+    def get(self, request, pk):
+        from service_requests.models import TripStop
+
+        job, err = self._resolve_job(request, pk)
+        if err:
+            return err
+        stops = TripStop.objects.filter(booking=job).order_by("sequence")
+        return Response({
+            "logistics_leg": job.logistics_leg,
+            "results": [
+                {
+                    "id": s.id,
+                    "sequence": s.sequence,
+                    "stop_type": s.stop_type,
+                    "address": s.address,
+                    "contact_name": s.contact_name,
+                    "contact_phone": s.contact_phone,
+                    "latitude": float(s.latitude) if s.latitude is not None else None,
+                    "longitude": float(s.longitude) if s.longitude is not None else None,
+                    "notes": s.notes,
+                    "arrived_at": s.arrived_at,
+                    "completed_at": s.completed_at,
+                }
+                for s in stops
+            ],
+        }, status=status.HTTP_200_OK)
+
+    def post(self, request, pk):
+        from service_requests.models import TripStop
+        from workforce_api.services.logistics_events import record_stop_progress
+
+        job, err = self._resolve_job(request, pk)
+        if err:
+            return err
+
+        if job.status in self._TERMINAL_STATUSES:
+            return Response(
+                {"error": f"Job #{job.id} is already '{job.status}' -- stops cannot be updated."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        stop_id = request.data.get("stop_id")
+        stop_sequence = request.data.get("stop_sequence") or request.data.get("sequence")
+        stop = None
+        if stop_id is not None:
+            stop = TripStop.objects.filter(booking=job, id=stop_id).first()
+        elif stop_sequence is not None:
+            stop = TripStop.objects.filter(booking=job, sequence=stop_sequence).first()
+        if stop is None:
+            return Response(
+                {"error": "Stop not found on this job. Provide a valid stop_id or stop_sequence."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        completed = str(request.data.get("completed", "")).strip().lower() in ("1", "true", "yes")
+        changed = record_stop_progress(job, stop, completed, actor=request.user)
+
+        return Response({
+            "stop_id": stop.id,
+            "sequence": stop.sequence,
+            "arrived_at": stop.arrived_at,
+            "completed_at": stop.completed_at,
+            "changed": changed,
         }, status=status.HTTP_200_OK)
 
 class WorkforceJobMessagesView(APIView):

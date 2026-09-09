@@ -33,6 +33,7 @@ import {
   Landmark,
   Crown,
   UserCheck,
+  Wind,
 } from 'lucide-react';
 
 export function Sidebar({ onCloseMobile = () => {} }) {

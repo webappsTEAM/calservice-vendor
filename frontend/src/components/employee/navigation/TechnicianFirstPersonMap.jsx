@@ -62,16 +62,34 @@ export function TechnicianFirstPersonMap({
   const [apiLoaded, setApiLoaded] = useState(false);
   const [mapReady, setMapReady] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [apiError, setApiError] = useState(null);
+  const [retryTick, setRetryTick] = useState(0);
 
-  const apiKey = import.meta.env.VITE_GOOGLE_MAPS_KEY;
+  // Bug found: this only read VITE_GOOGLE_MAPS_KEY, with no fallback to
+  // VITE_GOOGLE_MAPS_API_KEY -- inconsistent with loadGoogleMaps.js itself
+  // and with TechnicianArrivalView/TechnicianStandbyMapView, which already
+  // fall back to either name.
+  const apiKey = import.meta.env.VITE_GOOGLE_MAPS_KEY || import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 
   // Load Google Maps API Script
   useEffect(() => {
-    if (!apiKey) return;
+    if (!apiKey) {
+      setApiError('Google Maps API key is not configured.');
+      return;
+    }
+    setApiError(null);
     loadMapsApi(apiKey)
       .then(() => setApiLoaded(true))
-      .catch((err) => console.warn('[NAV_MAP_LOAD_ERROR]', err));
-  }, [apiKey]);
+      .catch((err) => {
+        console.warn('[NAV_MAP_LOAD_ERROR]', err);
+        // Bug found: this component had no apiError state or fallback UI at
+        // all -- a failed Google Maps load (bad key, network block,
+        // ad-blocker) left a permanent black screen with dead controls, no
+        // explanation, and no way to retry. Mirrors the fallback pattern
+        // already used correctly on LocationPickerMap.jsx.
+        setApiError('Could not load navigation. Check your connection and try again.');
+      });
+  }, [apiKey, retryTick]);
 
   // Compute forward-looking navigation camera center (offsets ~35m behind vehicle along heading vector)
   const computeNavigationCenter = useCallback((lat, lng, headingDeg = 0, zoom = 18.5) => {
@@ -374,6 +392,21 @@ export function TechnicianFirstPersonMap({
     <div className={`relative overflow-hidden bg-slate-900 ${className}`}>
       {/* Map Canvas Container */}
       <div ref={mapContainerRef} className="w-full h-full min-h-full" />
+
+      {apiError && (
+        <div className="absolute inset-0 flex items-center justify-center bg-slate-900 z-20 p-4">
+          <div className="text-center">
+            <p className="text-sm text-rose-300 font-medium mb-3">{apiError}</p>
+            <button
+              type="button"
+              onClick={() => setRetryTick((t) => t + 1)}
+              className="px-4 py-2 text-sm font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── 1. Floating Speedometer Dial (Bottom-Left) ── */}
       <div className="absolute left-4 bottom-6 z-20">

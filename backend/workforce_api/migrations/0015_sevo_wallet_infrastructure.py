@@ -12,6 +12,7 @@
 # Section 8 (Social Security Code registration tracking) -- see the model
 # docstrings in workforce_api/models.py for the full rationale.
 
+import django
 import django.db.models.deletion
 from django.db import migrations, models
 
@@ -61,11 +62,13 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name='walletaccount',
             constraint=models.CheckConstraint(
-                check=(
-                    models.Q(('account_type', 'PROVIDER_HEAD'), ('company__isnull', False), ('employee__isnull', True))
-                    | models.Q(('account_type', 'INDIVIDUAL_WORKER'), ('employee__isnull', False), ('company__isnull', True))
-                ),
-                name='wallet_account_type_matches_owner',
+                **{
+                    ('condition' if getattr(django, 'VERSION', (5, 0)) >= (6, 0) else 'check'): (
+                        models.Q(('account_type', 'PROVIDER_HEAD'), ('company__isnull', False), ('employee__isnull', True))
+                        | models.Q(('account_type', 'INDIVIDUAL_WORKER'), ('employee__isnull', False), ('company__isnull', True))
+                    ),
+                    'name': 'wallet_account_type_matches_owner',
+                }
             ),
         ),
         migrations.CreateModel(

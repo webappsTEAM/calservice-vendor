@@ -83,6 +83,16 @@ export function loadMapsApi(explicitKey) {
           reject(new Error('Google Maps script load timeout.'));
         }
       }, 12000);
+    }).catch((err) => {
+      // Bug found: mapsApiPromise never got reset on rejection, so a single
+      // transient failure (bad network blip, ad-blocker, a key that's
+      // briefly rate-limited) permanently broke maps for the rest of the
+      // page session -- every subsequent call returned this same already-
+      // rejected promise forever, with no way to retry short of a full
+      // page reload. Reset the singleton on failure so the next call
+      // (e.g. a user pressing "Retry") starts a fresh load attempt.
+      mapsApiPromise = null;
+      throw err;
     });
   }
 

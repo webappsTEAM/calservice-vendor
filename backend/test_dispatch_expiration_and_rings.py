@@ -190,6 +190,7 @@ def run_all_tests():
         WorkforceJobOffer.objects.filter(job=job).delete()
         return job
 
+
     # Helper to reset technicians state
     def reset_techs():
         now_iso = timezone.now().isoformat()
@@ -203,6 +204,18 @@ def run_all_tests():
         EmployeeJob.objects.filter(employee__in=[tech1_emp, tech2_emp, tech3_emp, tech4_emp]).exclude(status="COMPLETED").update(status="COMPLETED")
         ServiceRequest.objects.filter(assigned_employee__in=[tech1_emp, tech2_emp, tech3_emp, tech4_emp]).update(assigned_employee=None, status="unassigned")
 
+        # Expire any still-live OFFERED offers these employees hold.
+        # Without this, employees_with_live_offers() blocks them from receiving
+        # new offers in subsequent tests, which causes false dispatch failures.
+        WorkforceJobOffer.objects.filter(
+            employee__in=[tech1_emp, tech2_emp, tech3_emp, tech4_emp],
+            status=WorkforceJobOffer.Status.OFFERED,
+            expires_at__gt=timezone.now(),
+        ).update(
+            status=WorkforceJobOffer.Status.EXPIRED,
+            expires_at=timezone.now(),
+        )
+
         for emp, u, lat, lon in coords:
             emp.refresh_from_db()
             emp.is_online = True
@@ -215,6 +228,8 @@ def run_all_tests():
                 "updated_at": now_iso,
             }
             u.save(update_fields=["last_known_location"])
+
+
 
     # ── TEST A: Offer Creation & 5-Minute Window ──────────────────────────────
     try:

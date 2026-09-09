@@ -206,6 +206,23 @@ export async function apiTransitionJob(jobId, targetStatus) {
   });
 }
 
+// Hold and resume are not plain status transitions: they also open and close
+// the Break that keeps held time out of the technician's worked hours, so they
+// have dedicated endpoints rather than going through /transition/.
+export async function apiHoldJob(jobId, reason) {
+  return await apiRequest(`/workforce/jobs/${jobId}/hold/`, {
+    method: 'POST',
+    json: { reason },
+  });
+}
+
+export async function apiResumeJob(jobId) {
+  return await apiRequest(`/workforce/jobs/${jobId}/resume/`, {
+    method: 'POST',
+    json: {},
+  });
+}
+
 export async function apiAcceptJobOffer(jobId) {
   return await apiRequest(`/workforce/jobs/${jobId}/accept-offer/`, {
     method: 'POST',

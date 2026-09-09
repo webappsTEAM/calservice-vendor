@@ -767,10 +767,15 @@ export function PortalCockpitLayout({
                     <span>Collect Cash Payment (₹{payoutAmount})</span>
                   </button>
                 ) : (
-                  <div className="w-full py-3.5 rounded-xl font-bold text-xs bg-indigo-50 text-indigo-800 border border-indigo-200 flex items-center justify-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-indigo-600" />
-                    <span>Service Proof Submitted • Under Review</span>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleJobAction && handleJobAction(activeJob.id, 'COMPLETED')}
+                    disabled={actionLoading}
+                    className="w-full py-3.5 rounded-xl font-black text-xs transition-all flex items-center justify-center gap-2 bg-[#2d6a4f] hover:bg-[#1b4332] active:bg-[#153427] text-white shadow-md cursor-pointer"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Confirm Job Completion &amp; Finalize Settlement</span>
+                  </button>
                 )
               ) : isInProgress ? (
                 <button

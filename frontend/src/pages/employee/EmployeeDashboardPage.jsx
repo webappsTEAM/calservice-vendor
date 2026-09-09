@@ -1,5 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
-import { useLocation, Link } from 'react-router-dom';
+import {
+  useLocation,
+  Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthProvider.jsx';
 import { ClockInCard } from '../../components/employee/ClockInCard.jsx';
 import {
@@ -30,6 +32,8 @@ import {
   apiVerifyArrival,
   apiCancelJob,
   apiUploadDocument,
+  apiHoldJob,
+  apiResumeJob,
 } from '../../api/workforceService.js';
 import {
   apiClockIn,
@@ -852,11 +856,57 @@ export function EmployeeDashboardPage() {
       }
     };
 
-    const handleJobAction = async (jobId, targetStatus) => {
+    const handleJobAction = async (jobId, targetStatus, extra = {}) => {
       try {
         setActionLoading(jobId);
         setError('');
-        await apiTransitionJob(jobId, targetStatus);
+
+        // Hold and resume also open/close the Break that keeps held time out of
+        // the technician's worked hours, so they use their own endpoints.
+        if (String(targetStatus).toUpperCase() === 'ON_HOLD') {
+          const holdRes = await apiHoldJob(jobId, extra.reason || '');
+          setSuccessMsg(holdRes.message || 'Job placed on hold.');
+          await loadDashboard({ force: true });
+          setTimeout(() => setSuccessMsg(''), 4000);
+          return holdRes;
+        }
+        if (String(targetStatus).toUpperCase() === 'RESUME') {
+          const resumeRes = await apiResumeJob(jobId);
+          setSuccessMsg(resumeRes.message || 'Job resumed.');
+          const resumedTime = await apiGetTimeTracking().catch(() => null);
+          if (resumedTime) setTimeTracking(resumedTime);
+          await loadDashboard({ force: true });
+          setTimeout(() => setSuccessMsg(''), 4000);
+          return resumeRes;
+        }
+
+        const res = await apiTransitionJob(jobId, targetStatus);
+        // Starting a job also clocks the technician in server-side, so pull the
+        // authoritative TimeLog immediately: the shift timer derives its start
+        // from that server timestamp, never from a local counter, so it stays
+        // correct across a refresh.
+        if (String(targetStatus).toUpperCase() === 'IN_PROGRESS') {
+          const timeData = await apiGetTimeTracking().catch(() => null);
+          if (timeData) setTimeTracking(timeData);
+          if (res?.message) setSuccessMsg(res.message);
+        }
+        if (String(targetStatus).toUpperCase() === 'COMPLETED') {
+          if (typeof reconcileJobCompleted === 'function') {
+            reconcileJobCompleted(jobId, { status: 'completed', payment_status: 'PAID' });
+          } else {
+            setSelectedJob(null);
+          }
+          if (typeof refreshActiveJobs === 'function') {
+            await refreshActiveJobs({ force: true });
+          }
+          if (typeof refreshCompletedJobs === 'function') {
+            await refreshCompletedJobs({ silent: true });
+          }
+          if (typeof refreshProfile === 'function') {
+            refreshProfile(true).catch(() => {});
+          }
+          setSuccessMsg(res?.message || 'Job COMPLETED and settled.');
+        }
         await loadDashboard();
       } catch (err) {
         setError(err.message || 'Status transition failed.');
@@ -1095,12 +1145,15 @@ export function EmployeeDashboardPage() {
         await loadDashboard({ force: true });
         setTimeout(() => setSuccessMsg(''), 4000);
       } catch (err) {
-        if (err.code === 'CANCELLATION_LOCKED_AFTER_OTP' || err.status === 409) {
-          setError('Cancellation is locked once Customer OTP is verified.');
-        } else if (err.code === 'CANCELLATION_NOT_ALLOWED_IN_CURRENT_STATE') {
-          setError('Cancellation is not allowed in the current state.');
+        const errorCode = err.code || err.data?.code || (err.response && err.response.data && err.response.data.code);
+        if (errorCode === 'CANCELLATION_LOCKED_AFTER_OTP') {
+          setError('Cancellation is locked because customer OTP has been verified.');
+        } else if (errorCode === 'CANCELLATION_WINDOW_EXPIRED') {
+          setError('The 5-minute cancellation window for this job has expired. Please contact dispatch support.');
+        } else if (errorCode === 'CANCELLATION_NOT_ALLOWED_IN_CURRENT_STATE') {
+          setError('Cancellation is not permitted in the current job state.');
         } else {
-          setError(err.message || 'Failed to cancel job assignment.');
+          setError(err.message || err.error || 'Failed to cancel job assignment.');
         }
       } finally {
         setIsCancellingJob(false);

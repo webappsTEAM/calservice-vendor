@@ -890,6 +890,23 @@ export function EmployeeDashboardPage() {
           if (timeData) setTimeTracking(timeData);
           if (res?.message) setSuccessMsg(res.message);
         }
+        if (String(targetStatus).toUpperCase() === 'COMPLETED') {
+          if (typeof reconcileJobCompleted === 'function') {
+            reconcileJobCompleted(jobId, { status: 'completed', payment_status: 'PAID' });
+          } else {
+            setSelectedJob(null);
+          }
+          if (typeof refreshActiveJobs === 'function') {
+            await refreshActiveJobs({ force: true });
+          }
+          if (typeof refreshCompletedJobs === 'function') {
+            await refreshCompletedJobs({ silent: true });
+          }
+          if (typeof refreshProfile === 'function') {
+            refreshProfile(true).catch(() => {});
+          }
+          setSuccessMsg(res?.message || 'Job COMPLETED and settled.');
+        }
         await loadDashboard();
       } catch (err) {
         setError(err.message || 'Status transition failed.');

@@ -1,14 +1,18 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useContext } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthProvider.jsx';
+import { EmployeeRuntimeContext } from '../../context/EmployeeRuntimeContext.jsx';
+import { getGPSPosition } from '../../hooks/useGPSPosition.js';
 import {
   apiGetWorkforceJobs,
   apiTransitionJob,
   apiAcceptJobOffer,
   apiRejectJobOffer,
   apiVerifyOTP,
+  apiVerifyArrival,
 } from '../../api/workforceService.js';
 import { AppShell } from '../../components/common/AppShell.jsx';
+
 import { LoadingState } from '../../components/enterprise/LoadingState.jsx';
 import { ErrorState } from '../../components/enterprise/ErrorState.jsx';
 import { Modal } from '../../components/enterprise/Modal.jsx';
@@ -37,10 +41,42 @@ import {
   KeyRound,
   Wrench,
   Layers,
+  Truck,
   Eye,
   Check,
   Copy,
 } from 'lucide-react';
+
+/**
+ * Safely parse and format error messages, cleaning DRF ErrorDetail representations
+ */
+function cleanErrorMessage(error) {
+  if (!error) return 'An unexpected error occurred.';
+  let msg = typeof error === 'string' ? error : (error?.message || error?.error || error?.detail || '');
+  if (typeof msg !== 'string') {
+    try {
+      msg = JSON.stringify(msg);
+    } catch (_) {
+      msg = 'An unexpected error occurred.';
+    }
+  }
+
+  // 1. Extract string from Python DRF ErrorDetail representation: [ErrorDetail(string='...', code='...')]
+  const drfMatch = msg.match(/ErrorDetail\(string=['"]([^'"]+)['"]/);
+  if (drfMatch && drfMatch[1]) {
+    msg = drfMatch[1];
+  }
+
+  // 2. Strip bracket/quote wrappers like ["..."] or ['...']
+  msg = msg.replace(/^\[['"]?|['"]?\]$/g, '').trim();
+
+  // 3. Human-friendly geofence explanation if technical phrase was passed
+  if (msg.includes('Real GPS Arrival geofence check has not passed')) {
+    return 'Arrival verification requires GPS within 250m of the site.';
+  }
+
+  return msg || 'Action could not be completed.';
+}
 
 /**
  * Service Category Styling (Swiggy / Urban Company clean style)
@@ -48,7 +84,83 @@ import {
 function getServiceCategoryMeta(categoryName = '', title = '') {
   const text = `${categoryName} ${title}`.toLowerCase();
 
-  // 1. Electrical & Power
+  // 1. Mini Truck Delivery / Heavy Goods Transport
+  if (
+    text.includes('goods_transport_truck') ||
+    text.includes('mini truck') ||
+    text.includes('3 wheeler') ||
+    text.includes('three wheeler') ||
+    text.includes('truck') ||
+    text.includes('pickup') ||
+    text.includes('tata ace') ||
+    text.includes('dost') ||
+    text.includes('bolero') ||
+    text.includes('general goods')
+  ) {
+    return {
+      id: 'goods_transport_truck',
+      icon: Truck,
+      label: 'Mini Truck',
+      tagColor: 'bg-blue-500/10 text-blue-800 border-blue-200',
+      iconBg: 'bg-blue-100 text-blue-700',
+    };
+  }
+
+  // 2. Two-Wheeler / Bike Courier
+  if (
+    text.includes('goods_transport_two_wheeler') ||
+    text.includes('two_wheeler') ||
+    text.includes('two wheeler') ||
+    text.includes('bike') ||
+    text.includes('scooter') ||
+    text.includes('motorcycle') ||
+    text.includes('parcel') ||
+    text.includes('courier')
+  ) {
+    return {
+      id: 'goods_transport_two_wheeler',
+      icon: Truck,
+      label: 'Two-Wheeler',
+      tagColor: 'bg-indigo-500/10 text-indigo-800 border-indigo-200',
+      iconBg: 'bg-indigo-100 text-indigo-700',
+    };
+  }
+
+  // 3. Packers & Movers / Relocation
+  if (
+    text.includes('packers_movers') ||
+    text.includes('packer') ||
+    text.includes('mover') ||
+    text.includes('relocation') ||
+    text.includes('house shifting') ||
+    text.includes('shifting')
+  ) {
+    return {
+      id: 'packers_movers',
+      icon: Layers,
+      label: 'Packers & Movers',
+      tagColor: 'bg-purple-500/10 text-purple-800 border-purple-200',
+      iconBg: 'bg-purple-100 text-purple-700',
+    };
+  }
+
+  // 4. General Goods & Transport / Logistics
+  if (
+    text.includes('goods_transport') ||
+    text.includes('logistics') ||
+    text.includes('goods & transport') ||
+    text.includes('goods and transport')
+  ) {
+    return {
+      id: 'goods_transport',
+      icon: Truck,
+      label: 'Goods & Transport',
+      tagColor: 'bg-blue-500/10 text-blue-800 border-blue-200',
+      iconBg: 'bg-blue-100 text-blue-700',
+    };
+  }
+
+  // 5. Electrical & Power
   if (
     text.includes('electr') ||
     text.includes('socket') ||
@@ -69,7 +181,7 @@ function getServiceCategoryMeta(categoryName = '', title = '') {
     };
   }
 
-  // 2. AC & Appliances
+  // 6. AC & Appliances
   if (
     text.includes('ac') ||
     text.includes('air') ||
@@ -89,7 +201,7 @@ function getServiceCategoryMeta(categoryName = '', title = '') {
     };
   }
 
-  // 3. Plumbing & Water
+  // 7. Plumbing & Water
   if (
     text.includes('plumb') ||
     text.includes('pipe') ||
@@ -109,7 +221,7 @@ function getServiceCategoryMeta(categoryName = '', title = '') {
     };
   }
 
-  // 4. Carpentry, Locks & Doors
+  // 8. Carpentry, Locks & Doors
   if (
     text.includes('lock') ||
     text.includes('mortise') ||
@@ -128,7 +240,7 @@ function getServiceCategoryMeta(categoryName = '', title = '') {
     };
   }
 
-  // 5. Cleaning & Disinfection
+  // 9. Cleaning & Disinfection
   if (text.includes('clean') || text.includes('pest') || text.includes('deep') || text.includes('disinfect')) {
     return {
       id: 'cleaning',
@@ -205,6 +317,7 @@ function getStatusTag(status = '') {
 
 export function EmployeeJobsPage() {
   const { user } = useAuth();
+  const employeeRuntime = useContext(EmployeeRuntimeContext);
   const navigate = useNavigate();
   const [jobs, setJobs] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -217,6 +330,13 @@ export function EmployeeJobsPage() {
 
   // Job Details Modal
   const [selectedJobForDetails, setSelectedJobForDetails] = useState(null);
+
+  // Per-job inline action errors — replaces alert() entirely.
+  // Maps jobId → { code, message, isExpired, isAlreadyAccepted }
+  const [actionErrors, setActionErrors] = useState({});
+
+  const clearJobError = (jobId) =>
+    setActionErrors(prev => { const n = { ...prev }; delete n[jobId]; return n; });
 
   // Customer Start OTP Modal
   const [otpModalJob, setOtpModalJob] = useState(null);
@@ -233,7 +353,7 @@ export function EmployeeJobsPage() {
       const jobsList = Array.isArray(data) ? data : (data?.results || []);
       setJobs(jobsList);
     } catch (err) {
-      setError(err.message || 'Failed to load your field jobs.');
+      setError(cleanErrorMessage(err?.message || 'Failed to load your field jobs.'));
     } finally {
       setIsLoading(false);
     }
@@ -252,20 +372,37 @@ export function EmployeeJobsPage() {
 
   const handleAcceptOffer = async (jobId, e) => {
     e?.stopPropagation?.();
+    // Clear any stale error for this card before retrying
+    clearJobError(jobId);
     try {
       setActionLoadingId(jobId);
       await apiAcceptJobOffer(jobId);
       // Auto-start transit for immediate live first-person navigation
       try {
         await apiTransitionJob(jobId, 'ON_THE_WAY');
-      } catch (err) {
-        // Continue if transition already initiated
+      } catch (_) {
+        // Continue — transition may have already been initiated
       }
       if (selectedJobForDetails?.id === jobId) setSelectedJobForDetails(null);
-      // Immediately place into active navigation cockpit
       navigate(`/workforce/employee/dashboard?job_id=${jobId}&nav=1`);
     } catch (err) {
-      alert(err.message || 'Could not accept job offer.');
+      const msg = cleanErrorMessage(err?.message || 'Could not accept job offer.');
+      const code = err?.code || '';
+      // Classify the error so the card can show the right inline state
+      const isExpired =
+        code === 'OFFER_EXPIRED' ||
+        code === 'NO_ACTIVE_OFFER' ||
+        msg.toLowerCase().includes('expired') ||
+        msg.toLowerCase().includes('no active job offer');
+      const isAlreadyAccepted =
+        code === 'JOB_ALREADY_ACCEPTED' ||
+        msg.toLowerCase().includes('already been accepted');
+      setActionErrors(prev => ({
+        ...prev,
+        [jobId]: { code, message: msg, isExpired, isAlreadyAccepted },
+      }));
+      // Refresh the list so the card reflects server reality (may disappear if reassigned)
+      loadJobs();
     } finally {
       setActionLoadingId(null);
     }
@@ -274,13 +411,19 @@ export function EmployeeJobsPage() {
   const handleRejectOffer = async (jobId, e) => {
     e?.stopPropagation?.();
     if (!window.confirm('Decline this job offer? It will be reassigned to another nearby technician.')) return;
+    clearJobError(jobId);
     try {
       setActionLoadingId(jobId);
       await apiRejectJobOffer(jobId, 'Technician declined');
       await loadJobs();
       if (selectedJobForDetails?.id === jobId) setSelectedJobForDetails(null);
     } catch (err) {
-      alert(err.message || 'Could not decline job offer.');
+      const msg = cleanErrorMessage(err?.message || 'Could not decline job offer.');
+      const code = err?.code || '';
+      setActionErrors(prev => ({
+        ...prev,
+        [jobId]: { code, message: msg, isExpired: false, isAlreadyAccepted: false },
+      }));
     } finally {
       setActionLoadingId(null);
     }
@@ -288,14 +431,19 @@ export function EmployeeJobsPage() {
 
   const handleStartTrip = async (jobId, e) => {
     e?.stopPropagation?.();
+    clearJobError(jobId);
     try {
       setActionLoadingId(jobId);
       await apiTransitionJob(jobId, 'ON_THE_WAY');
       if (selectedJobForDetails?.id === jobId) setSelectedJobForDetails(null);
-      // Immediately place into active navigation cockpit
       navigate(`/workforce/employee/dashboard?job_id=${jobId}&nav=1`);
     } catch (err) {
-      alert(err.message || 'Failed to update status.');
+      const msg = cleanErrorMessage(err?.message || 'Failed to update status.');
+      const code = err?.code || '';
+      setActionErrors(prev => ({
+        ...prev,
+        [jobId]: { code, message: msg, isExpired: false, isAlreadyAccepted: false },
+      }));
     } finally {
       setActionLoadingId(null);
     }
@@ -303,13 +451,45 @@ export function EmployeeJobsPage() {
 
   const handleArrived = async (jobId, e) => {
     e?.stopPropagation?.();
+    clearJobError(jobId);
     try {
       setActionLoadingId(jobId);
-      await apiTransitionJob(jobId, 'ARRIVED');
+
+      // 1. Resolve GPS coordinates
+      let lat = employeeRuntime?.liveLocation?.latitude;
+      let lon = employeeRuntime?.liveLocation?.longitude;
+
+      if (!lat || !lon) {
+        try {
+          const loc = await employeeRuntime?.scanCurrentLocation?.();
+          lat = loc?.latitude;
+          lon = loc?.longitude;
+        } catch (_) {}
+      }
+
+      if (!lat || !lon) {
+        try {
+          const pos = await getGPSPosition(true);
+          lat = pos?.coords?.latitude;
+          lon = pos?.coords?.longitude;
+        } catch (_) {}
+      }
+
+      if (!lat || !lon) {
+        throw new Error('Unable to retrieve GPS coordinates. Please allow location permissions in your browser to verify arrival at site.');
+      }
+
+      // 2. Dedicated arrival verification with geofencing check
+      await apiVerifyArrival(jobId, lat, lon);
       await loadJobs();
       if (selectedJobForDetails?.id === jobId) setSelectedJobForDetails(null);
     } catch (err) {
-      alert(err.message || 'Failed to update status.');
+      const msg = cleanErrorMessage(err?.message || err || 'Failed to update status.');
+      const code = err?.code || '';
+      setActionErrors(prev => ({
+        ...prev,
+        [jobId]: { code, message: msg, isExpired: false, isAlreadyAccepted: false },
+      }));
     } finally {
       setActionLoadingId(null);
     }
@@ -330,7 +510,7 @@ export function EmployeeJobsPage() {
       setEnteredOtp('');
       await loadJobs();
     } catch (err) {
-      setOtpError(err.message || 'Invalid OTP code. Please check with customer.');
+      setOtpError(cleanErrorMessage(err?.message || 'Invalid OTP code. Please check with customer.'));
     } finally {
       setIsVerifyingOtp(false);
     }
@@ -487,6 +667,9 @@ export function EmployeeJobsPage() {
         <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
           {[
             { id: 'ALL', label: 'All Categories' },
+            { id: 'goods_transport_truck', label: '🚚 Mini Truck' },
+            { id: 'goods_transport_two_wheeler', label: '🛵 Two-Wheeler' },
+            { id: 'packers_movers', label: '📦 Packers & Movers' },
             { id: 'electrical', label: '⚡ Electrical' },
             { id: 'ac', label: '❄️ AC & Appliances' },
             { id: 'plumbing', label: '💧 Plumbing' },
@@ -702,27 +885,97 @@ export function EmployeeJobsPage() {
                     </button>
 
                     <div className="flex items-center gap-2">
-                      {/* OFFER ACTIONS */}
-                      {isOffer && (
-                        <>
+                      {/* OFFER ACTIONS — or inline error state when accept/decline fails */}
+                      {isOffer && (() => {
+                        const jobErr = actionErrors[job.id];
+                        if (jobErr) {
+                          // Offer expired / no longer active → subdued pill + refresh
+                          if (jobErr.isExpired || jobErr.isAlreadyAccepted) {
+                            return (
+                              <>
+                                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 text-slate-500 border border-slate-200 text-xs font-bold rounded-xl">
+                                  <AlertCircle className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                  <span>
+                                    {jobErr.isAlreadyAccepted
+                                      ? 'Taken by another'
+                                      : 'Offer expired'}
+                                  </span>
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => { clearJobError(job.id); loadJobs(); }}
+                                  className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-600 border border-slate-200 text-xs font-bold rounded-xl transition-all cursor-pointer inline-flex items-center gap-1"
+                                >
+                                  <RotateCcw className="w-3 h-3" />
+                                  <span>Refresh</span>
+                                </button>
+                              </>
+                            );
+                          }
+                          // Other action error → rose pill + dismiss
+                          return (
+                            <>
+                              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 text-rose-700 border border-rose-200 text-xs font-semibold rounded-xl max-w-[200px]">
+                                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                <span className="truncate">{jobErr.message}</span>
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => clearJobError(job.id)}
+                                className="p-1.5 bg-white hover:bg-slate-100 text-slate-500 border border-slate-200 rounded-lg transition-all cursor-pointer"
+                                title="Dismiss"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </>
+                          );
+                        }
+                        // Normal offer state — Decline + Accept buttons
+                        return (
+                          <>
+                            <button
+                              type="button"
+                              onClick={(e) => handleRejectOffer(job.id, e)}
+                              disabled={actionLoadingId === job.id}
+                              className="px-3.5 py-2 bg-white hover:bg-rose-50 text-slate-700 hover:text-rose-700 border border-slate-200 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                            >
+                              Decline
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => handleAcceptOffer(job.id, e)}
+                              disabled={actionLoadingId === job.id}
+                              className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-black rounded-xl shadow-sm transition-all cursor-pointer flex items-center gap-1.5"
+                            >
+                              <Zap className="w-4 h-4 fill-current" />
+                              <span>Accept • ₹{payoutAmount}</span>
+                            </button>
+                          </>
+                        );
+                      })()}
+
+                      {/* Non-offer action errors (start trip / arrived) */}
+                      {!isOffer && actionErrors[job.id] && (
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 text-rose-700 border border-rose-200 text-xs font-semibold rounded-xl max-w-[280px]"
+                            title={actionErrors[job.id].message}
+                          >
+                            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                            <span className="truncate">{actionErrors[job.id].message}</span>
+                          </span>
                           <button
                             type="button"
-                            onClick={(e) => handleRejectOffer(job.id, e)}
-                            disabled={actionLoadingId === job.id}
-                            className="px-3.5 py-2 bg-white hover:bg-rose-50 text-slate-700 hover:text-rose-700 border border-slate-200 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                            onClick={(e) => {
+                              e?.stopPropagation?.();
+                              clearJobError(job.id);
+                            }}
+                            className="p-1.5 bg-white hover:bg-slate-100 text-slate-500 border border-slate-200 rounded-lg transition-all cursor-pointer shrink-0"
+                            title="Dismiss"
                           >
-                            Decline
+                            <X className="w-3.5 h-3.5" />
                           </button>
-                          <button
-                            type="button"
-                            onClick={(e) => handleAcceptOffer(job.id, e)}
-                            disabled={actionLoadingId === job.id}
-                            className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-black rounded-xl shadow-sm transition-all cursor-pointer flex items-center gap-1.5"
-                          >
-                            <Zap className="w-4 h-4 fill-current" />
-                            <span>Accept • ₹{payoutAmount}</span>
-                          </button>
-                        </>
+                        </div>
                       )}
 
                       {/* ASSIGNED -> START TRIP */}

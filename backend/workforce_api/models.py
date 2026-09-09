@@ -3,6 +3,7 @@ workforce-app/backend/workforce_api/models.py
 Relational database models for Workforce Scheduling, Skills, Compliance, Notifications, Events, Payroll, and Reports.
 """
 import uuid
+import django
 from django.conf import settings
 from django.db import models
 
@@ -25,6 +26,7 @@ class WorkforceEmployeeSchedule(models.Model):
     company = models.ForeignKey(
         "companies.Company",
         on_delete=models.CASCADE,
+        
         related_name="employee_schedules",
     )
     day_of_week = models.IntegerField(choices=DayOfWeek.choices, db_index=True)
@@ -536,10 +538,16 @@ class PreServiceVerification(models.Model):
         db_table = "workforce_pre_service_verification"
 
     def check_completion(self):
+        # work_area_photo is required here to match the four gates the
+        # technician UI actually enforces ("3. Pre-Service Diagnostic Photos
+        # 0/2"). Without it the backend considered the job ready one photo
+        # earlier than the UI did, so the two disagreed about whether work
+        # could start. appliance_photo stays optional, as in the UI.
         ready = bool(
             self.geofence_passed
             and self.otp_verified
             and self.presence_photo
+            and self.work_area_photo
         )
         self.is_complete = ready
         if ready and not self.completed_at:
@@ -1268,6 +1276,14 @@ class JobPayment(models.Model):
             models.Index(fields=["company", "payment_status"]),
         ]
 
+    @property
+    def is_cash_collected(self) -> bool:
+        """
+        Canonical derived property representing whether cash has been physically collected.
+        Returns True if cash_collected_at is recorded, False otherwise.
+        """
+        return bool(self.cash_collected_at is not None)
+
     def __str__(self):
         return f"Payment #{self.id} for Job #{self.job_id} ({self.payment_method} - {self.payment_status} - ₹{self.amount_due})"
 
@@ -1525,11 +1541,13 @@ class WalletAccount(models.Model):
         db_table = "workforce_wallet_account"
         constraints = [
             models.CheckConstraint(
-                check=(
-                    models.Q(account_type="PROVIDER_HEAD", company__isnull=False, employee__isnull=True)
-                    | models.Q(account_type="INDIVIDUAL_WORKER", employee__isnull=False, company__isnull=True)
-                ),
-                name="wallet_account_type_matches_owner",
+                **{
+                    ("condition" if django.VERSION >= (5, 1) else "check"): (
+                        models.Q(account_type="PROVIDER_HEAD", company__isnull=False, employee__isnull=True)
+                        | models.Q(account_type="INDIVIDUAL_WORKER", employee__isnull=False, company__isnull=True)
+                    ),
+                    "name": "wallet_account_type_matches_owner",
+                }
             ),
         ]
         indexes = [

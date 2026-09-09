@@ -24,6 +24,8 @@ export function TechnicianStandbyMapView({
   const techMarkerRef = useRef(null);
   const radarCircleRef = useRef(null);
   const [apiLoaded, setApiLoaded] = useState(false);
+  const [apiError, setApiError] = useState(null);
+  const [retryTick, setRetryTick] = useState(0);
 
   const resolveCoord = (...candidates) => {
     for (const c of candidates) {
@@ -43,15 +45,28 @@ export function TechnicianStandbyMapView({
   useEffect(() => {
     let mounted = true;
     const apiKey = import.meta.env.VITE_GOOGLE_MAPS_KEY || import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+    if (!apiKey) {
+      setApiError('Google Maps API key is not configured.');
+      return;
+    }
+    setApiError(null);
     loadMapsApi(apiKey)
       .then(() => {
         if (mounted) setApiLoaded(true);
       })
-      .catch((err) => console.error('[STANDBY_MAP_LOAD_ERROR]', err));
+      .catch((err) => {
+        console.error('[STANDBY_MAP_LOAD_ERROR]', err);
+        // Bug found: this component had no apiError state or fallback UI at
+        // all -- a failed Google Maps load (bad key, network block,
+        // ad-blocker) just left the map container permanently blank with
+        // no explanation and no way to retry. Mirrors the fallback pattern
+        // already used correctly on LocationPickerMap.jsx.
+        if (mounted) setApiError('Could not load the map. Check your connection and try again.');
+      });
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [retryTick]);
 
   // Initialize Standby map
   useEffect(() => {
@@ -179,6 +194,21 @@ export function TechnicianStandbyMapView({
       {/* ── Map Container ── */}
       <div className="w-full flex-1 min-h-0 relative bg-slate-950">
         <div ref={mapContainerRef} className="w-full h-full absolute inset-0" />
+        {apiError && (
+          <div className="absolute inset-0 flex items-center justify-center bg-slate-950 z-10 p-4">
+            <div className="text-center">
+              <MapPin className="w-6 h-6 text-rose-400 mx-auto mb-2" />
+              <p className="text-xs text-rose-300 font-medium mb-3">{apiError}</p>
+              <button
+                type="button"
+                onClick={() => setRetryTick((t) => t + 1)}
+                className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── Telemetry Footer ── */}

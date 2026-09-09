@@ -72,17 +72,25 @@ class Command(BaseCommand):
             default=5,
             help="Interval in seconds between reconciliation cycles (default: 5s).",
         )
+        parser.add_argument(
+            "--limit",
+            type=int,
+            default=10,
+            help="Maximum number of pending jobs to reconcile per pass (default: 10).",
+        )
 
     def handle(self, *args, **options):
         run_once = options.get("once")
         run_loop = options.get("loop")
         interval = max(1, options.get("interval") or 5)
+        limit = max(1, options.get("limit") or 10)
 
-        self.stdout.write(self.style.SUCCESS(f"[DISPATCH ENGINE] Starting Workforce Dispatch Reconciliation (interval: {interval}s)..."))
+        self.stdout.write(self.style.SUCCESS(f"[DISPATCH ENGINE] Starting Workforce Dispatch Reconciliation (interval: {interval}s, limit: {limit})..."))
 
         if run_once or not run_loop:
             # Single pass reconciliation
-            result = dispatch_pending_jobs()
+            _write_heartbeat("running")
+            result = dispatch_pending_jobs(limit=limit)
             _write_heartbeat("ok", {
                 "pending_jobs_found": result.get("pending_jobs_found"),
                 "dispatched_count": result.get("dispatched_count"),
@@ -103,7 +111,8 @@ class Command(BaseCommand):
         try:
             while True:
                 try:
-                    result = dispatch_pending_jobs()
+                    _write_heartbeat("running")
+                    result = dispatch_pending_jobs(limit=limit)
                     _write_heartbeat("ok", {
                         "pending_jobs_found": result.get("pending_jobs_found"),
                         "dispatched_count": result.get("dispatched_count"),

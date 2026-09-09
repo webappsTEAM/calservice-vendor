@@ -28,21 +28,25 @@ _CUSTOMER_WEBHOOK_EVENT_MAP = {
 }
 
 ALLOWED_TRANSITIONS = {
-    "draft": ["new_request", "confirmed", "offering", "dispatching", "assigned", "unassigned", "cancelled"],
-    "new_request": ["confirmed", "offering", "dispatching", "assigned", "unassigned", "cancelled"],
-    "unassigned": ["offering", "dispatching", "assigned", "accepted", "redispatching", "cancelled"],
-    "offering": ["accepted", "unassigned", "redispatching", "cancelled"],
-    "dispatching": ["offering", "accepted", "unassigned", "redispatching", "cancelled"],
-    "redispatching": ["offering", "dispatching", "unassigned", "accepted", "cancelled"],
-    "confirmed": ["offering", "dispatching", "assigned", "unassigned", "accepted", "cancelled"],
-    "assigned": ["received", "accepted", "reassigned", "redispatching", "cancelled"],
-    "received": ["accepted", "reassigned", "redispatching", "cancelled"],
+    "draft": ["new_request", "confirmed", "offering", "dispatching", "assigned", "unassigned", "cancelled", "rescheduled"],
+    "new_request": ["confirmed", "offering", "dispatching", "assigned", "unassigned", "cancelled", "rescheduled"],
+    "unassigned": ["offering", "dispatching", "assigned", "accepted", "redispatching", "cancelled", "rescheduled"],
+    "offering": ["accepted", "unassigned", "redispatching", "cancelled", "rescheduled"],
+    "dispatching": ["offering", "accepted", "unassigned", "redispatching", "cancelled", "rescheduled"],
+    "redispatching": ["offering", "dispatching", "unassigned", "accepted", "cancelled", "rescheduled"],
+    "confirmed": ["offering", "dispatching", "assigned", "unassigned", "accepted", "cancelled", "rescheduled"],
+    "assigned": ["received", "accepted", "reassigned", "redispatching", "cancelled", "rescheduled"],
+    "received": ["accepted", "reassigned", "redispatching", "cancelled", "rescheduled"],
+    "rescheduled": ["offering", "dispatching", "assigned", "unassigned", "accepted", "cancelled"],
     "accepted": ["on_the_way", "en_route", "arrived", "redispatching", "cancelled", "unable_to_complete"],
     "on_the_way": ["arrived", "redispatching", "cancelled", "unable_to_complete"],
     "en_route": ["arrived", "redispatching", "cancelled", "unable_to_complete"],
     "arrived": ["service_started", "in_progress", "cancelled", "unable_to_complete"],
     "service_started": ["in_progress", "cancelled", "unable_to_complete"],
-    "in_progress": ["proof_submitted", "cancelled", "unable_to_complete", "follow_up_required"],
+    "in_progress": ["on_hold", "proof_submitted", "cancelled", "unable_to_complete", "follow_up_required"],
+    # A hold is a pause inside an active job, so it can only return to
+    # in_progress or end the job -- it can never skip straight to proof.
+    "on_hold": ["in_progress", "cancelled", "unable_to_complete"],
     "proof_submitted": ["completed", "cancelled", "unable_to_complete", "follow_up_required"],
     "follow_up_required": ["in_progress", "completed", "cancelled", "unable_to_complete"],
     "completed": [],
@@ -141,6 +145,32 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
         except Exception as webhook_err:
             logger.info("Could not notify Customer app of transition to '%s': %s", target, webhook_err)
 
+    # GT-B-03: start the logistics trip the moment a driver accepts.
+    #
+    # The leg endpoint has always existed, but nothing set the FIRST leg --
+    # so a trip stayed on a blank leg until the driver app explicitly sent
+    # one, and the customer's leg-aware tracking destination had nothing to
+    # act on for the whole run to pickup. Accepting a transport job
+    # unambiguously means "on the way to collect", so it is set here rather
+    # than depending on one more request the driver app may never send.
+    #
+    # Only the FIRST leg is inferred. LOADING / EN_ROUTE_DROP / UNLOADING
+    # are genuine driver signals about physical progress and are never
+    # guessed from a status change. DELIVERED is set when proof of delivery
+    # is submitted (see WorkforceJobProofView).
+    if target == "accepted":
+        try:
+            from workforce_api.services.automatic_dispatch import LOGISTICS_SERVICE_CATEGORIES
+            from workforce_api.services.logistics_events import set_logistics_leg
+
+            if (service_request.service_category or "").strip().lower() in LOGISTICS_SERVICE_CATEGORIES:
+                set_logistics_leg(service_request, "EN_ROUTE_PICKUP", actor=actor)
+        except Exception as leg_err:
+            logger.info(
+                "Could not set the initial logistics leg on job %s: %s",
+                getattr(service_request, "id", None), leg_err,
+            )
+
     # Sync EmployeeJob status and timestamps
     try:
         from service_requests.models import EmployeeJob
@@ -226,7 +256,13 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
                     )
 
         if target in ["completed", "cancelled", "redispatching", "unable_to_complete"]:
-            from workforce_api.models import JobTrackingSession
+            from workforce_api.models import JobTrackingSession, WorkforceJobOffer
+            # Atomically cancel any outstanding job offers so drivers cannot accept stale/cancelled/completed jobs
+            WorkforceJobOffer.objects.filter(
+                job=service_request,
+                status=WorkforceJobOffer.Status.OFFERED,
+            ).update(status=WorkforceJobOffer.Status.CANCELLED)
+
             closing_status = (
                 JobTrackingSession.SessionStatus.COMPLETED
                 if target == "completed"
@@ -246,6 +282,33 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
                     f"[EMPLOYEE_RELEASED] employee={service_request.assigned_employee.id} "
                     f"job={service_request.id} target_state={target.upper()}"
                 )
+
+                # Close the shift that starting the job opened. Without this the
+                # TimeLog outlives the job, and because a DB constraint allows
+                # only one open log per employee, the technician's NEXT job can
+                # never clock in -- and this job's hours never finalise.
+                try:
+                    from time_tracking.models import TimeLog
+                    for _log in TimeLog.objects.filter(
+                        employee=service_request.assigned_employee,
+                        clock_out__isnull=True,
+                    ):
+                        _log.clock_out = now
+                        _log.clock_out_address = service_request.address or ""
+                        _log.clock_out_notes = f"Auto clock-out on job {target}"
+                        _log.save(update_fields=[
+                            "clock_out", "clock_out_address", "clock_out_notes", "updated_at",
+                        ])
+                        logger.info(
+                            "[CLOCK_OUT] employee=%s job=%s timelog=%s target_state=%s",
+                            service_request.assigned_employee.id, service_request.id,
+                            _log.id, target.upper(),
+                        )
+                except Exception as _clockout_err:
+                    logger.warning(
+                        "Could not close TimeLog for job %s: %s",
+                        service_request.pk, _clockout_err,
+                    )
     except Exception as _sm_err:
         logger.exception(
             "Non-fatal error in post-transition side-effects for Job #%s -> %s: %s",

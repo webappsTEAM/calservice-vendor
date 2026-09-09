@@ -475,6 +475,30 @@ export function AdminOperationsPage() {
     loadData();
   }, []);
 
+  // ── Dispatch & Jobs Queue: active polling every 5s so new customer bookings appear in radar automatically ──
+  useEffect(() => {
+    const pollQueue = async () => {
+      try {
+        const [jobsList, eligible] = await Promise.all([
+          apiGetWorkforceJobs().catch(() => []),
+          apiGetEligibleTechnicians().catch(() => []),
+        ]);
+        const safe = (d) => (Array.isArray(d) ? d : d?.results || []);
+        setJobs(safe(jobsList));
+        setEligibleFleet(safe(eligible));
+      } catch (_) {}
+    };
+
+    const interval = setInterval(pollQueue, 5000);
+    const onFocus = () => pollQueue();
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, []);
+
   // ── Fleet Map: auto-refresh every 60s when tab is visible ──────────────────
   useEffect(() => {
     if (activeTab !== 'fleet_map') return;
