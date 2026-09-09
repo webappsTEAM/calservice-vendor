@@ -15,6 +15,7 @@ import 'jobs_providers.dart';
 import 'widgets/arrival_checklist_section.dart';
 import 'widgets/cancel_assignment_button.dart';
 import 'widgets/cash_collection_sheet.dart';
+import 'widgets/logistics_trip_section.dart';
 import 'widgets/navigate_button.dart';
 import 'widgets/offer_actions_section.dart';
 import 'widgets/proof_submission_sheet.dart';
@@ -418,6 +419,16 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
         // ══════════════════════════════════════════════════════════════════════
         // DYNAMIC STATE-DRIVEN ACTION STEPS SECTION
         // ══════════════════════════════════════════════════════════════════════
+        // Goods & Transport: the trip itself — legs, pickup/drop, stops.
+        // Placed above the generic action steps because on a delivery the
+        // trip IS the job: everything below this point (clock in, proof,
+        // payment) is the same as any other service, but none of it makes
+        // sense to a driver who cannot see where they are in the run.
+        if (job.isLogistics && presentation.isAccepted) ...[
+          LogisticsTripSection(job: job),
+          const SizedBox(height: AppSpacing.lg),
+        ],
+
         const Text(
           'ACTION STEPS',
           style: TextStyle(
@@ -486,15 +497,19 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
                   ],
                 ),
                 const SizedBox(height: 6),
-                const Text(
-                  'Clocked in on site. When repairs and service are finished, upload completion photos below to complete the service.',
-                  style: TextStyle(fontSize: 11.5, color: Color(0xFF047857), height: 1.35),
+                Text(
+                  job.isLogistics
+                      ? 'Trip underway. Once the goods are unloaded, capture proof of delivery below — that is what marks the trip delivered.'
+                      : 'Clocked in on site. When repairs and service are finished, upload completion photos below to complete the service.',
+                  style: const TextStyle(fontSize: 11.5, color: Color(0xFF047857), height: 1.35),
                 ),
                 const SizedBox(height: AppSpacing.md),
                 ElevatedButton.icon(
                   onPressed: () => ProofSubmissionSheet.show(context, job),
                   icon: const Icon(Icons.camera_alt_rounded, size: 16),
-                  label: const Text('SUBMIT COMPLETION PROOF'),
+                  label: Text(
+                    job.isLogistics ? 'SUBMIT PROOF OF DELIVERY' : 'SUBMIT COMPLETION PROOF',
+                  ),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF059669),
                     foregroundColor: Colors.white,

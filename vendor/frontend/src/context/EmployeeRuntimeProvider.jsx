@@ -73,6 +73,9 @@ export function EmployeeRuntimeProvider({ children }) {
   // Sequence versioning to prevent out-of-order stale responses
   const fetchGenerationRef = useRef(0);
   const inFlightActiveJobsPromiseRef = useRef(null);
+    // In-flight deduplication: prevents React StrictMode double-mount from firing
+    // two concurrent /notifications/ requests (same pattern as inFlightActiveJobsPromiseRef).
+    const inFlightNotificationsPromiseRef = useRef(null);
   const inFlightCompletedJobsPromiseRef = useRef(null);
   const activeJobsRef = useRef([]);
   const selectedJobRef = useRef(null);

@@ -415,6 +415,7 @@ class JobPaymentSerializer(serializers.ModelSerializer):
             "currency",
             "gateway_transaction_id",
             "cash_collected_at",
+            "is_cash_collected",
             "customer_confirmed_at",
             "customer_confirmation_method",
             "created_at",
@@ -433,9 +434,9 @@ class PaymentCollectionEventSerializer(serializers.ModelSerializer):
             "id",
             "job_payment",
             "event_type",
-            "amount",
-            "metadata",
+            "actor_type",
             "actor_name",
+            "metadata",
             "created_at",
         ]
         read_only_fields = fields
@@ -443,24 +444,26 @@ class PaymentCollectionEventSerializer(serializers.ModelSerializer):
     def get_actor_name(self, obj):
         if obj.actor_user:
             return obj.actor_user.get_full_name() or obj.actor_user.username
+        if obj.actor_employee:
+            return obj.actor_employee.full_name
         return "System"
 
 
 class WorkforceJobSerializer(serializers.ModelSerializer):
     customer_display_name = serializers.SerializerMethodField()
     service_title = serializers.SerializerMethodField()
+    job_status = serializers.SerializerMethodField()
+    payment = serializers.SerializerMethodField()
     active_offer = serializers.SerializerMethodField()
+    cancellation_info = serializers.SerializerMethodField()
     extensions = serializers.SerializerMethodField()
     active_extension = serializers.SerializerMethodField()
-    distance_km = serializers.SerializerMethodField()
-    payment = serializers.SerializerMethodField()
-    cancellation_info = serializers.SerializerMethodField()
-    job_status = serializers.SerializerMethodField()
     offer_status = serializers.SerializerMethodField()
     is_offer = serializers.SerializerMethodField()
     is_accepted_by_current_employee = serializers.SerializerMethodField()
     is_assigned_to_current_employee = serializers.SerializerMethodField()
     accepted_at = serializers.SerializerMethodField()
+    distance_km = serializers.SerializerMethodField()
     cancellation_deadline = serializers.SerializerMethodField()
     offer_expires_at = serializers.SerializerMethodField()
     settlement_channel = serializers.SerializerMethodField()
@@ -471,6 +474,12 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
     can_create_quote = serializers.SerializerMethodField()
     active_quote_id = serializers.SerializerMethodField()
     active_quote_number = serializers.SerializerMethodField()
+    # GT: the logistics half of a job. Without these the driver app can see
+    # where to collect from but not where to deliver to, and has no idea
+    # which leg of the trip it is on -- the leg/stop endpoints existed but
+    # nothing in the job payload told the app they applied.
+    is_logistics = serializers.SerializerMethodField()
+    trip_stop_count = serializers.SerializerMethodField()
 
     class Meta:
         model = ServiceRequest
@@ -526,7 +535,33 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             "can_create_quote",
             "active_quote_id",
             "active_quote_number",
+            # Goods & Transport
+            "is_logistics",
+            "drop_address",
+            "drop_latitude",
+            "drop_longitude",
+            "drop_contact_name",
+            "drop_contact_phone",
+            "logistics_leg",
+            "logistics_leg_updated_at",
+            "trip_stop_count",
         ]
+
+    def get_is_logistics(self, obj):
+        from workforce_api.services.automatic_dispatch import LOGISTICS_SERVICE_CATEGORIES
+        return (obj.service_category or "").strip().lower() in LOGISTICS_SERVICE_CATEGORIES
+
+    def get_trip_stop_count(self, obj):
+        """
+        How many stops this trip has, so the driver app knows whether to
+        show the multi-stop list at all. Cheap count rather than the full
+        list -- the stops endpoint serves those on demand.
+        """
+        try:
+            from service_requests.models import TripStop
+            return TripStop.objects.filter(booking=obj).count()
+        except Exception:
+            return 0
 
     def _get_context_emp(self):
         request = self.context.get("request")

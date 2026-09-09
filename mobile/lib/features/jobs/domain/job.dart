@@ -107,6 +107,15 @@ class Job {
     this.cancellationDeadline,
     this.offerExpiresAt,
     required this.canCancel,
+    this.isLogistics = false,
+    this.dropAddress,
+    this.dropLatitude,
+    this.dropLongitude,
+    this.dropContactName,
+    this.dropContactPhone,
+    this.logisticsLeg,
+    this.logisticsLegUpdatedAt,
+    this.tripStopCount = 0,
   });
 
   factory Job.fromJson(Map<String, dynamic> json) {
@@ -153,6 +162,15 @@ class Job {
       cancellationDeadline: parseDateTime(json['cancellation_deadline']),
       offerExpiresAt: parseDateTime(json['offer_expires_at']),
       canCancel: parseBool(json['can_cancel']),
+      isLogistics: parseBool(json['is_logistics']),
+      dropAddress: parseString(json['drop_address']),
+      dropLatitude: parseDouble(json['drop_latitude']),
+      dropLongitude: parseDouble(json['drop_longitude']),
+      dropContactName: parseString(json['drop_contact_name']),
+      dropContactPhone: parseString(json['drop_contact_phone']),
+      logisticsLeg: parseString(json['logistics_leg']),
+      logisticsLegUpdatedAt: parseDateTime(json['logistics_leg_updated_at']),
+      tripStopCount: parseInt(json['trip_stop_count']) ?? 0,
     );
   }
 
@@ -188,11 +206,44 @@ class Job {
   final DateTime? offerExpiresAt;
   final bool canCancel;
 
+  // ── Goods & Transport ────────────────────────────────────────────────
+  // A logistics job has a second location. Until these were added the
+  // driver app could show where to collect from but not where to deliver
+  // to, and had no idea which leg of the trip it was on -- the leg and
+  // stop endpoints existed on the backend but nothing in the job payload
+  // told the app they applied.
+
+  /// True when the backend classifies this job's service category as
+  /// logistics (mini truck / two wheeler / packers & movers). Comes from
+  /// the server so the app never has to keep its own copy of the category
+  /// list and drift out of step with dispatch.
+  final bool isLogistics;
+  final String? dropAddress;
+  final double? dropLatitude;
+  final double? dropLongitude;
+  final String? dropContactName;
+  final String? dropContactPhone;
+
+  /// Current trip leg -- one of kLogisticsLegSequence, or null before the
+  /// trip starts. Server-owned: the app displays it and asks the server to
+  /// change it, and never advances it locally.
+  final String? logisticsLeg;
+  final DateTime? logisticsLegUpdatedAt;
+
+  /// How many stops the trip has. 0 means a plain pickup -> drop run with
+  /// no intermediate stops, in which case the app shows the pickup/drop
+  /// pair instead of a stop list.
+  final int tripStopCount;
+
   /// The service name shown in the UI — falls back through the fields the
   /// backend may leave blank depending on how the request was created.
   String get displayTitle => serviceTitle ?? issueTitle ?? serviceCategory ?? 'Service Request';
 
   bool get hasCoordinates => latitude != null && longitude != null;
+
+  bool get hasDropCoordinates => dropLatitude != null && dropLongitude != null;
+
+  bool get hasMultipleStops => tripStopCount > 0;
 }
 
 /// Statuses that count as "an active workload" — a job the technician is

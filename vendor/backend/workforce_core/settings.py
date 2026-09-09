@@ -6,6 +6,7 @@ Shared database with primary backend, zero duplicated tables (managed=False).
 
 
 import os
+import sys
 from datetime import timedelta
 from pathlib import Path
 from dotenv import load_dotenv
@@ -102,9 +103,17 @@ ASGI_APPLICATION = "workforce_core.asgi.application"
 
 # ─── Database Configuration (Shared Supabase PostgreSQL) ──────────────────────
 
-USE_POSTGRES = os.getenv("DB_NAME") or os.getenv("DB_HOST")
+IS_TESTING = "test" in sys.argv or os.getenv("DJANGO_TEST_SQLITE") == "1"
+USE_POSTGRES = bool(os.getenv("DB_NAME") or os.getenv("DB_HOST"))
 
-if USE_POSTGRES:
+if IS_TESTING:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": ":memory:",
+        }
+    }
+elif USE_POSTGRES:
     _db_options = {
         "keepalives": 1,
         "keepalives_idle": 30,
@@ -271,15 +280,44 @@ else:
 # (workforce_integration/views.py) waiting for exactly this. See
 # workforce_api/services/customer_webhook.py for the sender.
 CUSTOMER_APP_BASE_URL = os.getenv("CUSTOMER_APP_BASE_URL", "http://localhost:8000").rstrip("/")
-# Must match the Customer app's WORKFORCE_WEBHOOK_SECRET env var exactly.
-# NOTE: the Customer app's receiver (workforce_integration/views.py,
-# _verify_webhook_signature) currently accepts the literal string
-# "wf_webhook_secret_default" as a valid secret unconditionally, regardless
-# of what WORKFORCE_WEBHOOK_SECRET is actually configured to on that side --
-# that is a bug on the receiving end (flagged separately, not fixed here)
-# and means a real secret should be set on BOTH apps before relying on this
-# for anything sensitive.
-WORKFORCE_WEBHOOK_SECRET = os.getenv("WORKFORCE_WEBHOOK_SECRET", "wf_webhook_secret_default")
+# Fails closed in production, for the same reason WORKFORCE_WEBHOOK_SECRET
+# does below -- but this one is easier to miss, because getting it wrong is
+# SILENT. Webhook delivery is fire-and-forget on a background thread, so an
+# unset CUSTOMER_APP_BASE_URL in production means every event this app sends
+# (leg changes, stop progress, proof of delivery, GPS, the final-fare
+# reconciliation) is POSTed to localhost, fails, and is logged at INFO. The
+# vendor side looks perfectly healthy while the customer's live tracking
+# never moves and their fare is never reconciled. Confirmed unset in the
+# deployed vendor .env at the time of writing.
+if not DEBUG and CUSTOMER_APP_BASE_URL.startswith(("http://localhost", "http://127.0.0.1")):
+    raise ValueError(
+        "CRITICAL CONFIG ERROR: CUSTOMER_APP_BASE_URL still points at localhost "
+        "with DEBUG=False. Every webhook this app sends the Customer app -- leg "
+        "changes, stop progress, proof of delivery, live GPS, fare reconciliation "
+        "-- would be delivered nowhere, silently. Set CUSTOMER_APP_BASE_URL to the "
+        "Customer app's real base URL."
+    )
+# Must match the Customer app's WORKFORCE_WEBHOOK_SECRET env var exactly --
+# it authenticates the webhook calls this app sends to the Customer app's
+# receiver (workforce_integration/views.py, _verify_webhook_signature).
+# Fixed: this used to silently fall back to the well-known literal
+# "wf_webhook_secret_default" whenever the env var was unset -- and that's
+# confirmed to be exactly what's deployed today (unset on both apps' live
+# .env files), meaning the current webhook auth is effectively a
+# publicly-known skeleton key. (The customer-side bug this comment used to
+# describe -- unconditionally accepting that literal even when a real
+# secret was set -- was already fixed separately; see that file.) Mirrors
+# the SECRET_KEY pattern above: usable in local DEBUG dev without extra
+# setup, but fails closed in production so a real secret must be set on
+# BOTH apps before going live.
+_raw_webhook_secret = os.getenv("WORKFORCE_WEBHOOK_SECRET")
+if not _raw_webhook_secret:
+    if DEBUG:
+        WORKFORCE_WEBHOOK_SECRET = "dev-insecure-workforce-webhook-secret-local-testing-only"
+    else:
+        raise ValueError("CRITICAL SECURITY ERROR: WORKFORCE_WEBHOOK_SECRET environment variable is mandatory in production (DEBUG=False) -- it authenticates cross-app webhook calls with the Customer app.")
+else:
+    WORKFORCE_WEBHOOK_SECRET = _raw_webhook_secret
 
 # ----------------------------------------------------------------------------
 # SEVO business plan (Section 1): RazorpayX Payouts for wallet withdrawals.
@@ -322,3 +360,4 @@ SEVO_INDIVIDUAL_COMMISSION_RATE = os.getenv("SEVO_INDIVIDUAL_COMMISSION_RATE", "
 SEVO_INDIVIDUAL_PROMO_RATE = os.getenv("SEVO_INDIVIDUAL_PROMO_RATE", "0.08")
 SEVO_PROMO_PERIOD_DAYS = os.getenv("SEVO_PROMO_PERIOD_DAYS", "90")
 SEVO_DISPUTE_HOLD_HOURS = os.getenv("SEVO_DISPUTE_HOLD_HOURS", "48")
+# env-reload: 2026-09-08

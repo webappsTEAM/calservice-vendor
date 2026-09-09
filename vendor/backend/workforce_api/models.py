@@ -1295,6 +1295,14 @@ class JobPayment(models.Model):
     def __str__(self):
         return f"Payment #{self.id} for Job #{self.job_id} ({self.payment_method} - {self.payment_status} - ₹{self.amount_due})"
 
+    @property
+    def is_cash_collected(self) -> bool:
+        """
+        Canonical derived property representing whether cash has been physically collected.
+        Returns True if cash_collected_at is recorded, False otherwise.
+        """
+        return bool(self.cash_collected_at is not None)
+
 
 class CashSettlement(models.Model):
     """

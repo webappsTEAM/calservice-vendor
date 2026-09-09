@@ -30,6 +30,7 @@ import { EmployeePerformancePage } from './pages/employee/EmployeePerformancePag
 import { EmployeeEarningsPage } from './pages/employee/EmployeeEarningsPage.jsx';
 import { EmployeeLocationPage } from './pages/employee/EmployeeLocationPage.jsx';
 import EmployeeEstimatesPage from './pages/employee/estimates/EmployeeEstimatesPage.jsx';
+import VendorEstimationsPage from './pages/vendor/estimations/VendorEstimationsPage.jsx';
 import { MyVendorNetworkPage } from './pages/employee/MyVendorNetworkPage.jsx';
 import { TechnicianInvitationsPage } from './pages/employee/TechnicianInvitationsPage.jsx';
 
@@ -50,7 +51,6 @@ import { VendorTechnicianNetworkPage } from './pages/admin/VendorTechnicianNetwo
 import { VendorInvitationsPage } from './pages/admin/VendorInvitationsPage.jsx';
 import { PlatformVendorsPage } from './pages/platform/PlatformVendorsPage.jsx';
 import { PlatformWorkforcePage } from './pages/platform/PlatformWorkforcePage.jsx';
-import VendorEstimationsPage from './pages/vendor/estimations/VendorEstimationsPage.jsx';
 import { CustomerTrackingPage } from './pages/customer/CustomerTrackingPage.jsx';
 import { CustomerQuotationDecisionPage } from './pages/customer/CustomerQuotationDecisionPage.jsx';
 import { AdminQuotationApprovalsPage } from './pages/admin/AdminQuotationApprovalsPage.jsx';

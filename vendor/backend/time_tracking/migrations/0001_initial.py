@@ -9,6 +9,14 @@ class Migration(migrations.Migration):
 
     dependencies = [
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
+        # This migration creates ForeignKeys to employees.Employee, but never
+        # said so. On an existing database the graph happened to order
+        # `employees` first and it worked; on a FRESH one it can be ordered
+        # after time_tracking, and then every CreateModel here fails with
+        # `relation "employees_employee" does not exist`. Declaring the
+        # dependency is ordering-only -- no operation, table or runtime
+        # behaviour changes.
+        ("employees", "0001_initial"),
     ]
 
     operations = [

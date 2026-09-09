@@ -2088,6 +2088,46 @@ class WorkforcePresenceStatusView(APIView):
 
 # ─── 8. Field Jobs & State Machine Execution ─────────────────────────────────
 
+def sync_payment_amount_due(pmt, job):
+    """
+    Keep an UNPAID JobPayment's amount_due in step with the job's fare.
+
+    JobPayment rows are created by get_or_create, and `defaults` only apply
+    on creation -- so amount_due froze at whatever job.total_amount was the
+    first time ANY of three endpoints ran: the driver opening the payment
+    screen, the customer viewing payment, or cash collection. Nothing
+    anywhere updated it afterwards.
+
+    That was fine while the fare never changed after booking. It stopped
+    being fine when fare reconciliation started running at DELIVERED: a trip
+    that ran longer, visited an extra stop, or picked up approved extra work
+    has its total_amount raised, and the driver's collection screen would
+    still show the amount from before the trip. The customer pays the old
+    number and the books say the new one -- or the reverse, if the
+    reconciliation went down and the customer is overcharged.
+
+    Only ever touches a PENDING row. A payment already PAID or COLLECTED is
+    history and is never rewritten; if a fare changes after money has moved,
+    that is a refund or a follow-up charge, not an edit.
+
+    Returns True when it changed something.
+    """
+    if pmt is None or job is None:
+        return False
+    if pmt.payment_status != JobPayment.PaymentStatus.PENDING:
+        return False
+    expected = job.total_amount or Decimal("0.00")
+    if pmt.amount_due == expected:
+        return False
+    logger.info(
+        "Job #%s fare changed after the payment row was created (%s -> %s); "
+        "refreshing amount_due.", job.id, pmt.amount_due, expected,
+    )
+    pmt.amount_due = expected
+    pmt.save(update_fields=["amount_due", "updated_at"])
+    return True
+
+
 def is_employee_authorized_for_job(emp, job) -> bool:
     """
     Validates tenant compatibility between an employee and a job:
@@ -2765,6 +2805,8 @@ class WorkforceJobPaymentDetailView(APIView):
             }
         )
 
+        sync_payment_amount_due(pmt, job)
+
         events = PaymentCollectionEvent.objects.filter(job_payment=pmt).order_by("-created_at")
 
         return Response({
@@ -2826,6 +2868,8 @@ class WorkforceJobCashCollectView(APIView):
                     "reconciled": False,
                 }
             )
+
+            sync_payment_amount_due(pmt, job)
 
             # Rule: Cannot collect cash for Online payment booking
             if pmt.payment_method == JobPayment.PaymentMethod.ONLINE:
@@ -3164,6 +3208,8 @@ class WorkforceCustomerJobPaymentView(APIView):
                 "amount_paid": job.total_amount if job.payment_status in ["paid", "collected"] else Decimal("0.00"),
             }
         )
+
+        sync_payment_amount_due(pmt, job)
 
         return Response({
             "job_id": job.id,
@@ -4366,6 +4412,93 @@ class WorkforceAutoDispatchTriggerView(APIView):
 
         success, msg = run_automatic_dispatch(job)
         return Response({"message": msg, "success": success, "status": job.status}, status=status.HTTP_200_OK)
+
+
+class WorkforceCrossServiceDispatchView(APIView):
+    """
+    Direct cross-service dispatch trigger invoked by Customer backend (WorkforceIntegrationService.dispatch_job).
+    POST /api/workforce/jobs/dispatch/
+    Authenticated by WORKFORCE_WEBHOOK_SECRET bearer token (IsInternalWorkforceCaller) --
+    same shared secret already used (in the other direction) for workforce->customer webhooks,
+    and already sent by WorkforceIntegrationService.dispatch_job() in the Customer app.
+    """
+    permission_classes = [IsInternalWorkforceCaller]
+
+    def post(self, request):
+        booking_id = request.data.get("booking_id")
+        if not booking_id:
+            return Response({"error": "booking_id required", "code": "BOOKING_ID_REQUIRED"}, status=status.HTTP_400_BAD_REQUEST)
+
+        job = None
+        if str(booking_id).isdigit():
+            job = ServiceRequest.objects.filter(models.Q(id=int(booking_id)) | models.Q(request_id=booking_id)).first()
+        else:
+            job = ServiceRequest.objects.filter(request_id=booking_id).first()
+
+        if not job:
+            return Response({"error": "Booking not found", "code": "BOOKING_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        success, msg = run_automatic_dispatch(job)
+        return Response({
+            "success": success,
+            "workforce_job_id": str(job.id),
+            "status": job.status,
+            "message": msg,
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceCustomerBookingQuoteView(APIView):
+    """
+    Customer / integration endpoint to retrieve estimation quotation for a booking.
+    GET /api/workforce/customer/bookings/<str:booking_id>/quote/
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, booking_id):
+        from service_requests.models import Estimation, EstimationQuotation
+
+        job = None
+        if str(booking_id).isdigit():
+            job = ServiceRequest.objects.filter(models.Q(id=int(booking_id)) | models.Q(request_id=booking_id)).first()
+        else:
+            job = ServiceRequest.objects.filter(request_id=booking_id).first()
+
+        if not job:
+            return Response({"error": "Booking not found", "code": "BOOKING_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        est = Estimation.objects.filter(service_request=job).first()
+        if not est:
+            return Response({"error": "No estimation quote for this booking", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        quote = est.quotations.order_by("-version", "-created_at").first()
+        if not quote:
+            return Response({"error": "No quotation found", "code": "QUOTE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        items_data = []
+        for item in quote.items.all():
+            items_data.append({
+                "id": item.id,
+                "service_name": item.service_name,
+                "description": item.description,
+                "quantity": float(item.quantity),
+                "unit": item.unit,
+                "unit_price": float(item.unit_price),
+                "line_total": float(item.line_total),
+            })
+
+        return Response({
+            "quote_id": quote.id,
+            "quote_number": quote.quote_ref,
+            "version": quote.version,
+            "status": quote.status,
+            "subtotal": float(quote.subtotal),
+            "tax_amount": float(quote.tax_amount),
+            "discount_amount": float(quote.discount_amount),
+            "total_amount": float(quote.total_amount),
+            "valid_until": str(quote.valid_until) if quote.valid_until else None,
+            "notes": quote.notes,
+            "items": items_data,
+        }, status=status.HTTP_200_OK)
 
 
 # ─── 11. Work Extensions & Scope Approvals ────────────────────────────────────
@@ -6183,29 +6316,37 @@ class WorkforceJobLiveTrackingView(APIView):
       1. The authorized customer who owns the booking
       2. The assigned technician
       3. An authorized workforce admin within the same tenant company
+      4. Internal server-to-server callers from the Customer platform
     """
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated | IsInternalWorkforceCaller]
 
     def get(self, request, pk):
         user = request.user
         from service_requests.models import ServiceRequest
         from accounts.permissions import is_admin_role
 
-        job = ServiceRequest.objects.filter(pk=pk).select_related("assigned_employee__user", "customer", "company").first()
+        if str(pk).isdigit():
+            job = ServiceRequest.objects.filter(pk=int(pk)).select_related("assigned_employee__user", "customer", "company").first()
+        else:
+            job = ServiceRequest.objects.filter(request_id=str(pk)).select_related("assigned_employee__user", "customer", "company").first()
+
         if not job:
             return Response({"error": "Job not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
-        is_owner_customer = (
-            job.customer == user
-            or str(getattr(job, "customer_name", "")).lower() == user.username.lower()
-            or getattr(job, "phone", "") == getattr(user, "username", "")
+        is_internal = IsInternalWorkforceCaller().has_permission(request, self)
+        is_owner_customer = bool(
+            user.is_authenticated and (
+                job.customer == user
+                or str(getattr(job, "customer_name", "")).lower() == user.username.lower()
+                or getattr(job, "phone", "") == getattr(user, "username", "")
+            )
         )
-        is_assigned_tech = bool(job.assigned_employee and job.assigned_employee.user == user)
-        is_platform_admin = getattr(user, "is_superuser", False)
-        user_company = resolve_actor_company(request)
-        is_tenant_admin = is_admin_role(user) and bool(job.company_id and user_company and job.company_id == user_company.id)
+        is_assigned_tech = bool(user.is_authenticated and job.assigned_employee and job.assigned_employee.user == user)
+        is_platform_admin = bool(user.is_authenticated and getattr(user, "is_superuser", False))
+        user_company = resolve_actor_company(request) if user.is_authenticated else None
+        is_tenant_admin = bool(user.is_authenticated and is_admin_role(user) and job.company_id and user_company and job.company_id == user_company.id)
 
-        if not (is_owner_customer or is_assigned_tech or is_platform_admin or is_tenant_admin):
+        if not (is_internal or is_owner_customer or is_assigned_tech or is_platform_admin or is_tenant_admin):
             return Response({
                 "error": "Unauthorized to view tracking for this job.",
                 "code": "CROSS_TENANT_FORBIDDEN"
@@ -6364,6 +6505,80 @@ class WorkforceJobLiveTrackingView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+class WorkforceTechnicianFeedbackView(APIView):
+    """
+    Accepts feedback/rating for a technician from Customer integration or technician direct URL.
+    Routes: /api/workforce/technicians/<str:technician_id>/feedback/
+    """
+    permission_classes = [permissions.IsAuthenticated | IsInternalWorkforceCaller]
+
+    def post(self, request, technician_id=None):
+        from employees.models import Employee
+        from service_requests.models import ServiceRequest, WorkforceJobFeedback
+        from workforce_api.serializers import WorkforceJobFeedbackSerializer
+        from workforce_api.services import recalculate_employee_scorecard
+
+        tech_id = technician_id or request.data.get("technician_id")
+        booking_id = request.data.get("booking_id") or request.data.get("request_id")
+        workforce_job_id = request.data.get("workforce_job_id") or request.data.get("job_id")
+
+        emp = None
+        if tech_id:
+            if str(tech_id).isdigit():
+                emp = Employee.objects.filter(pk=int(tech_id)).first()
+            if not emp:
+                emp = Employee.objects.filter(employee_id__iexact=str(tech_id)).first()
+
+        job = None
+        if workforce_job_id:
+            if str(workforce_job_id).isdigit():
+                job = ServiceRequest.objects.filter(pk=int(workforce_job_id)).first()
+            if not job:
+                job = ServiceRequest.objects.filter(request_id=str(workforce_job_id)).first()
+        elif booking_id:
+            job = ServiceRequest.objects.filter(request_id=str(booking_id)).first()
+
+        if not emp and job and job.assigned_employee:
+            emp = job.assigned_employee
+
+        if not emp:
+            return Response({"error": "Technician not found.", "code": "TECHNICIAN_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            rating = int(float(request.data.get("rating", 5)))
+        except (ValueError, TypeError):
+            rating = 5
+        rating = max(1, min(5, rating))
+
+        comments = str(request.data.get("comments") or request.data.get("review") or "").strip()
+
+        if job:
+            feedback, created = WorkforceJobFeedback.objects.update_or_create(
+                job=job,
+                defaults={
+                    "employee": emp,
+                    "customer": request.user if request.user.is_authenticated else getattr(job, "customer", None),
+                    "rating": rating,
+                    "review": comments,
+                    "csat_score": rating,
+                    "resolution_ontime": True,
+                    "customer_name": request.data.get("customer_name") or getattr(job, "customer_name", "") or "Customer",
+                }
+            )
+            feedback_data = WorkforceJobFeedbackSerializer(feedback).data
+        else:
+            feedback_data = {"rating": rating, "review": comments, "technician_id": emp.id}
+
+        try:
+            recalculate_employee_scorecard(emp)
+        except Exception as e:
+            logger.warning("Scorecard recalculation error: %s", e)
+
+        return Response({
+            "success": True,
+            "message": "Technician feedback recorded successfully.",
+            "feedback": feedback_data
+        }, status=status.HTTP_201_CREATED if job else status.HTTP_200_OK)
 
 
 # ─── 21. Notification Engine & Event Triggers ────────────────────────────────
@@ -7412,9 +7627,14 @@ class WorkforceLatencyAuditView(APIView):
 
 
 class WorkforceVerificationSuiteView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
+        if not getattr(settings, "DEBUG", False) and not getattr(request.user, "is_superuser", False):
+            return Response(
+                {"error": "Verification suite is disabled in production", "code": "DISABLED_IN_PRODUCTION"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         try:
             suite_name = request.query_params.get("suite", "master")
             if suite_name == "employee_platform":
@@ -7580,7 +7800,13 @@ class WorkforceJobArriveView(APIView):
 
         if job.latitude is not None and job.longitude is not None:
             distance_m = haversine_distance(lat_val, lon_val, float(job.latitude), float(job.longitude))
-            if distance_m > ARRIVAL_RADIUS_METERS:
+            is_override = (
+                getattr(emp, "allow_all_locations", False)
+                or not getattr(getattr(emp, "company", None), "geofence_enabled", True)
+                or getattr(request.user, "is_superuser", False)
+                or getattr(request.user, "is_staff", False)
+            )
+            if distance_m > ARRIVAL_RADIUS_METERS and not is_override:
                 return Response({
                     "error": f"Arrival failed: You are {int(distance_m)}m away from the customer address. You must be within 250m to confirm arrival.",
                     "geofence_passed": False,
@@ -9532,19 +9758,155 @@ class WorkforceJobLogisticsLegView(APIView):
                 "error": f"Invalid leg. Choose one of: {valid_legs}"
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        now = timezone.now()
-        job.logistics_leg = leg
-        job.logistics_leg_updated_at = now
-        history = job.logistics_leg_history or []
-        history.append({"leg": leg, "at": now.isoformat(), "by": request.user.id})
-        job.logistics_leg_history = history
-        job.save(update_fields=["logistics_leg", "logistics_leg_updated_at", "logistics_leg_history", "updated_at"])
+        # Being the assigned employee is not by itself a tenant check -- an
+        # assignment can outlive a technician moving between companies, and
+        # WorkforceJobProofView (the sibling endpoint on the same trip)
+        # verifies both. Advancing a leg writes to the shared booking row
+        # and fires a customer-facing event, so it gets the same guard.
+        if not is_employee_authorized_for_job(emp, job):
+            return Response(
+                {"error": "Unauthorized access to job belonging to another company.",
+                 "code": "CROSS_TENANT_FORBIDDEN"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Delegates to services/logistics_events.set_logistics_leg, which
+        # adds three things this endpoint previously lacked: forward-only
+        # ordering (a trip cannot move backwards from DELIVERED to
+        # EN_ROUTE_PICKUP and corrupt the customer's tracking view),
+        # idempotency on a retried request (no duplicate history entry, no
+        # moved timestamp), and emission of `logistics.leg_changed` so a
+        # customer watching the map sees the change immediately instead of
+        # on their next poll.
+        from workforce_api.services.logistics_events import set_logistics_leg
+
+        changed, error = set_logistics_leg(job, leg, actor=request.user)
+        if error:
+            return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({
             "logistics_leg": job.logistics_leg,
             "logistics_leg_updated_at": job.logistics_leg_updated_at,
-            "logistics_leg_history": job.logistics_leg_history,
+            "changed": changed,
         }, status=status.HTTP_200_OK)
+
+
+class WorkforceJobTripStopsView(APIView):
+    """
+    GT-D-01: the driver's view of a multi-stop trip, and how they advance
+    it.
+
+    Until now the vendor side had zero references to TripStop anywhere:
+    multi-stop routes were customer-side-only data that no technician could
+    see and nothing on this side could advance. A driver had no way to say
+    "I have reached stop 2" and the customer had no way to find out.
+
+    GET  /workforce/jobs/<pk>/stops/                     -- the stop list
+    POST /workforce/jobs/<pk>/stops/  {"stop_id"|"stop_sequence", "completed"}
+         -- mark a stop arrived, and completed when the driver is done there
+    """
+    permission_classes = [IsApprovedTechnician]
+
+    _TERMINAL_STATUSES = {"completed", "cancelled", "unable_to_complete"}
+
+    def _resolve_job(self, request, pk):
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return None, Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp or job.assigned_employee != emp:
+            return None, Response(
+                {"error": "Unauthorized: Job is not assigned to you."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        # Same reasoning as WorkforceJobLogisticsLegView: assignment is not
+        # tenancy, and marking a stop writes to the shared table and emits a
+        # customer event.
+        if not is_employee_authorized_for_job(emp, job):
+            return None, Response(
+                {"error": "Unauthorized access to job belonging to another company.",
+                 "code": "CROSS_TENANT_FORBIDDEN"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        # Stops only exist on logistics bookings, so a non-logistics job
+        # would fail later with a confusing 404 "stop not found". Refuse it
+        # here for the same reason and with the same message as the leg
+        # endpoint.
+        from workforce_api.services.automatic_dispatch import LOGISTICS_SERVICE_CATEGORIES
+
+        if (job.service_category or "").strip().lower() not in LOGISTICS_SERVICE_CATEGORIES:
+            return None, Response(
+                {"error": f"Trip stops are only available for logistics jobs, "
+                          f"not '{job.service_category}'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return job, None
+
+    def get(self, request, pk):
+        from service_requests.models import TripStop
+
+        job, err = self._resolve_job(request, pk)
+        if err:
+            return err
+        stops = TripStop.objects.filter(booking=job).order_by("sequence")
+        return Response({
+            "logistics_leg": job.logistics_leg,
+            "results": [
+                {
+                    "id": s.id,
+                    "sequence": s.sequence,
+                    "stop_type": s.stop_type,
+                    "address": s.address,
+                    "contact_name": s.contact_name,
+                    "contact_phone": s.contact_phone,
+                    "latitude": float(s.latitude) if s.latitude is not None else None,
+                    "longitude": float(s.longitude) if s.longitude is not None else None,
+                    "notes": s.notes,
+                    "arrived_at": s.arrived_at,
+                    "completed_at": s.completed_at,
+                }
+                for s in stops
+            ],
+        }, status=status.HTTP_200_OK)
+
+    def post(self, request, pk):
+        from service_requests.models import TripStop
+        from workforce_api.services.logistics_events import record_stop_progress
+
+        job, err = self._resolve_job(request, pk)
+        if err:
+            return err
+
+        if job.status in self._TERMINAL_STATUSES:
+            return Response(
+                {"error": f"Job #{job.id} is already '{job.status}' -- stops cannot be updated."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        stop_id = request.data.get("stop_id")
+        stop_sequence = request.data.get("stop_sequence") or request.data.get("sequence")
+        stop = None
+        if stop_id is not None:
+            stop = TripStop.objects.filter(booking=job, id=stop_id).first()
+        elif stop_sequence is not None:
+            stop = TripStop.objects.filter(booking=job, sequence=stop_sequence).first()
+        if stop is None:
+            return Response(
+                {"error": "Stop not found on this job. Provide a valid stop_id or stop_sequence."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        completed = str(request.data.get("completed", "")).strip().lower() in ("1", "true", "yes")
+        changed = record_stop_progress(job, stop, completed, actor=request.user)
+
+        return Response({
+            "stop_id": stop.id,
+            "sequence": stop.sequence,
+            "arrived_at": stop.arrived_at,
+            "completed_at": stop.completed_at,
+            "changed": changed,
+        }, status=status.HTTP_200_OK)
+
 
 class WorkforceJobMessagesView(APIView):
     """
