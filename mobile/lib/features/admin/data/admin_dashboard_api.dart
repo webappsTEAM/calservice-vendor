@@ -425,8 +425,289 @@ class AdminDashboardApi {
     final data = response.data;
     return data is Map<String, dynamic> ? data : const <String, dynamic>{};
   }
+
+  // ── Quotation Approvals & Pre-Send Review ───────────────────────────────────
+
+  /// Fetches quotations awaiting SEVO approval after customer acceptance.
+  Future<List<dynamic>> fetchQuotesPendingApproval({String? companyId}) async {
+    final response = await _dio.get(
+      '/workforce/quotes/pending-approval/',
+      queryParameters: companyId != null && companyId.isNotEmpty
+          ? {'company_id': companyId}
+          : null,
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is List ? data : const [];
+  }
+
+  /// Fetches quotations held for high-value / structural pre-send review.
+  Future<List<dynamic>> fetchQuotesPendingReview() async {
+    final response = await _dio.get(
+      '/workforce/quotes/pending-review/',
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is List ? data : const [];
+  }
+
+  /// Decides on an accepted quotation awaiting SEVO admin approval.
+  Future<Map<String, dynamic>> adminReviewQuote(
+    int quoteId, {
+    required String action,
+    String notes = '',
+    String reason = '',
+  }) async {
+    final response = await _dio.post(
+      '/workforce/quotes/$quoteId/admin-review/',
+      data: {
+        'action': action,
+        'notes': notes,
+        'reason': reason,
+      },
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is Map<String, dynamic> ? data : const <String, dynamic>{};
+  }
+
+  /// Releases (and sends) or rejects a quote held before sending.
+  Future<Map<String, dynamic>> preSendReviewQuote(
+    int quoteId, {
+    required String action,
+    String notes = '',
+    String reason = '',
+  }) async {
+    final response = await _dio.post(
+      '/workforce/quotes/$quoteId/pre-send-review/',
+      data: {
+        'action': action,
+        'notes': notes,
+        'reason': reason,
+      },
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is Map<String, dynamic> ? data : const <String, dynamic>{};
+  }
+
+  // ── Commercial Invoices ─────────────────────────────────────────────────────
+
+  /// Fetches commercial invoices scoped to the caller.
+  Future<List<dynamic>> fetchInvoices({
+    String? search,
+    String? status,
+  }) async {
+    final params = <String, dynamic>{
+      if (search != null && search.isNotEmpty) 'search': search,
+      if (status != null && status.isNotEmpty) 'status': status,
+    };
+    final response = await _dio.get(
+      '/workforce/invoices/',
+      queryParameters: params.isNotEmpty ? params : null,
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is List ? data : const [];
+  }
+
+  /// Fetches detailed invoice breakdown by ID.
+  Future<Map<String, dynamic>> fetchInvoiceDetail(int id) async {
+    final response = await _dio.get(
+      '/workforce/invoices/$id/',
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is Map<String, dynamic> ? data : const <String, dynamic>{};
+  }
+
+  /// Records a manual or offline payment against an invoice.
+  Future<Map<String, dynamic>> recordInvoicePayment(
+    int id, {
+    required double amount,
+    required String method,
+    String reference = '',
+  }) async {
+    final response = await _dio.post(
+      '/workforce/invoices/$id/payments/',
+      data: {
+        'amount': amount,
+        'method': method,
+        'reference': reference,
+      },
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is Map<String, dynamic> ? data : const <String, dynamic>{};
+  }
+
+  // ── Pricing Policies ────────────────────────────────────────────────────────
+
+  /// Fetches service category commercial pricing & approval policies.
+  Future<List<dynamic>> fetchPricingPolicies() async {
+    final response = await _dio.get(
+      '/workforce/settings/pricing-policies/',
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is List ? data : const [];
+  }
+
+  /// Updates an existing service category commercial pricing policy.
+  Future<Map<String, dynamic>> updatePricingPolicy(
+    int id,
+    Map<String, dynamic> payload,
+  ) async {
+    final response = await _dio.patch(
+      '/workforce/settings/pricing-policies/$id/',
+      data: payload,
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is Map<String, dynamic> ? data : const <String, dynamic>{};
+  }
+
+  // ── Workforce Scorecards ───────────────────────────────────────────────────
+
+  /// Fetches worker & provider scorecards across the workforce.
+  Future<Map<String, dynamic>> fetchAdminScorecards() async {
+    final response = await _dio.get(
+      '/workforce/admin/scorecards/',
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is Map<String, dynamic> ? data : const <String, dynamic>{};
+  }
+
+  // ── Social Security Code Registrations ─────────────────────────────────────
+
+  /// Fetches individual worker Social Security compliance registration records.
+  Future<Map<String, dynamic>> fetchSocialSecurityRegistrations({
+    String? status,
+  }) async {
+    final params = <String, dynamic>{
+      if (status != null && status.isNotEmpty) 'status': status,
+    };
+    final response = await _dio.get(
+      '/workforce/admin/social-security/',
+      queryParameters: params.isNotEmpty ? params : null,
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is Map<String, dynamic> ? data : const <String, dynamic>{};
+  }
+
+  /// Records that an administrator has manually completed the Shram Suvidha portal submission.
+  Future<Map<String, dynamic>> markSocialSecurityRegistered({
+    required int registrationId,
+    required String portalReferenceId,
+  }) async {
+    final response = await _dio.post(
+      '/workforce/admin/social-security/mark-registered/',
+      data: {
+        'registration_id': registrationId,
+        'portal_reference_id': portalReferenceId,
+      },
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is Map<String, dynamic> ? data : const <String, dynamic>{};
+  }
+
+  /// Vendor Network: Lists and filters all technicians in this vendor's network.
+  Future<Map<String, dynamic>> fetchVendorNetwork({
+    String? status,
+    String? search,
+  }) async {
+    final queryParams = <String, dynamic>{};
+    if (status != null && status.isNotEmpty && status != 'ALL') {
+      queryParams['status'] = status;
+    }
+    if (search != null && search.isNotEmpty) {
+      queryParams['search'] = search;
+    }
+
+    final response = await _dio.get(
+      '/workforce/vendor/network/',
+      queryParameters: queryParams.isNotEmpty ? queryParams : null,
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is Map<String, dynamic> ? data : const <String, dynamic>{};
+  }
+
+  /// Updates vendor-technician relationship status (e.g. SUSPEND, ACTIVATE, TERMINATE).
+  Future<Map<String, dynamic>> updateVendorTechnicianStatus({
+    required int relationshipId,
+    required String action,
+  }) async {
+    final response = await _dio.post(
+      '/workforce/vendor/network/$relationshipId/status/',
+      data: {'action': action},
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is Map<String, dynamic> ? data : const <String, dynamic>{};
+  }
+
+  /// Vendor Invitations: Lists sent invitations for this vendor.
+  Future<Map<String, dynamic>> fetchVendorInvitations({String? status}) async {
+    final queryParams = <String, dynamic>{};
+    if (status != null && status.isNotEmpty && status != 'ALL') {
+      queryParams['status'] = status;
+    }
+
+    final response = await _dio.get(
+      '/workforce/vendor/invitations/',
+      queryParameters: queryParams.isNotEmpty ? queryParams : null,
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is Map<String, dynamic> ? data : const <String, dynamic>{};
+  }
+
+  /// Creates and sends a new invitation to a technician email.
+  Future<Map<String, dynamic>> createVendorInvitation({
+    required String invitedEmail,
+    String message = '',
+    String channel = 'DIRECT_EMAIL',
+  }) async {
+    final response = await _dio.post(
+      '/workforce/vendor/invitations/',
+      data: {
+        'invited_email': invitedEmail,
+        'message': message,
+        'channel': channel,
+      },
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is Map<String, dynamic> ? data : const <String, dynamic>{};
+  }
+
+  /// Cancels a pending vendor invitation.
+  Future<Map<String, dynamic>> cancelVendorInvitation(int invitationId) async {
+    final response = await _dio.post(
+      '/workforce/vendor/invitations/$invitationId/cancel/',
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is Map<String, dynamic> ? data : const <String, dynamic>{};
+  }
+
+  /// Provider Profile: Fetches authenticated service provider organization details.
+  Future<Map<String, dynamic>> fetchProviderProfile() async {
+    final response = await _dio.get(
+      '/workforce/provider/profile/',
+      options: _adminReqOptions,
+    );
+    final data = response.data;
+    return data is Map<String, dynamic> ? data : const <String, dynamic>{};
+  }
 }
 
 final adminDashboardApiProvider = Provider<AdminDashboardApi>((ref) {
   return AdminDashboardApi(ref.watch(apiClientProvider));
 });
+
+

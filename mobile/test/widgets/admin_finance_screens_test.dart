@@ -137,8 +137,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Technician Wallets & Financial Oversight'), findsOneWidget);
-    expect(find.text('Technicians with Wallets'), findsOneWidget);
-    expect(find.text('Total Available Balances'), findsOneWidget);
+    expect(find.text('Technicians'), findsOneWidget);
+    expect(find.text('Total Available'), findsOneWidget);
+    expect(find.text('In T+7 Hold'), findsOneWidget);
+    expect(find.text('Total Disbursed'), findsOneWidget);
     expect(find.text('Ramesh Kumar'), findsOneWidget);
     expect(find.text('Suresh Patel'), findsOneWidget);
     expect(find.text('Active'), findsWidgets);

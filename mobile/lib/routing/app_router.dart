@@ -14,6 +14,7 @@ import '../features/auth/presentation/auth_controller.dart';
 import '../features/auth/presentation/create_account_screen.dart';
 import '../features/auth/presentation/employee_only_screen.dart';
 import '../features/auth/presentation/login_screen.dart';
+import '../features/auth/presentation/provider_register_screen.dart';
 import '../features/dashboard/presentation/home_screen.dart';
 import '../features/documents/presentation/documents_screen.dart';
 import '../features/estimates/presentation/estimates_screen.dart';
@@ -25,7 +26,16 @@ import '../features/admin/presentation/finance/admin_bank_accounts_screen.dart';
 import '../features/admin/presentation/finance/admin_transactions_screen.dart';
 import '../features/admin/presentation/finance/admin_wallets_screen.dart';
 import '../features/admin/presentation/finance/admin_withdrawals_screen.dart';
+import '../features/admin/presentation/invoices/admin_invoices_screen.dart';
+import '../features/admin/presentation/invitations/admin_vendor_invitations_screen.dart';
 import '../features/admin/presentation/monitoring/admin_database_egress_screen.dart';
+import '../features/admin/presentation/network/admin_tied_technicians_screen.dart';
+import '../features/admin/presentation/pricing/admin_pricing_screen.dart';
+import '../features/admin/presentation/profile/admin_provider_profile_screen.dart';
+import '../features/admin/presentation/quotations/admin_quotation_approvals_screen.dart';
+import '../features/admin/presentation/scorecards/admin_scorecards_screen.dart';
+import '../features/admin/presentation/settings/admin_settings_screen.dart';
+import '../features/admin/presentation/social_security/admin_social_security_screen.dart';
 import '../features/invitations/presentation/technician_invitations_screen.dart';
 import '../features/jobs/presentation/job_detail_screen.dart';
 import '../features/jobs/presentation/jobs_screen.dart';
@@ -49,6 +59,10 @@ import '../features/settings/presentation/privacy_data_screen.dart';
 import '../features/settings/presentation/settings_screen.dart';
 import '../features/splash/presentation/splash_controller.dart';
 import '../features/splash/presentation/splash_screen.dart';
+import '../features/superadmin/applications/presentation/superadmin_applications_screen.dart';
+import '../features/superadmin/presentation/superadmin_dashboard_screen.dart';
+import '../features/superadmin/vendors/presentation/superadmin_vendor_directory_screen.dart';
+import '../features/superadmin/workforce/presentation/superadmin_workforce_roster_screen.dart';
 import '../shared/widgets/app_shell_scaffold.dart';
 import 'app_routes.dart';
 
@@ -88,9 +102,12 @@ bool _isEmployeeAppPath(String location) {
 /// Paths that live inside the authenticated admin app.
 bool _isAdminAppPath(String location) {
   return location.startsWith('/admin') ||
+      location.startsWith('/superadmin') ||
       location.startsWith('/workforce/admin') ||
       location.startsWith(AppRoutes.notifications) ||
-      location.startsWith(AppRoutes.more);
+      location.startsWith(AppRoutes.more) ||
+      location.startsWith(AppRoutes.estimates) ||
+      location.startsWith(AppRoutes.performance);
 }
 
 final appRouterProvider = Provider<GoRouter>((ref) {
@@ -125,12 +142,19 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       if (authState.status == AuthStatus.unauthenticated) {
         // Fresh user / first launch: route to intro onboarding walkthrough
         if (!onboardingCompleted) {
-          if (location == AppRoutes.createAccount) return null;
+          if (location == AppRoutes.createAccount ||
+              location == AppRoutes.providerRegister ||
+              location == '/workforce/signup') {
+            return null;
+          }
           return location == AppRoutes.onboarding ? null : AppRoutes.onboarding;
         }
 
         // Returning user who has completed or skipped onboarding
-        if (location == AppRoutes.createAccount || location == AppRoutes.onboarding) {
+        if (location == AppRoutes.createAccount ||
+            location == AppRoutes.providerRegister ||
+            location == '/workforce/signup' ||
+            location == AppRoutes.onboarding) {
           return null;
         }
         return location == AppRoutes.login ? null : AppRoutes.login;
@@ -139,9 +163,12 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       // 3. Authenticated flow
       final user = authState.user!;
 
-      // 1. Admin / Management Accounts
+      // 1. Admin / Super Admin / Management Accounts
       if (user.isAdmin) {
-        return _isAdminAppPath(location) ? null : AppRoutes.adminHome;
+        final defaultHome = user.isSuperAdmin
+            ? AppRoutes.superAdminDashboard
+            : AppRoutes.adminHome;
+        return _isAdminAppPath(location) ? null : defaultHome;
       }
 
       // 2. Employee Accounts
@@ -182,7 +209,20 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: AppRoutes.createAccount,
-        builder: (context, state) => const CreateAccountScreen(),
+        builder: (context, state) {
+          final companyIdParam = state.uri.queryParameters['company_id'];
+          final companyId = companyIdParam != null ? int.tryParse(companyIdParam) : null;
+          return CreateAccountScreen(companyId: companyId);
+        },
+      ),
+      GoRoute(
+        path: '/workforce/signup',
+        redirect: (context, state) =>
+            '${AppRoutes.createAccount}${state.uri.query.isNotEmpty ? '?${state.uri.query}' : ''}',
+      ),
+      GoRoute(
+        path: AppRoutes.providerRegister,
+        builder: (context, state) => const ProviderRegisterScreen(),
       ),
       GoRoute(
         path: AppRoutes.onboardingWizard,
@@ -212,6 +252,79 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: AppRoutes.employeeOnly,
         builder: (context, state) => const EmployeeOnlyScreen(),
       ),
+      // ── Super Admin Routes ──────────────────────────────────────────────────
+      GoRoute(
+        path: AppRoutes.superAdminDashboard,
+        builder: (context, state) => const SuperAdminDashboardScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.superAdminVendors,
+        builder: (context, state) => const SuperAdminVendorDirectoryScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.superAdminWorkforce,
+        builder: (context, state) {
+          final vendorIdStr = state.uri.queryParameters['vendor_id'] ??
+              state.uri.queryParameters['company_id'];
+          final vendorId = vendorIdStr != null ? int.tryParse(vendorIdStr) : null;
+          return SuperAdminWorkforceRosterScreen(initialVendorId: vendorId);
+        },
+      ),
+      GoRoute(
+        path: '/workforce/platform/workforce',
+        redirect: (context, state) =>
+            '${AppRoutes.superAdminWorkforce}${state.uri.query.isNotEmpty ? '?${state.uri.query}' : ''}',
+      ),
+      GoRoute(
+        path: '/platform/workforce',
+        redirect: (context, state) =>
+            '${AppRoutes.superAdminWorkforce}${state.uri.query.isNotEmpty ? '?${state.uri.query}' : ''}',
+      ),
+      GoRoute(
+        path: '/workforce/platform/vendors',
+        redirect: (context, state) => AppRoutes.superAdminVendors,
+      ),
+      GoRoute(
+        path: '/platform/vendors',
+        redirect: (context, state) => AppRoutes.superAdminVendors,
+      ),
+      GoRoute(
+        path: AppRoutes.superAdminApplications,
+        builder: (context, state) {
+          final status = state.uri.queryParameters['status'];
+          return SuperAdminApplicationsScreen(initialStatusFilter: status);
+        },
+      ),
+      GoRoute(
+        path: '/workforce/platform/applications',
+        redirect: (context, state) =>
+            '${AppRoutes.superAdminApplications}${state.uri.query.isNotEmpty ? '?${state.uri.query}' : ''}',
+      ),
+      GoRoute(
+        path: '/platform/applications',
+        redirect: (context, state) =>
+            '${AppRoutes.superAdminApplications}${state.uri.query.isNotEmpty ? '?${state.uri.query}' : ''}',
+      ),
+      GoRoute(
+        path: '/workforce/platform/providers',
+        builder: (context, state) => const AdminPlaceholderScreen(
+          title: 'Service Providers',
+          module: 'Platform Governance',
+          description: 'Service provider organizations, business entities, and tied workforce fleets',
+        ),
+      ),
+      GoRoute(
+        path: '/superadmin',
+        redirect: (context, state) => AppRoutes.superAdminDashboard,
+      ),
+      GoRoute(
+        path: '/superadmin/home',
+        redirect: (context, state) => AppRoutes.superAdminDashboard,
+      ),
+      GoRoute(
+        path: '/superadmin/dashboard',
+        redirect: (context, state) => AppRoutes.superAdminDashboard,
+      ),
       // ── Admin Routes ───────────────────────────────────────────────────────
       GoRoute(
         path: AppRoutes.adminHome,
@@ -220,6 +333,22 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/workforce/admin',
         redirect: (context, state) => AppRoutes.adminHome,
+      ),
+      GoRoute(
+        path: AppRoutes.adminTiedTechnicians,
+        builder: (context, state) => const AdminTiedTechniciansScreen(),
+      ),
+      GoRoute(
+        path: '/workforce/admin/technician-network',
+        redirect: (context, state) => AppRoutes.adminTiedTechnicians,
+      ),
+      GoRoute(
+        path: AppRoutes.adminVendorInvitations,
+        builder: (context, state) => const AdminVendorInvitationsScreen(),
+      ),
+      GoRoute(
+        path: '/workforce/admin/vendor-invitations',
+        redirect: (context, state) => AppRoutes.adminVendorInvitations,
       ),
       GoRoute(
         path: AppRoutes.adminEmployees,
@@ -305,6 +434,58 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         redirect: (context, state) => AppRoutes.adminDispatch,
       ),
       GoRoute(
+        path: AppRoutes.adminProviderProfile,
+        builder: (context, state) => const AdminProviderProfileScreen(),
+      ),
+      GoRoute(
+        path: '/workforce/admin/provider-profile',
+        redirect: (context, state) => AppRoutes.adminProviderProfile,
+      ),
+      GoRoute(
+        path: '/workforce/provider/profile',
+        redirect: (context, state) => AppRoutes.adminProviderProfile,
+      ),
+      GoRoute(
+        path: AppRoutes.adminQuotationApprovals,
+        builder: (context, state) => const AdminQuotationApprovalsScreen(),
+      ),
+      GoRoute(
+        path: '/workforce/admin/quotations',
+        redirect: (context, state) => AppRoutes.adminQuotationApprovals,
+      ),
+      GoRoute(
+        path: AppRoutes.adminInvoices,
+        builder: (context, state) => const AdminInvoicesScreen(),
+      ),
+      GoRoute(
+        path: '/workforce/admin/invoices',
+        redirect: (context, state) => AppRoutes.adminInvoices,
+      ),
+      GoRoute(
+        path: AppRoutes.adminPricingApprovals,
+        builder: (context, state) => const AdminPricingApprovalsScreen(),
+      ),
+      GoRoute(
+        path: '/workforce/admin/pricing-approvals',
+        redirect: (context, state) => AppRoutes.adminPricingApprovals,
+      ),
+      GoRoute(
+        path: AppRoutes.adminScorecards,
+        builder: (context, state) => const AdminScorecardsScreen(),
+      ),
+      GoRoute(
+        path: '/workforce/admin/scorecards',
+        redirect: (context, state) => AppRoutes.adminScorecards,
+      ),
+      GoRoute(
+        path: AppRoutes.adminSocialSecurity,
+        builder: (context, state) => const AdminSocialSecurityScreen(),
+      ),
+      GoRoute(
+        path: '/workforce/admin/social-security',
+        redirect: (context, state) => AppRoutes.adminSocialSecurity,
+      ),
+      GoRoute(
         path: AppRoutes.adminReports,
         builder: (context, state) => const AdminReportsScreen(),
       ),
@@ -314,11 +495,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: AppRoutes.adminSettings,
-        builder: (context, state) => const AdminPlaceholderScreen(
-          title: 'System Settings & Controls',
-          module: 'Settings',
-          description: 'Tenant parameters, radius rules, and dispatch expiration ring timings',
-        ),
+        builder: (context, state) => const AdminSettingsScreen(),
       ),
       GoRoute(
         path: '/workforce/admin/settings',
@@ -399,6 +576,14 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         builder: (context, state) => const BankAccountsScreen(),
       ),
       // Aliases & Direct Shortcuts
+      GoRoute(
+        path: '/admin/estimates',
+        redirect: (context, state) => AppRoutes.estimates,
+      ),
+      GoRoute(
+        path: '/workforce/admin/estimates',
+        redirect: (context, state) => AppRoutes.estimates,
+      ),
       GoRoute(
         path: '/more/estimates',
         redirect: (context, state) => AppRoutes.estimates,

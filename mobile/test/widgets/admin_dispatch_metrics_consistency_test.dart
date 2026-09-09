@@ -172,7 +172,7 @@ void main() {
       expect(find.text('2. Live Automated Geo-Dispatch Engine Monitor'), findsOneWidget);
       expect(find.text('Autonomous Dispatch Active'), findsOneWidget);
       expect(find.textContaining('Inspecting Job: None Selected'), findsOneWidget);
-      expect(find.textContaining('20 KM Geographic Dispatch Active: Fallback search evaluates candidates across a true 20 km circular radius in all 360° directions using authoritative geodesic Haversine calculation and 9-Gate qualification.'), findsOneWidget);
+      expect(find.textContaining('Autonomous Dispatch Active: Jobs are automatically assigned to nearest eligible technicians using the 9-Gate Employee Eligibility Engine'), findsOneWidget);
 
       // Distance Rings
       expect(find.text('Distance Rings:'), findsOneWidget);

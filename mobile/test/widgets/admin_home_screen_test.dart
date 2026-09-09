@@ -244,7 +244,7 @@ void main() {
       expect(find.text('ACTION CENTER'), findsOneWidget);
       expect(find.byType(ActionCenterSection), findsOneWidget);
       expect(find.text('Pending Applications'), findsOneWidget);
-      expect(find.text('Documents to Verify'), findsOneWidget);
+      expect(find.text('Active Technicians'), findsOneWidget);
       expect(find.text('Jobs Awaiting Assignment'), findsOneWidget);
       expect(find.text('Corrections Pending Resubmission'), findsOneWidget);
 

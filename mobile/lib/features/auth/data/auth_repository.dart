@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/storage/token_storage.dart';
 import '../domain/auth_user.dart';
+import '../domain/provider_registration_result.dart';
 import 'auth_api.dart';
 
 /// Combines AuthApi (network) with TokenStorage (secure storage) into the
@@ -74,6 +75,7 @@ class AuthRepository {
     required String mobileNumber,
     required String email,
     required String password,
+    dynamic companyId,
   }) async {
     final json = await _authApi.signup(
       firstName: firstName,
@@ -81,6 +83,7 @@ class AuthRepository {
       mobileNumber: mobileNumber,
       email: email,
       password: password,
+      companyId: companyId,
     );
 
     final accessToken =
@@ -102,6 +105,39 @@ class AuthRepository {
     }
     final meJson = await _authApi.fetchMe();
     return AuthUser.fromJson(meJson);
+  }
+
+  Future<ProviderRegistrationResult> registerProvider({
+    required String businessName,
+    required String contactFirstName,
+    String? contactLastName,
+    required String mobileNumber,
+    required String email,
+    required String password,
+    String? address,
+    String? city,
+  }) async {
+    final json = await _authApi.registerProvider(
+      businessName: businessName,
+      contactFirstName: contactFirstName,
+      contactLastName: contactLastName,
+      mobileNumber: mobileNumber,
+      email: email,
+      password: password,
+      address: address,
+      city: city,
+    );
+
+    final result = ProviderRegistrationResult.fromJson(json);
+
+    if (result.accessToken.isNotEmpty && result.refreshToken.isNotEmpty) {
+      await _tokenStorage.saveTokens(
+        accessToken: result.accessToken,
+        refreshToken: result.refreshToken,
+      );
+    }
+
+    return result;
   }
 
   Future<AuthUser?> refreshUser() async {

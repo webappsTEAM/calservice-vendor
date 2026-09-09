@@ -19,6 +19,7 @@ class EstimatesRepository {
     String? tab,
     String? status,
     String? search,
+    String? date,
   }) async {
     final queryParams = <String, dynamic>{};
     if (tab != null && tab.isNotEmpty && tab.toLowerCase() != 'all') {
@@ -29,6 +30,9 @@ class EstimatesRepository {
     }
     if (search != null && search.isNotEmpty) {
       queryParams['search'] = search;
+    }
+    if (date != null && date.isNotEmpty) {
+      queryParams['date'] = date;
     }
 
     try {

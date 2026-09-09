@@ -39,7 +39,7 @@ class RecentOperationsSection extends StatelessWidget {
                   const SizedBox(width: 6),
                   Flexible(
                     child: Text(
-                      'Recent Operations (${data.jobs.length})',
+                      'Recent Operations & Service Bookings (${data.jobs.length})',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(

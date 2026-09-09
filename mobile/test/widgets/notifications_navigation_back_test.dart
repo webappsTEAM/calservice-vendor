@@ -83,7 +83,7 @@ void main() {
     role: 'admin',
     companyId: 1,
     companyName: 'CalServices Enterprise Solutions Group Ltd',
-    isSuperuser: true,
+    isSuperuser: false,
     employeeId: null,
     registrationStatus: 'approved',
   );

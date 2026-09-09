@@ -890,7 +890,7 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
             _MetricCard(
               title: 'Total Fleet',
               value: '$totalFleet',
-              subtitle: 'Technicians on roster',
+              subtitle: 'Total technicians/workforce tracked by dispatch.',
               icon: Icons.groups_rounded,
               color: const Color(0xFF004E89),
               badgeBg: const Color(0xFFEFF6FF),
@@ -1162,53 +1162,98 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
                 ),
                 if (selectedJob != null) ...[
                   const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () => _openJobTimeline(selectedJob),
-                          icon: const Icon(Icons.history_rounded, size: 14),
-                          label: const Text('Timeline'),
-                          style: OutlinedButton.styleFrom(
-                            visualDensity: VisualDensity.compact,
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 7),
-                            textStyle: const TextStyle(
-                              fontSize: 11.5,
-                              fontWeight: FontWeight.w700,
+                  LayoutBuilder(
+                    builder: (context, btnConstraints) {
+                      final isNarrowBtn = btnConstraints.maxWidth < 280;
+                      if (isNarrowBtn) {
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            OutlinedButton.icon(
+                              onPressed: () => _openJobTimeline(selectedJob),
+                              icon: const Icon(Icons.history_rounded, size: 14),
+                              label: const Text('Timeline'),
+                              style: OutlinedButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 7),
+                                textStyle: const TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                                side: const BorderSide(color: Color(0xFFCBD5E1)),
+                              ),
                             ),
-                            side: const BorderSide(color: Color(0xFFCBD5E1)),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: FilledButton.icon(
-                          onPressed: _isActionInProgress
-                              ? null
-                              : () => _triggerAutoDispatch(selectedJob),
-                          icon: const Icon(Icons.auto_awesome_rounded, size: 14),
-                          label: const Text('Re-evaluate Auto-Dispatch'),
-                          style: FilledButton.styleFrom(
-                            backgroundColor: const Color(0xFF004E89),
-                            visualDensity: VisualDensity.compact,
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 7),
-                            textStyle: const TextStyle(
-                              fontSize: 11.5,
-                              fontWeight: FontWeight.w700,
+                            const SizedBox(height: 6),
+                            FilledButton.icon(
+                              onPressed: _isActionInProgress
+                                  ? null
+                                  : () => _triggerAutoDispatch(selectedJob),
+                              icon: const Icon(Icons.auto_awesome_rounded, size: 14),
+                              label: const Text('Re-evaluate Auto-Dispatch'),
+                              style: FilledButton.styleFrom(
+                                backgroundColor: const Color(0xFF004E89),
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 7),
+                                textStyle: const TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ],
+                        );
+                      }
+                      return Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: () => _openJobTimeline(selectedJob),
+                              icon: const Icon(Icons.history_rounded, size: 14),
+                              label: const Text('Timeline'),
+                              style: OutlinedButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 7),
+                                textStyle: const TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                                side: const BorderSide(color: Color(0xFFCBD5E1)),
+                              ),
                             ),
                           ),
-                        ),
-                      ),
-                    ],
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: FilledButton.icon(
+                              onPressed: _isActionInProgress
+                                  ? null
+                                  : () => _triggerAutoDispatch(selectedJob),
+                              icon: const Icon(Icons.auto_awesome_rounded, size: 14),
+                              label: const Text('Re-evaluate Auto-Dispatch'),
+                              style: FilledButton.styleFrom(
+                                backgroundColor: const Color(0xFF004E89),
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 7),
+                                textStyle: const TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      );
+                    },
                   ),
                 ],
               ],
             ),
           ),
 
-          // ── Operational Protocol & 20 KM Geographic Dispatch Banner ──
+          // ── Autonomous Dispatch Information Banner ───────────────────
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
             decoration: const BoxDecoration(
@@ -1233,7 +1278,7 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
                 Expanded(
                   child: Text.rich(
                     TextSpan(
-                      text: '20 KM Geographic Dispatch Active: ',
+                      text: 'Autonomous Dispatch Active: ',
                       style: TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w800,
@@ -1243,7 +1288,7 @@ class _AdminDispatchScreenState extends ConsumerState<AdminDispatchScreen>
                       children: [
                         TextSpan(
                           text:
-                              'Fallback search evaluates candidates across a true 20 km circular radius in all 360° directions using authoritative geodesic Haversine calculation and 9-Gate qualification.',
+                              'Jobs are automatically assigned to nearest eligible technicians using the 9-Gate Employee Eligibility Engine (real-time GPS freshness window, Haversine proximity, skill match, and shift clock-in state).',
                           style: TextStyle(
                             fontSize: 11,
                             fontWeight: FontWeight.w500,
@@ -2034,6 +2079,31 @@ class _DispatchJobItemCard extends StatelessWidget {
       }
     }
 
+    String? displayLocation;
+    if (address != null && address.isNotEmpty) {
+      displayLocation = address;
+    } else if (job.latitude != null && job.longitude != null) {
+      displayLocation = 'Location: GPS (${job.latitude!.toStringAsFixed(4)}, ${job.longitude!.toStringAsFixed(4)})';
+    }
+
+    String dispatchMode = 'Auto-Dispatch Active';
+    Color dispatchModeBg = const Color(0xFFEFF6FF);
+    Color dispatchModeFg = const Color(0xFF1E40AF);
+    if (job.isOffer || (job.activeOffer != null && !job.activeOffer!.isExpired)) {
+      dispatchMode = 'Offer Active (Awaiting Acceptance)';
+      dispatchModeBg = const Color(0xFFFEF3C7);
+      dispatchModeFg = const Color(0xFFB45309);
+    } else if (job.status.toLowerCase() == 'assigned' || job.status.toLowerCase() == 'in_progress') {
+      dispatchMode = 'Assigned';
+      dispatchModeBg = const Color(0xFFECFDF5);
+      dispatchModeFg = const Color(0xFF065F46);
+    }
+
+    String displayDate = formattedSchedule;
+    if (job.createdAt != null && (scheduledDate == null || scheduledDate.isEmpty)) {
+      displayDate = '${job.createdAt!.year}-${job.createdAt!.month.toString().padLeft(2, '0')}-${job.createdAt!.day.toString().padLeft(2, '0')}';
+    }
+
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(14),
@@ -2128,7 +2198,7 @@ class _DispatchJobItemCard extends StatelessWidget {
                 color: Color(0xFF334155),
               ),
             ),
-            if (address != null && address.isNotEmpty) ...[
+            if (displayLocation != null && displayLocation.isNotEmpty) ...[
               const SizedBox(height: 4),
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -2141,7 +2211,7 @@ class _DispatchJobItemCard extends StatelessWidget {
                   const SizedBox(width: 4),
                   Expanded(
                     child: Text(
-                      address,
+                      displayLocation,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -2153,23 +2223,42 @@ class _DispatchJobItemCard extends StatelessWidget {
                 ],
               ),
             ],
-            const SizedBox(height: 4),
-            Row(
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                const Icon(Icons.schedule_rounded,
-                    size: 13, color: Color(0xFF94A3B8)),
-                const SizedBox(width: 4),
-                Expanded(
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: dispatchModeBg,
+                    borderRadius: BorderRadius.circular(5),
+                  ),
                   child: Text(
-                    formattedSchedule,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 11,
-                      fontFamily: 'monospace',
-                      color: Color(0xFF64748B),
+                    dispatchMode,
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w700,
+                      color: dispatchModeFg,
                     ),
                   ),
+                ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.calendar_today_outlined,
+                        size: 11, color: Color(0xFF94A3B8)),
+                    const SizedBox(width: 4),
+                    Text(
+                      displayDate,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontFamily: 'monospace',
+                        color: Color(0xFF64748B),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -2409,7 +2498,7 @@ class _EligibleTechnicianCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
                 width: 34,
@@ -2435,49 +2524,81 @@ class _EligibleTechnicianCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        Text(
+                          technician.name,
+                          style: const TextStyle(
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF0F172A),
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 1.5),
+                          decoration: BoxDecoration(
+                            color: technician.isOnline
+                                ? const Color(0xFFECFDF5)
+                                : const Color(0xFFF1F5F9),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            technician.isOnline ? 'Online' : 'Offline',
+                            style: TextStyle(
+                              fontSize: 9.5,
+                              fontWeight: FontWeight.w700,
+                              color: technician.isOnline
+                                  ? const Color(0xFF065F46)
+                                  : const Color(0xFF64748B),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
                     Text(
-                      technician.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                      '${technician.employeeId ?? 'Tech'} • ${technician.phone ?? 'No phone'}',
                       style: const TextStyle(
-                        fontSize: 13.5,
-                        fontWeight: FontWeight.w700,
-                        color: Color(0xFF0F172A),
+                        fontSize: 11,
+                        fontFamily: 'monospace',
+                        color: Color(0xFF64748B),
                       ),
                     ),
-                    if (technician.employeeId != null)
-                      Text(
-                        technician.employeeId!,
-                        style: const TextStyle(
-                          fontSize: 11,
-                          fontFamily: 'monospace',
-                          color: Color(0xFF64748B),
-                        ),
-                      ),
                   ],
                 ),
               ),
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
+            ],
+          ),
+          const SizedBox(height: 6),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: technician.isDispatchReady
+                    ? const Color(0xFFECFDF5)
+                    : const Color(0xFFFFF7ED),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                technician.isDispatchReady
+                    ? '✓ Qualified Candidate'
+                    : (technician.ineligibilityReason.isNotEmpty
+                        ? technician.ineligibilityReason
+                        : 'Ineligible'),
+                style: TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w800,
                   color: technician.isDispatchReady
-                      ? const Color(0xFFECFDF5)
-                      : const Color(0xFFFFF7ED),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  technician.isDispatchReady ? '✓ Qualified' : 'Ineligible',
-                  style: TextStyle(
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.w800,
-                    color: technician.isDispatchReady
-                        ? const Color(0xFF065F46)
-                        : const Color(0xFFC2410C),
-                  ),
+                      ? const Color(0xFF065F46)
+                      : const Color(0xFFC2410C),
                 ),
               ),
-            ],
+            ),
           ),
           const SizedBox(height: 8),
 
@@ -2487,22 +2608,23 @@ class _EligibleTechnicianCard extends StatelessWidget {
             runSpacing: 4,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              if (technician.distanceKm != null)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFEFF6FF),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Text(
-                    '${technician.distanceKm!.toStringAsFixed(1)} km away',
-                    style: const TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      color: Color(0xFF1E40AF),
-                    ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEFF6FF),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  technician.distanceKm != null
+                      ? '${technician.distanceKm!.toStringAsFixed(1)} km away'
+                      : 'Proximity Pending GPS',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1E40AF),
                   ),
                 ),
+              ),
               if (technician.distanceBand != null &&
                   technician.distanceBand != 'unknown')
                 Container(
@@ -2541,7 +2663,7 @@ class _EligibleTechnicianCard extends StatelessWidget {
                   ),
                 ),
               Text(
-                'Score: ${technician.score.toStringAsFixed(1)}',
+                'Match Score: ${technician.score.toStringAsFixed(0)}',
                 style: const TextStyle(
                   fontSize: 11.5,
                   fontWeight: FontWeight.w800,

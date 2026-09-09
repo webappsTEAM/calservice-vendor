@@ -355,9 +355,9 @@ void main() {
 
       // Verify Eligible candidates
       expect(find.text('2.3 km away'), findsOneWidget);
-      expect(find.text('Score: 95.0'), findsOneWidget);
-      expect(find.text('✓ Qualified'), findsOneWidget);
-      expect(find.text('Ineligible'), findsOneWidget);
+      expect(find.text('Match Score: 95'), findsOneWidget);
+      expect(find.text('✓ Qualified Candidate'), findsOneWidget);
+      expect(find.text('Technician is busy on active job PA3509'), findsOneWidget);
       expect(find.text('Dispatch Offer'), findsOneWidget);
     });
 
@@ -379,7 +379,7 @@ void main() {
 
       // Pre-selected job should immediately update Inspecting Job
       expect(find.textContaining('Inspecting Job: PA3510'), findsOneWidget);
-      expect(find.text('Score: 95.0'), findsOneWidget);
+      expect(find.text('Match Score: 95'), findsOneWidget);
     });
 
     testWidgets('AdminDispatchScreen assignment confirmation dialog pops up', (tester) async {

@@ -15,10 +15,32 @@ class AuthUser {
     required this.employeeId,
     required this.registrationStatus,
     this.avatar,
+    this.isPlatformAdmin = false,
+    this.isVendorAdmin = false,
+    this.isTechnician = false,
+    this.userType,
   });
 
   factory AuthUser.fromJson(Map<String, dynamic> json) {
     final rawAvatar = (json['avatar'] as String?) ?? (json['avatar_url'] as String?);
+    final role = (json['role'] as String? ?? 'employee').toLowerCase();
+    final isSuper = json['is_superuser'] as bool? ?? false;
+    final companyId = (json['company'] as num?)?.toInt();
+    final userType = json['user_type'] as String?;
+    final isPlatformRole = role == 'superadmin' ||
+        role == 'platform_admin' ||
+        userType == 'platform_admin' ||
+        isSuper;
+    final isPlatformAdmin = (json['is_platform_admin'] == true) ||
+        isPlatformRole ||
+        ((role == 'admin' || role == 'manager') && (companyId == 1 || companyId == null));
+    final isVendorRole = role == 'admin' ||
+        role == 'manager' ||
+        role == 'vendor_admin' ||
+        role == 'company_admin';
+    final isVendorAdmin = !isPlatformAdmin &&
+        ((json['is_vendor_admin'] == true) || isVendorRole);
+    final isTech = (json['is_technician'] as bool?) ?? (!isPlatformAdmin && !isVendorAdmin);
 
     return AuthUser(
       id: json['id'] as int,
@@ -26,10 +48,14 @@ class AuthUser {
       email: json['email'] as String? ?? '',
       firstName: json['first_name'] as String? ?? '',
       lastName: json['last_name'] as String? ?? '',
-      role: (json['role'] as String? ?? 'employee').toLowerCase(),
-      companyId: (json['company'] as num?)?.toInt(),
+      role: role,
+      companyId: companyId,
       companyName: json['company_name'] as String?,
-      isSuperuser: json['is_superuser'] as bool? ?? false,
+      isSuperuser: isSuper,
+      isPlatformAdmin: isPlatformAdmin,
+      isVendorAdmin: isVendorAdmin,
+      isTechnician: isTech,
+      userType: userType,
       employeeId: json['employee_id'] as String?,
       registrationStatus:
           (json['registration_status'] as String?) ?? 'not_started',
@@ -46,22 +72,38 @@ class AuthUser {
   final int? companyId;
   final String? companyName;
   final bool isSuperuser;
+  final bool isPlatformAdmin;
+  final bool isVendorAdmin;
+  final bool isTechnician;
+  final String? userType;
   final String? employeeId;
   final String registrationStatus;
   final String? avatar;
 
-  /// The backend already normalizes `role` to "employee" for anyone with an
-  /// Employee profile who isn't admin/manager, so a plain equality check is
-  /// authoritative here — see accounts/views.py.
-  bool get isEmployee => role == 'employee';
+  /// True for Platform Super Admins.
+  bool get isSuperAdmin =>
+      isPlatformAdmin ||
+      isSuperuser ||
+      role == 'superadmin' ||
+      role == 'platform_admin' ||
+      userType == 'platform_admin';
 
   /// True for Platform Admins (superuser/staff) and Vendor Admins/Managers.
   bool get isAdmin =>
+      isSuperAdmin ||
+      isVendorAdmin ||
+      isPlatformAdmin ||
+      isSuperuser ||
       role == 'admin' ||
       role == 'manager' ||
       role == 'company_admin' ||
       role == 'vendor_admin' ||
-      isSuperuser;
+      role == 'superadmin' ||
+      role == 'platform_admin' ||
+      userType == 'platform_admin';
+
+  /// True for Employees / Technicians (mutually exclusive with Admin).
+  bool get isEmployee => !isAdmin && (role == 'employee' || isTechnician);
 
   String get displayName {
     final full = '$firstName $lastName'.trim();

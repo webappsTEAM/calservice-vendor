@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/network/auth_events.dart';
 import '../data/auth_repository.dart';
 import '../domain/auth_user.dart';
+import '../domain/provider_registration_result.dart';
 
 enum AuthStatus { unknown, unauthenticated, authenticated }
 
@@ -60,6 +61,7 @@ class AuthController extends StateNotifier<AuthState> {
     required String mobileNumber,
     required String email,
     required String password,
+    dynamic companyId,
   }) async {
     final user = await _repository.signup(
       firstName: firstName,
@@ -67,7 +69,38 @@ class AuthController extends StateNotifier<AuthState> {
       mobileNumber: mobileNumber,
       email: email,
       password: password,
+      companyId: companyId,
     );
+    state = AuthState.authenticated(user);
+  }
+
+  Future<ProviderRegistrationResult> registerProvider({
+    required String businessName,
+    required String contactFirstName,
+    String? contactLastName,
+    required String mobileNumber,
+    required String email,
+    required String password,
+    String? address,
+    String? city,
+  }) async {
+    final result = await _repository.registerProvider(
+      businessName: businessName,
+      contactFirstName: contactFirstName,
+      contactLastName: contactLastName,
+      mobileNumber: mobileNumber,
+      email: email,
+      password: password,
+      address: address,
+      city: city,
+    );
+    // Tokens are already securely saved to TokenStorage by AuthRepository.
+    // We defer setting AuthState.authenticated until the user taps "Go to Dashboard"
+    // on the Provider Registration Success Screen.
+    return result;
+  }
+
+  void completeProviderAuth(AuthUser user) {
     state = AuthState.authenticated(user);
   }
 

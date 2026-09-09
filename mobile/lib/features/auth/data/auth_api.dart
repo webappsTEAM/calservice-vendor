@@ -16,6 +16,7 @@ class AuthApi {
     required String mobileNumber,
     required String email,
     required String password,
+    dynamic companyId,
   }) async {
     final response = await _dio.post(
       '/workforce/signup/',
@@ -25,6 +26,34 @@ class AuthApi {
         'mobile_number': mobileNumber,
         'email': email,
         'password': password,
+        'company_id': ?companyId,
+      },
+    );
+    return response.data as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> registerProvider({
+    required String businessName,
+    required String contactFirstName,
+    String? contactLastName,
+    required String mobileNumber,
+    required String email,
+    required String password,
+    String? address,
+    String? city,
+  }) async {
+    final response = await _dio.post(
+      '/workforce/provider/signup/',
+      data: {
+        'business_name': businessName,
+        'contact_first_name': contactFirstName,
+        if (contactLastName != null && contactLastName.isNotEmpty)
+          'contact_last_name': contactLastName,
+        'mobile_number': mobileNumber,
+        'email': email,
+        'password': password,
+        if (address != null && address.isNotEmpty) 'address': address,
+        if (city != null && city.isNotEmpty) 'city': city,
       },
     );
     return response.data as Map<String, dynamic>;

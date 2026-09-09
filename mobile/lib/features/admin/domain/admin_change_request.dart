@@ -10,6 +10,7 @@ class AdminChangeRequest {
     this.fieldLabel,
     this.oldValue,
     this.newValue,
+    this.reason,
     required this.status,
     this.requestedAt,
     this.decidedAt,
@@ -29,6 +30,7 @@ class AdminChangeRequest {
       fieldLabel: parseString(json['field_label']),
       oldValue: parseString(json['old_value']),
       newValue: parseString(json['new_value']) ?? parseString(json['requested_value']),
+      reason: parseString(json['reason']),
       status: parseString(json['status'])?.toLowerCase() ?? 'pending',
       requestedAt: parseDateTime(json['created_at']) ?? parseDateTime(json['requested_at']),
       decidedAt: parseDateTime(json['decided_at']),
@@ -43,6 +45,7 @@ class AdminChangeRequest {
   final String? fieldLabel;
   final String? oldValue;
   final String? newValue;
+  final String? reason;
   final String status;
   final DateTime? requestedAt;
   final DateTime? decidedAt;

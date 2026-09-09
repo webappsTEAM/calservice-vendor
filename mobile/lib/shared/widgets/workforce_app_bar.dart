@@ -149,19 +149,28 @@ class WorkforceAppBar extends ConsumerWidget implements PreferredSizeWidget {
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF059669).withValues(alpha: 0.3),
+                        color: user?.isSuperAdmin == true
+                            ? const Color(0xFFFEF3C7).withValues(alpha: 0.9)
+                            : const Color(0xFF059669).withValues(alpha: 0.3),
                         borderRadius: BorderRadius.circular(4),
-                        border: Border.all(color: const Color(0xFF34D399).withValues(alpha: 0.4), width: 0.5),
+                        border: Border.all(
+                          color: user?.isSuperAdmin == true
+                              ? const Color(0xFFFDE68A)
+                              : const Color(0xFF34D399).withValues(alpha: 0.4),
+                          width: 0.5,
+                        ),
                       ),
-                      child: const Text(
-                        'WORKFORCE',
+                      child: Text(
+                        user?.isSuperAdmin == true ? 'SUPERADMIN' : 'WORKFORCE',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           fontSize: 8.5,
                           fontWeight: FontWeight.w800,
                           letterSpacing: 0.8,
-                          color: Color(0xFF6EE7B7),
+                          color: user?.isSuperAdmin == true
+                              ? const Color(0xFF92400E)
+                              : const Color(0xFF6EE7B7),
                         ),
                       ),
                     ),

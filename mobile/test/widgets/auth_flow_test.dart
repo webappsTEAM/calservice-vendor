@@ -74,6 +74,7 @@ class FakeAuthRepository extends AuthRepository {
     required String mobileNumber,
     required String email,
     required String password,
+    dynamic companyId,
   }) async {
     if (shouldThrow) throw Exception('Email already exists');
     lastSignupPayload = {
@@ -82,6 +83,7 @@ class FakeAuthRepository extends AuthRepository {
       'mobile_number': mobileNumber,
       'email': email,
       'password': password,
+      'company_id': ?companyId,
     };
     return AuthUser(
       id: 2,
@@ -183,8 +185,8 @@ void main() {
       await tester.tap(createAccountLink);
       await tester.pumpAndSettle();
 
-      expect(find.text('Create Technician'), findsOneWidget);
-      expect(find.text('Create your account and start your workforce journey.'), findsOneWidget);
+      expect(find.text('Join the Workforce Platform'), findsOneWidget);
+      expect(find.text('Create your technician account to start onboarding'), findsOneWidget);
     });
 
     testWidgets('LoginScreen does not render any debug buttons in UI',
@@ -223,7 +225,7 @@ void main() {
       expect(find.textContaining('Email Address'), findsOneWidget);
       expect(find.textContaining('Password'), findsWidgets);
       expect(find.textContaining('Confirm Password'), findsOneWidget);
-      expect(find.text('Create Account & Continue'), findsOneWidget);
+      expect(find.text('Create Account & Start Onboarding'), findsOneWidget);
       expect(find.text('Already have an account? '), findsOneWidget);
       expect(find.text('Sign In'), findsOneWidget);
       expect(find.textContaining('CALDIM ENGINEERING'), findsOneWidget);
@@ -241,7 +243,7 @@ void main() {
       await tester.tap(find.text('Create Account'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Create Technician'), findsOneWidget);
+      expect(find.text('Join the Workforce Platform'), findsOneWidget);
 
       await tester.tap(find.text('Sign In'));
       await tester.pumpAndSettle();
@@ -261,7 +263,7 @@ void main() {
       await tester.tap(find.text('Create Account'));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Create Account & Continue'));
+      await tester.tap(find.text('Create Account & Start Onboarding'));
       await tester.pumpAndSettle();
 
       expect(find.text('First name required'), findsOneWidget);
@@ -289,7 +291,7 @@ void main() {
       await tester.enterText(textFields.at(4), 'Password123');
       await tester.enterText(textFields.at(5), 'Password123');
 
-      await tester.tap(find.text('Create Account & Continue'));
+      await tester.tap(find.text('Create Account & Start Onboarding'));
       await tester.pumpAndSettle();
 
       expect(find.text('Enter a valid email address'), findsOneWidget);
@@ -314,7 +316,7 @@ void main() {
       await tester.enterText(textFields.at(4), '123');
       await tester.enterText(textFields.at(5), '123');
 
-      await tester.tap(find.text('Create Account & Continue'));
+      await tester.tap(find.text('Create Account & Start Onboarding'));
       await tester.pumpAndSettle();
 
       expect(find.text('Password must be at least 6 characters'), findsOneWidget);
@@ -339,7 +341,7 @@ void main() {
       await tester.enterText(textFields.at(4), 'Password123');
       await tester.enterText(textFields.at(5), 'DifferentPassword');
 
-      await tester.tap(find.text('Create Account & Continue'));
+      await tester.tap(find.text('Create Account & Start Onboarding'));
       await tester.pumpAndSettle();
 
       expect(find.text('Passwords do not match'), findsOneWidget);
@@ -388,7 +390,7 @@ void main() {
       await tester.enterText(textFields.at(4), 'Secret123');
       await tester.enterText(textFields.at(5), 'Secret123');
 
-      await tester.tap(find.text('Create Account & Continue'));
+      await tester.tap(find.text('Create Account & Start Onboarding'));
       await tester.pumpAndSettle();
 
       // Verify payload passed to backend repository

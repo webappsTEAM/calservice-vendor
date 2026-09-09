@@ -15,12 +15,14 @@ class AsyncValueView<T> extends StatelessWidget {
     required this.builder,
     this.onRetry,
     this.compact = false,
+    this.errorMessage,
   });
 
   final AsyncValue<T> value;
   final Widget Function(BuildContext context, T data) builder;
   final VoidCallback? onRetry;
   final bool compact;
+  final String? errorMessage;
 
   @override
   Widget build(BuildContext context) {
@@ -28,9 +30,10 @@ class AsyncValueView<T> extends StatelessWidget {
       data: (data) => builder(context, data),
       loading: () => _LoadingBlock(compact: compact),
       error: (error, _) => _ErrorBlock(
-        message: error is DioException
-            ? describeDioError(error, fallback: 'Something went wrong. Please try again.')
-            : 'Something went wrong. Please try again.',
+        message: errorMessage ??
+            (error is DioException
+                ? describeDioError(error, fallback: 'Something went wrong. Please try again.')
+                : 'Something went wrong. Please try again.'),
         onRetry: onRetry,
         compact: compact,
       ),

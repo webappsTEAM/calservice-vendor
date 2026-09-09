@@ -259,10 +259,8 @@ void main() {
 
       // Tab 0 Content: Dispatch Monitor (Only active jobs are included in dispatch queue)
       expect(find.text('1. Customer Service Requests (1)'), findsOneWidget);
-      expect(find.text('PA3510'), findsOneWidget);
-      expect(find.text('Autonomous Dispatch Active'), findsOneWidget);
-      expect(find.textContaining('20 KM Geographic Dispatch Active: Fallback search evaluates candidates across a true 20 km circular radius in all 360° directions using authoritative geodesic Haversine calculation and 9-Gate qualification.'), findsOneWidget);
-      expect(find.text('EMP-P3-001'), findsOneWidget);
+      expect(find.textContaining('Autonomous Dispatch Active: Jobs are automatically assigned to nearest eligible technicians using the 9-Gate Employee Eligibility Engine'), findsOneWidget);
+      expect(find.textContaining('EMP-P3-001'), findsOneWidget);
       expect(find.text('2.3 km away'), findsOneWidget);
       expect(find.text('Dispatch Offer'), findsOneWidget);
     });
