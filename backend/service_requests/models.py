@@ -478,7 +478,7 @@ class ServiceRequest(models.Model):
         # A booking with TripStops cannot become COMPLETED until every required stop has completed_at.
         try:
             from service_requests.models import TripStop
-            stops = TripStop.objects.filter(service_request=self)
+            stops = TripStop.objects.filter(booking=self)
             if stops.exists():
                 incomplete_stops = [s for s in stops if s.completed_at is None]
                 if incomplete_stops:
@@ -487,7 +487,7 @@ class ServiceRequest(models.Model):
                         f"Required trip stops have not been completed: {', '.join(stop_descs)}."
                     )
         except Exception as e:
-            pass
+            pending_dependencies.append(f"Trip stop verification failed: {str(e)}")
 
         is_ready = len(pending_dependencies) == 0
         reason = "Ready for completion." if is_ready else f"Cannot complete ServiceRequest: {'; '.join(pending_dependencies)}"

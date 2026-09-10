@@ -3787,7 +3787,7 @@ class WorkforceJobAcceptOfferView(APIView):
                 }, status=status.HTTP_200_OK)
 
             # Reject acceptance if assigned to another employee (Simultaneous Acceptance Winner-Takes-All)
-            if job_obj.assigned_employee and job_obj.assigned_employee != emp and job_obj.status in ["accepted", "on_the_way", "arrived", "in_progress", "completed"]:
+            if job_obj.assigned_employee and job_obj.assigned_employee != emp and job_obj.status in ["assigned", "accepted", "on_the_way", "en_route", "arrived", "in_progress", "completed"]:
                 return Response({
                     "error": "Cannot accept job: Job has already been assigned and accepted by another technician.",
                     "code": "JOB_ALREADY_ACCEPTED"

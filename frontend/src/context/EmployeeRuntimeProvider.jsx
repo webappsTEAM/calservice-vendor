@@ -106,6 +106,34 @@ export function EmployeeRuntimeProvider({ children }) {
     );
   }, [activeJobs]);
 
+  // incomingOffers: array form of all live pending offers (for consumers that
+  // need the list rather than just the first one)
+  const incomingOffers = useMemo(() => {
+    return activeJobs.filter(
+      (j) =>
+        (j.is_offer === true || j.active_offer?.status === 'OFFERED') &&
+        !j.active_offer?.is_expired &&
+        !j.is_assigned_to_current_employee
+    );
+  }, [activeJobs]);
+
+  // activeAssignedJob: the job this technician is currently ASSIGNED to
+  // (accepted, on_the_way, arrived, in_progress, etc.) — distinct from an
+  // incoming offer. This is the job the cockpit should drive all actions
+  // (cancel, verify arrival, OTP, etc.) from.
+  const activeAssignedJob = useMemo(() => {
+    return (
+      activeJobs.find((j) => {
+        const st = (j.status || j.job_status || '').toLowerCase();
+        return (
+          j.is_assigned_to_current_employee === true &&
+          j.is_offer !== true &&
+          ACTIVE_QUEUE_STATUSES.includes(st)
+        );
+      }) || null
+    );
+  }, [activeJobs]);
+
   // ── 3. Notification Deduplication ──────────────────────────────────────────
   const knownOfferIdsRef = useRef(new Set());
   const isInitialOffersLoadedRef = useRef(false);
@@ -202,7 +230,12 @@ export function EmployeeRuntimeProvider({ children }) {
               isInitialOffersLoadedRef.current = true;
             }
 
-            // Smart reconciliation of selectedJob without resetting selection
+            // Smart reconciliation of selectedJob without retaining stale ghost jobs.
+            // If the previously selected job is no longer in the fresh server response
+            // (offer expired, job reassigned, job completed and removed from active list),
+            // we MUST NOT return the stale prev object. Doing so left the cancel button
+            // visible for a job the employee was no longer assigned to, causing a 403.
+            // Instead fall through to the same "best available" logic as the initial load.
             setSelectedJob((prev) => {
               if (!prev) {
                 if (currentOffer) return currentOffer;
@@ -212,7 +245,21 @@ export function EmployeeRuntimeProvider({ children }) {
                 return active || jobsData[0] || null;
               }
               const updated = jobsData.find((j) => j.id === prev.id);
-              return updated || prev;
+              if (updated) return updated;
+              // prev job is gone from server — do NOT preserve the stale object.
+              // Select the most relevant job from the fresh list.
+              const assignedJob = jobsData.find(
+                (j) =>
+                  j.is_assigned_to_current_employee === true &&
+                  j.is_offer !== true &&
+                  ACTIVE_QUEUE_STATUSES.includes((j.status || j.job_status || '').toLowerCase())
+              );
+              if (assignedJob) return assignedJob;
+              if (currentOffer) return currentOffer;
+              const anyActive = jobsData.find((j) =>
+                ACTIVE_QUEUE_STATUSES.includes((j.status || j.job_status || '').toLowerCase())
+              );
+              return anyActive || jobsData[0] || null;
             });
             return jobsData;
           }
@@ -276,6 +323,44 @@ export function EmployeeRuntimeProvider({ children }) {
     },
     [refreshActiveJobs]
   );
+
+  // ── Optimistic reconciliation helpers ──────────────────────────────────────
+  // These allow the UI to immediately reflect state changes (offer removal,
+  // job acceptance, job completion) before the next full refresh from the
+  // server arrives. They do NOT replace the authoritative server refresh --
+  // the refresh still follows immediately after any action.
+
+  // Remove a job from activeJobs by its ServiceRequest id. Used when an offer
+  // is declined, expires, or cancelled by the technician.
+  const reconcileOfferRemoved = useCallback((jobId) => {
+    if (!jobId) return;
+    setActiveJobs((prev) => prev.filter((j) => j.id !== jobId));
+  }, []);
+
+  // Optimistically mark a job as accepted in the local list so the cockpit
+  // updates instantly on accept, before the server responds with new data.
+  const reconcileJobAccepted = useCallback((jobId) => {
+    if (!jobId) return;
+    setActiveJobs((prev) =>
+      prev.map((j) =>
+        j.id === jobId
+          ? {
+              ...j,
+              status: 'accepted',
+              job_status: 'accepted',
+              is_offer: false,
+              is_assigned_to_current_employee: true,
+            }
+          : j
+      )
+    );
+  }, []);
+
+  // Optimistically mark a job as completed / remove it from the active list.
+  const reconcileJobCompleted = useCallback((jobId, patch = {}) => {
+    if (!jobId) return;
+    setActiveJobs((prev) => prev.filter((j) => j.id !== jobId));
+  }, []);
 
   // ── 6. Centralized Notification Synchronization ────────────────────────────
   const syncNotifications = useCallback(async () => {
@@ -573,12 +658,21 @@ export function EmployeeRuntimeProvider({ children }) {
       selectedJob,
       setSelectedJob,
       incomingOffer,
+      // Array form of incoming offers (consumers that need the list, not just first)
+      incomingOffers,
       hasActiveJob,
+      // The currently assigned (non-offer) active job for this technician.
+      // Derived from activeJobs so it is always in sync with server data.
+      activeAssignedJob,
       isJobsLoading,
       isCompletedLoading,
       jobsError,
       refreshActiveJobs,
       refreshCompletedJobs,
+      // Optimistic reconcilers — remove stale entries immediately on action
+      reconcileOfferRemoved,
+      reconcileJobAccepted,
+      reconcileJobCompleted,
 
       // Location & Presence State Machine
       presenceState,
@@ -587,6 +681,8 @@ export function EmployeeRuntimeProvider({ children }) {
       isLocationPending,
       liveLocation,
       locationState: isGpsLive ? 'live' : isLocationPending ? 'locating' : 'idle',
+      // Alias: some consumers reference this as gpsState
+      gpsState: isGpsLive ? 'live' : isLocationPending ? 'locating' : 'idle',
       locationError,
       scanCurrentLocation,
       togglePresence: togglePresenceFast,
@@ -610,12 +706,17 @@ export function EmployeeRuntimeProvider({ children }) {
       completedJobs,
       selectedJob,
       incomingOffer,
+      incomingOffers,
       hasActiveJob,
+      activeAssignedJob,
       isJobsLoading,
       isCompletedLoading,
       jobsError,
       refreshActiveJobs,
       refreshCompletedJobs,
+      reconcileOfferRemoved,
+      reconcileJobAccepted,
+      reconcileJobCompleted,
       presenceState,
       isOnline,
       isGpsLive,

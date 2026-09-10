@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import List, Dict, Any, Tuple, Optional
 
 from django.db import IntegrityError, transaction
-from django.db.models import Count, Exists, F, OuterRef, Prefetch, Q
+from django.db.models import Case, Count, Exists, F, IntegerField, OuterRef, Prefetch, Q, Value, When
 from django.utils import timezone
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -1444,33 +1444,66 @@ def dispatch_pending_jobs(company_id=None, limit: int = 50) -> Dict[str, Any]:
     if company_id:
         qs = qs.filter(company_id=company_id)
 
-    # Find all jobs in dispatchable states, prioritized deterministically:
-    # 1. Earliest due date / immediate (preferred_date NULLS FIRST, then earliest date)
-    # 2. FIFO tie-breaker (created_at ASC) to guarantee zero queue starvation
-    pending_jobs = list(
+    business_tz = timezone.get_current_timezone()
+    local_now = timezone.localtime(now, business_tz) if timezone.is_aware(now) else timezone.make_aware(now, business_tz)
+    today = local_now.date()
+
+    # Exclude jobs scheduled far in the future (> tomorrow).
+    # Since maximum dispatch lead time is 120 minutes (2 hours), any job scheduled
+    # beyond tomorrow cannot enter its dispatch window in this cycle.
+    # Excluding far-future jobs prevents head-of-line queue starvation.
+    qs = qs.filter(
+        Q(preferred_date__isnull=True) | Q(preferred_date__lte=today + timedelta(days=1))
+    )
+
+    # Prioritize immediate / overdue / open-window jobs ahead of held future-scheduled jobs:
+    # Urgency Rank 0: Immediate bookings (preferred_date is NULL, or in past, or today with no specific slot)
+    # Urgency Rank 1: Scheduled bookings (specific slot today or tomorrow)
+    urgency_rank = Case(
+        When(preferred_date__isnull=True, then=Value(0)),
+        When(preferred_date__lt=today, then=Value(0)),
+        When(Q(preferred_date=today) & (Q(preferred_time__isnull=True) | Q(preferred_time="")), then=Value(0)),
+        default=Value(1),
+        output_field=IntegerField(),
+    )
+
+    candidate_qs = (
         qs.exclude(
             # Exclude jobs that already have an active exclusive offer
             job_offers__status=WorkforceJobOffer.Status.OFFERED,
             job_offers__expires_at__gt=now,
-        ).order_by(
+        )
+        .annotate(urgency_rank=urgency_rank)
+        .order_by(
+            F("urgency_rank").asc(),
             F("preferred_date").asc(nulls_first=True),
             F("created_at").asc(),
-        ).distinct()[:limit]
+        )
+        .distinct()
     )
 
     results = {
         "expired_offers_swept": expired_count,
-        "pending_jobs_found": len(pending_jobs),
+        "pending_jobs_found": 0,
         "dispatched_count": 0,
         "unassigned_count": 0,
         "details": [],
     }
 
-    for job in pending_jobs:
+    evaluated_actionable_count = 0
+    # Fetch an initial batch of candidates (up to max(limit * 3, 50)) to allow skipping held future jobs
+    # without starving actionable immediate jobs behind them.
+    batch_size = max(limit * 3, 50)
+    candidate_jobs = list(candidate_qs[:batch_size])
+    results["pending_jobs_found"] = len(candidate_jobs)
+
+    for job in candidate_jobs:
         is_future, _, _ = get_scheduled_dispatch_window(job, now=now)
         if is_future:
             logger.info(f"[DISPATCH_PENDING_SCHEDULED_HELD] Job #{job.id} held outside scheduled dispatch window.")
             continue
+
+        evaluated_actionable_count += 1
         logger.info(f"[DISPATCH_JOB_FOUND] Reconciling pending Job #{job.id} ({job.request_id}, status={job.status}).")
         success, msg = dispatch_job(job)
         results["details"].append({"job_id": job.id, "success": success, "message": msg})
@@ -1478,6 +1511,9 @@ def dispatch_pending_jobs(company_id=None, limit: int = 50) -> Dict[str, Any]:
             results["dispatched_count"] += 1
         else:
             results["unassigned_count"] += 1
+
+        if evaluated_actionable_count >= limit:
+            break
 
     return results
 

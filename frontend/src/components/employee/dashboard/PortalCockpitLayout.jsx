@@ -121,7 +121,18 @@ export function PortalCockpitLayout({
 
   // Authoritative Primary Active Job and Incoming Offer Resolution
   const offer = incomingOffers && incomingOffers.length > 0 ? incomingOffers[0] : null;
-  const activeJob = activeAssignedJob || (activeJobs && activeJobs.length > 0 ? activeJobs[0] : null);
+  const activeJob =
+    activeAssignedJob ||
+    (activeJobs &&
+      activeJobs.find((j) => {
+        const st = (j.status || j.job_status || '').toLowerCase();
+        return (
+          j.is_assigned_to_current_employee === true &&
+          j.is_offer !== true &&
+          !['completed', 'cancelled'].includes(st)
+        );
+      })) ||
+    null;
   const isOffer = Boolean(offer && !activeJob);
   const job = activeJob || offer || null;
 
