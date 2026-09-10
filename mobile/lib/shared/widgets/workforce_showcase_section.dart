@@ -5,7 +5,7 @@ import '../../core/theme/app_typography.dart';
 import 'app_fade_in.dart';
 
 /// The default single promotional banner image asset.
-const String kDefaultServiceSpotlightImage = 'Technician Homepage.jpg';
+const String kDefaultServiceSpotlightImage = 'Technician_banner.jpg';
 
 /// A modern, responsive single-image Service Spotlight section.
 ///
