@@ -2253,6 +2253,87 @@ def is_employee_authorized_for_job(emp, job) -> bool:
     return job_cid == emp_cid
 
 
+def _is_admin_authorized_for_job(request, job) -> bool:
+    user = getattr(request, "user", None)
+    if not user or not is_admin_role(user):
+        return False
+    if getattr(user, "is_superuser", False):
+        return True
+    user_company = resolve_actor_company(request)
+    if not user_company:
+        return False
+    job_cid = getattr(job, "company_id", None)
+    if job_cid is None or job_cid == 1:
+        return user_company.id == 1
+    return user_company.id == job_cid
+
+
+def _authorize_job_actor(
+    request,
+    job,
+    allow_admin: bool = True,
+    not_assigned_msg: str = "Unauthorized: You are not assigned to this job.",
+    not_assigned_code: str = "UNAUTHORIZED_CANCELLATION",
+):
+    """
+    Centralized GT Actor & State Authorization Gatekeeper:
+    Authorizes whether the requesting actor (Technician, Driver, Fleet Manager, Vendor Admin, Ops Manager)
+    is authorized to access and act upon the given ServiceRequest job.
+
+    Returns a 4-tuple:
+        (is_authorized: bool, error_response: Response or None, emp: Employee or None, is_admin: bool)
+    """
+    user = getattr(request, "user", None)
+    if not user or not user.is_authenticated:
+        return False, Response({"error": "Authentication required.", "code": "UNAUTHENTICATED"}, status=status.HTTP_401_UNAUTHORIZED), None, False
+
+    is_admin = is_admin_role(user)
+    if is_admin:
+        if not allow_admin:
+            return False, Response({"error": "Admin access not permitted for this action.", "code": "ADMIN_NOT_PERMITTED"}, status=status.HTTP_403_FORBIDDEN), None, True
+        if getattr(user, "is_superuser", False):
+            return True, None, getattr(user, "employee_profile", None), True
+        user_company = resolve_actor_company(request)
+        if not user_company:
+            return False, Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN), None, True
+        job_cid = getattr(job, "company_id", None)
+        if job_cid is not None and job_cid > 1 and user_company.id != job_cid:
+            return False, Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN), None, True
+        return True, None, getattr(user, "employee_profile", None), True
+
+    emp = getattr(user, "employee_profile", None)
+    if not emp:
+        from employees.models import Employee
+        try:
+            emp = Employee.objects.filter(user=user).first()
+        except Exception:
+            emp = None
+    if not emp:
+        return False, Response({"error": "Employee profile not found.", "code": "PROFILE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND), None, False
+
+    if not is_employee_authorized_for_job(emp, job):
+        return False, Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN), emp, False
+
+    from service_requests.models import EmployeeJob
+    # Authoritative assignment relationship: ServiceRequest.assigned_employee_id
+    is_assigned = (
+        (job.assigned_employee_id == emp.id) or
+        (job.assigned_employee == emp)
+    )
+    if not is_assigned and not job.assigned_employee_id:
+        has_emp_job = EmployeeJob.objects.filter(
+            service_request=job, employee=emp
+        ).exclude(status__in=["CANCELLED", "EMPLOYEE_CANCELLED", "REJECTED"]).exists()
+        if has_emp_job:
+            is_assigned = True
+            job.assigned_employee = emp
+            job.save(update_fields=["assigned_employee", "updated_at"])
+    if not is_assigned:
+        return False, Response({"error": not_assigned_msg, "code": not_assigned_code}, status=status.HTTP_403_FORBIDDEN), emp, False
+
+    return True, None, emp, False
+
+
 class WorkforceJobListView(APIView):
     permission_classes = [IsApprovedTechnician]
 
@@ -2350,7 +2431,7 @@ class WorkforceJobListView(APIView):
                 )
             else: # "active" default
                 qs = ServiceRequest.objects.filter(
-                    assigned_active_qs | offered_qs | (employee_job_qs & Q(status__in=ACTIVE_QUEUE_STATUSES))
+                    assigned_active_qs | offered_qs | (employee_job_qs & Q(status__in=ACTIVE_QUEUE_STATUSES) & (Q(assigned_employee=emp) | Q(assigned_employee__isnull=True)))
                 ).exclude(status__in=["completed", "cancelled"])
 
             if emp.company:
@@ -2428,33 +2509,29 @@ class WorkforceJobTransitionView(APIView):
         if not target_status:
             return Response({"error": "Target status required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        emp = getattr(request.user, "employee_profile", None)
-        if not is_admin_role(request.user):
-            try:
-                from service_requests.models import EmployeeJob
-                has_emp_job = EmployeeJob.objects.filter(service_request=job, employee=emp).exists()
-            except Exception:
-                has_emp_job = False
-            if not emp or (job.assigned_employee != emp and not has_emp_job):
-                return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not is_employee_authorized_for_job(emp, job):
-                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
-        elif not getattr(request.user, "is_superuser", False):
-            user_company = resolve_actor_company(request)
-            if not user_company:
-                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
-            if not job.company_id or user_company.id != job.company_id:
-                return Response({"error": "Unauthorized: Job belongs to another vendor company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: You are not assigned to this job.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return err_resp
 
+        target_emp = emp or job.assigned_employee
+        is_logistics = (
+            getattr(job, "is_logistics", False) or
+            (job.service_category or "").lower() in [
+                "two_wheeler_delivery", "mini_truck_delivery", "truck_transport",
+                "goods_transport", "packers_movers", "goods_transport_two_wheeler",
+                "goods_transport_truck", "truck", "two_wheeler"
+            ]
+        )
         try:
-            # "Start Service Execution" lands here. apply_transition() refuses
-            # in_progress unless an open TimeLog already exists, and no UI path
-            # created one, so the button failed with an error the technician had
-            # no way to act on. Route it through the shared starter, which clocks
-            # them in idempotently and then transitions.
-            if str(target_status).lower() == "in_progress" and emp:
+            # "Start Service Execution" lands here for home services.
+            # Logistics jobs do not have hourly TimeLog or PreServiceVerification gates.
+            if str(target_status).lower() == "in_progress" and target_emp and not is_logistics:
                 time_log, start_err = ensure_job_started(
-                    job, emp, request.user,
+                    job, target_emp, request.user,
                     notes="Clock-in on Start Service Execution",
                 )
                 if start_err:
@@ -2649,9 +2726,13 @@ class WorkforceJobHoldView(APIView):
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        emp = getattr(request.user, "employee_profile", None)
-        if not emp or job.assigned_employee != emp:
-            return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: Job is not assigned to you.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return err_resp
 
         if job.status != "in_progress":
             return Response(
@@ -2663,14 +2744,15 @@ class WorkforceJobHoldView(APIView):
         if not reason:
             return Response({"error": "A reason is required to put a job on hold."}, status=status.HTTP_400_BAD_REQUEST)
 
-        time_log = TimeLog.objects.filter(employee=emp, clock_out__isnull=True).first()
-        if not time_log:
+        target_emp = emp or job.assigned_employee
+        time_log = TimeLog.objects.filter(employee=target_emp, clock_out__isnull=True).first() if target_emp else None
+        if not time_log and not is_admin:
             return Response(
                 {"error": "No active shift found for this job, so it cannot be put on hold."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        existing = _open_hold_break(time_log)
+        existing = _open_hold_break(time_log) if time_log else None
         if existing:
             # Idempotent: a double-tap returns the hold already running rather
             # than opening a second one and double-counting the pause.
@@ -2684,9 +2766,11 @@ class WorkforceJobHoldView(APIView):
 
         now_ts = timezone.now()
         with transaction.atomic():
-            hold = Break.objects.create(
-                time_log=time_log, break_start=now_ts, break_type="job_hold",
-            )
+            hold = None
+            if time_log:
+                hold = Break.objects.create(
+                    time_log=time_log, break_start=now_ts, break_type="job_hold",
+                )
             try:
                 apply_transition(job, "on_hold", actor=request.user)
             except ValidationError as exc:
@@ -2699,7 +2783,8 @@ class WorkforceJobHoldView(APIView):
                 user=request.user,
                 event_type="JOB_HOLD_STARTED",
                 payload={
-                    "job_id": job.id, "employee_id": emp.id, "hold_id": hold.id,
+                    "job_id": job.id, "employee_id": target_emp.id if target_emp else None,
+                    "hold_id": hold.id if hold else None,
                     "reason": reason, "started_at": now_ts.isoformat(),
                 },
             )
@@ -2712,14 +2797,14 @@ class WorkforceJobHoldView(APIView):
                 f"({job.service_category or 'service'}) on hold. Reason: {reason}"
             ),
             notification_type="JOB_HOLD",
-            dedup_key=f"hold:{job.id}:{hold.id}",
+            dedup_key=f"hold:{job.id}:{hold.id if hold else 'manual'}",
         )
 
         return Response({
             "message": "Job placed on hold. The working-hours clock is paused.",
             "job_id": job.id,
             "status": job.status,
-            "hold_id": hold.id,
+            "hold_id": hold.id if hold else None,
             "hold_started_at": now_ts.isoformat(),
             "reason": reason,
         }, status=status.HTTP_200_OK)
@@ -2737,9 +2822,13 @@ class WorkforceJobResumeView(APIView):
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        emp = getattr(request.user, "employee_profile", None)
-        if not emp or job.assigned_employee != emp:
-            return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: Job is not assigned to you.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return err_resp
 
         if job.status != "on_hold":
             return Response(
@@ -2747,8 +2836,9 @@ class WorkforceJobResumeView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        time_log = TimeLog.objects.filter(employee=emp, clock_out__isnull=True).first()
-        hold = _open_hold_break(time_log)
+        target_emp = emp or job.assigned_employee
+        time_log = TimeLog.objects.filter(employee=target_emp, clock_out__isnull=True).first() if target_emp else None
+        hold = _open_hold_break(time_log) if time_log else None
         now_ts = timezone.now()
 
         with transaction.atomic():
@@ -2770,14 +2860,14 @@ class WorkforceJobResumeView(APIView):
                 user=request.user,
                 event_type="JOB_HOLD_RESUMED",
                 payload={
-                    "job_id": job.id, "employee_id": emp.id,
+                    "job_id": job.id, "employee_id": target_emp.id if target_emp else None,
                     "hold_id": hold.id if hold else None,
                     "resumed_at": now_ts.isoformat(),
                     "hold_duration_minutes": hold_minutes,
                 },
             )
 
-        overtime = check_job_overtime(job, time_log, actor=request.user)
+        overtime = check_job_overtime(job, time_log, actor=request.user) if time_log else None
 
         return Response({
             "message": "Job resumed. The working-hours clock is running again.",
@@ -2800,35 +2890,49 @@ class WorkforceJobProofView(APIView):
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        emp = getattr(request.user, "employee_profile", None)
-        if not is_admin_role(request.user):
-            if not emp or job.assigned_employee != emp:
-                return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not is_employee_authorized_for_job(emp, job):
-                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
-        elif not getattr(request.user, "is_superuser", False):
-            user_company = resolve_actor_company(request)
-            if not user_company:
-                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
-            if not job.company_id or user_company.id != job.company_id:
-                return Response({"error": "Unauthorized: Job belongs to another vendor company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: You are not assigned to this job.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return err_resp
 
-        if job.status not in ["in_progress", "proof_submitted"]:
+        is_logistics = (
+            getattr(job, "is_logistics", False) or
+            (job.service_category or "").lower() in [
+                "two_wheeler_delivery", "mini_truck_delivery", "truck_transport",
+                "goods_transport", "packers_movers", "goods_transport_two_wheeler",
+                "goods_transport_truck", "truck", "two_wheeler"
+            ]
+        )
+
+        valid_proof_statuses = ["in_progress", "proof_submitted"]
+        if is_logistics:
+            valid_proof_statuses.extend(["arrived", "accepted"])
+
+        if job.status not in valid_proof_statuses:
             return Response({"error": f"Cannot submit completion proof for job in status '{job.status}'. Expected 'in_progress'."}, status=status.HTTP_400_BAD_REQUEST)
 
         completion_notes = request.data.get("notes", "").strip() or request.data.get("completion_notes", "").strip()
         after_presence = request.FILES.get("after_presence_photo") or request.FILES.get("after_selfie") or request.FILES.get("presence_photo")
-        after_appliance = request.FILES.get("after_appliance_photo") or request.FILES.get("after_photo")
+        after_appliance = request.FILES.get("after_appliance_photo") or request.FILES.get("after_photo") or request.FILES.get("delivery_proof") or request.FILES.get("photo")
         after_work_area = request.FILES.get("after_work_area_photo") or request.FILES.get("during_photo") or request.FILES.get("before_photo")
+        signature_photo = request.FILES.get("signature_photo") or request.FILES.get("signature")
         parts_used = request.data.get("parts_used", [])
 
-        if not after_presence and not after_appliance and not after_work_area:
-            return Response({"error": "After-service completion requires After Face/Identity Selfie or service photo."}, status=status.HTTP_400_BAD_REQUEST)
+        if is_logistics:
+            if not after_presence and not after_appliance and not after_work_area and not signature_photo and not completion_notes:
+                return Response({"error": "Proof of delivery requires a photo of delivered goods, recipient signature, or completion notes."}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            if not after_presence and not after_appliance and not after_work_area:
+                return Response({"error": "After-service completion requires After Face/Identity Selfie or service photo."}, status=status.HTTP_400_BAD_REQUEST)
 
-        for _f in (after_presence, after_appliance, after_work_area):
-            _photo_err = _validate_photo_upload(_f)
-            if _photo_err:
-                return Response({"error": _photo_err}, status=status.HTTP_400_BAD_REQUEST)
+        for _f in (after_presence, after_appliance, after_work_area, signature_photo):
+            if _f:
+                _photo_err = _validate_photo_upload(_f)
+                if _photo_err:
+                    return Response({"error": _photo_err}, status=status.HTTP_400_BAD_REQUEST)
 
         proof, _ = PostServiceProof.objects.get_or_create(
             job=job,
@@ -2840,16 +2944,26 @@ class WorkforceJobProofView(APIView):
             proof.after_appliance_photo = after_appliance
         if after_work_area:
             proof.after_work_area_photo = after_work_area
+        if signature_photo and hasattr(proof, "signature_photo"):
+            proof.signature_photo = signature_photo
         if completion_notes:
             proof.completion_notes = completion_notes
         if parts_used:
             proof.parts_used = parts_used
 
-        proof.check_submission()
-        proof.save()
+        if is_logistics:
+            proof.is_submitted = True
+            proof.submitted_at = timezone.now()
+            proof.save()
+        else:
+            proof.check_submission()
+            proof.save()
 
         # Step 1: Transition job to proof_submitted (service completed)
         apply_transition(job, "proof_submitted", actor=request.user)
+        if is_logistics:
+            from workforce_api.services.logistics_events import set_logistics_leg
+            set_logistics_leg(job, "DELIVERED", actor=emp)
 
         # Step 2: Check payment state machine. If payment is already PAID (e.g. verified ONLINE), close the job.
         pmt = JobPayment.objects.filter(job=job).first()
@@ -2934,18 +3048,13 @@ class WorkforceJobPaymentDetailView(APIView):
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        emp = getattr(request.user, "employee_profile", None)
-        if not is_admin_role(request.user):
-            if not emp or job.assigned_employee != emp:
-                return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not is_employee_authorized_for_job(emp, job):
-                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
-        elif not getattr(request.user, "is_superuser", False):
-            user_company = resolve_actor_company(request)
-            if not user_company:
-                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
-            if not job.company_id or user_company.id != job.company_id:
-                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: You are not assigned to this job.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return err_resp
 
         is_online = (job.payment_method or "").upper() in ["ONLINE", "PREPAID"]
         pmt, _ = JobPayment.objects.get_or_create(
@@ -2989,25 +3098,21 @@ class WorkforceJobCashCollectView(APIView):
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        emp = getattr(request.user, "employee_profile", None)
-        if not is_admin_role(request.user):
-            if not emp or job.assigned_employee != emp:
-                return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not is_employee_authorized_for_job(emp, job):
-                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
-        elif not getattr(request.user, "is_superuser", False):
-            user_company = resolve_actor_company(request)
-            if not user_company:
-                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
-            if not job.company_id or user_company.id != job.company_id:
-                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: You are not assigned to this job.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return err_resp
 
+        target_emp = emp or job.assigned_employee
         with transaction.atomic():
             pmt, created = JobPayment.objects.select_for_update().get_or_create(
                 job=job,
                 defaults={
                     "company": job.company,
-                    "employee": emp,
+                    "employee": target_emp,
                     "payment_method": JobPayment.PaymentMethod.CASH_ON_SERVICE,
                     "payment_status": JobPayment.PaymentStatus.PENDING,
                     # Bug found: this used to fall back to a hardcoded Decimal("450.00")
@@ -3140,18 +3245,13 @@ class WorkforceJobPaymentVerifyOTPView(APIView):
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        emp = getattr(request.user, "employee_profile", None)
-        if not is_admin_role(request.user):
-            if not emp or job.assigned_employee != emp:
-                return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not is_employee_authorized_for_job(emp, job):
-                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
-        elif not getattr(request.user, "is_superuser", False):
-            user_company = resolve_actor_company(request)
-            if not user_company:
-                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
-            if not job.company_id or user_company.id != job.company_id:
-                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: You are not assigned to this job.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return err_resp
 
         with transaction.atomic():
             pmt = JobPayment.objects.select_for_update().filter(job=job).first()
@@ -4018,23 +4118,15 @@ class WorkforceJobCancelAssignmentView(APIView):
         if not job:
             return Response({"error": "Job not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
-        emp = getattr(request.user, "employee_profile", None)
-        if not emp:
-            return Response({"error": "Employee profile not found.", "code": "PROFILE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
-
-        # Cross-company tenant isolation check
-        if not is_employee_authorized_for_job(emp, job):
-            return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
-
-        # Authorization: must be the currently assigned technician or active EmployeeJob
-        from service_requests.models import EmployeeJob
-        has_emp_job = EmployeeJob.objects.filter(
-            service_request=job,
-            employee=emp,
-            status__in=["ASSIGNED", "ACCEPTED", "IN_PROGRESS", "ON_THE_WAY", "ARRIVED"]
-        ).exists()
-        if job.assigned_employee != emp and not has_emp_job:
-            return Response({"error": "Unauthorized: You are not assigned to this job.", "code": "UNAUTHORIZED_CANCELLATION"}, status=status.HTTP_403_FORBIDDEN)
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request,
+            job,
+            allow_admin=True,
+            not_assigned_msg="Unauthorized: You are not assigned to this job.",
+            not_assigned_code="UNAUTHORIZED_CANCELLATION",
+        )
+        if not is_auth:
+            return err_resp
 
         # Structured reason validation & normalization
         raw_reason = str(request.data.get("reason_code") or request.data.get("reason") or "").strip().upper()
@@ -4059,13 +4151,28 @@ class WorkforceJobCancelAssignmentView(APIView):
 
         with transaction.atomic():
             job_obj = ServiceRequest.objects.select_for_update().filter(pk=pk).first()
-            emp_obj = Employee.objects.select_for_update().filter(pk=emp.pk).first()
+            if not job_obj:
+                return Response({"error": "Job not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
-            emp_job = EmployeeJob.objects.filter(service_request=job_obj, employee=emp_obj).first()
-            is_assigned_direct = (job_obj.assigned_employee == emp_obj)
+            from service_requests.models import EmployeeJob
+            from workforce_api.models import WorkforceJobLifecycleEvent, JobTrackingSession, WorkforceEventLog, WorkforceJobOffer
+
+            # Determine the target assigned employee being unassigned/cancelled
+            target_emp = None
+            if not is_admin and emp:
+                target_emp = Employee.objects.select_for_update().filter(pk=emp.pk).first()
+            elif job_obj.assigned_employee:
+                target_emp = Employee.objects.select_for_update().filter(pk=job_obj.assigned_employee.pk).first()
+            else:
+                active_ej = EmployeeJob.objects.filter(service_request=job_obj).exclude(status__in=["CANCELLED", "EMPLOYEE_CANCELLED", "REJECTED"]).first()
+                if active_ej and active_ej.employee:
+                    target_emp = Employee.objects.select_for_update().filter(pk=active_ej.employee.pk).first()
+
+            emp_job = EmployeeJob.objects.filter(service_request=job_obj, employee=target_emp).first() if target_emp else None
+            is_assigned_direct = bool(target_emp and job_obj.assigned_employee == target_emp)
             is_assigned_via_empjob = bool(emp_job and emp_job.status not in ["CANCELLED", "EMPLOYEE_CANCELLED", "REJECTED"])
 
-            # Idempotency check: If already cancelled / redispatching and unassigned from this employee
+            # Idempotency check: If already cancelled / redispatching and unassigned
             if job_obj.status in ["redispatching", "unassigned", "cancelled"] and not is_assigned_direct and not is_assigned_via_empjob:
                 return Response({
                     "message": "Job assignment is already cancelled.",
@@ -4073,51 +4180,51 @@ class WorkforceJobCancelAssignmentView(APIView):
                     "status": job_obj.status,
                 }, status=status.HTTP_200_OK)
 
-            if not is_assigned_direct and not is_assigned_via_empjob:
+            if not is_admin and not is_assigned_direct and not is_assigned_via_empjob:
                 return Response({
                     "error": "Unauthorized: You are no longer assigned to this job.",
                     "code": "UNAUTHORIZED_CANCELLATION",
                 }, status=status.HTTP_403_FORBIDDEN)
 
-            # State check: Allowed only from 'accepted' or 'on_the_way'
-            if job_obj.status not in ["accepted", "on_the_way"]:
+            # State check: Allowed only from 'accepted', 'on_the_way', 'en_route', 'arrived'
+            if job_obj.status not in ["accepted", "on_the_way", "en_route", "arrived"]:
                 if getattr(job_obj, "otp_verified", False) or job_obj.status in ["in_progress", "proof_submitted", "completed"]:
                     return Response({
                         "error": "Cancellation is locked because customer OTP has been verified.",
                         "code": "CANCELLATION_LOCKED_AFTER_OTP",
                     }, status=status.HTTP_409_CONFLICT)
                 return Response({
-                    "error": f"Cannot cancel job in status '{job_obj.status}'. Cancellation is only allowed while 'accepted' or 'on_the_way'.",
+                    "error": f"Cannot cancel job in status '{job_obj.status}'. Cancellation is only allowed while 'accepted', 'on_the_way', or 'arrived'.",
                     "code": "CANCELLATION_NOT_ALLOWED_IN_CURRENT_STATE",
                 }, status=status.HTTP_409_CONFLICT)
 
-            # 5-minute cancellation window check
-            from service_requests.models import EmployeeJob
-            from workforce_api.models import WorkforceJobLifecycleEvent, JobTrackingSession, WorkforceEventLog
-
-            accept_event = WorkforceJobLifecycleEvent.objects.filter(
-                job=job_obj,
-                employee=emp_obj,
-                event_type=WorkforceJobLifecycleEvent.EventType.EMPLOYEE_JOB_ACCEPTED,
-            ).order_by("-created_at").first()
-
-            accepted_at = (
-                accept_event.accepted_at if accept_event
-                else (emp_job.accepted_date if emp_job and emp_job.accepted_date else job_obj.updated_at)
-            )
-
+            # 5-minute cancellation window check ONLY for non-admin technicians
             now = timezone.now()
-            cancellation_deadline = (
-                accept_event.cancellation_deadline if accept_event and accept_event.cancellation_deadline
-                else (accepted_at + timedelta(minutes=5))
-            )
+            accepted_at = None
+            cancellation_deadline = None
+            if not is_admin:
+                accept_event = WorkforceJobLifecycleEvent.objects.filter(
+                    job=job_obj,
+                    employee=target_emp,
+                    event_type=WorkforceJobLifecycleEvent.EventType.EMPLOYEE_JOB_ACCEPTED,
+                ).order_by("-created_at").first()
 
-            if now > cancellation_deadline:
-                return Response({
-                    "error": "The 5-minute cancellation window for this job has expired. Please contact dispatch support.",
-                    "code": "CANCELLATION_WINDOW_EXPIRED",
-                    "cancellation_deadline": cancellation_deadline.isoformat(),
-                }, status=status.HTTP_409_CONFLICT)
+                accepted_at = (
+                    accept_event.accepted_at if accept_event
+                    else (emp_job.accepted_date if emp_job and emp_job.accepted_date else job_obj.updated_at)
+                )
+
+                cancellation_deadline = (
+                    accept_event.cancellation_deadline if accept_event and accept_event.cancellation_deadline
+                    else (accepted_at + timedelta(minutes=5) if accepted_at else now + timedelta(minutes=5))
+                )
+
+                if now > cancellation_deadline:
+                    return Response({
+                        "error": "The 5-minute cancellation window for this job has expired. Please contact dispatch support.",
+                        "code": "CANCELLATION_WINDOW_EXPIRED",
+                        "cancellation_deadline": cancellation_deadline.isoformat(),
+                    }, status=status.HTTP_409_CONFLICT)
 
             prev_status = job_obj.status
 
@@ -4133,37 +4240,38 @@ class WorkforceJobCancelAssignmentView(APIView):
                 emp_job.uncompletion_reason = f"[{reason_code}] {reason_text}".strip()
                 emp_job.save(update_fields=["status", "is_primary", "uncompletion_reason"])
 
-            # Terminate existing JobTrackingSession
-            JobTrackingSession.objects.filter(
-                job=job_obj,
-                employee=emp_obj,
-                status=JobTrackingSession.SessionStatus.ACTIVE,
-            ).update(
-                status=JobTrackingSession.SessionStatus.CANCELLED,
-                ended_at=now,
-            )
+            # Terminate existing JobTrackingSession if target_emp exists
+            if target_emp:
+                JobTrackingSession.objects.filter(
+                    job=job_obj,
+                    employee=target_emp,
+                    status=JobTrackingSession.SessionStatus.ACTIVE,
+                ).update(
+                    status=JobTrackingSession.SessionStatus.CANCELLED,
+                    ended_at=now,
+                )
 
-            # Invalidate offer
-            WorkforceJobOffer.objects.filter(
-                job=job_obj,
-                employee=emp_obj,
-                status="ACCEPTED",
-            ).update(
-                status="CANCELLED",
-                rejection_reason=f"[{reason_code}] {reason_text}".strip(),
-            )
+                # Invalidate offer
+                WorkforceJobOffer.objects.filter(
+                    job=job_obj,
+                    employee=target_emp,
+                    status="ACCEPTED",
+                ).update(
+                    status="CANCELLED",
+                    rejection_reason=f"[{reason_code}] {reason_text}".strip(),
+                )
 
-            # Release Employee Availability: reconcile against remaining active jobs
-            from workforce_api.services.workload import reconcile_employee_availability
-            reconcile_employee_availability(emp_obj)
-            logger.info(f"[EMPLOYEE_RELEASED] employee={emp_obj.id} cancelled_job={job_obj.id} state={emp_obj.current_availability.upper()}")
+                # Release Employee Availability: reconcile against remaining active jobs
+                from workforce_api.services.workload import reconcile_employee_availability
+                reconcile_employee_availability(target_emp)
+                logger.info(f"[EMPLOYEE_RELEASED] employee={target_emp.id} cancelled_job={job_obj.id} state={target_emp.current_availability.upper()}")
 
             window_seconds = max(0, int((now - accepted_at).total_seconds())) if accepted_at else None
 
             # Create immutable audit log
             WorkforceJobLifecycleEvent.objects.create(
                 job=job_obj,
-                employee=emp_obj,
+                employee=target_emp,
                 company=job_obj.company,
                 actor_user=request.user,
                 event_type=WorkforceJobLifecycleEvent.EventType.EMPLOYEE_JOB_CANCELLED,
@@ -4175,15 +4283,16 @@ class WorkforceJobCancelAssignmentView(APIView):
                 reason_code=reason_code,
                 reason_text=reason_text,
                 cancellation_window_seconds=window_seconds,
-                metadata={"cancellation_window_seconds": window_seconds}
+                metadata={"cancellation_window_seconds": window_seconds, "cancelled_by_admin": is_admin}
             )
 
             # Broadcast realtime events
-            WorkforceEventLog.objects.create(
-                user=emp_obj.user,
-                event_type="EMPLOYEE_JOB_CANCELLED",
-                payload={"job_id": job_obj.id, "employee_id": emp_obj.id, "reason_code": reason_code}
-            )
+            if target_emp and target_emp.user:
+                WorkforceEventLog.objects.create(
+                    user=target_emp.user,
+                    event_type="EMPLOYEE_JOB_CANCELLED",
+                    payload={"job_id": job_obj.id, "employee_id": target_emp.id, "reason_code": reason_code}
+                )
             WorkforceEventLog.objects.create(
                 user=job_obj.customer if hasattr(job_obj, "customer") else None,
                 event_type="EMPLOYEE_CANCELLED",
@@ -4195,8 +4304,9 @@ class WorkforceJobCancelAssignmentView(APIView):
                 }
             )
 
-            # Trigger automatic redispatch excluding the cancelling technician
-            success, msg = run_automatic_dispatch(job_obj, excluded_employee_ids=[emp_obj.id])
+            # Trigger automatic redispatch excluding the cancelling technician (if any)
+            excluded = [target_emp.id] if target_emp else []
+            success, msg = run_automatic_dispatch(job_obj, excluded_employee_ids=excluded)
 
             return Response({
                 "message": f"Job #{job_obj.id} assignment cancelled successfully. Redispatch status: {msg}",
@@ -4208,8 +4318,8 @@ class WorkforceJobCancelAssignmentView(APIView):
 
 class WorkforceJobTechnicianCancelView(APIView):
     """
-    Authoritative 5-minute cancellation endpoint for technicians.
-    Allows cancellation ONLY when status is ACCEPTED or ON_THE_WAY and within 5 minutes of acceptance.
+    Authoritative cancellation endpoint for technicians and company managers.
+    Allows cancellation ONLY when status is ACCEPTED, ON_THE_WAY, EN_ROUTE, or ARRIVED prior to customer OTP verification.
     Requires structured cancellation reasons.
     Triggers automatic redispatch excluding the cancelling technician.
     """
@@ -4227,9 +4337,19 @@ class WorkforceJobTechnicianCancelView(APIView):
     ]
 
     def post(self, request, pk):
-        emp = getattr(request.user, "employee_profile", None)
-        if not emp:
-            return Response({"error": "Employee profile not found.", "code": "EMPLOYEE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return Response({"error": "Job not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request,
+            job,
+            allow_admin=True,
+            not_assigned_msg="You are not the assigned technician for this job.",
+            not_assigned_code="NOT_ASSIGNED_TECHNICIAN",
+        )
+        if not is_auth:
+            return err_resp
 
         reason_code = request.data.get("reason_code") or request.data.get("reason")
         reason_detail = (request.data.get("reason_detail") or request.data.get("notes") or "").strip()
@@ -4278,56 +4398,60 @@ class WorkforceJobTechnicianCancelView(APIView):
             }, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
-            job = ServiceRequest.objects.select_for_update().filter(pk=pk).first()
-            if not job:
+            job_obj = ServiceRequest.objects.select_for_update().filter(pk=pk).first()
+            if not job_obj:
                 return Response({"error": "Job not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
-            # Cross-tenant check
-            if emp.company_id and job.company_id and emp.company_id != job.company_id:
-                return Response({"error": "Cross-company cancellation forbidden.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
-
-            # Verify assigned technician (direct or via EmployeeJob)
             from service_requests.models import EmployeeJob
-            emp_job = EmployeeJob.objects.filter(service_request=job, employee=emp).first()
-            is_assigned_direct = (job.assigned_employee == emp)
+            from workforce_api.models import PreServiceVerification, JobTrackingSession, WorkforceJobOffer, WorkforceEventLog
+
+            target_emp = None
+            if not is_admin and emp:
+                target_emp = Employee.objects.select_for_update().filter(pk=emp.pk).first()
+            elif job_obj.assigned_employee:
+                target_emp = Employee.objects.select_for_update().filter(pk=job_obj.assigned_employee.pk).first()
+            else:
+                active_ej = EmployeeJob.objects.filter(service_request=job_obj).exclude(status__in=["CANCELLED", "EMPLOYEE_CANCELLED", "REJECTED"]).first()
+                if active_ej and active_ej.employee:
+                    target_emp = Employee.objects.select_for_update().filter(pk=active_ej.employee.pk).first()
+
+            emp_job = EmployeeJob.objects.filter(service_request=job_obj, employee=target_emp).first() if target_emp else None
+            is_assigned_direct = bool(target_emp and job_obj.assigned_employee == target_emp)
             is_assigned_via_empjob = bool(emp_job and emp_job.status not in ["CANCELLED", "EMPLOYEE_CANCELLED", "REJECTED"])
 
-            if not is_assigned_direct and not is_assigned_via_empjob:
+            if not is_admin and not is_assigned_direct and not is_assigned_via_empjob:
                 return Response({"error": "You are not the assigned technician for this job.", "code": "NOT_ASSIGNED_TECHNICIAN"}, status=status.HTTP_403_FORBIDDEN)
 
             # OTP verification lock check: once customer OTP is verified, cancellation is locked
-            from workforce_api.models import PreServiceVerification
             has_verified_otp = (
-                getattr(job, "otp_verified", False)
-                or PreServiceVerification.objects.filter(job=job, otp_verified=True).exists()
+                getattr(job_obj, "otp_verified", False)
+                or PreServiceVerification.objects.filter(job=job_obj, otp_verified=True).exists()
             )
-            if has_verified_otp or job.status in ["in_progress", "proof_submitted", "completed"]:
+            if has_verified_otp or job_obj.status in ["in_progress", "proof_submitted", "completed"]:
                 return Response({
                     "error": "Cancellation is locked because customer OTP has been verified.",
                     "code": "CANCELLATION_LOCKED_AFTER_OTP",
                 }, status=status.HTTP_409_CONFLICT)
 
-            # State check: ONLY allow cancellation during ACCEPTED or ON_THE_WAY
-            if job.status not in ["accepted", "on_the_way", "en_route"]:
+            # State check: ONLY allow cancellation during ACCEPTED, ON_THE_WAY, EN_ROUTE, ARRIVED
+            if job_obj.status not in ["accepted", "on_the_way", "en_route", "arrived"]:
                 return Response({
-                    "error": f"Cancellation is not allowed in current job state '{job.status}'. Cancellation window is only open prior to arrival.",
+                    "error": f"Cancellation is not allowed in current job state '{job_obj.status}'. Cancellation window is only open prior to service start.",
                     "code": "CANCELLATION_NOT_ALLOWED_IN_CURRENT_STATE",
                 }, status=status.HTTP_409_CONFLICT)
 
-            # 5-minute cancellation window check
-            from service_requests.models import EmployeeJob
-            emp_job = EmployeeJob.objects.filter(service_request=job, employee=emp).first()
-            accepted_at = (emp_job.accepted_date if emp_job and emp_job.accepted_date else None) or job.updated_at
-            
-            cancellation_deadline = accepted_at + timedelta(minutes=5)
+            # 5-minute cancellation window check ONLY for non-admin technician
             now = timezone.now()
-            if now > cancellation_deadline:
-                return Response({
-                    "error": "Cancellation window has closed (5 minutes elapsed since acceptance).",
-                    "code": "CANCELLATION_WINDOW_EXPIRED",
-                    "accepted_at": accepted_at.isoformat(),
-                    "cancellation_deadline": cancellation_deadline.isoformat(),
-                }, status=status.HTTP_409_CONFLICT)
+            if not is_admin:
+                accepted_at = (emp_job.accepted_date if emp_job and emp_job.accepted_date else None) or job_obj.updated_at
+                cancellation_deadline = accepted_at + timedelta(minutes=5) if accepted_at else now + timedelta(minutes=5)
+                if now > cancellation_deadline:
+                    return Response({
+                        "error": "Cancellation window has closed (5 minutes elapsed since acceptance).",
+                        "code": "CANCELLATION_WINDOW_EXPIRED",
+                        "accepted_at": accepted_at.isoformat() if accepted_at else None,
+                        "cancellation_deadline": cancellation_deadline.isoformat(),
+                    }, status=status.HTTP_409_CONFLICT)
 
             # 1. Update EmployeeJob record
             full_reason_str = f"[{reason_code}] {reason_detail}".strip()
@@ -4336,42 +4460,46 @@ class WorkforceJobTechnicianCancelView(APIView):
                 emp_job.notes = full_reason_str
                 emp_job.save(update_fields=["status", "notes"])
 
-            # 2. Terminate active JobTrackingSession
-            from workforce_api.models import JobTrackingSession, WorkforceJobOffer, WorkforceEventLog
-            JobTrackingSession.objects.filter(job=job, employee=emp, status=JobTrackingSession.SessionStatus.ACTIVE).update(
-                status=JobTrackingSession.SessionStatus.CANCELLED
-            )
+            # 2. Terminate active JobTrackingSession if target_emp
+            if target_emp:
+                JobTrackingSession.objects.filter(job=job_obj, employee=target_emp, status=JobTrackingSession.SessionStatus.ACTIVE).update(
+                    status=JobTrackingSession.SessionStatus.CANCELLED
+                )
+                WorkforceJobOffer.objects.filter(job=job_obj, employee=target_emp).update(status="CANCELLED")
 
-            # 3. Mark offer as CANCELLED
-            WorkforceJobOffer.objects.filter(job=job, employee=emp).update(status="CANCELLED")
+                # Release Employee Availability
+                from workforce_api.services.workload import reconcile_employee_availability
+                reconcile_employee_availability(target_emp)
 
-            # 4. Clear technician assignment on job & preserve customer booking
-            job.assigned_employee = None
-            job.status = "confirmed"
-            job.save(update_fields=["assigned_employee", "status"])
+            # 3. Clear technician assignment on job & set to redispatching
+            job_obj.assigned_employee = None
+            job_obj.status = "confirmed"
+            job_obj.save(update_fields=["assigned_employee", "status"])
+            apply_transition(job_obj, "redispatching", actor=request.user)
 
-            # 5. Log audit event
+            # 4. Log audit event
             WorkforceEventLog.objects.create(
-                user=emp.user,
+                user=request.user,
                 event_type="JOB_CANCELLED_BY_TECH",
                 payload={
-                    "job_id": job.id,
-                    "employee_id": emp.id,
+                    "job_id": job_obj.id,
+                    "employee_id": target_emp.id if target_emp else None,
                     "reason_code": reason_code,
                     "reason_detail": reason_detail,
+                    "cancelled_by_admin": is_admin,
                 }
             )
 
-            # 6. Automatic redispatch to next eligible candidate, excluding this technician
+            # 5. Automatic redispatch to next eligible candidate
+            excluded = [target_emp.id] if target_emp else []
             try:
-                from workforce_api.services.automatic_dispatch import dispatch_job
-                dispatch_job(job, exclude_employee_ids=[emp.id])
+                run_automatic_dispatch(job_obj, excluded_employee_ids=excluded)
             except Exception as e:
-                logger.error(f"[REDISPATCH_ERROR] Failed to auto-dispatch job #{job.id} after tech cancellation: {e}")
+                logger.error(f"[REDISPATCH_ERROR] Failed to auto-dispatch job #{job_obj.id} after cancellation: {e}")
 
             return Response({
-                "message": f"Job #{job.id} cancelled successfully. Redispatch started for next professional.",
-                "job_id": job.id,
+                "message": f"Job #{job_obj.id} assignment cancelled successfully. Redispatch started for next professional.",
+                "job_id": job_obj.id,
                 "status": "CANCELLED_BY_TECHNICIAN",
             }, status=status.HTTP_200_OK)
 
@@ -4616,20 +4744,33 @@ class WorkforceCrossServiceDispatchView(APIView):
     permission_classes = [IsInternalWorkforceCaller]
 
     def post(self, request):
-        booking_id = request.data.get("booking_id")
+        booking_id = (
+            request.data.get("booking_id")
+            or request.data.get("service_request_id")
+            or request.data.get("request_id")
+            or request.data.get("id")
+        )
         if not booking_id:
             return Response({"error": "booking_id required", "code": "BOOKING_ID_REQUIRED"}, status=status.HTTP_400_BAD_REQUEST)
 
+        b_str = str(booking_id).strip()
         job = None
-        if str(booking_id).isdigit():
-            job = ServiceRequest.objects.filter(models.Q(id=int(booking_id)) | models.Q(request_id=booking_id)).first()
+        if b_str.isdigit():
+            job = ServiceRequest.objects.filter(
+                models.Q(id=int(b_str)) | models.Q(request_id__iexact=b_str)
+            ).first()
         else:
-            job = ServiceRequest.objects.filter(request_id=booking_id).first()
+            job = ServiceRequest.objects.filter(request_id__iexact=b_str).first()
 
         if not job:
+            logger.warning(
+                f"[CROSS_SERVICE_DISPATCH] Booking not found for identifier '{booking_id}'. "
+                f"Keys received: {list(request.data.keys())}"
+            )
             return Response({"error": "Booking not found", "code": "BOOKING_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
         success, msg = run_automatic_dispatch(job)
+        logger.info(f"[CROSS_SERVICE_DISPATCH] Dispatch executed for booking {job.request_id} (#{job.id}): success={success}, msg={msg}")
         return Response({
             "success": success,
             "workforce_job_id": str(job.id),
@@ -4743,18 +4884,13 @@ class WorkforceJobExtensionView(APIView):
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        emp = getattr(request.user, "employee_profile", None)
-        if not is_admin_role(request.user):
-            if not emp or job.assigned_employee != emp:
-                return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not is_employee_authorized_for_job(emp, job):
-                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
-        elif not getattr(request.user, "is_superuser", False):
-            user_company = resolve_actor_company(request)
-            if not user_company:
-                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
-            if not job.company_id or user_company.id != job.company_id:
-                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: You are not assigned to this job.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return err_resp
 
         extensions = WorkforceWorkExtension.objects.filter(job=job).order_by("-created_at")
         serializer = WorkforceWorkExtensionSerializer(extensions, many=True)
@@ -4765,18 +4901,13 @@ class WorkforceJobExtensionView(APIView):
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        emp = getattr(request.user, "employee_profile", None)
-        if not is_admin_role(request.user):
-            if not emp or job.assigned_employee != emp:
-                return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not is_employee_authorized_for_job(emp, job):
-                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
-        elif not getattr(request.user, "is_superuser", False):
-            user_company = resolve_actor_company(request)
-            if not user_company:
-                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
-            if not job.company_id or user_company.id != job.company_id:
-                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: You are not assigned to this job.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return err_resp
 
         if job.status not in ["in_progress", "proof_submitted"]:
             return Response({
@@ -5461,18 +5592,13 @@ class WorkforceCreateSupplementalInvoiceView(APIView):
         # platform could act on any other company's job just by guessing/
         # incrementing pk. Mirrors the company-check pattern already used
         # correctly on WorkforceJobExtensionView just above.
-        emp = getattr(request.user, "employee_profile", None)
-        if not is_admin_role(request.user):
-            if not emp or job.assigned_employee != emp:
-                return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not is_employee_authorized_for_job(emp, job):
-                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
-        elif not getattr(request.user, "is_superuser", False):
-            user_company = resolve_actor_company(request)
-            if not user_company:
-                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
-            if not job.company_id or user_company.id != job.company_id:
-                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: You are not assigned to this job.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return err_resp
 
         extension = WorkforceWorkExtension.objects.filter(pk=ext_id, job=job).first()
         if not extension:
@@ -5602,18 +5728,13 @@ class WorkforceJobRescheduleView(APIView):
         # platform could act on any other company's job just by guessing/
         # incrementing pk. Mirrors the company-check pattern already used
         # correctly on WorkforceJobExtensionView just above.
-        emp = getattr(request.user, "employee_profile", None)
-        if not is_admin_role(request.user):
-            if not emp or job.assigned_employee != emp:
-                return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not is_employee_authorized_for_job(emp, job):
-                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
-        elif not getattr(request.user, "is_superuser", False):
-            user_company = resolve_actor_company(request)
-            if not user_company:
-                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
-            if not job.company_id or user_company.id != job.company_id:
-                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: You are not assigned to this job.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return err_resp
 
         new_date = request.data.get("rescheduled_date") or request.data.get("date")
         reason = str(request.data.get("reason", "")).strip()
@@ -5746,14 +5867,13 @@ class WorkforceJobPurchaseRequestView(APIView):
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        emp = getattr(request.user, "employee_profile", None)
-        if not is_admin_role(request.user):
-            if not emp or job.assigned_employee != emp:
-                return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
-            if not is_employee_authorized_for_job(emp, job):
-                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
-        elif not _is_admin_authorized_for_company(request, job.company):
-            return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: You are not assigned to this job.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return err_resp
 
         item_name = request.data.get("item_name", "Spare Part").strip()
         quantity = int(request.data.get("quantity", 1))
@@ -7999,9 +8119,13 @@ class WorkforceJobArriveView(APIView):
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        emp = getattr(request.user, "employee_profile", None)
-        if not emp or job.assigned_employee != emp:
-            return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: Job is not assigned to you.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return err_resp
 
         if job.status not in ["accepted", "on_the_way", "arrived"]:
             return Response({
@@ -8027,12 +8151,14 @@ class WorkforceJobArriveView(APIView):
         # Real GPS Arrival Geofencing: Compare Employee GPS against Customer Job Location
         from time_tracking.geo import haversine_distance, evaluate
         ARRIVAL_RADIUS_METERS = 250.0
+        target_emp = emp or job.assigned_employee
 
         if job.latitude is not None and job.longitude is not None:
             distance_m = haversine_distance(lat_val, lon_val, float(job.latitude), float(job.longitude))
             is_override = (
-                getattr(emp, "allow_all_locations", False)
-                or not getattr(getattr(emp, "company", None), "geofence_enabled", True)
+                is_admin
+                or getattr(target_emp, "allow_all_locations", False)
+                or not getattr(getattr(target_emp, "company", None), "geofence_enabled", True)
                 or getattr(request.user, "is_superuser", False)
                 or getattr(request.user, "is_staff", False)
             )
@@ -8050,13 +8176,14 @@ class WorkforceJobArriveView(APIView):
                 }, status=status.HTTP_403_FORBIDDEN)
             matched_location = f"Customer Destination ({job.address[:40]}...)" if job.address else "Customer Job Location"
         else:
-            permitted_locs = list(Location.objects.filter(company=emp.company, is_active=True))
+            user_company = resolve_actor_company(request) or getattr(target_emp, "company", None)
+            permitted_locs = list(Location.objects.filter(company=user_company, is_active=True)) if user_company else []
             decision = evaluate(
                 lat=lat_val,
                 lng=lon_val,
                 permitted_locations=permitted_locs,
-                is_admin=getattr(request.user, "is_staff", False),
-                allow_all_locations=getattr(emp, "allow_all_locations", False) or not getattr(emp.company, "geofence_enabled", True)
+                is_admin=is_admin or getattr(request.user, "is_staff", False),
+                allow_all_locations=is_admin or getattr(target_emp, "allow_all_locations", False) or not getattr(getattr(target_emp, "company", None), "geofence_enabled", True)
             )
             if not decision.allowed:
                 return Response({
@@ -8072,11 +8199,11 @@ class WorkforceJobArriveView(APIView):
 
         verification, _ = PreServiceVerification.objects.get_or_create(
             job=job,
-            defaults={"employee": emp}
+            defaults={"employee": target_emp}
         )
         # Ensure employee is up-to-date on existing records (e.g. re-assignment)
-        if verification.employee_id != emp.pk:
-            verification.employee = emp
+        if target_emp and verification.employee_id != target_emp.pk:
+            verification.employee = target_emp
 
         # ── Authoritative Single OTP Resolution ──────────────────────────────
         # Priority: start_otp on ServiceRequest (set during booking) > existing
@@ -8114,7 +8241,8 @@ class WorkforceJobArriveView(APIView):
             verification.otp_verified = False
             verification.otp_verified_at = None
 
-        verification.employee = emp
+        if target_emp:
+            verification.employee = target_emp
         verification.geofence_passed = True
         verification.arrival_lat = lat_val
         verification.arrival_lon = lon_val
@@ -8131,22 +8259,23 @@ class WorkforceJobArriveView(APIView):
             save_fields.append("start_otp")
         job.save(update_fields=save_fields)
 
-        try:
-            from service_requests.models import EmployeeJob
-            EmployeeJob.objects.filter(service_request=job, employee=emp).update(status="ARRIVED")
-        except Exception:
-            pass
+        if target_emp:
+            try:
+                from service_requests.models import EmployeeJob
+                EmployeeJob.objects.filter(service_request=job, employee=target_emp).update(status="ARRIVED")
+            except Exception:
+                pass
 
         # Send notification to customer with Work Start OTP
         if job.customer:
+            tech_name = target_emp.user.get_full_name() if (target_emp and getattr(target_emp, "user", None)) else (request.user.get_full_name() or "Technician")
             create_notification(
                 recipient=job.customer,
                 title="Technician Arrived — Work Start OTP",
-                message=f"Technician {emp.user.get_full_name()} has arrived. Share OTP {active_otp} to start service.",
+                message=f"Technician {tech_name} has arrived. Share OTP {active_otp} to start service.",
                 notification_type="WORK_START_OTP",
                 company=job.company,
                 related_object_id=str(job.id),
-
             )
 
         return Response({
@@ -8171,9 +8300,15 @@ class WorkforceJobVerifyOTPView(APIView):
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        emp = getattr(request.user, "employee_profile", None)
-        if not emp or job.assigned_employee != emp:
-            return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: Job is not assigned to you.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return err_resp
+
+        target_emp = emp or job.assigned_employee
 
         otp_input = str(request.data.get("otp") or request.data.get("otp_code") or "").strip()
         if not otp_input:
@@ -8198,8 +8333,11 @@ class WorkforceJobVerifyOTPView(APIView):
         if not verification:
             verification, _ = PreServiceVerification.objects.get_or_create(
                 job=job,
-                defaults={"employee": emp, "geofence_passed": True, "otp_code": canonical_otp}
+                defaults={"employee": target_emp, "geofence_passed": True, "otp_code": canonical_otp}
             )
+
+        if target_emp and verification.employee_id != target_emp.pk:
+            verification.employee = target_emp
 
         # Sync canonical_otp into PSV.otp_code so all subsequent reads are consistent
         if verification.otp_code != canonical_otp:
@@ -8211,7 +8349,7 @@ class WorkforceJobVerifyOTPView(APIView):
             # pre-service gate endpoint starts the job by exactly the same
             # path. See ensure_job_started() for why this was hoisted.
             ensure_job_started(
-                job_obj, emp, request.user,
+                job_obj, target_emp, request.user,
                 notes="Auto clock-in on Work Start OTP verification",
             )
 
@@ -8286,14 +8424,21 @@ class WorkforceJobResendOTPView(APIView):
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        emp = getattr(request.user, "employee_profile", None)
-        if not emp or job.assigned_employee != emp:
-            return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: Job is not assigned to you.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return err_resp
 
+        target_emp = emp or job.assigned_employee
         verification, _ = PreServiceVerification.objects.get_or_create(
             job=job,
-            defaults={"employee": emp}
+            defaults={"employee": target_emp}
         )
+        if target_emp and verification.employee_id != target_emp.pk:
+            verification.employee = target_emp
 
         now = timezone.now()
         new_otp = f"{secrets.randbelow(900000) + 100000}"
@@ -8394,9 +8539,15 @@ class WorkforceJobPreServicePhotoView(APIView):
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        emp = getattr(request.user, "employee_profile", None)
-        if not emp or job.assigned_employee != emp:
-            return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: Job is not assigned to you.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return err_resp
+
+        target_emp = emp or job.assigned_employee
 
         photo_type = request.data.get("photo_type")
         photo_file = request.FILES.get("file") or request.FILES.get("photo")
@@ -8415,8 +8566,10 @@ class WorkforceJobPreServicePhotoView(APIView):
 
         verification, _ = PreServiceVerification.objects.get_or_create(
             job=job,
-            defaults={"employee": emp}
+            defaults={"employee": target_emp}
         )
+        if target_emp and verification.employee_id != target_emp.pk:
+            verification.employee = target_emp
 
         if photo_type == "presence":
             verification.presence_photo = photo_file
@@ -8434,7 +8587,7 @@ class WorkforceJobPreServicePhotoView(APIView):
         job_started = False
         if is_complete:
             _time_log, _start_err = ensure_job_started(
-                job, emp, request.user,
+                job, target_emp, request.user,
                 notes="Auto clock-in on pre-service photo completion",
             )
             job_started = bool(_time_log and not _start_err)
@@ -8455,12 +8608,13 @@ class WorkforceJobPreServiceStatusView(APIView):
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        emp = getattr(request.user, "employee_profile", None)
-        if not emp or job.assigned_employee != emp:
-            return Response({
-                "error": "Unauthorized: Job is not assigned to you.",
-                "code": "PRE_SERVICE_ACCESS_DENIED",
-            }, status=status.HTTP_403_FORBIDDEN)
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: Job is not assigned to you.",
+            not_assigned_code="PRE_SERVICE_ACCESS_DENIED"
+        )
+        if not is_auth:
+            return err_resp
 
         verification = PreServiceVerification.objects.filter(job=job).first()
         if not verification:
@@ -9941,10 +10095,12 @@ class WorkforceJobLogisticsLegView(APIView):
         job = ServiceRequest.objects.filter(pk=pk).first()
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+        from workforce_api.services.logistics_events import get_sequence_for_job
         return Response({
             "logistics_leg": job.logistics_leg,
             "logistics_leg_updated_at": job.logistics_leg_updated_at,
             "logistics_leg_history": job.logistics_leg_history,
+            "sequence": get_sequence_for_job(job.service_category, job.logistics_leg),
         }, status=status.HTTP_200_OK)
 
     def post(self, request, pk):
@@ -9954,21 +10110,13 @@ class WorkforceJobLogisticsLegView(APIView):
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        emp = getattr(request.user, "employee_profile", None)
-        if not emp or job.assigned_employee != emp:
-            return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
-
-        # Being the assigned employee is not by itself a tenant check -- an
-        # assignment can outlive a technician moving between companies, and
-        # WorkforceJobProofView (the sibling endpoint on the same trip)
-        # verifies both. Advancing a leg writes to the shared booking row
-        # and fires a customer-facing event, so it gets the same guard.
-        if not is_employee_authorized_for_job(emp, job):
-            return Response(
-                {"error": "Unauthorized access to job belonging to another company.",
-                 "code": "CROSS_TENANT_FORBIDDEN"},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: Job is not assigned to you.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return err_resp
 
         service_name = (job.service_category or "").strip().lower()
         if service_name not in LOGISTICS_SERVICE_CATEGORIES:
@@ -9988,15 +10136,7 @@ class WorkforceJobLogisticsLegView(APIView):
                 "error": f"Invalid leg. Choose one of: {valid_legs}"
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Delegates to services/logistics_events.set_logistics_leg, which
-        # adds three things this endpoint previously lacked: forward-only
-        # ordering (a trip cannot move backwards from DELIVERED to
-        # EN_ROUTE_PICKUP and corrupt the customer's tracking view),
-        # idempotency on a retried request (no duplicate history entry, no
-        # moved timestamp), and emission of `logistics.leg_changed` so a
-        # customer watching the map sees the change immediately instead of
-        # on their next poll.
-        from workforce_api.services.logistics_events import set_logistics_leg
+        from workforce_api.services.logistics_events import set_logistics_leg, get_sequence_for_job
 
         changed, error = set_logistics_leg(job, leg, actor=request.user)
         if error:
@@ -10006,6 +10146,7 @@ class WorkforceJobLogisticsLegView(APIView):
             "logistics_leg": job.logistics_leg,
             "logistics_leg_updated_at": job.logistics_leg_updated_at,
             "logistics_leg_history": job.logistics_leg_history,
+            "sequence": get_sequence_for_job(job.service_category, job.logistics_leg),
             "changed": changed,
         }, status=status.HTTP_200_OK)
 
@@ -10032,21 +10173,15 @@ class WorkforceJobTripStopsView(APIView):
         job = ServiceRequest.objects.filter(pk=pk).first()
         if not job:
             return None, Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
-        emp = getattr(request.user, "employee_profile", None)
-        if not emp or job.assigned_employee != emp:
-            return None, Response(
-                {"error": "Unauthorized: Job is not assigned to you."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        # Same reasoning as WorkforceJobLogisticsLegView: assignment is not
-        # tenancy, and marking a stop writes to the shared table and emits a
-        # customer event.
-        if not is_employee_authorized_for_job(emp, job):
-            return None, Response(
-                {"error": "Unauthorized access to job belonging to another company.",
-                 "code": "CROSS_TENANT_FORBIDDEN"},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: Job is not assigned to you.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return None, err_resp
+
         # Stops only exist on logistics bookings, so a non-logistics job
         # would fail later with a confusing 404 "stop not found". Refuse it
         # here for the same reason and with the same message as the leg
@@ -10103,20 +10238,29 @@ class WorkforceJobTripStopsView(APIView):
             )
 
         stop_id = request.data.get("stop_id")
-        stop_sequence = request.data.get("stop_sequence") or request.data.get("sequence")
-        stop = None
+        stop_seq = request.data.get("stop_sequence")
+        completed = bool(request.data.get("completed", False))
+
         if stop_id is not None:
-            stop = TripStop.objects.filter(booking=job, id=stop_id).first()
-        elif stop_sequence is not None:
-            stop = TripStop.objects.filter(booking=job, sequence=stop_sequence).first()
-        if stop is None:
+            stop = TripStop.objects.filter(booking=job, pk=stop_id).first()
+        elif stop_seq is not None:
+            try:
+                stop = TripStop.objects.filter(booking=job, sequence=int(stop_seq)).first()
+            except (ValueError, TypeError):
+                stop = None
+        else:
             return Response(
-                {"error": "Stop not found on this job. Provide a valid stop_id or stop_sequence."},
+                {"error": "Provide either 'stop_id' or 'stop_sequence'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not stop:
+            return Response(
+                {"error": "Stop not found on this booking."},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        completed = str(request.data.get("completed", "")).strip().lower() in ("1", "true", "yes")
-        changed = record_stop_progress(job, stop, completed, actor=request.user)
+        changed = record_stop_progress(job, stop, completed=completed, actor=request.user)
 
         return Response({
             "stop_id": stop.id,
@@ -10128,7 +10272,10 @@ class WorkforceJobTripStopsView(APIView):
 
 class WorkforceJobMessagesView(APIView):
     """
-    X-09: in-app chat between customer and technician for a job. Mirrors
+    GT-D-02: two-way messaging between the technician on this job and the
+    customer.
+
+    Both parties poll against this endpoint's sister view,
     CustomerBookingMessagesView on the Customer app -- see BookingMessage's
     docstring (service_requests/models.py, both apps) for the full
     rationale, including why this is polling-based rather than push and
@@ -10146,9 +10293,14 @@ class WorkforceJobMessagesView(APIView):
         job = ServiceRequest.objects.filter(pk=pk).first()
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
-        emp = getattr(request.user, "employee_profile", None)
-        if not emp or job.assigned_employee != emp:
-            return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
+
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: Job is not assigned to you.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return err_resp
 
         messages = BookingMessage.objects.filter(booking_id=job.id)
         unread_ids = [m.id for m in messages if m.sender_persona != BookingMessage.SenderPersona.TECHNICIAN and m.read_at_technician is None]
@@ -10177,9 +10329,14 @@ class WorkforceJobMessagesView(APIView):
         job = ServiceRequest.objects.filter(pk=pk).first()
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
-        emp = getattr(request.user, "employee_profile", None)
-        if not emp or job.assigned_employee != emp:
-            return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
+
+        is_auth, err_resp, emp, is_admin = _authorize_job_actor(
+            request, job, allow_admin=True,
+            not_assigned_msg="Unauthorized: Job is not assigned to you.",
+            not_assigned_code="UNAUTHORIZED_JOB_ACTION"
+        )
+        if not is_auth:
+            return err_resp
 
         body = (request.data.get("body") or "").strip()
         if not body:
@@ -10187,10 +10344,12 @@ class WorkforceJobMessagesView(APIView):
         if len(body) > 2000:
             return Response({"error": "Message is too long (max 2000 characters)."}, status=status.HTTP_400_BAD_REQUEST)
 
+        sender_name = job.technician_name or (emp.full_name if (emp and hasattr(emp, "full_name")) else (request.user.get_full_name() or "Vendor Staff"))
+
         msg = BookingMessage.objects.create(
             booking_id=job.id,
             sender_persona=BookingMessage.SenderPersona.TECHNICIAN,
-            sender_name=job.technician_name or (emp.full_name if hasattr(emp, "full_name") else "Technician"),
+            sender_name=sender_name,
             body=body,
         )
         return Response({

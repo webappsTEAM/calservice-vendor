@@ -12,13 +12,17 @@ export function getEmployeeJobPresentation(job, hasActiveJob = false) {
   if (!job) return null;
 
   // 1. Authoritative Backend Acceptance Verification (active in-flight jobs only)
+  const isAssigned = Boolean(job.is_assigned_to_current_employee || job.is_accepted_by_current_employee);
+  const isNotTerminal = !['completed', 'cancelled'].includes((job.status || '').toLowerCase());
   const isAcceptedByMe = Boolean(
-    (job.is_accepted_by_current_employee && !['completed', 'cancelled'].includes((job.status || '').toLowerCase())) ||
-    (job.offer_status === 'ACCEPTED' && job.is_assigned_to_current_employee && !['completed', 'cancelled'].includes((job.status || '').toLowerCase())) ||
-    (job.is_assigned_to_current_employee && [
-      'accepted', 'on_the_way', 'en_route', 'arrived', 'in_progress',
-      'proof_submitted'
-    ].includes((job.status || '').toLowerCase()))
+    isAssigned && isNotTerminal && (
+      job.is_accepted_by_current_employee ||
+      job.offer_status === 'ACCEPTED' ||
+      [
+        'accepted', 'on_the_way', 'en_route', 'arrived', 'in_progress',
+        'proof_submitted'
+      ].includes((job.status || '').toLowerCase())
+    )
   );
 
   // 2. Authoritative Pending Offer Verification (strictly not accepted and not busy on another active job)
@@ -58,8 +62,8 @@ export function getEmployeeJobPresentation(job, hasActiveJob = false) {
   if (isAcceptedByMe) {
     const rawStatus = (job.status || 'accepted').toLowerCase();
 
-    if (rawStatus === 'on_the_way') {
-      const isCancelAvail = Boolean(job.cancellation_info?.cancellation_available);
+    if (rawStatus === 'on_the_way' || rawStatus === 'en_route') {
+      const isCancelAvail = Boolean(job.cancellation_info?.cancellation_available ?? job.cancellation_info?.can_cancel);
       return {
         state: 'ON_THE_WAY',
         displayStatus: 'ON THE WAY',
@@ -82,6 +86,7 @@ export function getEmployeeJobPresentation(job, hasActiveJob = false) {
     }
 
     if (rawStatus === 'arrived') {
+      const isCancelAvail = Boolean((job.cancellation_info?.cancellation_available ?? job.cancellation_info?.can_cancel) && !job.otp_verified);
       return {
         state: 'ARRIVED',
         displayStatus: 'ARRIVED AT CUSTOMER SITE',
@@ -93,13 +98,13 @@ export function getEmployeeJobPresentation(job, hasActiveJob = false) {
         isAccepted: true,
         canAccept: false,
         canDecline: false,
-        canCancel: false,
+        canCancel: isCancelAvail,
         canTrack: true,
         showOfferCountdown: false,
-        showCancellationCountdown: false,
+        showCancellationCountdown: Boolean(job.cancellation_info?.cancellation_deadline),
         offerExpiresAt: null,
-        acceptedAt: job.accepted_at || null,
-        cancellationDeadline: null,
+        acceptedAt: job.accepted_at || job.cancellation_info?.accepted_at || null,
+        cancellationDeadline: job.cancellation_deadline || job.cancellation_info?.cancellation_deadline || null,
       };
     }
 
@@ -148,7 +153,7 @@ export function getEmployeeJobPresentation(job, hasActiveJob = false) {
     }
 
     // Default Accepted State (prior to heading out)
-    const isCancelAvail = Boolean(job.cancellation_info?.cancellation_available);
+    const isCancelAvail = Boolean(job.cancellation_info?.cancellation_available ?? job.cancellation_info?.can_cancel);
     return {
       state: 'ACCEPTED',
       displayStatus: 'ACCEPTED / ASSIGNED TO YOU',

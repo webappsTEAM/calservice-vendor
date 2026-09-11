@@ -58,14 +58,16 @@ export function TechnicianFirstPersonNavView({
     isRecalculating,
     directionsFailed,
     telemetryStatus,
+    isPostPickup,
+    destinationAddress,
   } = useTechnicianNavigation({
     job,
     initialTechnicianLocation: initialTechLocation,
     onLocationReport,
   });
 
-  const customerPhone = job?.phone || job?.customer_phone;
-  const customerAddress = job?.address || job?.customer_address || 'Customer Authorized Address';
+  const customerPhone = isPostPickup && job?.drop_contact_phone ? job.drop_contact_phone : (job?.phone || job?.customer_phone);
+  const customerAddress = destinationAddress || job?.address || job?.customer_address || 'Customer Authorized Address';
 
   // Toggle Route Overview
   const handleToggleRouteOverview = () => {

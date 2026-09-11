@@ -34,7 +34,11 @@ export function TechnicianArrivalView({
     return null;
   };
 
+  const postPickupLegs = ["EN_ROUTE_DROP", "UNLOADING", "DELIVERED"];
+  const isPostPickup = Boolean(job?.is_logistics && postPickupLegs.includes((job?.logistics_leg || "").toUpperCase()));
+
   const custLat = resolveCoord(
+    isPostPickup ? job?.drop_latitude : null,
     job?.latitude,
     job?.customer_latitude,
     job?.site_latitude,
@@ -43,6 +47,7 @@ export function TechnicianArrivalView({
     job?.lat
   );
   const custLon = resolveCoord(
+    isPostPickup ? job?.drop_longitude : null,
     job?.longitude,
     job?.customer_longitude,
     job?.site_longitude,
@@ -54,9 +59,9 @@ export function TechnicianArrivalView({
   const techLat = resolveCoord(technicianLocation?.latitude, technicianLocation?.lat);
   const techLon = resolveCoord(technicianLocation?.longitude, technicianLocation?.lng, technicianLocation?.lon);
 
-  const customerName = job?.customer_name || 'Customer';
-  const customerPhone = job?.phone || job?.customer_phone;
-  const customerAddress = job?.address || job?.customer_address || 'Customer Authorized Address';
+  const customerName = (isPostPickup && job?.drop_contact_name) ? job.drop_contact_name : (job?.customer_name || 'Customer');
+  const customerPhone = (isPostPickup && job?.drop_contact_phone) ? job.drop_contact_phone : (job?.phone || job?.customer_phone);
+  const customerAddress = (isPostPickup && job?.drop_address) ? job.drop_address : (job?.address || job?.customer_address || 'Customer Authorized Address');
 
   const custMarkerRef = useRef(null);
   const geofenceCircleRef = useRef(null);

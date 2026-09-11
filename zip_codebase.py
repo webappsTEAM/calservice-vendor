@@ -10,6 +10,7 @@ import fnmatch
 import os
 from datetime import datetime
 from pathlib import Path
+import shutil
 import sys
 import zipfile
 
@@ -399,6 +400,13 @@ def main():
     print(f" Compressed Size : {format_size(zip_size)}")
     print(f" Space Reduction : {saved_pct:.1f}% saved")
     print(f" .env Files      : {total_env_files} included")
+    latest_path = output_path.parent / "calservices_latest.zip"
+    try:
+        shutil.copy2(output_path, latest_path)
+        print(f" Latest Backup   : {latest_path}")
+    except Exception as e:
+        print(f" [Note] Could not update latest alias: {e}")
+
     print(f" Total Duration  : {elapsed:.2f}s")
     print("=" * 65 + "\n")
 

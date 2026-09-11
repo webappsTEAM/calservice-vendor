@@ -142,9 +142,37 @@ def set_logistics_leg(job, leg, actor=None):
     job.logistics_leg = leg
     job.logistics_leg_updated_at = now
     job.logistics_leg_history = history
-    job.save(update_fields=[
+
+    target_status = None
+    cur_status = (getattr(job, "status", None) or "").lower()
+    if leg in ("EN_ROUTE_PICKUP", "TEAM_EN_ROUTE"):
+        if cur_status in ("assigned", "accepted", "received"):
+            target_status = "on_the_way"
+    elif leg in ("LOADING", "ARRIVED_PICKUP", "PACKING", "DISMANTLING"):
+        if cur_status in ("assigned", "accepted", "received", "on_the_way", "en_route"):
+            target_status = "arrived"
+    elif leg in ("EN_ROUTE_DROP", "IN_TRANSIT", "UNLOADING", "REASSEMBLY", "UNPACKING"):
+        if cur_status in ("assigned", "accepted", "received", "on_the_way", "en_route", "arrived"):
+            target_status = "in_progress"
+    elif leg == "DELIVERED":
+        if cur_status in ("assigned", "accepted", "received", "on_the_way", "en_route", "arrived", "in_progress"):
+            target_status = "proof_submitted"
+    elif leg == "COMPLETED":
+        target_status = "completed"
+
+    update_fields = [
         "logistics_leg", "logistics_leg_updated_at", "logistics_leg_history", "updated_at",
-    ])
+    ]
+    if target_status and cur_status != target_status:
+        job.status = target_status
+        update_fields.append("status")
+        try:
+            from service_requests.models import EmployeeJob
+            EmployeeJob.objects.filter(service_request=job).update(status=target_status.upper())
+        except Exception:
+            pass
+
+    job.save(update_fields=update_fields)
 
     emit_leg_changed(job, leg)
     return True, ""

@@ -38,8 +38,18 @@ export function useTechnicianNavigation({
   initialTechnicianLocation,
   onLocationReport,
 }) {
-  const custLat = job?.latitude != null ? parseFloat(job.latitude) : null;
-  const custLon = job?.longitude != null ? parseFloat(job.longitude) : null;
+  const postPickupLegs = ["EN_ROUTE_DROP", "UNLOADING", "DELIVERED"];
+  const isPostPickup = Boolean(job?.is_logistics && postPickupLegs.includes((job?.logistics_leg || "").toUpperCase()));
+
+  const targetLat = isPostPickup && job?.drop_latitude != null ? job.drop_latitude : job?.latitude;
+  const targetLon = isPostPickup && job?.drop_longitude != null ? job.drop_longitude : job?.longitude;
+
+  const custLat = targetLat != null ? parseFloat(targetLat) : null;
+  const custLon = targetLon != null ? parseFloat(targetLon) : null;
+
+  const destinationAddress = isPostPickup && job?.drop_address
+    ? job.drop_address
+    : (job?.address || job?.customer_address || 'Customer Authorized Address');
 
   // Real technician live coordinates
   const [technicianLocation, setTechnicianLocation] = useState(
@@ -368,5 +378,7 @@ export function useTechnicianNavigation({
     telemetryStatus,
     lastUpdateSecondsAgo,
     requestRoadRoute,
+    isPostPickup,
+    destinationAddress,
   };
 }

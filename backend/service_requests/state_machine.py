@@ -43,7 +43,7 @@ ALLOWED_TRANSITIONS = {
     "en_route": ["arrived", "redispatching", "cancelled", "unable_to_complete"],
     "arrived": ["service_started", "in_progress", "cancelled", "unable_to_complete"],
     "service_started": ["in_progress", "cancelled", "unable_to_complete"],
-    "in_progress": ["on_hold", "proof_submitted", "cancelled", "unable_to_complete", "follow_up_required"],
+    "in_progress": ["on_hold", "proof_submitted", "completed", "cancelled", "unable_to_complete", "follow_up_required"],
     # A hold is a pause inside an active job, so it can only return to
     # in_progress or end the job -- it can never skip straight to proof.
     "on_hold": ["in_progress", "cancelled", "unable_to_complete"],
@@ -99,22 +99,32 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
         )
 
     emp = getattr(actor, "employee_profile", None) if actor else None
+    is_logistics = (
+        getattr(service_request, "is_logistics", False) or
+        (service_request.service_category or "").lower() in [
+            "two_wheeler_delivery", "mini_truck_delivery", "truck_transport",
+            "goods_transport", "packers_movers", "goods_transport_two_wheeler",
+            "goods_transport_truck", "truck", "two_wheeler"
+        ]
+    )
     if not getattr(actor, "is_superuser", False):
-        # 1. Gate: ARRIVED / SERVICE_STARTED requires Geofence Passed
+        # 1. Gate: ARRIVED / SERVICE_STARTED requires Geofence Passed (home services only)
         if target in ["arrived", "service_started"]:
-            from workforce_api.models import PreServiceVerification
-            verification = PreServiceVerification.objects.filter(job=service_request).first()
-            if not verification or not verification.geofence_passed:
-                raise ValidationError("Transition rejected: Real GPS Arrival geofence check has not passed.")
+            if not is_logistics:
+                from workforce_api.models import PreServiceVerification
+                verification = PreServiceVerification.objects.filter(job=service_request).first()
+                if not verification or not verification.geofence_passed:
+                    raise ValidationError("Transition rejected: Real GPS Arrival geofence check has not passed.")
 
-        # 2. Gate: IN_PROGRESS requires active TimeLog clock-in
+        # 2. Gate: IN_PROGRESS requires active TimeLog clock-in (hourly home services only)
         if target == "in_progress":
-            from time_tracking.models import TimeLog
-            eval_emp = emp or service_request.assigned_employee
-            if eval_emp:
-                is_clocked_in = TimeLog.objects.filter(employee=eval_emp, clock_out__isnull=True).exists()
-                if not is_clocked_in:
-                    raise ValidationError("Transition rejected: Active shift TimeLog clock-in is required before IN_PROGRESS.")
+            if not is_logistics:
+                from time_tracking.models import TimeLog
+                eval_emp = emp or service_request.assigned_employee
+                if eval_emp:
+                    is_clocked_in = TimeLog.objects.filter(employee=eval_emp, clock_out__isnull=True).exists()
+                    if not is_clocked_in:
+                        raise ValidationError("Transition rejected: Active shift TimeLog clock-in is required before IN_PROGRESS.")
 
         # 3. Gate: COMPLETED requires Authoritative Completion Aggregation check
         if target == "completed":
@@ -122,10 +132,11 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
             if not is_ready:
                 raise ValidationError(f"Transition rejected: {reason}")
         elif target == "proof_submitted":
-            from workforce_api.models import PostServiceProof
-            proof = PostServiceProof.objects.filter(job=service_request).first()
-            if not proof or not proof.is_submitted:
-                raise ValidationError("Transition rejected: After-service proof (photos and notes) required before PROOF_SUBMITTED.")
+            if not is_logistics:
+                from workforce_api.models import PostServiceProof
+                proof = PostServiceProof.objects.filter(job=service_request).first()
+                if not proof or not proof.is_submitted:
+                    raise ValidationError("Transition rejected: After-service proof (photos and notes) required before PROOF_SUBMITTED.")
 
     service_request.status = target
     service_request.save(update_fields=["status"])

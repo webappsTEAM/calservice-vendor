@@ -627,6 +627,8 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
         offer = self._get_emp_offer(obj, emp)
         if not offer:
             return None
+        if offer.status == "ACCEPTED" and obj.assigned_employee_id != emp.id:
+            return "SUPERSEDED_BY_REASSIGNMENT"
         from django.utils import timezone
         if offer.status == "OFFERED" and offer.expires_at <= timezone.now():
             return "EXPIRED"
@@ -832,37 +834,71 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         if not request or not getattr(request, "user", None):
             return None
-        emp = getattr(request.user, "employee_profile", None)
-        if not emp or obj.assigned_employee_id != emp.id:
-            return None
-
-        if obj.status not in ["accepted", "on_the_way", "en_route"]:
-            return {
-                "can_cancel": False,
-                "reason": "Not in cancellable state",
-                "remaining_seconds": 0,
-            }
-
-        from service_requests.models import EmployeeJob
+        user = request.user
+        from accounts.permissions import is_admin_role
         from django.utils import timezone
         from datetime import timedelta
+        from service_requests.models import EmployeeJob
 
-        emp_job = EmployeeJob.objects.filter(service_request=obj, employee=emp).first()
-        accepted_at = (emp_job.accepted_date if emp_job and emp_job.accepted_date else None) or obj.updated_at
-        if not accepted_at:
-            return None
+        is_admin = is_admin_role(user)
+        otp_verified = getattr(obj, "otp_verified", False)
 
-        deadline = accepted_at + timedelta(minutes=5)
-        now = timezone.now()
-        remaining_seconds = max(0, int((deadline - now).total_seconds()))
-        can_cancel = remaining_seconds > 0
+        if not is_admin:
+            emp = getattr(user, "employee_profile", None)
+            if not emp:
+                from employees.models import Employee
+                try:
+                    emp = Employee.objects.filter(user=user).first()
+                except Exception:
+                    emp = None
+            is_assigned = bool(
+                emp and (
+                    obj.assigned_employee_id == emp.id
+                    or obj.assigned_employee == emp
+                    or EmployeeJob.objects.filter(service_request=obj, employee=emp).exclude(status__in=["CANCELLED", "EMPLOYEE_CANCELLED", "REJECTED"]).exists()
+                )
+            )
+            if not is_assigned:
+                return None
 
-        return {
-            "can_cancel": can_cancel,
-            "accepted_at": accepted_at.isoformat(),
-            "cancellation_deadline": deadline.isoformat(),
-            "remaining_seconds": remaining_seconds,
-        }
+            if obj.status not in ["accepted", "on_the_way", "en_route", "arrived"] or otp_verified:
+                return {
+                    "can_cancel": False,
+                    "cancellation_available": False,
+                    "reason": "Cancellation locked after OTP or not in cancellable state",
+                    "remaining_seconds": 0,
+                }
+
+            emp_job = EmployeeJob.objects.filter(service_request=obj, employee=emp).first()
+            accepted_at = (emp_job.accepted_date if emp_job and emp_job.accepted_date else None) or obj.updated_at
+            if not accepted_at:
+                return None
+
+            deadline = accepted_at + timedelta(minutes=5)
+            now = timezone.now()
+            remaining_seconds = max(0, int((deadline - now).total_seconds()))
+            can_cancel = (remaining_seconds > 0) and not otp_verified
+
+            return {
+                "can_cancel": can_cancel,
+                "cancellation_available": can_cancel,
+                "accepted_at": accepted_at.isoformat(),
+                "cancellation_deadline": deadline.isoformat(),
+                "remaining_seconds": remaining_seconds,
+            }
+        else:
+            # Vendor Admin / Ops Manager
+            is_cancellable_state = obj.status in ["accepted", "on_the_way", "en_route", "arrived"]
+            can_cancel = is_cancellable_state and not otp_verified
+
+            return {
+                "can_cancel": can_cancel,
+                "cancellation_available": can_cancel,
+                "is_admin": True,
+                "accepted_at": obj.updated_at.isoformat() if obj.updated_at else None,
+                "cancellation_deadline": None,
+                "remaining_seconds": 3600 if can_cancel else 0,
+            }
 
 
 class WorkforceEmployeeChangeRequestSerializer(serializers.ModelSerializer):

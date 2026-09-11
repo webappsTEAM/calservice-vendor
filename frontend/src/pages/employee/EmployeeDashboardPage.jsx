@@ -34,6 +34,10 @@ import {
   apiUploadDocument,
   apiHoldJob,
   apiResumeJob,
+  apiSetLogisticsLeg,
+  apiGetLogisticsLeg,
+  apiGetJobTripStops,
+  apiUpdateJobTripStop,
 } from '../../api/workforceService.js';
 import {
   apiClockIn,
@@ -710,6 +714,52 @@ export function EmployeeDashboardPage() {
   const [catalogCategories, setCatalogCategories] = useState([]);
   const [serviceActionLoading, setServiceActionLoading] = useState(null);
 
+  // Logistics sub-phase & multi-stop waypoint tracking (GT-B-03 / GT-D-01)
+  const [isAdvancingLeg, setIsAdvancingLeg] = useState(false);
+  const [jobStops, setJobStops] = useState([]);
+  const [isLoadingStops, setIsLoadingStops] = useState(false);
+
+  useEffect(() => {
+    if (selectedJob?.is_logistics && selectedJob?.trip_stop_count > 0) {
+      setIsLoadingStops(true);
+      apiGetJobTripStops(selectedJob.id)
+        .then(res => {
+          setJobStops(res?.results || []);
+        })
+        .catch(() => {})
+        .finally(() => setIsLoadingStops(false));
+    } else {
+      setJobStops([]);
+    }
+  }, [selectedJob?.id, selectedJob?.is_logistics, selectedJob?.trip_stop_count]);
+
+  const handleAdvanceLogisticsLeg = async (targetLeg) => {
+    if (!selectedJob || isAdvancingLeg) return;
+    try {
+      setIsAdvancingLeg(true);
+      setError('');
+      await apiSetLogisticsLeg(selectedJob.id, targetLeg);
+      setSelectedJob(prev => prev ? { ...prev, logistics_leg: targetLeg } : prev);
+      if (typeof refreshActiveJobs === 'function') {
+        refreshActiveJobs({ silent: true }).catch(() => {});
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to update trip leg.');
+    } finally {
+      setIsAdvancingLeg(false);
+    }
+  };
+
+  const handleCompleteStop = async (stopId) => {
+    if (!selectedJob) return;
+    try {
+      await apiUpdateJobTripStop(selectedJob.id, { stopId, completed: true });
+      setJobStops(prev => prev.map(s => s.id === stopId ? { ...s, completed_at: new Date().toISOString() } : s));
+    } catch (err) {
+      setError(err.message || 'Failed to update stop progress.');
+    }
+  };
+
   const loadDashboard = useCallback(async (options = {}) => {
     const isSilent = options?.silent === true;
     try {
@@ -923,16 +973,31 @@ export function EmployeeDashboardPage() {
       const targetJob = (activeJobs && activeJobs.find(j => j.id === candidateJob.id)) || candidateJob;
       if (!targetJob) return;
 
-      if (!afterFaceFile) {
+      const isLogisticsJob = Boolean(
+        targetJob?.is_logistics ||
+        (targetJob?.service_category || '').toLowerCase().includes('goods') ||
+        (targetJob?.service_category || '').toLowerCase().includes('truck') ||
+        (targetJob?.service_category || '').toLowerCase().includes('two_wheeler') ||
+        (targetJob?.service_category || '').toLowerCase().includes('transport')
+      );
+
+      if (!isLogisticsJob && !afterFaceFile) {
         setError('Live After Face Selfie is required for service completion.');
+        return;
+      }
+      if (isLogisticsJob && !afterFaceFile && !afterFile && !workNotes) {
+        setError('Proof of delivery requires a cargo photo, recipient signature, or delivery notes.');
         return;
       }
 
       try {
         setIsUploadingProof(true);
         const formData = new FormData();
-        formData.append('after_presence_photo', afterFaceFile);
-        if (afterFile) formData.append('after_appliance_photo', afterFile);
+        if (afterFaceFile) formData.append('after_presence_photo', afterFaceFile);
+        if (afterFile) {
+          formData.append('after_appliance_photo', afterFile);
+          formData.append('delivery_proof', afterFile);
+        }
         if (workNotes) formData.append('notes', workNotes);
 
         const res = await apiUploadJobProof(targetJob.id, formData);
@@ -1152,6 +1217,10 @@ export function EmployeeDashboardPage() {
           setError('The 5-minute cancellation window for this job has expired. Please contact dispatch support.');
         } else if (errorCode === 'CANCELLATION_NOT_ALLOWED_IN_CURRENT_STATE') {
           setError('Cancellation is not permitted in the current job state.');
+        } else if (errorCode === 'UNAUTHORIZED_CANCELLATION') {
+          setError('You are not authorized to cancel this job assignment.');
+        } else if (errorCode === 'CROSS_TENANT_FORBIDDEN') {
+          setError('Cross-company action forbidden.');
         } else {
           setError(err.message || err.error || 'Failed to cancel job assignment.');
         }
@@ -2962,36 +3031,103 @@ export function EmployeeDashboardPage() {
                         <span>Email: <a href={`mailto:${selectedJob.email}`} className="text-blue-600 hover:underline">{selectedJob.email}</a></span>
                       </p>
                     )}
-                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 pt-1 border-t border-slate-200/80">
-                      <div className="flex items-start gap-2">
-                        <MapPin className="w-3.5 h-3.5 text-blue-600 shrink-0 mt-0.5" />
-                        <div>
-                          <span className="text-slate-500">Customer Location:</span>{' '}
-                          <strong className="text-slate-800">{selectedJob.address}</strong>
-                          {selectedJob.latitude != null && selectedJob.longitude != null && (
-                            <p className="text-[10px] text-slate-500 font-mono mt-0.5">
-                              Coordinates: {Number(selectedJob.latitude).toFixed(6)}, {Number(selectedJob.longitude).toFixed(6)}
-                            </p>
-                          )}
+                    {selectedJob.is_logistics ? (
+                      <div className="space-y-2.5 pt-1 border-t border-slate-200/80">
+                        <div className="p-3 bg-blue-50/60 border border-blue-200/80 rounded-xl space-y-2.5">
+                          {/* Pickup */}
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-start gap-2 min-w-0">
+                              <div className="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center text-[10px] font-black shrink-0 mt-0.5 shadow-2xs">P</div>
+                              <div className="min-w-0 flex-1">
+                                <span className="text-[10px] font-extrabold uppercase tracking-wider text-blue-900 block">1. Pickup Site</span>
+                                <strong className="text-xs text-slate-900 block leading-tight">{selectedJob.address}</strong>
+                                {selectedJob.phone && (
+                                  <p className="text-[11px] text-slate-600 mt-0.5">
+                                    Sender: <a href={`tel:${selectedJob.phone}`} className="font-bold text-blue-700 hover:underline">{selectedJob.phone}</a>
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                            {['accepted', 'on_the_way', 'arrived'].includes((selectedJob.status || '').toLowerCase()) && selectedJob.latitude != null && selectedJob.longitude != null && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const el = document.getElementById('arrival-verification-checklist');
+                                  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                                }}
+                                className="shrink-0 text-[10px] bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1 rounded font-bold transition-colors inline-flex items-center gap-1 shadow-2xs cursor-pointer"
+                              >
+                                <Navigation className="w-3 h-3 rotate-45" />
+                                <span>Nav Pickup</span>
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Drop */}
+                          <div className="flex items-start justify-between gap-2 pt-2 border-t border-blue-100">
+                            <div className="flex items-start gap-2 min-w-0">
+                              <div className="w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[10px] font-black shrink-0 mt-0.5 shadow-2xs">D</div>
+                              <div className="min-w-0 flex-1">
+                                <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-900 block">2. Delivery Destination</span>
+                                <strong className="text-xs text-slate-900 block leading-tight">{selectedJob.drop_address || '—'}</strong>
+                                {(selectedJob.drop_contact_name || selectedJob.drop_contact_phone) && (
+                                  <p className="text-[11px] text-slate-600 mt-0.5">
+                                    Receiver: <strong>{selectedJob.drop_contact_name || 'Contact'}</strong>
+                                    {selectedJob.drop_contact_phone && (
+                                      <> — <a href={`tel:${selectedJob.drop_contact_phone}`} className="font-bold text-emerald-700 hover:underline">{selectedJob.drop_contact_phone}</a></>
+                                    )}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                            {selectedJob.drop_latitude != null && selectedJob.drop_longitude != null && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const el = document.getElementById('arrival-verification-checklist');
+                                  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                                }}
+                                className="shrink-0 text-[10px] bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded font-bold transition-colors inline-flex items-center gap-1 shadow-2xs cursor-pointer"
+                              >
+                                <Navigation className="w-3 h-3 rotate-45" />
+                                <span>Nav Drop</span>
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
-                      {/* ONLY render Live Driving Route for ACTIVE pre-service jobs, NEVER on completed */}
-                      {['accepted', 'on_the_way', 'arrived'].includes((selectedJob.status || '').toLowerCase()) && selectedJob.latitude != null && selectedJob.longitude != null && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const el = document.getElementById('arrival-verification-checklist');
-                            if (el) {
-                              el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                            }
-                          }}
-                          className="shrink-0 text-[11px] bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded font-bold transition-colors inline-flex items-center gap-1.5 shadow-sm cursor-pointer"
-                        >
-                          <Navigation className="w-3.5 h-3.5 rotate-45" />
-                          <span>Live Driving Route ↓</span>
-                        </button>
-                      )}
-                    </div>
+                    ) : (
+                      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 pt-1 border-t border-slate-200/80">
+                        <div className="flex items-start gap-2">
+                          <MapPin className="w-3.5 h-3.5 text-blue-600 shrink-0 mt-0.5" />
+                          <div>
+                            <span className="text-slate-500">Customer Location:</span>{' '}
+                            <strong className="text-slate-800">{selectedJob.address}</strong>
+                            {selectedJob.latitude != null && selectedJob.longitude != null && (
+                              <p className="text-[10px] text-slate-500 font-mono mt-0.5">
+                                Coordinates: {Number(selectedJob.latitude).toFixed(6)}, {Number(selectedJob.longitude).toFixed(6)}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        {/* ONLY render Live Driving Route for ACTIVE pre-service jobs, NEVER on completed */}
+                        {['accepted', 'on_the_way', 'arrived'].includes((selectedJob.status || '').toLowerCase()) && selectedJob.latitude != null && selectedJob.longitude != null && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const el = document.getElementById('arrival-verification-checklist');
+                              if (el) {
+                                el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                              }
+                            }}
+                            className="shrink-0 text-[11px] bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded font-bold transition-colors inline-flex items-center gap-1.5 shadow-sm cursor-pointer"
+                          >
+                            <Navigation className="w-3.5 h-3.5 rotate-45" />
+                            <span>Live Driving Route ↓</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
 
                     <p className="flex items-center gap-2">
                       <Calendar className="w-3.5 h-3.5 text-slate-500 shrink-0" />
@@ -3482,45 +3618,229 @@ export function EmployeeDashboardPage() {
                         </div>
                       )}
 
-                      {selectedJob.status === 'in_progress' && (
-                        <div className="w-full p-4 bg-emerald-50/80 border border-emerald-200 rounded-lg space-y-3 mt-1">
-                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-emerald-200/70 pb-2.5">
-                            <div className="flex items-center gap-2">
-                              <span className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse shrink-0"></span>
-                              <div>
-                                <h4 className="text-xs font-bold text-emerald-900 flex items-center gap-1.5">
-                                  <CheckCircle2 className="w-4 h-4 text-emerald-700" />
-                                  Active Work Session — Job In Progress
-                                </h4>
-                                <p className="text-[11px] text-emerald-700">
-                                  Clocked in on site. When repairs & service are finished, upload completion photos below to complete the service.
-                                </p>
+                      {((selectedJob.is_logistics && ['accepted', 'on_the_way', 'en_route', 'arrived', 'in_progress', 'proof_submitted'].includes((selectedJob.status || '').toLowerCase())) || (!selectedJob.is_logistics && selectedJob.status === 'in_progress')) && (
+                        selectedJob.is_logistics ? (
+                          <div className="w-full p-4 bg-slate-900 border border-slate-800 rounded-lg text-white space-y-3.5 mt-1 shadow-md">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
+                              <div className="flex items-center gap-2">
+                                <div className="w-8 h-8 rounded-lg bg-blue-600/30 border border-blue-500/50 flex items-center justify-center text-blue-400 shrink-0">
+                                  <Truck className="w-4 h-4" />
+                                </div>
+                                <div>
+                                  <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                                    Goods & Transport Trip in Progress
+                                  </h4>
+                                  <p className="text-[11px] text-slate-400">
+                                    Current Leg: <strong className="text-blue-400 font-mono">{selectedJob.logistics_leg || 'EN_ROUTE_PICKUP'}</strong>
+                                  </p>
+                                </div>
+                              </div>
+                              <span className="px-2.5 py-1 bg-blue-600 text-white font-bold text-xs rounded shadow-xs self-start sm:self-auto shrink-0">
+                                {selectedJob.logistics_leg || 'ACTIVE TRIP'}
+                              </span>
+                            </div>
+
+                            {/* Logistics Trip Stepper */}
+                            <div className="bg-slate-950/60 rounded-md p-2.5 border border-slate-800/80">
+                              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Trip Progression</div>
+                              <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5 text-center">
+                                {[
+                                  { key: 'EN_ROUTE_PICKUP', label: '1. To Pickup' },
+                                  { key: 'LOADING', label: '2. Loading' },
+                                  { key: 'EN_ROUTE_DROP', label: '3. To Drop' },
+                                  { key: 'UNLOADING', label: '4. Unloading' },
+                                  { key: 'DELIVERED', label: '5. Delivered' },
+                                ].map((step, idx, arr) => {
+                                  const currentLeg = selectedJob.logistics_leg || 'EN_ROUTE_PICKUP';
+                                  const legOrder = arr.map(s => s.key);
+                                  const currentIdx = legOrder.indexOf(currentLeg);
+                                  const isCurrent = currentLeg === step.key;
+                                  const isPast = currentIdx > idx;
+
+                                  return (
+                                    <div
+                                      key={step.key}
+                                      className={`px-2 py-1.5 rounded text-[11px] font-bold flex items-center justify-center gap-1 border transition-colors ${
+                                        isPast
+                                          ? 'bg-emerald-950/40 border-emerald-700/50 text-emerald-400'
+                                          : isCurrent
+                                          ? 'bg-blue-600/30 border-blue-500 text-blue-300 ring-1 ring-blue-500'
+                                          : 'bg-slate-900/50 border-slate-800 text-slate-500'
+                                      }`}
+                                    >
+                                      {isPast && <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />}
+                                      <span>{step.label}</span>
+                                    </div>
+                                  );
+                                })}
                               </div>
                             </div>
-                            <span className="px-2.5 py-1 bg-emerald-600 text-white font-bold text-xs rounded shadow-xs self-start sm:self-auto shrink-0">
-                              IN PROGRESS
-                            </span>
-                          </div>
 
-                          <div className="flex flex-wrap items-center gap-2.5 pt-1">
-                            <button
-                              type="button"
-                              onClick={() => setProofModalJob(selectedJob)}
-                              className="px-4 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow transition-colors inline-flex items-center gap-2 active:scale-95 cursor-pointer"
-                            >
-                              <Camera className="w-4 h-4" />
-                              <span>Submit Completion Proof</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setExtensionModalJob(selectedJob)}
-                              className="px-3.5 py-2 rounded bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 font-bold text-xs shadow-xs transition-colors inline-flex items-center gap-1.5 active:scale-95 cursor-pointer"
-                            >
-                              <PlusCircle className="w-3.5 h-3.5 text-indigo-600" />
-                              <span>Request Scope Extension</span>
-                            </button>
+                            {/* Next Leg Action Buttons */}
+                            <div className="flex flex-wrap items-center gap-2 pt-1">
+                              {(!selectedJob.logistics_leg || selectedJob.logistics_leg === 'EN_ROUTE_PICKUP') && (
+                                <button
+                                  type="button"
+                                  disabled={isAdvancingLeg}
+                                  onClick={() => handleAdvanceLogisticsLeg('LOADING')}
+                                  className="px-4 py-2 rounded bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold text-xs shadow transition-colors inline-flex items-center gap-2 cursor-pointer"
+                                >
+                                  <Truck className="w-4 h-4" />
+                                  <span>{isAdvancingLeg ? 'Updating...' : 'Arrived at Pickup — Start Loading Goods →'}</span>
+                                </button>
+                              )}
+
+                              {selectedJob.logistics_leg === 'LOADING' && (
+                                <button
+                                  type="button"
+                                  disabled={isAdvancingLeg}
+                                  onClick={() => handleAdvanceLogisticsLeg('EN_ROUTE_DROP')}
+                                  className="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold text-xs shadow transition-colors inline-flex items-center gap-2 cursor-pointer"
+                                >
+                                  <Navigation className="w-4 h-4" />
+                                  <span>{isAdvancingLeg ? 'Updating...' : 'Finished Loading — Depart to Drop Site →'}</span>
+                                </button>
+                              )}
+
+                              {selectedJob.logistics_leg === 'EN_ROUTE_DROP' && (
+                                <button
+                                  type="button"
+                                  disabled={isAdvancingLeg}
+                                  onClick={() => handleAdvanceLogisticsLeg('UNLOADING')}
+                                  className="px-4 py-2 rounded bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-bold text-xs shadow transition-colors inline-flex items-center gap-2 cursor-pointer"
+                                >
+                                  <MapPin className="w-4 h-4" />
+                                  <span>{isAdvancingLeg ? 'Updating...' : 'Arrived at Drop — Start Unloading Goods →'}</span>
+                                </button>
+                              )}
+
+                              {selectedJob.logistics_leg === 'UNLOADING' && (
+                                <button
+                                  type="button"
+                                  onClick={() => setProofModalJob(selectedJob)}
+                                  className="px-4 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow transition-colors inline-flex items-center gap-2 cursor-pointer animate-pulse"
+                                >
+                                  <Camera className="w-4 h-4" />
+                                  <span>Unloading Done — Submit Proof of Delivery (POD)</span>
+                                </button>
+                              )}
+
+                              {/* Always allow submitting proof if needed */}
+                              {selectedJob.logistics_leg !== 'UNLOADING' && (
+                                <button
+                                  type="button"
+                                  onClick={() => setProofModalJob(selectedJob)}
+                                  className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-colors inline-flex items-center gap-1.5 cursor-pointer"
+                                >
+                                  <Camera className="w-3.5 h-3.5" />
+                                  <span>Proof of Delivery</span>
+                                </button>
+                              )}
+                            </div>
+
+                            {/* Multi-Stop Waypoints (GT-D-01) */}
+                            {jobStops && jobStops.length > 0 && (
+                              <div className="bg-slate-950/70 rounded-md p-3 border border-slate-800 space-y-2 mt-2">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                                    Trip Waypoints & Stops ({jobStops.length})
+                                  </span>
+                                  <span className="text-[10px] text-slate-400 font-mono">
+                                    {jobStops.filter(s => s.completed_at).length} / {jobStops.length} Completed
+                                  </span>
+                                </div>
+                                <div className="space-y-1.5">
+                                  {jobStops.map((stop, idx) => (
+                                    <div
+                                      key={stop.id || idx}
+                                      className={`p-2 rounded border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs ${
+                                        stop.completed_at
+                                          ? 'bg-emerald-950/20 border-emerald-800/40 text-slate-300'
+                                          : 'bg-slate-900 border-slate-800 text-white'
+                                      }`}
+                                    >
+                                      <div className="flex items-start gap-2 min-w-0">
+                                        <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black shrink-0 mt-0.5 ${
+                                          stop.completed_at ? 'bg-emerald-700 text-white' : 'bg-slate-700 text-slate-200'
+                                        }`}>
+                                          {stop.sequence != null ? stop.sequence : idx + 1}
+                                        </span>
+                                        <div className="min-w-0">
+                                          <div className="flex items-center gap-1.5">
+                                            <strong className="text-slate-100 truncate">{stop.address}</strong>
+                                            <span className="text-[9px] uppercase px-1 py-0.2 rounded bg-slate-800 text-slate-400 font-mono">
+                                              {stop.stop_type || 'WAYPOINT'}
+                                            </span>
+                                          </div>
+                                          {(stop.contact_name || stop.contact_phone) && (
+                                            <p className="text-[11px] text-slate-400">
+                                              Contact: {stop.contact_name || 'Recipient'} {stop.contact_phone && `(${stop.contact_phone})`}
+                                            </p>
+                                          )}
+                                        </div>
+                                      </div>
+                                      <div className="shrink-0">
+                                        {stop.completed_at ? (
+                                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-400">
+                                            <CheckCircle2 className="w-3.5 h-3.5" />
+                                            Done
+                                          </span>
+                                        ) : (
+                                          <button
+                                            type="button"
+                                            onClick={() => handleCompleteStop(stop.id)}
+                                            className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white font-bold text-[11px] rounded shadow-2xs transition-colors cursor-pointer"
+                                          >
+                                            Complete Stop ✓
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
                           </div>
-                        </div>
+                        ) : (
+                          <div className="w-full p-4 bg-emerald-50/80 border border-emerald-200 rounded-lg space-y-3 mt-1">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-emerald-200/70 pb-2.5">
+                              <div className="flex items-center gap-2">
+                                <span className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse shrink-0"></span>
+                                <div>
+                                  <h4 className="text-xs font-bold text-emerald-900 flex items-center gap-1.5">
+                                    <CheckCircle2 className="w-4 h-4 text-emerald-700" />
+                                    Active Work Session — Job In Progress
+                                  </h4>
+                                  <p className="text-[11px] text-emerald-700">
+                                    Clocked in on site. When repairs & service are finished, upload completion photos below to complete the service.
+                                  </p>
+                                </div>
+                              </div>
+                              <span className="px-2.5 py-1 bg-emerald-600 text-white font-bold text-xs rounded shadow-xs self-start sm:self-auto shrink-0">
+                                IN PROGRESS
+                              </span>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2.5 pt-1">
+                              <button
+                                type="button"
+                                onClick={() => setProofModalJob(selectedJob)}
+                                className="px-4 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow transition-colors inline-flex items-center gap-2 active:scale-95 cursor-pointer"
+                              >
+                                <Camera className="w-4 h-4" />
+                                <span>Submit Completion Proof</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setExtensionModalJob(selectedJob)}
+                                className="px-3.5 py-2 rounded bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 font-bold text-xs shadow-xs transition-colors inline-flex items-center gap-1.5 active:scale-95 cursor-pointer"
+                              >
+                                <PlusCircle className="w-3.5 h-3.5 text-indigo-600" />
+                                <span>Request Scope Extension</span>
+                              </button>
+                            </div>
+                          </div>
+                        )
                       )}
 
                       {selectedJob.status === 'proof_submitted' && (
@@ -3723,182 +4043,197 @@ export function EmployeeDashboardPage() {
             setBeforePreviewUrl(null);
             setAfterPreviewUrl(null);
           }}
-          title={`Proof of Work Completion — Job #${proofModalJob?.id}`}
+          title={
+            Boolean(proofModalJob?.is_logistics || (proofModalJob?.service_category || '').toLowerCase().includes('goods') || (proofModalJob?.service_category || '').toLowerCase().includes('truck') || (proofModalJob?.service_category || '').toLowerCase().includes('two_wheeler') || (proofModalJob?.service_category || '').toLowerCase().includes('transport'))
+              ? `Proof of Delivery (POD) — Job #${proofModalJob?.request_id || proofModalJob?.id}`
+              : `Proof of Work Completion — Job #${proofModalJob?.id}`
+          }
         >
-          <form onSubmit={handleProofSubmit} className="space-y-4 text-xs">
-            {/* Mandatory Step 1: After Face Selfie */}
-            <div>
-              <label className="block text-slate-700 font-semibold mb-1">
-                After Face Selfie (Technician Identity at Completion) <span className="text-rose-500">*</span>
-              </label>
-              {afterFaceFile ? (
-                <div className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
-                  <div className="flex items-center gap-2.5">
-                    {afterFacePreviewUrl ? (
-                      <img
-                        src={afterFacePreviewUrl}
-                        alt="After Face"
-                        className="w-12 h-12 object-cover rounded-lg border border-slate-300 shadow-sm"
-                      />
-                    ) : (
-                      <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center text-blue-600">
-                        <Camera className="w-6 h-6" />
+          {(() => {
+            const isLogisticsProof = Boolean(
+              proofModalJob?.is_logistics ||
+              (proofModalJob?.service_category || '').toLowerCase().includes('goods') ||
+              (proofModalJob?.service_category || '').toLowerCase().includes('truck') ||
+              (proofModalJob?.service_category || '').toLowerCase().includes('two_wheeler') ||
+              (proofModalJob?.service_category || '').toLowerCase().includes('transport')
+            );
+            return (
+              <form onSubmit={handleProofSubmit} className="space-y-4 text-xs">
+                {/* Step 1: After Face Selfie (optional for logistics, mandatory for home services) */}
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">
+                    {isLogisticsProof ? 'Driver Selfie (optional)' : 'After Face Selfie (Technician Identity at Completion)'} {!isLogisticsProof && <span className="text-rose-500">*</span>}
+                  </label>
+                  {afterFaceFile ? (
+                    <div className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
+                      <div className="flex items-center gap-2.5">
+                        {afterFacePreviewUrl ? (
+                          <img
+                            src={afterFacePreviewUrl}
+                            alt="After Face"
+                            className="w-12 h-12 object-cover rounded-lg border border-slate-300 shadow-sm"
+                          />
+                        ) : (
+                          <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center text-blue-600">
+                            <Camera className="w-6 h-6" />
+                          </div>
+                        )}
+                        <div>
+                          <span className="font-bold text-xs text-slate-800 block truncate max-w-[180px]">
+                            {afterFaceFile.name || 'After Face Selfie Captured'}
+                          </span>
+                          <span className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3" /> Live selfie attached
+                          </span>
+                        </div>
                       </div>
-                    )}
-                    <div>
-                      <span className="font-bold text-xs text-slate-800 block truncate max-w-[180px]">
-                        {afterFaceFile.name || 'After Face Selfie Captured'}
-                      </span>
-                      <span className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1">
-                        <CheckCircle2 className="w-3 h-3" /> Live selfie attached
-                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          openLiveCamera(
+                            'Capture After Face Selfie',
+                            'user',
+                            'after_face_selfie',
+                            (file, previewUrl) => {
+                              setAfterFaceFile(file);
+                              setAfterFacePreviewUrl(previewUrl);
+                            }
+                          )
+                        }
+                        className="px-2.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-bold rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
+                      >
+                        <RefreshCw className="w-3 h-3" /> Retake
+                      </button>
                     </div>
-                  </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        openLiveCamera(
+                          'Capture After Face Selfie',
+                          'user',
+                          'after_face_selfie',
+                          (file, previewUrl) => {
+                            setAfterFaceFile(file);
+                            setAfterFacePreviewUrl(previewUrl);
+                          }
+                        )
+                      }
+                      className="w-full py-2.5 px-4 border border-dashed border-blue-400 hover:border-blue-600 bg-blue-50/60 hover:bg-blue-50 text-blue-700 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all active:scale-[0.99] shadow-sm cursor-pointer"
+                    >
+                      <Camera className="w-4 h-4 text-blue-600" />
+                      <span>📸 {isLogisticsProof ? 'Take Live Driver Selfie (optional)' : 'Take Live Face Selfie (Required)'}</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Step 2: Delivered Cargo / After Product Photo */}
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">
+                    {isLogisticsProof ? 'Delivered Goods / Drop Site Photo' : 'After Product Photo (Completed Result)'} {isLogisticsProof ? <span className="text-slate-400 font-normal text-[11px]">(recommended)</span> : <span className="text-slate-400 font-normal text-[11px]">(optional)</span>}
+                  </label>
+                  {afterFile ? (
+                    <div className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
+                      <div className="flex items-center gap-2.5">
+                        {afterPreviewUrl ? (
+                          <img
+                            src={afterPreviewUrl}
+                            alt="After"
+                            className="w-12 h-12 object-cover rounded-lg border border-slate-300 shadow-sm"
+                          />
+                        ) : (
+                          <div className="w-12 h-12 bg-emerald-100 rounded-lg flex items-center justify-center text-emerald-600">
+                            <Camera className="w-6 h-6" />
+                          </div>
+                        )}
+                        <div>
+                          <span className="font-bold text-xs text-slate-800 block truncate max-w-[180px]">
+                            {afterFile.name || (isLogisticsProof ? 'POD Photo Captured' : 'After Photo Captured')}
+                          </span>
+                          <span className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3" /> Live snapshot attached
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          openLiveCamera(
+                            isLogisticsProof ? 'Capture Proof of Delivery Photo' : 'Capture After Photo',
+                            'environment',
+                            'after_work',
+                            (file, previewUrl) => {
+                              setAfterFile(file);
+                              setAfterPreviewUrl(previewUrl);
+                            }
+                          )
+                        }
+                        className="px-2.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-bold rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
+                      >
+                        <RefreshCw className="w-3 h-3" /> Retake
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        openLiveCamera(
+                          isLogisticsProof ? 'Capture Proof of Delivery Photo' : 'Capture After Photo',
+                          'environment',
+                          'after_work',
+                          (file, previewUrl) => {
+                            setAfterFile(file);
+                            setAfterPreviewUrl(previewUrl);
+                          }
+                        )
+                      }
+                      className="w-full py-2.5 px-4 border border-dashed border-slate-300 hover:border-slate-400 bg-slate-50 hover:bg-slate-100/70 text-slate-700 rounded-xl font-semibold text-xs flex items-center justify-center gap-2 transition-all active:scale-[0.99] cursor-pointer"
+                    >
+                      <Camera className="w-4 h-4 text-slate-500" />
+                      <span>📸 {isLogisticsProof ? 'Take Photo of Delivered Cargo at Drop' : 'Add After Product Photo (optional)'}</span>
+                    </button>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">
+                    {isLogisticsProof ? 'Delivery Remarks / Recipient Notes' : 'Completion Notes'} <span className="text-slate-400 font-normal text-[11px]">(optional)</span>
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={workNotes}
+                    onChange={(e) => setWorkNotes(e.target.value)}
+                    placeholder={isLogisticsProof ? 'Recipient name, parcel handed over to, or delivery remarks...' : 'Details of service provided, parts replaced, or tests performed...'}
+                    className="w-full border border-slate-300 rounded px-3 py-2"
+                  />
+                </div>
+                <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
                   <button
                     type="button"
-                    onClick={() =>
-                      openLiveCamera(
-                        'Capture After Face Selfie',
-                        'user',
-                        'after_face_selfie',
-                        (file, previewUrl) => {
-                          setAfterFaceFile(file);
-                          setAfterFacePreviewUrl(previewUrl);
-                        }
-                      )
-                    }
-                    className="px-2.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-bold rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
+                    onClick={() => {
+                      setProofModalJob(null);
+                      setAfterFaceFile(null);
+                      setAfterFile(null);
+                      if (afterFacePreviewUrl) URL.revokeObjectURL(afterFacePreviewUrl);
+                      if (afterPreviewUrl) URL.revokeObjectURL(afterPreviewUrl);
+                      setAfterFacePreviewUrl(null);
+                      setAfterPreviewUrl(null);
+                    }}
+                    className="px-3 py-1.5 rounded border border-slate-300 text-slate-700 font-semibold cursor-pointer"
                   >
-                    <RefreshCw className="w-3 h-3" /> Retake
+                    Cancel
                   </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() =>
-                    openLiveCamera(
-                      'Capture After Face Selfie',
-                      'user',
-                      'after_face_selfie',
-                      (file, previewUrl) => {
-                        setAfterFaceFile(file);
-                        setAfterFacePreviewUrl(previewUrl);
-                      }
-                    )
-                  }
-                  className="w-full py-3 px-4 border-2 border-dashed border-blue-400 hover:border-blue-600 bg-blue-50/60 hover:bg-blue-50 text-blue-700 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all active:scale-[0.99] shadow-sm cursor-pointer"
-                >
-                  <Camera className="w-4 h-4 text-blue-600" />
-                  <span>📸 Take Live Face Selfie (Required)</span>
-                </button>
-              )}
-            </div>
-
-            {/* Optional Step 2: After Product Photo */}
-            <div>
-              <label className="block text-slate-700 font-semibold mb-1">
-                After Product Photo (Completed Result) <span className="text-slate-400 font-normal text-[11px]">(optional)</span>
-              </label>
-              {afterFile ? (
-                <div className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
-                  <div className="flex items-center gap-2.5">
-                    {afterPreviewUrl ? (
-                      <img
-                        src={afterPreviewUrl}
-                        alt="After"
-                        className="w-12 h-12 object-cover rounded-lg border border-slate-300 shadow-sm"
-                      />
-                    ) : (
-                      <div className="w-12 h-12 bg-emerald-100 rounded-lg flex items-center justify-center text-emerald-600">
-                        <Camera className="w-6 h-6" />
-                      </div>
-                    )}
-                    <div>
-                      <span className="font-bold text-xs text-slate-800 block truncate max-w-[180px]">
-                        {afterFile.name || 'After Photo Captured'}
-                      </span>
-                      <span className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1">
-                        <CheckCircle2 className="w-3 h-3" /> Live snapshot attached
-                      </span>
-                    </div>
-                  </div>
                   <button
-                    type="button"
-                    onClick={() =>
-                      openLiveCamera(
-                        'Capture After Photo',
-                        'environment',
-                        'after_work',
-                        (file, previewUrl) => {
-                          setAfterFile(file);
-                          setAfterPreviewUrl(previewUrl);
-                        }
-                      )
-                    }
-                    className="px-2.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-bold rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
+                    type="submit"
+                    disabled={isUploadingProof || (!isLogisticsProof && !afterFaceFile) || (isLogisticsProof && !afterFaceFile && !afterFile && !workNotes)}
+                    className="px-4 py-1.5 rounded bg-emerald-600 disabled:opacity-50 text-white font-bold hover:bg-emerald-700 shadow-sm cursor-pointer"
                   >
-                    <RefreshCw className="w-3 h-3" /> Retake
+                    {isUploadingProof ? 'Uploading...' : (isLogisticsProof ? 'Submit Proof of Delivery (POD)' : 'Complete Job')}
                   </button>
                 </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() =>
-                    openLiveCamera(
-                      'Capture After Photo',
-                      'environment',
-                      'after_work',
-                      (file, previewUrl) => {
-                        setAfterFile(file);
-                        setAfterPreviewUrl(previewUrl);
-                      }
-                    )
-                  }
-                  className="w-full py-2.5 px-4 border border-dashed border-slate-300 hover:border-slate-400 bg-slate-50 hover:bg-slate-100/70 text-slate-700 rounded-xl font-semibold text-xs flex items-center justify-center gap-2 transition-all active:scale-[0.99] cursor-pointer"
-                >
-                  <Camera className="w-4 h-4 text-slate-500" />
-                  <span>📸 Add After Product Photo (optional)</span>
-                </button>
-              )}
-            </div>
-
-            <div>
-              <label className="block text-slate-700 font-semibold mb-1">
-                Completion Notes <span className="text-slate-400 font-normal text-[11px]">(optional)</span>
-              </label>
-              <textarea
-                rows={3}
-                value={workNotes}
-                onChange={(e) => setWorkNotes(e.target.value)}
-                placeholder="Details of service provided, parts replaced, or tests performed..."
-                className="w-full border border-slate-300 rounded px-3 py-2"
-              />
-            </div>
-            <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
-              <button
-                type="button"
-                onClick={() => {
-                  setProofModalJob(null);
-                  setAfterFaceFile(null);
-                  setAfterFile(null);
-                  if (afterFacePreviewUrl) URL.revokeObjectURL(afterFacePreviewUrl);
-                  if (afterPreviewUrl) URL.revokeObjectURL(afterPreviewUrl);
-                  setAfterFacePreviewUrl(null);
-                  setAfterPreviewUrl(null);
-                }}
-                className="px-3 py-1.5 rounded border border-slate-300 text-slate-700 font-semibold cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={isUploadingProof || !afterFaceFile}
-                className="px-4 py-1.5 rounded bg-emerald-600 disabled:opacity-50 text-white font-bold hover:bg-emerald-700 shadow-sm cursor-pointer"
-              >
-                {isUploadingProof ? 'Uploading...' : 'Complete Job'}
-              </button>
-            </div>
-          </form>
+              </form>
+            );
+          })()}
         </Modal>
 
         {/* Modal: Request Scope / Work Extension */}

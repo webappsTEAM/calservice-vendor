@@ -274,6 +274,21 @@ export async function apiGetLogisticsLeg(jobId) {
   return await apiRequest(`/workforce/jobs/${jobId}/logistics-leg/`);
 }
 
+// GT-D-01: multi-stop trip waypoints for logistics jobs
+export async function apiGetJobTripStops(jobId) {
+  return await apiRequest(`/workforce/jobs/${jobId}/stops/`);
+}
+
+export async function apiUpdateJobTripStop(jobId, { stopId = null, stopSequence = null, completed = false } = {}) {
+  const json = { completed };
+  if (stopId != null) json.stop_id = stopId;
+  if (stopSequence != null) json.stop_sequence = stopSequence;
+  return await apiRequest(`/workforce/jobs/${jobId}/stops/`, {
+    method: 'POST',
+    json,
+  });
+}
+
 // X-09: in-app chat -- mirrors CustomerBookingMessagesView on the Customer
 // app. Polling-based, see BookingMessage's docstring (both apps) for why.
 export async function apiGetJobMessages(jobId) {
