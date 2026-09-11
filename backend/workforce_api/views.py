@@ -6864,7 +6864,8 @@ class WorkforceTechnicianFeedbackView(APIView):
 
     def post(self, request, technician_id=None):
         from employees.models import Employee
-        from service_requests.models import ServiceRequest, WorkforceJobFeedback
+        from service_requests.models import ServiceRequest
+        from workforce_api.models import WorkforceJobFeedback
         from workforce_api.serializers import WorkforceJobFeedbackSerializer
         from workforce_api.services import recalculate_employee_scorecard
 
