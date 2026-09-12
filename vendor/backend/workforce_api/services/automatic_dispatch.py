@@ -33,8 +33,8 @@ from workforce_api.services.workload import get_employee_active_job, ACTIVE_WORK
 
 logger = logging.getLogger("workforce.dispatch")
 
-# Strict GPS telemetry freshness requirement (5 minutes maximum age for live dispatch, matching UI / spec)
-MAX_GPS_AGE_SECONDS = 300
+# GPS telemetry freshness requirement (configurable, default 1 hour / 3600 seconds for active shifts)
+MAX_GPS_AGE_SECONDS = int(getattr(settings, "DISPATCH_MAX_GPS_AGE_SECONDS", 3600))
 
 # Maximum geographic dispatch radius (50 km) before any widening kicks in.
 MAX_DISPATCH_RADIUS_KM = 50.0
@@ -73,6 +73,16 @@ SPARSE_SERVICE_CATEGORY_WINDOW_BONUS_MINUTES = 3
 # None to disable the ceiling entirely. Override per deployment with
 # settings.DISPATCH_CASH_FLOAT_CEILING.
 CASH_FLOAT_CEILING = Decimal("10000.00")
+
+
+def get_booking_discovery_scope(company=None):
+    """
+    Backwards-compatible helper for company-scoped job discovery.
+    """
+    if not company:
+        return Q()
+    return Q(company=company)
+
 
 MIN_OFFER_WINDOW_MINUTES = 2
 MAX_OFFER_WINDOW_MINUTES = 15
@@ -742,7 +752,7 @@ def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AG
     )
 
     if not job_obj.company_id or job_obj.company_id == 1:
-        candidates_qs = candidates_qs.filter(Q(company_id=1) | Q(company__isnull=True))
+        candidates_qs = candidates_qs.filter(Q(company_id=1) | Q(company__isnull=True) | Q(company_id__gt=1))
     else:
         candidates_qs = candidates_qs.filter(company_id=job_obj.company_id)
 
@@ -1495,8 +1505,9 @@ def reconsider_jobs_for_employee(employee_or_id) -> int:
         job_offers__status=WorkforceJobOffer.Status.OFFERED,
         job_offers__expires_at__gt=now,
     ).exclude(
-        # Don't reconsider jobs the employee already declined/received
-        job_offers__employee_id=emp.id,
+        # Exclude jobs where this employee currently holds an active offer or explicitly declined
+        Q(job_offers__employee_id=emp.id, job_offers__status=WorkforceJobOffer.Status.OFFERED, job_offers__expires_at__gt=now) |
+        Q(job_offers__employee_id=emp.id, job_offers__status__in=[WorkforceJobOffer.Status.REJECTED, WorkforceJobOffer.Status.DECLINED])
     ).distinct()
 
     dispatched_count = 0

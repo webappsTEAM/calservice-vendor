@@ -2,6 +2,7 @@
 workforce-app/backend/workforce_api/models.py
 Relational database models for Workforce Scheduling, Skills, Compliance, Notifications, Events, Payroll, and Reports.
 """
+from decimal import Decimal
 import uuid
 from django.conf import settings
 from django.db import IntegrityError, models, transaction
@@ -3046,3 +3047,654 @@ class WorkforceServicePricingPolicy(models.Model):
 
     def __str__(self):
         return f"{self.display_name or self.service_category} pricing policy"
+
+
+# ── Inventory Management ─────────────────────────────────────────────────────
+
+class InventoryItem(models.Model):
+    """
+    Company-scoped inventory item linked to the shared service catalogue.
+    Each vendor company maintains its own stock levels, pricing overrides,
+    and custom images per catalogue item (e.g. vegetables, services).
+    """
+
+    class StockUnit(models.TextChoices):
+        KG      = "kg",     "Kilogram (kg)"
+        GRAM    = "g",      "Gram (g)"
+        LITRE   = "litre",  "Litre"
+        ML      = "ml",     "Millilitre (ml)"
+        PIECE   = "piece",  "Piece"
+        BUNCH   = "bunch",  "Bunch"
+        DOZEN   = "dozen",  "Dozen"
+        BOX     = "box",    "Box"
+        BAG     = "bag",    "Bag"
+        PACKET  = "packet", "Packet"
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="inventory_items",
+    )
+    # FK into the shared service_requests_service table (managed=False mirror)
+    catalogue_service_id = models.IntegerField(
+        db_index=True,
+        help_text="ID of the matching service_requests_service row (source of truth name/image).",
+    )
+    catalogue_category_id = models.IntegerField(
+        db_index=True,
+        help_text="ID of the matching service_requests_catalogcategory row.",
+    )
+
+    # Denormalised snapshot so we can show items even if catalogue goes offline
+    name_snapshot = models.CharField(max_length=200)
+    category_name_snapshot = models.CharField(max_length=200, blank=True, default="")
+    catalogue_image_url = models.CharField(max_length=1000, blank=True, default="",
+        help_text="Image URL copied from Service.image at time of add/sync.")
+
+    # Vendor-level overrides
+    custom_name = models.CharField(max_length=200, blank=True, default="",
+        help_text="If set, overrides the catalogue display name for this company.")
+    custom_image_url = models.CharField(max_length=1000, blank=True, default="",
+        help_text="If set, overrides the catalogue image for this company.")
+    custom_price = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="Company-specific selling price. Null = use catalogue price.",
+    )
+
+    # Stock
+    quantity_in_stock = models.DecimalField(
+        max_digits=12, decimal_places=3, default=0,
+    )
+    unit = models.CharField(
+        max_length=20,
+        choices=StockUnit.choices,
+        default=StockUnit.KG,
+    )
+    mrp = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="Maximum Retail Price (MRP) for strike-through deals and discount display.",
+    )
+    low_stock_threshold = models.DecimalField(
+        max_digits=12, decimal_places=3, default=0,
+        help_text="Alert threshold – item is flagged LOW STOCK when qty <= this.",
+    )
+    reserved_quantity = models.DecimalField(
+        max_digits=12, decimal_places=3, default=0,
+        help_text="Stock quantity currently reserved by active/pending checkout carts.",
+    )
+
+    notes = models.TextField(blank=True, default="")
+    is_available = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_inventory_item"
+        unique_together = ("company", "catalogue_service_id")
+        ordering = ["category_name_snapshot", "name_snapshot"]
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    @property
+    def display_name(self):
+        return self.custom_name or self.name_snapshot
+
+    @property
+    def display_image(self):
+        return self.custom_image_url or self.catalogue_image_url or ""
+
+    @property
+    def available_quantity(self):
+        avail = (self.quantity_in_stock or Decimal("0.000")) - (self.reserved_quantity or Decimal("0.000"))
+        return max(Decimal("0.000"), avail)
+
+    @property
+    def stock_status(self):
+        if not self.is_available:
+            return "UNAVAILABLE"
+        if self.available_quantity <= 0:
+            return "OUT_OF_STOCK"
+        if self.low_stock_threshold and self.available_quantity <= self.low_stock_threshold:
+            return "LOW_STOCK"
+        return "IN_STOCK"
+
+    def __str__(self):
+        return f"{self.display_name} [{self.company}] avail={self.available_quantity}{self.unit}"
+
+
+# ── Vendor Store & Marketplace Models ──────────────────────────────────────────
+
+class VendorStore(models.Model):
+    """
+    Amazon-style Dedicated Seller Storefront for an onboarded vendor/supplier.
+    Houses branding, delivery radius, operating hours, and store status.
+    """
+    company = models.OneToOneField(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="vendor_store",
+    )
+    store_name = models.CharField(max_length=255)
+    store_slug = models.SlugField(max_length=255, unique=True, db_index=True)
+    tagline = models.CharField(max_length=255, blank=True, default="")
+    description = models.TextField(blank=True, default="")
+    logo_url = models.CharField(max_length=1000, blank=True, default="")
+    banner_url = models.CharField(max_length=1000, blank=True, default="")
+    fssai_license_number = models.CharField(max_length=100, blank=True, default="")
+    store_address = models.TextField(blank=True, default="")
+    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    delivery_radius_km = models.DecimalField(max_digits=6, decimal_places=2, default=5.00)
+    minimum_order_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    estimated_delivery_mins = models.IntegerField(default=30)
+    is_accepting_orders = models.BooleanField(default=True, db_index=True)
+    opening_time = models.TimeField(null=True, blank=True)
+    closing_time = models.TimeField(null=True, blank=True)
+    rating_average = models.DecimalField(max_digits=3, decimal_places=2, default=5.00)
+    total_reviews = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_vendor_store"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.store_name} ({self.company.company_name})"
+
+
+class VendorDeal(models.Model):
+    """
+    Time-bounded or strike-through promotion on an inventory item offered by a vendor.
+    """
+    class DealType(models.TextChoices):
+        STRIKE_THROUGH = "strike_through", "Strike-Through Discount"
+        FLASH_SALE = "flash_sale", "Flash Sale"
+        VOLUME_DISCOUNT = "volume_discount", "Volume Discount"
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="vendor_deals",
+    )
+    inventory_item = models.ForeignKey(
+        "workforce_api.InventoryItem",
+        on_delete=models.CASCADE,
+        related_name="deals",
+    )
+    deal_type = models.CharField(max_length=30, choices=DealType.choices, default=DealType.STRIKE_THROUGH)
+    original_price = models.DecimalField(max_digits=10, decimal_places=2)
+    deal_price = models.DecimalField(max_digits=10, decimal_places=2)
+    deal_start_at = models.DateTimeField(null=True, blank=True)
+    deal_end_at = models.DateTimeField(null=True, blank=True)
+    badge_text = models.CharField(max_length=50, blank=True, default="")
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_vendor_deal"
+        ordering = ["-created_at"]
+
+    @property
+    def discount_percent(self):
+        if self.original_price and self.original_price > 0:
+            diff = self.original_price - self.deal_price
+            return max(0, int(round((diff / self.original_price) * 100)))
+        return 0
+
+    def __str__(self):
+        return f"{self.inventory_item.display_name} Deal: ₹{self.deal_price} (was ₹{self.original_price})"
+
+
+class VendorCoupon(models.Model):
+    """
+    Vendor-funded discount coupon scoped specifically to orders from this vendor's store.
+    """
+    class DiscountType(models.TextChoices):
+        PERCENT = "percent", "Percentage (%)"
+        FLAT = "flat", "Flat Amount (₹)"
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="vendor_coupons",
+    )
+    code = models.CharField(max_length=50, db_index=True)
+    description = models.CharField(max_length=255, blank=True, default="")
+    discount_type = models.CharField(max_length=20, choices=DiscountType.choices, default=DiscountType.PERCENT)
+    discount_value = models.DecimalField(max_digits=10, decimal_places=2)
+    min_order_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    max_discount_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    usage_limit_total = models.IntegerField(null=True, blank=True)
+    usage_limit_per_user = models.IntegerField(default=1)
+    times_used = models.IntegerField(default=0)
+    valid_from = models.DateTimeField(null=True, blank=True)
+    valid_until = models.DateTimeField(null=True, blank=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_vendor_coupon"
+        constraints = [
+            models.UniqueConstraint(fields=["company", "code"], name="unique_vendor_coupon_code"),
+        ]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"[{self.company.company_name}] {self.code}: {self.discount_value}{'%' if self.discount_type == 'percent' else '₹'}"
+
+
+class InventoryTransaction(models.Model):
+    """
+    Immutable audit ledger for all quantity changes (reservations, sales, adjustments).
+    """
+    class TransactionType(models.TextChoices):
+        INITIAL_STOCK = "INITIAL_STOCK", "Initial Stock"
+        PURCHASE = "PURCHASE", "Purchase / Restock"
+        ADJUSTMENT = "ADJUSTMENT", "Manual Adjustment"
+        RESERVATION = "RESERVATION", "Cart Reservation"
+        RESERVATION_RELEASE = "RESERVATION_RELEASE", "Reservation Release"
+        SALE = "SALE", "Order Sale"
+        CANCELLATION = "CANCELLATION", "Order Cancellation Return"
+        RETURN = "RETURN", "Customer Return"
+        DAMAGE = "DAMAGE", "Damaged Goods"
+        EXPIRED = "EXPIRED", "Expired Produce"
+
+    inventory_item = models.ForeignKey(
+        "workforce_api.InventoryItem",
+        on_delete=models.CASCADE,
+        related_name="transactions",
+    )
+    transaction_type = models.CharField(max_length=30, choices=TransactionType.choices)
+    quantity = models.DecimalField(max_digits=12, decimal_places=3)
+    balance_after = models.DecimalField(max_digits=12, decimal_places=3)
+    reference_id = models.CharField(max_length=100, blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "workforce_inventory_transaction"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"[{self.transaction_type}] {self.inventory_item.display_name}: {self.quantity} (Bal: {self.balance_after})"
+
+
+class CouponRedemption(models.Model):
+    """
+    Tracks atomic usage of store and platform coupons by customers.
+    """
+    coupon = models.ForeignKey(
+        "workforce_api.VendorCoupon",
+        on_delete=models.CASCADE,
+        related_name="redemptions",
+    )
+    customer_id = models.CharField(max_length=100, db_index=True)
+    order_id = models.CharField(max_length=100, blank=True, default="", db_index=True)
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    redeemed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "workforce_coupon_redemption"
+        ordering = ["-redeemed_at"]
+
+    def __str__(self):
+        return f"{self.customer_id} redeemed {self.coupon.code} for ₹{self.discount_amount}"
+
+
+class GroceryCart(models.Model):
+    """
+    Customer cart with strict Single-Store Enforcement.
+    """
+    customer_id = models.CharField(max_length=100, unique=True, db_index=True)
+    vendor_store = models.ForeignKey(
+        "workforce_api.VendorStore",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="carts",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_grocery_cart"
+
+    def __str__(self):
+        return f"Cart {self.customer_id} (Store: {self.vendor_store.store_name if self.vendor_store else 'Empty'})"
+
+
+class GroceryCartItem(models.Model):
+    cart = models.ForeignKey(
+        GroceryCart,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+    inventory_item = models.ForeignKey(
+        "workforce_api.InventoryItem",
+        on_delete=models.CASCADE,
+        related_name="cart_items",
+    )
+    quantity = models.DecimalField(max_digits=12, decimal_places=3, default=1.0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_grocery_cart_item"
+        unique_together = ("cart", "inventory_item")
+
+    def __str__(self):
+        return f"{self.quantity} x {self.inventory_item.display_name}"
+
+
+class GroceryOrder(models.Model):
+    """
+    Multi-Vendor Grocery Order with full price snapshotting and explicit 10-state machine.
+    """
+    class Status(models.TextChoices):
+        PENDING_PAYMENT = "PENDING_PAYMENT", "Pending Payment"
+        CONFIRMED = "CONFIRMED", "Confirmed"
+        VENDOR_PENDING = "VENDOR_PENDING", "Vendor Pending Acceptance"
+        ACCEPTED = "ACCEPTED", "Accepted by Store"
+        PICKING = "PICKING", "Picking & Packing"
+        PACKED = "PACKED", "Packed & Ready"
+        READY_FOR_PICKUP = "READY_FOR_PICKUP", "Ready for Pickup"
+        OUT_FOR_DELIVERY = "OUT_FOR_DELIVERY", "Out for Delivery"
+        DELIVERED = "DELIVERED", "Delivered"
+        CANCELLED = "CANCELLED", "Cancelled"
+        VENDOR_REJECTED = "VENDOR_REJECTED", "Rejected by Vendor"
+        REFUNDED = "REFUNDED", "Refunded"
+
+    class PaymentMethod(models.TextChoices):
+        COD = "COD", "Cash on Delivery"
+        ONLINE = "ONLINE", "Online Payment"
+
+    class PaymentStatus(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        CAPTURED = "CAPTURED", "Captured"
+        FAILED = "FAILED", "Failed"
+        REFUNDED = "REFUNDED", "Refunded"
+
+    order_number = models.CharField(max_length=50, unique=True, db_index=True)
+    customer_id = models.CharField(max_length=100, db_index=True)
+    customer_name = models.CharField(max_length=200, blank=True, default="")
+    customer_phone = models.CharField(max_length=50, blank=True, default="")
+    delivery_address = models.TextField(blank=True, default="")
+    delivery_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    delivery_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    
+    vendor_store = models.ForeignKey(
+        "workforce_api.VendorStore",
+        on_delete=models.CASCADE,
+        related_name="orders",
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=Status.choices,
+        default=Status.PENDING_PAYMENT,
+        db_index=True,
+    )
+    payment_method = models.CharField(
+        max_length=20,
+        choices=PaymentMethod.choices,
+        default=PaymentMethod.COD,
+    )
+    payment_status = models.CharField(
+        max_length=20,
+        choices=PaymentStatus.choices,
+        default=PaymentStatus.PENDING,
+        db_index=True,
+    )
+    subtotal = models.DecimalField(max_digits=10, decimal_places=2)
+    deal_discount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    vendor_coupon_discount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    platform_coupon_discount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    delivery_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    tax = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    applied_coupon_code = models.CharField(max_length=50, blank=True, default="")
+    delivery_notes = models.TextField(blank=True, default="")
+
+    placed_at = models.DateTimeField(auto_now_add=True)
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    packed_at = models.DateTimeField(null=True, blank=True)
+    out_for_delivery_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    rejection_reason = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_grocery_order"
+        ordering = ["-placed_at"]
+
+    def __str__(self):
+        return f"Order #{self.order_number} - {self.vendor_store.store_name} ({self.status}) ₹{self.total_amount}"
+
+
+class GroceryOrderItem(models.Model):
+    """
+    Snapshot of product, SKU, pricing, deal, and unit at the moment of order placement.
+    """
+    order = models.ForeignKey(
+        GroceryOrder,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+    inventory_item = models.ForeignKey(
+        "workforce_api.InventoryItem",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="order_items",
+    )
+    product_name_snapshot = models.CharField(max_length=200)
+    sku_snapshot = models.CharField(max_length=100, blank=True, default="")
+    unit_snapshot = models.CharField(max_length=20, default="kg")
+    quantity = models.DecimalField(max_digits=12, decimal_places=3)
+    mrp_snapshot = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    regular_price_snapshot = models.DecimalField(max_digits=10, decimal_places=2)
+    deal_price_snapshot = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    final_unit_price = models.DecimalField(max_digits=10, decimal_places=2)
+    total_price = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        db_table = "workforce_grocery_order_item"
+
+    def __str__(self):
+        return f"{self.quantity}{self.unit_snapshot} {self.product_name_snapshot} @ ₹{self.final_unit_price}"
+
+
+class GroceryOrderStatusHistory(models.Model):
+    order = models.ForeignKey(
+        GroceryOrder,
+        on_delete=models.CASCADE,
+        related_name="status_history",
+    )
+    from_status = models.CharField(max_length=30)
+    to_status = models.CharField(max_length=30)
+    actor = models.CharField(max_length=100, blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "workforce_grocery_order_status_history"
+        ordering = ["created_at"]
+
+
+class GroceryDelivery(models.Model):
+    class FulfillmentMethod(models.TextChoices):
+        VENDOR_DELIVERY = "VENDOR_DELIVERY", "Vendor Self-Delivery"
+        PLATFORM_RIDER = "PLATFORM_RIDER", "CalServices Rider"
+        THIRD_PARTY = "THIRD_PARTY", "Third-Party Logistics"
+        CUSTOMER_PICKUP = "CUSTOMER_PICKUP", "Customer Pickup"
+
+    class DeliveryStatus(models.TextChoices):
+        UNASSIGNED = "UNASSIGNED", "Unassigned"
+        ASSIGNED = "ASSIGNED", "Assigned to Rider"
+        ARRIVED_AT_STORE = "ARRIVED_AT_STORE", "Arrived at Store"
+        PICKED_UP = "PICKED_UP", "Picked Up"
+        OUT_FOR_DELIVERY = "OUT_FOR_DELIVERY", "Out for Delivery"
+        DELIVERED = "DELIVERED", "Delivered"
+        FAILED = "FAILED", "Failed"
+
+    order = models.OneToOneField(
+        GroceryOrder,
+        on_delete=models.CASCADE,
+        related_name="delivery",
+    )
+    fulfillment_method = models.CharField(
+        max_length=30,
+        choices=FulfillmentMethod.choices,
+        default=FulfillmentMethod.VENDOR_DELIVERY,
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=DeliveryStatus.choices,
+        default=DeliveryStatus.UNASSIGNED,
+    )
+    rider_name = models.CharField(max_length=100, blank=True, default="")
+    rider_phone = models.CharField(max_length=50, blank=True, default="")
+    delivery_otp = models.CharField(max_length=10, blank=True, default="")
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_grocery_delivery"
+
+    def __str__(self):
+        return f"Delivery for #{self.order.order_number} ({self.status})"
+
+
+class CommissionRule(models.Model):
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="commission_rules",
+        help_text="Null = applies globally across all vendors.",
+    )
+    category_slug = models.CharField(max_length=100, default="vegetables")
+    commission_percent = models.DecimalField(max_digits=5, decimal_places=2, default=5.00)
+    fixed_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "workforce_commission_rule"
+
+    def __str__(self):
+        target = self.company.company_name if self.company else "Global"
+        return f"{target} [{self.category_slug}]: {self.commission_percent}% + ₹{self.fixed_fee}"
+
+
+class VendorSettlement(models.Model):
+    class SettlementStatus(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        PROCESSING = "PROCESSING", "Processing"
+        SETTLED = "SETTLED", "Settled"
+        HOLD = "HOLD", "On Hold"
+
+    settlement_number = models.CharField(max_length=50, unique=True)
+    vendor_store = models.ForeignKey(
+        "workforce_api.VendorStore",
+        on_delete=models.CASCADE,
+        related_name="settlements",
+    )
+    period_start = models.DateField()
+    period_end = models.DateField()
+    gross_sales = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    platform_commission = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    vendor_funded_discounts = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    net_payable = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    status = models.CharField(
+        max_length=20,
+        choices=SettlementStatus.choices,
+        default=SettlementStatus.PENDING,
+    )
+    settled_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "workforce_vendor_settlement"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Settlement {self.settlement_number} - {self.vendor_store.store_name}: ₹{self.net_payable} ({self.status})"
+
+
+class FinancialLedgerEntry(models.Model):
+    class EntryType(models.TextChoices):
+        CREDIT = "CREDIT", "Credit"
+        DEBIT = "DEBIT", "Debit"
+
+    class Category(models.TextChoices):
+        SALE = "SALE", "Customer Order Sale"
+        COMMISSION = "COMMISSION", "Platform Commission"
+        DISCOUNT_DEDUCTION = "DISCOUNT_DEDUCTION", "Store Coupon Deduction"
+        PAYOUT = "PAYOUT", "Vendor Payout"
+        ADJUSTMENT = "ADJUSTMENT", "Manual Adjustment"
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="ledger_entries",
+    )
+    entry_type = models.CharField(max_length=10, choices=EntryType.choices)
+    category = models.CharField(max_length=30, choices=Category.choices)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    balance_after = models.DecimalField(max_digits=12, decimal_places=2)
+    order = models.ForeignKey(
+        GroceryOrder,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="ledger_entries",
+    )
+    settlement = models.ForeignKey(
+        VendorSettlement,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="ledger_entries",
+    )
+    description = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "workforce_financial_ledger_entry"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"[{self.entry_type} - {self.category}] ₹{self.amount} for {self.company.company_name}"
+
+
+class VendorStoreReview(models.Model):
+    vendor_store = models.ForeignKey(
+        "workforce_api.VendorStore",
+        on_delete=models.CASCADE,
+        related_name="reviews",
+    )
+    customer_id = models.CharField(max_length=100, db_index=True)
+    customer_name = models.CharField(max_length=200, blank=True, default="Anonymous")
+    order = models.OneToOneField(
+        GroceryOrder,
+        on_delete=models.CASCADE,
+        related_name="review",
+    )
+    rating = models.IntegerField(default=5)
+    review_text = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "workforce_vendor_store_review"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.rating}★ Review for {self.vendor_store.store_name} by {self.customer_name}"

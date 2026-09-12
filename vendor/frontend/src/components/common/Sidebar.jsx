@@ -34,6 +34,11 @@ import {
   Crown,
   UserCheck,
   Wind,
+  Package,
+  Store,
+  Tag,
+  ShoppingBag,
+  DollarSign,
 } from 'lucide-react';
 
 export function Sidebar({ onCloseMobile = () => {} }) {
@@ -49,6 +54,16 @@ export function Sidebar({ onCloseMobile = () => {} }) {
   } = useAuth();
   const { accent } = useTheme();
   const location = useLocation();
+
+  const isGrocerySupplier =
+    isPlatformAdmin ||
+    user?.company?.business_type === 'grocery_supplier' ||
+    user?.company?.business_type === 'hybrid' ||
+    user?.business_type === 'grocery_supplier' ||
+    user?.company?.selected_modules?.includes('grocery_supplier') ||
+    user?.company?.selected_modules?.includes('grocery_inventory') ||
+    user?.company?.industry?.toLowerCase()?.includes('grocery') ||
+    user?.company?.industry?.toLowerCase()?.includes('produce');
 
   // Collapsible sections state
   const [collapsed, setCollapsed] = useState({
@@ -308,6 +323,15 @@ export function Sidebar({ onCloseMobile = () => {} }) {
               <div className="space-y-0.5">
                 {renderNavLink('/workforce/admin/jobs', Briefcase, 'Field Jobs')}
                 {renderNavLink('/workforce/admin/dispatch', Send, 'Dispatch Radar')}
+                {isGrocerySupplier && (
+                  <>
+                    {renderNavLink('/workforce/admin/grocery-orders', ShoppingBag, 'Store Orders')}
+                    {renderNavLink('/workforce/admin/inventory', Package, 'Stock Inventory')}
+                    {renderNavLink('/workforce/admin/store-profile', Store, 'Seller Store')}
+                    {renderNavLink('/workforce/admin/promotions', Tag, 'Deals & Coupons')}
+                    {renderNavLink('/workforce/admin/grocery-settlements', DollarSign, 'Settlement Ledger')}
+                  </>
+                )}
                 {renderNavLink('/workforce/admin/provider-profile', Building2, 'Company Profile')}
               </div>
             )}

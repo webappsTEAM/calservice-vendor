@@ -65,6 +65,11 @@ import { EmployeeWalletDashboardPage } from './pages/employee/wallet/EmployeeWal
 import { EmployeeWalletTransactionsPage } from './pages/employee/wallet/EmployeeWalletTransactionsPage.jsx';
 import { EmployeeWalletWithdrawalsPage } from './pages/employee/wallet/EmployeeWalletWithdrawalsPage.jsx';
 import { EmployeePayoutAccountsPage } from './pages/employee/wallet/EmployeePayoutAccountsPage.jsx';
+import AdminInventoryPage from './pages/admin/AdminInventoryPage.jsx';
+import AdminStoreProfilePage from './pages/admin/AdminStoreProfilePage.jsx';
+import AdminPromotionsPage from './pages/admin/AdminPromotionsPage.jsx';
+import AdminGroceryOrdersPage from './pages/admin/AdminGroceryOrdersPage.jsx';
+import AdminGrocerySettlementsPage from './pages/admin/AdminGrocerySettlementsPage.jsx';
 
 
 function EmployeeWorkspaceLayout() {
@@ -510,6 +515,46 @@ export function App() {
             element={
               <AdminRoute>
                 <AdminReportsPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/inventory"
+            element={
+              <AdminRoute>
+                <AdminInventoryPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/store-profile"
+            element={
+              <AdminRoute>
+                <AdminStoreProfilePage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/promotions"
+            element={
+              <AdminRoute>
+                <AdminPromotionsPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/grocery-orders"
+            element={
+              <AdminRoute>
+                <AdminGroceryOrdersPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/grocery-settlements"
+            element={
+              <AdminRoute>
+                <AdminGrocerySettlementsPage />
               </AdminRoute>
             }
           />

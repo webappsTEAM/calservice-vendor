@@ -56,6 +56,52 @@ class IsVendorAdmin(BasePermission):
         return has_admin_role and has_company
 
 
+class IsGrocerySupplier(BasePermission):
+    """
+    Authorizes an authenticated Vendor Admin/Manager who is registered as a Grocery Supplier.
+    Service providers (AC, electrical, cleaning, plumbing, etc.) without grocery capability
+    are strictly rejected with 403 Forbidden.
+    """
+    message = "This module is restricted to verified Grocery Suppliers."
+
+    def has_permission(self, request, view):
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return False
+        if getattr(user, "is_superuser", False):
+            return True
+        if not is_admin_role(user):
+            return False
+
+        emp = getattr(user, "employee_profile", None)
+        company = emp.company if emp else getattr(user, "company", None)
+        if not company:
+            return False
+
+        # Platform company exception (has access to all modules)
+        if company.id == 1 or getattr(company, "slug", "") in (
+            "calservices",
+            "caldim-platform",
+            "caldim-engineering-pvt-ltd",
+            "caldim-services",
+        ):
+            return True
+
+        btype = getattr(company, "business_type", "") or ""
+        if btype in ("grocery_supplier", "hybrid"):
+            return True
+
+        modules = getattr(company, "selected_modules", []) or []
+        if any(m in modules for m in ("grocery_supplier", "grocery_inventory", "groceries")):
+            return True
+
+        industry = (getattr(company, "industry", "") or "").lower()
+        if any(k in industry for k in ("grocery", "vegetable", "produce", "farm", "supermarket")):
+            return True
+
+        return False
+
+
 class IsInternalWorkforceCaller(BasePermission):
     """
     Authorizes server-to-server calls from the Customer app's

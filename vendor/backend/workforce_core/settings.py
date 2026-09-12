@@ -139,7 +139,7 @@ elif USE_POSTGRES:
             "HOST": os.getenv("DB_HOST", "localhost"),
             "PORT": os.getenv("DB_PORT", "6543"),
             "OPTIONS": _db_options,
-            "CONN_MAX_AGE": int(os.getenv("DB_CONN_MAX_AGE", "0")),
+            "CONN_MAX_AGE": int(os.getenv("DB_CONN_MAX_AGE", "600")),
             "CONN_HEALTH_CHECKS": True,
             "DISABLE_SERVER_SIDE_CURSORS": True,
         }
@@ -151,6 +151,23 @@ else:
             "NAME": BASE_DIR / "db.sqlite3",
         }
     }
+
+_cache_backend = "django.core.cache.backends.locmem.LocMemCache"
+try:
+    import redis  # noqa: F401
+    _cache_backend = "django.core.cache.backends.redis.RedisCache"
+except ImportError:
+    pass
+
+_cache_url = os.getenv("CACHE_URL", "redis://127.0.0.1:6379/1")
+CACHES = {
+    "default": {
+        "BACKEND": _cache_backend,
+        "LOCATION": _cache_url if "redis" in _cache_backend else "workforce-local-cache",
+        "TIMEOUT": 300,
+        "KEY_PREFIX": "workforce",
+    }
+}
 
 AUTH_USER_MODEL = "accounts.User"
 

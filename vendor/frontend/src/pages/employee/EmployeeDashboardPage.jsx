@@ -176,9 +176,26 @@ export function EmployeeDashboardPage() {
   const pathname = location.pathname;
   const hash = location.hash;
 
+  const CACHED_PROFILE_KEY = 'calservice_workforce_cached_profile';
+  const CACHED_TIMETRACKING_KEY = 'calservice_workforce_cached_timetracking';
+
   const [jobQueueTab, setJobQueueTab] = useState('active'); // 'active' | 'completed' | 'all'
-  const [profile, setProfile] = useState(null);
-  const [timeTracking, setTimeTracking] = useState(null);
+  const [profile, setProfile] = useState(() => {
+    try {
+      const saved = localStorage.getItem(CACHED_PROFILE_KEY);
+      return saved ? JSON.parse(saved) : (employee || null);
+    } catch {
+      return employee || null;
+    }
+  });
+  const [timeTracking, setTimeTracking] = useState(() => {
+    try {
+      const saved = localStorage.getItem(CACHED_TIMETRACKING_KEY);
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   const [skills, setSkills] = useState([]);
   const [selectedServiceIds, setSelectedServiceIds] = useState([]);
 
@@ -235,7 +252,13 @@ export function EmployeeDashboardPage() {
   );
   const [gpsErrorState, setGpsErrorState] = useState(null);
 
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(() => {
+    try {
+      return !(localStorage.getItem(CACHED_PROFILE_KEY) || employee);
+    } catch {
+      return true;
+    }
+  });
   const [actionLoading, setActionLoading] = useState(null);
   const [isTogglingOnline, setIsTogglingOnline] = useState(false);
   const [error, setError] = useState('');
@@ -708,7 +731,8 @@ export function EmployeeDashboardPage() {
   const [serviceActionLoading, setServiceActionLoading] = useState(null);
 
   const loadDashboard = useCallback(async (options = {}) => {
-    const isSilent = options?.silent === true;
+    const hasCachedData = Boolean(localStorage.getItem(CACHED_PROFILE_KEY) || employee);
+    const isSilent = options?.silent === true || hasCachedData;
     try {
       if (!isSilent) setIsLoading(true);
       const [timeData, profileData] = await Promise.all([
@@ -716,13 +740,19 @@ export function EmployeeDashboardPage() {
         apiGetOnboardingProfile().catch(() => null),
         refreshActiveJobs(options),
       ]);
-      if (profileData) setProfile(profileData);
-      if (timeData) setTimeTracking(timeData);
+      if (profileData) {
+        setProfile(profileData);
+        try { localStorage.setItem(CACHED_PROFILE_KEY, JSON.stringify(profileData)); } catch (_) {}
+      }
+      if (timeData) {
+        setTimeTracking(timeData);
+        try { localStorage.setItem(CACHED_TIMETRACKING_KEY, JSON.stringify(timeData)); } catch (_) {}
+      }
     } catch (_) {
     } finally {
-      if (!isSilent) setIsLoading(false);
+      setIsLoading(false);
     }
-  }, [refreshActiveJobs]);
+  }, [refreshActiveJobs, employee]);
 
   // Initial dashboard load on mount
   useEffect(() => {

@@ -145,6 +145,29 @@ export function TechnicianStandbyMapView({
     }
   }, [apiLoaded, techLat, techLon, isOnline]);
 
+  // Auto-recenter map when going ONLINE and GPS fix arrives.
+  // When offline the map sits at the last saved (or fallback) coords.
+  // Once the technician toggles online, togglePresenceFast fires
+  // getGPSPosition() which resolves, calls handlePositionChange, which
+  // updates technicianLocation → techLat/techLon. This effect detects
+  // that transition and pans the map to the fresh real-world fix.
+  const prevIsOnlineRef = useRef(isOnline);
+  useEffect(() => {
+    const justWentOnline = !prevIsOnlineRef.current && isOnline;
+    prevIsOnlineRef.current = isOnline;
+
+    if (!mapRef.current || !window.google?.maps) return;
+    if (!isOnline) return;
+
+    // Only re-center if we have a real fix (not the Bengaluru fallback
+    // that is used only when technicianLocation is null/undefined).
+    const hasRealFix = Boolean(technicianLocation?.latitude || technicianLocation?.lat);
+    if (!hasRealFix && !justWentOnline) return;
+
+    mapRef.current.panTo({ lat: techLat, lng: techLon });
+    mapRef.current.setZoom(16);
+  }, [isOnline, techLat, techLon, technicianLocation]);
+
   const handleRecenter = () => {
     if (mapRef.current && window.google?.maps) {
       mapRef.current.panTo({ lat: techLat, lng: techLon });

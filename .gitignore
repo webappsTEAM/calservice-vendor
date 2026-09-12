@@ -77,3 +77,13 @@ tunnel_daemon.py
 check_job_otp.py
 caltrack_runbook_test_results.json
 runbook_full.txt
+
+# Landing site bundle and temporary extractions
+Sevo landing/
+
+# Temporary diagnostic and scratch scripts
+scratch_*.py
+**/scratch_*.py
+_scratch_*.py
+**/_scratch_*.py
+

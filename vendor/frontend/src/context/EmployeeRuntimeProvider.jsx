@@ -62,9 +62,26 @@ export function EmployeeRuntimeProvider({ children }) {
     }
   }, [isOnlineAuth]);
 
+const CACHED_ACTIVE_JOBS_KEY = 'calservice_workforce_cached_active_jobs';
+const CACHED_COMPLETED_JOBS_KEY = 'calservice_workforce_cached_completed_jobs';
+
   // ── 2. Jobs State & Cache (Correction 6: Stale-While-Revalidate) ─────────────
-  const [activeJobs, setActiveJobs] = useState([]);
-  const [completedJobs, setCompletedJobs] = useState([]);
+  const [activeJobs, setActiveJobs] = useState(() => {
+    try {
+      const saved = localStorage.getItem(CACHED_ACTIVE_JOBS_KEY);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [completedJobs, setCompletedJobs] = useState(() => {
+    try {
+      const saved = localStorage.getItem(CACHED_COMPLETED_JOBS_KEY);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
   const [selectedJob, setSelectedJob] = useState(null);
   const [isJobsLoading, setIsJobsLoading] = useState(false);
   const [isCompletedLoading, setIsCompletedLoading] = useState(false);
@@ -191,6 +208,9 @@ export function EmployeeRuntimeProvider({ children }) {
 
           if (Array.isArray(jobsData)) {
             setActiveJobs(jobsData);
+            try {
+              localStorage.setItem(CACHED_ACTIVE_JOBS_KEY, JSON.stringify(jobsData));
+            } catch (_) {}
 
             // Seed initial offer IDs so historical offers do not trigger browser alerts
             const currentOffer = jobsData.find(
@@ -260,6 +280,9 @@ export function EmployeeRuntimeProvider({ children }) {
         const completedData = await apiGetWorkforceJobs('completed');
         if (Array.isArray(completedData)) {
           setCompletedJobs(completedData);
+          try {
+            localStorage.setItem(CACHED_COMPLETED_JOBS_KEY, JSON.stringify(completedData));
+          } catch (_) {}
           return completedData;
         }
         return [];

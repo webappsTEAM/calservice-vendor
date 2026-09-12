@@ -161,6 +161,30 @@ from .views import (
     PlatformRelievingRequestsView,
     PlatformApproveRelievingView,
     RelievingLegalSignoffView,
+    # Inventory Management
+    InventoryItemListView,
+    InventoryItemDetailView,
+    InventoryCatalogueBrowseView,
+    InventoryBulkSyncView,
+    # Vendor Store & Promotions
+    VendorStoreProfileView,
+    VendorDealListView,
+    VendorDealDetailView,
+    VendorCouponListView,
+    VendorCouponDetailView,
+    PublicStoreListView,
+    PublicStoreDetailView,
+    VendorOrderListView,
+    VendorOrderAcceptView,
+    VendorOrderRejectView,
+    VendorOrderStatusUpdateView,
+    VendorSettlementListView,
+    VendorInventoryLedgerView,
+    PublicGroceryCartView,
+    PublicGroceryCartClearView,
+    PublicGroceryCheckoutView,
+    PublicGroceryOrderTrackingView,
+    PublicGroceryOrderReviewView,
 )
 
 
@@ -457,6 +481,36 @@ urlpatterns = [
     path("admin/quotes/metrics/", invoice_views.AdminQuoteMetricsView.as_view(), name="workforce-admin-quote-metrics"),
     path("admin/quotes/<int:pk>/clear-structural/", invoice_views.AdminClearStructuralView.as_view(), name="workforce-admin-clear-structural"),
     path("admin/quotes/<int:pk>/retry-conversion/", invoice_views.AdminRetryQuoteConversionView.as_view(), name="workforce-admin-retry-conversion"),
+
+    # ── Inventory Management ───────────────────────────────────────────────────
+    path("inventory/", InventoryItemListView.as_view(), name="workforce-inventory-list"),
+    path("inventory/<int:pk>/", InventoryItemDetailView.as_view(), name="workforce-inventory-detail"),
+    path("inventory/catalogue/", InventoryCatalogueBrowseView.as_view(), name="workforce-inventory-catalogue"),
+    path("inventory/sync-catalogue/", InventoryBulkSyncView.as_view(), name="workforce-inventory-sync"),
+
+    # ── Vendor Store & Promotions (Multi-Vendor Marketplace) ─────────────
+    path("store/profile/", VendorStoreProfileView.as_view(), name="workforce-store-profile"),
+    path("promotions/deals/", VendorDealListView.as_view(), name="workforce-vendor-deals"),
+    path("promotions/deals/<int:pk>/", VendorDealDetailView.as_view(), name="workforce-vendor-deal-detail"),
+    path("promotions/coupons/", VendorCouponListView.as_view(), name="workforce-vendor-coupons"),
+    path("promotions/coupons/<int:pk>/", VendorCouponDetailView.as_view(), name="workforce-vendor-coupon-detail"),
+    path("public/stores/", PublicStoreListView.as_view(), name="workforce-public-stores"),
+    path("public/stores/<slug:slug>/", PublicStoreDetailView.as_view(), name="workforce-public-store-detail"),
+
+    # ── Vendor Order Management & Financials (Grocery Supplier Isolated) ───────
+    path("orders/grocery/", VendorOrderListView.as_view(), name="workforce-grocery-orders"),
+    path("orders/grocery/<int:pk>/accept/", VendorOrderAcceptView.as_view(), name="workforce-grocery-order-accept"),
+    path("orders/grocery/<int:pk>/reject/", VendorOrderRejectView.as_view(), name="workforce-grocery-order-reject"),
+    path("orders/grocery/<int:pk>/status/", VendorOrderStatusUpdateView.as_view(), name="workforce-grocery-order-status"),
+    path("settlements/", VendorSettlementListView.as_view(), name="workforce-settlements"),
+    path("inventory/ledger/", VendorInventoryLedgerView.as_view(), name="workforce-inventory-ledger"),
+
+    # ── Public Customer Marketplace Cart, Checkout & Order Tracking ────────────
+    path("public/cart/", PublicGroceryCartView.as_view(), name="workforce-public-cart"),
+    path("public/cart/clear/", PublicGroceryCartClearView.as_view(), name="workforce-public-cart-clear"),
+    path("public/checkout/", PublicGroceryCheckoutView.as_view(), name="workforce-public-checkout"),
+    path("public/orders/<str:order_number>/", PublicGroceryOrderTrackingView.as_view(), name="workforce-public-order-tracking"),
+    path("public/orders/<str:order_number>/review/", PublicGroceryOrderReviewView.as_view(), name="workforce-public-order-review"),
 ]
 
 

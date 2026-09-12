@@ -33,6 +33,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from accounts.authentication import set_auth_cookies
+from workforce_api.permissions import IsGrocerySupplier
 from companies.models import Company, Region
 from employees.models import Employee, PresenceLog
 from employees.utils import generate_next_employee_id
@@ -527,15 +528,26 @@ class ProviderSignupView(APIView):
                 slug = f"{base_slug}-{counter}"
                 counter += 1
 
+            b_type = data.get("business_type", "service_provider")
             company = Company.objects.create(
                 company_name=data["business_name"],
                 slug=slug,
+                business_type=b_type,
                 primary_country="IN",
                 region=region,
                 default_state="Tamil Nadu",
                 address=data.get("address", ""),
                 is_active=True,
             )
+
+            if b_type in ("grocery_supplier", "hybrid"):
+                from workforce_api.models import VendorStore
+                VendorStore.objects.create(
+                    company=company,
+                    store_name=data["business_name"],
+                    store_slug=slug,
+                    store_address=data.get("address", ""),
+                )
 
             username_candidate = data["email"].split("@")[0].lower()
             username = username_candidate
@@ -888,8 +900,9 @@ class WorkforceOnboardingMeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
+        from workforce_api.services.registration import get_or_create_employee_profile
         user = request.user
-        emp = getattr(user, "employee_profile", None)
+        emp = get_or_create_employee_profile(user)
         if not emp:
             return Response({"error": "No employee profile found for user."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -902,11 +915,12 @@ class WorkforceOnboardingMeView(APIView):
 
 
 class WorkforceOnboardingDraftView(APIView):
-    permission_classes = [IsWorkforceEmployee]
+    permission_classes = [permissions.IsAuthenticated]
 
     def patch(self, request):
+        from workforce_api.services.registration import get_or_create_employee_profile
         user = request.user
-        emp = getattr(user, "employee_profile", None)
+        emp = get_or_create_employee_profile(user)
         if not emp:
             return Response({"error": "Employee record not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -2133,7 +2147,8 @@ def is_employee_authorized_for_job(emp, job) -> bool:
     Validates tenant compatibility between an employee and a job:
     - Solo technician (emp.company_id is None) can handle platform jobs (job.company_id in (None, 1)).
     - Platform technician (emp.company_id == 1) can handle platform jobs (job.company_id in (None, 1)).
-    - Vendor technician (emp.company_id > 1) can handle jobs belonging to their company (job.company_id == emp.company_id).
+    - Vendor technician (emp.company_id > 1) can handle jobs belonging to their company (job.company_id == emp.company_id)
+      as well as platform/marketplace jobs (job.company_id in (None, 1)).
     """
     if not emp or not job:
         return False
@@ -2141,7 +2156,7 @@ def is_employee_authorized_for_job(emp, job) -> bool:
     emp_cid = getattr(emp, "company_id", None)
     if emp_cid is None or emp_cid == 1:
         return job_cid is None or job_cid == 1
-    return job_cid == emp_cid
+    return job_cid == emp_cid or job_cid is None or job_cid == 1
 
 
 class WorkforceJobListView(APIView):
@@ -2155,11 +2170,28 @@ class WorkforceJobListView(APIView):
         if is_admin_role(user):
             context = {"request": request}
             if user.is_superuser:
-                jobs = ServiceRequest.objects.all().order_by("-created_at")[:50]
+                jobs_qs = ServiceRequest.objects.all()
             elif company:
-                jobs = ServiceRequest.objects.filter(company=company).order_by("-created_at")[:50]
+                if company.id == 1 or getattr(company, "slug", "") in ("calservices", "caldim-engineering-pvt-ltd", "caldim-platform", "caldim-services"):
+                    jobs_qs = ServiceRequest.objects.filter(Q(company=company) | Q(company__isnull=True) | Q(company_id=1))
+                else:
+                    jobs_qs = ServiceRequest.objects.filter(
+                        Q(company=company) |
+                        Q(vendor_id=str(company.id)) |
+                        Q(assigned_employee__company=company) |
+                        Q(job_offers__employee__company=company) |
+                        ((Q(company_id=1) | Q(company__isnull=True)) & Q(status__in=["confirmed", "unassigned", "pending", "requested", "searching", "redispatching", "draft", "new_request"]))
+                    ).distinct()
             else:
-                jobs = ServiceRequest.objects.none()
+                jobs_qs = ServiceRequest.objects.filter(Q(company_id=1) | Q(company__isnull=True))
+
+            status_filter = str(request.query_params.get("status", "all")).lower().strip()
+            if status_filter == "completed":
+                jobs_qs = jobs_qs.filter(status="completed")
+            elif status_filter == "active":
+                jobs_qs = jobs_qs.exclude(status__in=["completed", "cancelled"])
+
+            jobs = list(jobs_qs.select_related("customer", "assigned_employee", "assigned_employee__user", "company").order_by("-created_at")[:100])
         elif emp:
             now = timezone.now()
             from workforce_api.models import WorkforceJobOffer, WorkforceJobLifecycleEvent, WorkforceWorkExtension, JobPayment
@@ -2210,10 +2242,11 @@ class WorkforceJobListView(APIView):
             ).values("service_request_id")
 
             # Canonical query definitions using subqueries to avoid extra roundtrips
+            # NOTE: technician_id is a CharField snapshot on ServiceRequest — it cannot
+            # be used as a Django ORM lookup field. Use the assigned_employee FK instead.
             assigned_active_qs = Q(
-                status__in=ACTIVE_QUEUE_STATUSES
-            ) & (
-                Q(assigned_employee=emp) | Q(technician_id=user.id)
+                status__in=ACTIVE_QUEUE_STATUSES,
+                assigned_employee=emp,
             )
             completed_qs = Q(
                 assigned_employee=emp,
@@ -2243,7 +2276,10 @@ class WorkforceJobListView(APIView):
                 ).exclude(status__in=["completed", "cancelled"])
 
             if emp.company:
-                qs = qs.filter(company=emp.company)
+                if emp.company.id == 1 or getattr(emp.company, "slug", "") in ("calservices", "caldim-engineering-pvt-ltd", "caldim-platform", "caldim-services"):
+                    qs = qs.filter(Q(company=emp.company) | Q(company__isnull=True) | Q(company_id=1))
+                else:
+                    qs = qs.filter(Q(company=emp.company) | Q(company_id=1) | Q(company__isnull=True))
 
             qs = qs.select_related("customer", "assigned_employee", "assigned_employee__user", "company")
             qs = qs.distinct().order_by("-updated_at", "-created_at")
@@ -2256,6 +2292,10 @@ class WorkforceJobListView(APIView):
             extensions_map = {}
             active_extensions_map = {}
             payments_map = {}
+            quotes_map = {}
+            psvs_map = {}
+            trip_stops_map = {}
+            emp_jobs_map = {}
 
             if job_ids:
                 # 1. Bulk fetch employee job offers
@@ -2304,6 +2344,27 @@ class WorkforceJobListView(APIView):
                 for psv in psvs:
                     psvs_map[psv.job_id] = psv
 
+                # 7. Bulk fetch trip stop counts
+                trip_stops_map = {}
+                try:
+                    from service_requests.models import TripStop
+                    from django.db.models import Count
+                    ts_counts = TripStop.objects.filter(booking_id__in=job_ids).values("booking_id").annotate(cnt=Count("id"))
+                    for ts in ts_counts:
+                        trip_stops_map[ts["booking_id"]] = ts["cnt"]
+                except Exception:
+                    pass
+
+                # 8. Bulk fetch EmployeeJob records for cancellation deadline & status
+                emp_jobs_map = {}
+                try:
+                    from service_requests.models import EmployeeJob
+                    emp_jobs = list(EmployeeJob.objects.filter(service_request_id__in=job_ids, employee=emp))
+                    for ej in emp_jobs:
+                        emp_jobs_map[ej.service_request_id] = ej
+                except Exception:
+                    pass
+
             context = {
                 "request": request,
                 "emp_offers_map": emp_offers_map,
@@ -2314,6 +2375,8 @@ class WorkforceJobListView(APIView):
                 "payments_map": payments_map,
                 "quotes_map": quotes_map,
                 "psvs_map": psvs_map,
+                "trip_stops_map": trip_stops_map,
+                "emp_jobs_map": emp_jobs_map,
             }
             jobs = job_list
         else:
@@ -5614,9 +5677,9 @@ class WorkforceTimeTrackingView(APIView):
 
         # Check active job assignment
         from service_requests.models import ServiceRequest, EmployeeJob
-        emp_job_sr_ids = list(EmployeeJob.objects.filter(employee=emp).values_list("service_request_id", flat=True))
+        emp_job_sr_ids_qs = EmployeeJob.objects.filter(employee=emp).values("service_request_id")
         active_job = ServiceRequest.objects.filter(
-            Q(assigned_employee=emp) | Q(id__in=emp_job_sr_ids),
+            Q(assigned_employee=emp) | Q(id__in=emp_job_sr_ids_qs),
             company=emp.company,
             status__in=["accepted", "on_the_way", "arrived", "in_progress"]
         ).first()
@@ -11224,6 +11287,1406 @@ class RelievingLegalSignoffView(APIView):
         except Exception as e:
             logger.exception("Error in legal signoff: %s", e)
             return Response({"error": "Failed to record legal signoff."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ── Inventory Management ──────────────────────────────────────────────────────
+
+
+class InventoryItemListView(APIView):
+    """
+    GET  /api/workforce/inventory/
+         List all inventory items for the authenticated user's company.
+         Supports ?search=, ?category=, ?status= query params.
+
+    POST /api/workforce/inventory/
+         Add a new inventory item from the service catalogue.
+         Body: { catalogue_service_id, unit, quantity_in_stock,
+                 low_stock_threshold, custom_price, custom_name,
+                 custom_image_url, notes, is_available }
+    """
+    permission_classes = [permissions.IsAuthenticated, IsGrocerySupplier]
+
+    def _get_company(self, user):
+        emp = getattr(user, "employee_profile", None)
+        return emp.company_id if (emp and emp.company_id) else getattr(user, "company_id", None)
+
+    def get(self, request):
+        from workforce_api.models import InventoryItem
+        company_id = self._get_company(request.user)
+        if not company_id:
+            return Response({"error": "Could not determine company."}, status=status.HTTP_403_FORBIDDEN)
+
+        qs = InventoryItem.objects.filter(company_id=company_id)
+
+        search = request.query_params.get("search", "").strip()
+        if search:
+            qs = qs.filter(
+                models.Q(name_snapshot__icontains=search)
+                | models.Q(custom_name__icontains=search)
+                | models.Q(category_name_snapshot__icontains=search)
+            )
+
+        cat = request.query_params.get("category", "").strip()
+        if cat:
+            qs = qs.filter(category_name_snapshot__icontains=cat)
+
+        stock_status = request.query_params.get("status", "").strip().upper()
+        if stock_status == "LOW_STOCK":
+            qs = qs.filter(
+                is_available=True,
+                quantity_in_stock__gt=0,
+                quantity_in_stock__lte=models.F("low_stock_threshold"),
+            )
+        elif stock_status == "OUT_OF_STOCK":
+            qs = qs.filter(is_available=True, quantity_in_stock__lte=0)
+        elif stock_status == "UNAVAILABLE":
+            qs = qs.filter(is_available=False)
+        elif stock_status == "IN_STOCK":
+            qs = qs.filter(
+                is_available=True,
+                quantity_in_stock__gt=models.F("low_stock_threshold"),
+            )
+
+        items = []
+        for item in qs:
+            items.append({
+                "id": item.id,
+                "catalogue_service_id": item.catalogue_service_id,
+                "catalogue_category_id": item.catalogue_category_id,
+                "name": item.display_name,
+                "name_snapshot": item.name_snapshot,
+                "custom_name": item.custom_name,
+                "category": item.category_name_snapshot,
+                "image": item.display_image,
+                "catalogue_image_url": item.catalogue_image_url,
+                "custom_image_url": item.custom_image_url,
+                "custom_price": str(item.custom_price) if item.custom_price is not None else None,
+                "mrp": str(item.mrp) if item.mrp is not None else None,
+                "quantity_in_stock": str(item.quantity_in_stock),
+                "unit": item.unit,
+                "low_stock_threshold": str(item.low_stock_threshold),
+                "notes": item.notes,
+                "is_available": item.is_available,
+                "stock_status": item.stock_status,
+                "created_at": item.created_at.isoformat(),
+                "updated_at": item.updated_at.isoformat(),
+            })
+
+        return Response(items, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        from workforce_api.models import InventoryItem
+        from service_requests.models import Service, CatalogCategory
+        from decimal import Decimal, InvalidOperation
+
+        company_id = self._get_company(request.user)
+        if not company_id:
+            return Response({"error": "Could not determine company."}, status=status.HTTP_403_FORBIDDEN)
+
+        catalogue_service_id = request.data.get("catalogue_service_id")
+        if not catalogue_service_id:
+            return Response({"error": "catalogue_service_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            catalogue_service_id = int(catalogue_service_id)
+        except (TypeError, ValueError):
+            return Response({"error": "catalogue_service_id must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Duplicate guard
+        if InventoryItem.objects.filter(company_id=company_id, catalogue_service_id=catalogue_service_id).exists():
+            return Response(
+                {"error": "This catalogue item already exists in your inventory."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # Resolve name/category/image from live catalogue
+        try:
+            svc = Service.objects.select_related("category").get(pk=catalogue_service_id)
+            name_snapshot = svc.name
+            category_name_snapshot = svc.category.name if svc.category else ""
+            catalogue_category_id = svc.category_id or 0
+            catalogue_image_url = svc.image or ""
+        except Service.DoesNotExist:
+            return Response(
+                {"error": f"Service with id={catalogue_service_id} not found in catalogue."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Parse optional fields
+        unit = request.data.get("unit", "kg")
+        valid_units = [u[0] for u in InventoryItem.StockUnit.choices]
+        if unit not in valid_units:
+            unit = "kg"
+
+        def _decimal(key, default=None):
+            val = request.data.get(key)
+            if val is None or val == "":
+                return default
+            try:
+                return Decimal(str(val))
+            except InvalidOperation:
+                return default
+
+        quantity_in_stock = _decimal("quantity_in_stock", Decimal("0"))
+        low_stock_threshold = _decimal("low_stock_threshold", Decimal("0"))
+        custom_price = _decimal("custom_price", None)
+        mrp = _decimal("mrp", None)
+        custom_name = str(request.data.get("custom_name", "")).strip()
+        custom_image_url = str(request.data.get("custom_image_url", "")).strip()
+        notes = str(request.data.get("notes", "")).strip()
+        is_available = bool(request.data.get("is_available", True))
+
+        item = InventoryItem.objects.create(
+            company_id=company_id,
+            catalogue_service_id=catalogue_service_id,
+            catalogue_category_id=catalogue_category_id,
+            name_snapshot=name_snapshot,
+            category_name_snapshot=category_name_snapshot,
+            catalogue_image_url=catalogue_image_url,
+            custom_name=custom_name,
+            custom_image_url=custom_image_url,
+            custom_price=custom_price,
+            mrp=mrp,
+            quantity_in_stock=quantity_in_stock,
+            unit=unit,
+            low_stock_threshold=low_stock_threshold,
+            notes=notes,
+            is_available=is_available,
+        )
+
+        return Response({
+            "id": item.id,
+            "name": item.display_name,
+            "category": item.category_name_snapshot,
+            "image": item.display_image,
+            "quantity_in_stock": str(item.quantity_in_stock),
+            "unit": item.unit,
+            "stock_status": item.stock_status,
+            "mrp": str(item.mrp) if item.mrp is not None else None,
+            "message": "Inventory item added successfully.",
+        }, status=status.HTTP_201_CREATED)
+
+
+class InventoryItemDetailView(APIView):
+    """
+    GET    /api/workforce/inventory/<pk>/  – fetch one item
+    PATCH  /api/workforce/inventory/<pk>/  – update stock/overrides
+    DELETE /api/workforce/inventory/<pk>/  – remove from inventory
+    """
+    permission_classes = [permissions.IsAuthenticated, IsGrocerySupplier]
+
+    def _get_item(self, request, pk):
+        from workforce_api.models import InventoryItem
+        from companies.models import Company
+
+        user = request.user
+        emp = getattr(user, "employee_profile", None)
+        if emp and emp.company_id:
+            company_id = emp.company_id
+        else:
+            try:
+                company_id = Company.objects.get(head_user=user).id
+            except Exception:
+                return None, None
+
+        try:
+            item = InventoryItem.objects.get(pk=pk, company_id=company_id)
+            return item, company_id
+        except InventoryItem.DoesNotExist:
+            return None, company_id
+
+    def get(self, request, pk):
+        item, _ = self._get_item(request, pk)
+        if item is None:
+            return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({
+            "id": item.id,
+            "catalogue_service_id": item.catalogue_service_id,
+            "catalogue_category_id": item.catalogue_category_id,
+            "name": item.display_name,
+            "name_snapshot": item.name_snapshot,
+            "custom_name": item.custom_name,
+            "category": item.category_name_snapshot,
+            "image": item.display_image,
+            "catalogue_image_url": item.catalogue_image_url,
+            "custom_image_url": item.custom_image_url,
+            "custom_price": str(item.custom_price) if item.custom_price is not None else None,
+            "quantity_in_stock": str(item.quantity_in_stock),
+            "unit": item.unit,
+            "low_stock_threshold": str(item.low_stock_threshold),
+            "notes": item.notes,
+            "is_available": item.is_available,
+            "stock_status": item.stock_status,
+            "created_at": item.created_at.isoformat(),
+            "updated_at": item.updated_at.isoformat(),
+        }, status=status.HTTP_200_OK)
+
+    def patch(self, request, pk):
+        from decimal import Decimal, InvalidOperation
+
+        item, company_id = self._get_item(request, pk)
+        if item is None:
+            return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        def _decimal(key, current):
+            val = request.data.get(key, "__MISSING__")
+            if val == "__MISSING__":
+                return current
+            if val is None or val == "":
+                return None
+            try:
+                return Decimal(str(val))
+            except InvalidOperation:
+                return current
+
+        # Mutable fields
+        if "quantity_in_stock" in request.data:
+            item.quantity_in_stock = _decimal("quantity_in_stock", item.quantity_in_stock) or Decimal("0")
+        if "unit" in request.data:
+            from workforce_api.models import InventoryItem as _II
+            valid_units = [u[0] for u in _II.StockUnit.choices]
+            u = request.data["unit"]
+            if u in valid_units:
+                item.unit = u
+        if "low_stock_threshold" in request.data:
+            item.low_stock_threshold = _decimal("low_stock_threshold", item.low_stock_threshold) or Decimal("0")
+        if "custom_price" in request.data:
+            item.custom_price = _decimal("custom_price", item.custom_price)
+        if "custom_name" in request.data:
+            item.custom_name = str(request.data["custom_name"]).strip()
+        if "custom_image_url" in request.data:
+            item.custom_image_url = str(request.data["custom_image_url"]).strip()
+        if "notes" in request.data:
+            item.notes = str(request.data["notes"]).strip()
+        if "is_available" in request.data:
+            item.is_available = bool(request.data["is_available"])
+
+        # Sync catalogue snapshot if requested
+        if request.data.get("sync_catalogue", False):
+            try:
+                from service_requests.models import Service
+                svc = Service.objects.select_related("category").get(pk=item.catalogue_service_id)
+                item.name_snapshot = svc.name
+                item.category_name_snapshot = svc.category.name if svc.category else ""
+                item.catalogue_image_url = svc.image or ""
+            except Exception:
+                pass
+
+        item.save()
+
+        return Response({
+            "id": item.id,
+            "name": item.display_name,
+            "category": item.category_name_snapshot,
+            "image": item.display_image,
+            "quantity_in_stock": str(item.quantity_in_stock),
+            "unit": item.unit,
+            "stock_status": item.stock_status,
+            "message": "Inventory item updated successfully.",
+        }, status=status.HTTP_200_OK)
+
+    def delete(self, request, pk):
+        item, _ = self._get_item(request, pk)
+        if item is None:
+            return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        item_name = item.display_name
+        item.delete()
+        return Response({"message": f"'{item_name}' removed from inventory."}, status=status.HTTP_200_OK)
+
+
+class InventoryCatalogueBrowseView(APIView):
+    """
+    GET /api/workforce/inventory/catalogue/
+    Returns all active catalogue items grouped by category so the frontend
+    can present a multi-select item picker when adding to inventory.
+    Supports ?search= to filter by service name.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsGrocerySupplier]
+
+    def get(self, request):
+        try:
+            from service_requests.models import CatalogCategory, Service
+
+            search = request.query_params.get("search", "").strip()
+
+            svc_qs = Service.objects.filter(is_active=True).select_related("category")
+            if search:
+                svc_qs = svc_qs.filter(name__icontains=search)
+
+            cats_map = {}
+            for svc in svc_qs.order_by("category__sort_order", "category__id", "sort_order", "id"):
+                cat_id = svc.category_id
+                if cat_id not in cats_map:
+                    cats_map[cat_id] = {
+                        "id": cat_id,
+                        "name": svc.category.name if svc.category else "Other",
+                        "icon": svc.category.icon if svc.category else "",
+                        "image": svc.category.image if svc.category else "",
+                        "services": [],
+                    }
+                cats_map[cat_id]["services"].append({
+                    "id": svc.id,
+                    "name": svc.name,
+                    "slug": svc.slug,
+                    "description": svc.description or "",
+                    "image": svc.image or "",
+                    "icon": svc.icon or "",
+                })
+
+            return Response(list(cats_map.values()), status=status.HTTP_200_OK)
+        except Exception as e:
+            logger.exception("InventoryCatalogueBrowseView error: %s", e)
+            return Response([], status=status.HTTP_200_OK)
+
+
+class InventoryBulkSyncView(APIView):
+    """
+    POST /api/workforce/inventory/sync-catalogue/
+    Re-syncs name/category/image snapshots for all inventory items in the
+    company from the live catalogue.  Harmless no-op if nothing changed.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsGrocerySupplier]
+
+    def post(self, request):
+        from workforce_api.models import InventoryItem
+        from service_requests.models import Service
+
+        user = request.user
+        emp = getattr(user, "employee_profile", None)
+        company_id = emp.company_id if (emp and emp.company_id) else getattr(user, "company_id", None)
+        if not company_id:
+            return Response({"error": "Could not determine company."}, status=status.HTTP_403_FORBIDDEN)
+
+        items = list(InventoryItem.objects.filter(company_id=company_id))
+        service_ids = {item.catalogue_service_id for item in items}
+        services = {svc.id: svc for svc in
+                    Service.objects.filter(id__in=service_ids).select_related("category")}
+
+        updated = 0
+        for item in items:
+            svc = services.get(item.catalogue_service_id)
+            if not svc:
+                continue
+            changed = False
+            if item.name_snapshot != svc.name:
+                item.name_snapshot = svc.name
+                changed = True
+            new_cat = svc.category.name if svc.category else ""
+            if item.category_name_snapshot != new_cat:
+                item.category_name_snapshot = new_cat
+                changed = True
+            new_img = svc.image or ""
+            if item.catalogue_image_url != new_img:
+                item.catalogue_image_url = new_img
+                changed = True
+            if changed:
+                item.save(update_fields=["name_snapshot", "category_name_snapshot", "catalogue_image_url", "updated_at"])
+                updated += 1
+
+        return Response({
+            "message": f"Sync complete. {updated} item(s) updated.",
+            "updated": updated,
+            "total": len(items),
+        }, status=status.HTTP_200_OK)
+
+
+# ── Vendor Storefront Management ──────────────────────────────────────────────
+
+class VendorStoreProfileView(APIView):
+    """
+    GET   /api/workforce/store/profile/  – Fetch the vendor's store details
+    PATCH /api/workforce/store/profile/  – Update store branding, location, hours, and status
+    """
+    permission_classes = [permissions.IsAuthenticated, IsGrocerySupplier]
+
+    def _get_company(self, user):
+        emp = getattr(user, "employee_profile", None)
+        return emp.company_id if (emp and emp.company_id) else getattr(user, "company_id", None)
+
+    def get(self, request):
+        from workforce_api.models import VendorStore
+        from companies.models import Company
+        company_id = self._get_company(request.user)
+        if not company_id:
+            return Response({"error": "Could not determine company."}, status=status.HTTP_403_FORBIDDEN)
+
+        company = Company.objects.filter(id=company_id).first()
+        store, _ = VendorStore.objects.get_or_create(
+            company_id=company_id,
+            defaults={
+                "store_name": getattr(company, "company_name", "My Store"),
+                "store_slug": getattr(company, "slug", f"store-{company_id}"),
+                "store_address": getattr(company, "address", "") or "",
+            },
+        )
+        return Response({
+            "id": store.id,
+            "company_id": store.company_id,
+            "company_name": company.company_name if company else "",
+            "store_name": store.store_name,
+            "store_slug": store.store_slug,
+            "tagline": store.tagline,
+            "description": store.description,
+            "logo_url": store.logo_url,
+            "banner_url": store.banner_url,
+            "fssai_license_number": store.fssai_license_number,
+            "store_address": store.store_address,
+            "latitude": str(store.latitude) if store.latitude is not None else None,
+            "longitude": str(store.longitude) if store.longitude is not None else None,
+            "delivery_radius_km": float(store.delivery_radius_km),
+            "minimum_order_amount": str(store.minimum_order_amount),
+            "estimated_delivery_mins": store.estimated_delivery_mins,
+            "is_accepting_orders": store.is_accepting_orders,
+            "opening_time": store.opening_time.strftime("%H:%M") if store.opening_time else None,
+            "closing_time": store.closing_time.strftime("%H:%M") if store.closing_time else None,
+            "rating_average": float(store.rating_average),
+            "total_reviews": store.total_reviews,
+            "created_at": store.created_at.isoformat(),
+            "updated_at": store.updated_at.isoformat(),
+        })
+
+    def patch(self, request):
+        from workforce_api.models import VendorStore
+        from companies.models import Company
+        company_id = self._get_company(request.user)
+        if not company_id:
+            return Response({"error": "Could not determine company."}, status=status.HTTP_403_FORBIDDEN)
+
+        company = Company.objects.filter(id=company_id).first()
+        store, _ = VendorStore.objects.get_or_create(
+            company_id=company_id,
+            defaults={
+                "store_name": getattr(company, "company_name", "My Store"),
+                "store_slug": getattr(company, "slug", f"store-{company_id}"),
+            },
+        )
+
+        data = request.data
+        updatable_fields = [
+            "store_name", "tagline", "description", "logo_url", "banner_url",
+            "fssai_license_number", "store_address", "is_accepting_orders",
+            "estimated_delivery_mins",
+        ]
+        for field in updatable_fields:
+            if field in data:
+                setattr(store, field, data[field])
+
+        if "delivery_radius_km" in data:
+            try:
+                store.delivery_radius_km = Decimal(str(data["delivery_radius_km"]))
+            except Exception:
+                pass
+
+        if "minimum_order_amount" in data:
+            try:
+                store.minimum_order_amount = Decimal(str(data["minimum_order_amount"]))
+            except Exception:
+                pass
+
+        if "latitude" in data and data["latitude"]:
+            try:
+                store.latitude = Decimal(str(data["latitude"]))
+            except Exception:
+                pass
+
+        if "longitude" in data and data["longitude"]:
+            try:
+                store.longitude = Decimal(str(data["longitude"]))
+            except Exception:
+                pass
+
+        store.save()
+        return Response({
+            "message": "Store profile updated successfully.",
+            "store_name": store.store_name,
+            "is_accepting_orders": store.is_accepting_orders,
+            "delivery_radius_km": float(store.delivery_radius_km),
+        }, status=status.HTTP_200_OK)
+
+
+# ── Vendor Deals Management ───────────────────────────────────────────────────
+
+class VendorDealListView(APIView):
+    """
+    GET  /api/workforce/promotions/deals/ – List active deals for vendor
+    POST /api/workforce/promotions/deals/ – Create a new promotional deal on an inventory item
+    """
+    permission_classes = [permissions.IsAuthenticated, IsGrocerySupplier]
+
+    def _get_company(self, user):
+        emp = getattr(user, "employee_profile", None)
+        return emp.company_id if (emp and emp.company_id) else getattr(user, "company_id", None)
+
+    def get(self, request):
+        from workforce_api.models import VendorDeal
+        company_id = self._get_company(request.user)
+        if not company_id:
+            return Response({"error": "Could not determine company."}, status=status.HTTP_403_FORBIDDEN)
+
+        deals = VendorDeal.objects.filter(company_id=company_id).select_related("inventory_item")
+        results = []
+        for d in deals:
+            results.append({
+                "id": d.id,
+                "inventory_item_id": d.inventory_item_id,
+                "item_name": d.inventory_item.display_name,
+                "item_image": d.inventory_item.display_image,
+                "deal_type": d.deal_type,
+                "original_price": str(d.original_price),
+                "deal_price": str(d.deal_price),
+                "discount_percent": d.discount_percent,
+                "badge_text": d.badge_text,
+                "is_active": d.is_active,
+                "deal_start_at": d.deal_start_at.isoformat() if d.deal_start_at else None,
+                "deal_end_at": d.deal_end_at.isoformat() if d.deal_end_at else None,
+            })
+        return Response(results)
+
+    def post(self, request):
+        from workforce_api.models import VendorDeal, InventoryItem
+        company_id = self._get_company(request.user)
+        if not company_id:
+            return Response({"error": "Could not determine company."}, status=status.HTTP_403_FORBIDDEN)
+
+        data = request.data
+        item_id = data.get("inventory_item_id")
+        item = InventoryItem.objects.filter(id=item_id, company_id=company_id).first()
+        if not item:
+            return Response({"error": "Inventory item not found for your store."}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            deal_price = Decimal(str(data.get("deal_price")))
+            original_price = Decimal(str(data.get("original_price") or item.custom_price or item.mrp or deal_price))
+        except Exception:
+            return Response({"error": "Invalid pricing format."}, status=status.HTTP_400_BAD_REQUEST)
+
+        deal = VendorDeal.objects.create(
+            company_id=company_id,
+            inventory_item=item,
+            deal_type=data.get("deal_type", "strike_through"),
+            original_price=original_price,
+            deal_price=deal_price,
+            badge_text=data.get("badge_text", f"{int(round(((original_price - deal_price)/original_price)*100))}% OFF" if original_price > deal_price else "SPECIAL DEAL"),
+            is_active=bool(data.get("is_active", True)),
+        )
+        return Response({
+            "id": deal.id,
+            "message": "Deal created successfully.",
+            "discount_percent": deal.discount_percent,
+        }, status=status.HTTP_201_CREATED)
+
+
+class VendorDealDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsGrocerySupplier]
+
+    def _get_company(self, user):
+        emp = getattr(user, "employee_profile", None)
+        return emp.company_id if (emp and emp.company_id) else getattr(user, "company_id", None)
+
+    def delete(self, request, pk):
+        from workforce_api.models import VendorDeal
+        company_id = self._get_company(request.user)
+        deal = VendorDeal.objects.filter(pk=pk, company_id=company_id).first()
+        if not deal:
+            return Response({"error": "Deal not found."}, status=status.HTTP_404_NOT_FOUND)
+        deal.delete()
+        return Response({"message": "Deal removed."}, status=status.HTTP_200_OK)
+
+
+# ── Vendor Coupons Management ─────────────────────────────────────────────────
+
+class VendorCouponListView(APIView):
+    """
+    GET  /api/workforce/promotions/coupons/ – List coupons created by this vendor
+    POST /api/workforce/promotions/coupons/ – Create a store-scoped discount coupon
+    """
+    permission_classes = [permissions.IsAuthenticated, IsGrocerySupplier]
+
+    def _get_company(self, user):
+        emp = getattr(user, "employee_profile", None)
+        return emp.company_id if (emp and emp.company_id) else getattr(user, "company_id", None)
+
+    def get(self, request):
+        from workforce_api.models import VendorCoupon
+        company_id = self._get_company(request.user)
+        if not company_id:
+            return Response({"error": "Could not determine company."}, status=status.HTTP_403_FORBIDDEN)
+
+        coupons = VendorCoupon.objects.filter(company_id=company_id)
+        results = []
+        for c in coupons:
+            results.append({
+                "id": c.id,
+                "code": c.code,
+                "description": c.description,
+                "discount_type": c.discount_type,
+                "discount_value": str(c.discount_value),
+                "min_order_amount": str(c.min_order_amount),
+                "max_discount_amount": str(c.max_discount_amount) if c.max_discount_amount else None,
+                "usage_limit_total": c.usage_limit_total,
+                "times_used": c.times_used,
+                "is_active": c.is_active,
+                "valid_until": c.valid_until.isoformat() if c.valid_until else None,
+            })
+        return Response(results)
+
+    def post(self, request):
+        from workforce_api.models import VendorCoupon
+        company_id = self._get_company(request.user)
+        if not company_id:
+            return Response({"error": "Could not determine company."}, status=status.HTTP_403_FORBIDDEN)
+
+        data = request.data
+        code = str(data.get("code", "")).strip().upper()
+        if not code:
+            return Response({"error": "Coupon code is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if VendorCoupon.objects.filter(company_id=company_id, code=code).exists():
+            return Response({"error": "A coupon with this code already exists for your store."}, status=status.HTTP_409_CONFLICT)
+
+        try:
+            discount_value = Decimal(str(data.get("discount_value")))
+            min_order_amount = Decimal(str(data.get("min_order_amount", "0")))
+            max_discount_amount = Decimal(str(data.get("max_discount_amount"))) if data.get("max_discount_amount") else None
+        except Exception:
+            return Response({"error": "Invalid decimal numbers."}, status=status.HTTP_400_BAD_REQUEST)
+
+        coupon = VendorCoupon.objects.create(
+            company_id=company_id,
+            code=code,
+            description=data.get("description", ""),
+            discount_type=data.get("discount_type", "percent"),
+            discount_value=discount_value,
+            min_order_amount=min_order_amount,
+            max_discount_amount=max_discount_amount,
+            usage_limit_total=data.get("usage_limit_total"),
+            is_active=bool(data.get("is_active", True)),
+        )
+        return Response({
+            "id": coupon.id,
+            "code": coupon.code,
+            "message": "Coupon created successfully.",
+        }, status=status.HTTP_201_CREATED)
+
+
+class VendorCouponDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsGrocerySupplier]
+
+    def _get_company(self, user):
+        emp = getattr(user, "employee_profile", None)
+        return emp.company_id if (emp and emp.company_id) else getattr(user, "company_id", None)
+
+    def delete(self, request, pk):
+        from workforce_api.models import VendorCoupon
+        company_id = self._get_company(request.user)
+        coupon = VendorCoupon.objects.filter(pk=pk, company_id=company_id).first()
+        if not coupon:
+            return Response({"error": "Coupon not found."}, status=status.HTTP_404_NOT_FOUND)
+        coupon.delete()
+        return Response({"message": "Coupon deleted."}, status=status.HTTP_200_OK)
+
+
+# ── Customer-Facing Public Storefront Endpoints ───────────────────────────────
+
+class PublicStoreListView(APIView):
+    """
+    GET /api/workforce/public/stores/
+    List active vendor stores delivering groceries/fresh produce.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        from workforce_api.models import VendorStore
+        stores = VendorStore.objects.filter(is_accepting_orders=True).select_related("company")
+        results = []
+        for s in stores:
+            results.append({
+                "id": s.id,
+                "store_name": s.store_name,
+                "store_slug": s.store_slug,
+                "tagline": s.tagline,
+                "logo_url": s.logo_url,
+                "banner_url": s.banner_url,
+                "rating_average": float(s.rating_average),
+                "total_reviews": s.total_reviews,
+                "delivery_radius_km": float(s.delivery_radius_km),
+                "estimated_delivery_mins": s.estimated_delivery_mins,
+                "minimum_order_amount": str(s.minimum_order_amount),
+            })
+        return Response(results)
+
+
+class PublicStoreDetailView(APIView):
+    """
+    GET /api/workforce/public/stores/<slug>/
+    Detailed storefront view with categories, in-stock products, and active deals.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, slug):
+        from workforce_api.models import VendorStore, InventoryItem, VendorDeal, VendorCoupon
+        store = VendorStore.objects.filter(store_slug=slug).select_related("company").first()
+        if not store:
+            return Response({"error": "Store not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # In-stock inventory
+        items = InventoryItem.objects.filter(
+            company=store.company,
+            is_available=True,
+            quantity_in_stock__gt=0,
+        )
+
+        deals_map = {
+            d.inventory_item_id: d
+            for d in VendorDeal.objects.filter(company=store.company, is_active=True)
+        }
+
+        products = []
+        for item in items:
+            deal = deals_map.get(item.id)
+            products.append({
+                "id": item.id,
+                "catalogue_service_id": item.catalogue_service_id,
+                "name": item.display_name,
+                "category": item.category_name_snapshot,
+                "image": item.display_image,
+                "price": str(deal.deal_price if deal else (item.custom_price or item.mrp or "0.00")),
+                "mrp": str(deal.original_price if deal else (item.mrp or item.custom_price or "0.00")),
+                "has_deal": bool(deal),
+                "deal_badge": deal.badge_text if deal else None,
+                "discount_percent": deal.discount_percent if deal else 0,
+                "unit": item.unit,
+                "in_stock": True,
+            })
+
+        coupons = VendorCoupon.objects.filter(company=store.company, is_active=True)
+        coupon_list = [
+            {
+                "code": c.code,
+                "description": c.description,
+                "discount_type": c.discount_type,
+                "discount_value": str(c.discount_value),
+                "min_order_amount": str(c.min_order_amount),
+            }
+            for c in coupons
+        ]
+
+        return Response({
+            "store": {
+                "id": store.id,
+                "store_name": store.store_name,
+                "store_slug": store.store_slug,
+                "tagline": store.tagline,
+                "description": store.description,
+                "logo_url": store.logo_url,
+                "banner_url": store.banner_url,
+                "rating_average": float(store.rating_average),
+                "total_reviews": store.total_reviews,
+                "delivery_radius_km": float(store.delivery_radius_km),
+                "estimated_delivery_mins": store.estimated_delivery_mins,
+                "minimum_order_amount": str(store.minimum_order_amount),
+                "is_accepting_orders": store.is_accepting_orders,
+            },
+            "products": products,
+            "coupons": coupon_list,
+        })
+
+
+# ── Customer Cart & Server-Driven Checkout Endpoints ───────────────────────────
+
+class PublicGroceryCartView(APIView):
+    """
+    Customer Cart endpoint enforcing the Single-Store Cart Invariant.
+    Returns HTTP 409 CART_STORE_CONFLICT if an item from another store is added.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        from workforce_api.models import GroceryCart
+        from workforce_api.services.grocery_pricing import GroceryPricingService
+        customer_id = request.query_params.get("customer_id") or request.headers.get("X-Customer-ID") or "anonymous_guest"
+        cart = GroceryCart.objects.filter(customer_id=customer_id).select_related("vendor_store").first()
+        if not cart or not cart.vendor_store or not cart.items.exists():
+            return Response({
+                "customer_id": customer_id,
+                "store": None,
+                "items": [],
+                "subtotal": 0.0,
+                "total_amount": 0.0,
+                "deal_discount": 0.0,
+                "delivery_fee": 0.0,
+            })
+
+        cart_items_data = [
+            {"inventory_item": ci.inventory_item, "quantity": ci.quantity}
+            for ci in cart.items.select_related("inventory_item")
+        ]
+        coupon_code = request.query_params.get("coupon_code")
+        summary = GroceryPricingService.calculate_order_summary(
+            store=cart.vendor_store,
+            cart_items=cart_items_data,
+            coupon_code=coupon_code,
+            customer_id=customer_id,
+        )
+        summary["cart_id"] = cart.id
+        summary["customer_id"] = customer_id
+        return Response(summary)
+
+    def post(self, request):
+        from workforce_api.models import GroceryCart, GroceryCartItem, InventoryItem
+        from django.db import transaction
+
+        customer_id = request.data.get("customer_id") or request.headers.get("X-Customer-ID") or "anonymous_guest"
+        inventory_item_id = request.data.get("inventory_item_id")
+        quantity = Decimal(str(request.data.get("quantity", 1.0)))
+        force_replace = bool(request.data.get("force_replace", False))
+
+        if not inventory_item_id:
+            return Response({"error": "inventory_item_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        inv_item = InventoryItem.objects.filter(id=inventory_item_id).select_related("company__vendor_store").first()
+        if not inv_item:
+            return Response({"error": "Product offer not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        item_store = getattr(inv_item.company, "vendor_store", None)
+        if not item_store:
+            return Response({"error": "Vendor store not found for this product."}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            cart, _ = GroceryCart.objects.get_or_create(customer_id=customer_id)
+
+            # Single-Store Cart Conflict Check
+            if cart.vendor_store_id and cart.vendor_store_id != item_store.id:
+                if not force_replace:
+                    return Response({
+                        "error": {
+                            "code": "CART_STORE_CONFLICT",
+                            "message": f"Your cart contains items from '{cart.vendor_store.store_name}'. Would you like to clear it and add items from '{item_store.store_name}'?",
+                            "current_store_id": cart.vendor_store_id,
+                            "current_store_name": cart.vendor_store.store_name,
+                            "new_store_id": item_store.id,
+                            "new_store_name": item_store.store_name,
+                        }
+                    }, status=status.HTTP_409_CONFLICT)
+                else:
+                    cart.items.all().delete()
+                    cart.vendor_store = item_store
+                    cart.save(update_fields=["vendor_store", "updated_at"])
+            elif not cart.vendor_store_id:
+                cart.vendor_store = item_store
+                cart.save(update_fields=["vendor_store", "updated_at"])
+
+            if quantity <= 0:
+                GroceryCartItem.objects.filter(cart=cart, inventory_item=inv_item).delete()
+                if not cart.items.exists():
+                    cart.vendor_store = None
+                    cart.save(update_fields=["vendor_store", "updated_at"])
+            else:
+                cart_item, created = GroceryCartItem.objects.get_or_create(
+                    cart=cart,
+                    inventory_item=inv_item,
+                    defaults={"quantity": quantity},
+                )
+                if not created:
+                    cart_item.quantity = quantity
+                    cart_item.save(update_fields=["quantity", "updated_at"])
+
+        return self.get(request)
+
+
+class PublicGroceryCartClearView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        from workforce_api.models import GroceryCart
+        customer_id = request.data.get("customer_id") or request.headers.get("X-Customer-ID") or "anonymous_guest"
+        cart = GroceryCart.objects.filter(customer_id=customer_id).first()
+        if cart:
+            cart.items.all().delete()
+            cart.vendor_store = None
+            cart.save(update_fields=["vendor_store", "updated_at"])
+        return Response({"success": True, "message": "Cart cleared successfully."})
+
+
+class PublicGroceryCheckoutView(APIView):
+    """
+    Server-Driven Checkout with Atomic Stock Reservations (select_for_update),
+    Coupon validation, Price snapshots, and Order creation.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        import uuid
+        from workforce_api.models import (
+            GroceryCart, GroceryOrder, GroceryOrderItem,
+            GroceryOrderStatusHistory, GroceryDelivery,
+            InventoryTransaction, CouponRedemption, VendorCoupon
+        )
+        from workforce_api.services.grocery_pricing import GroceryPricingService
+        from django.db import transaction
+
+        customer_id = request.data.get("customer_id") or "anonymous_guest"
+        customer_name = request.data.get("customer_name", "Valued Customer")
+        customer_phone = request.data.get("customer_phone", "")
+        delivery_address = request.data.get("delivery_address", "")
+        coupon_code = request.data.get("coupon_code", "")
+        payment_method = request.data.get("payment_method", "COD")
+        delivery_notes = request.data.get("delivery_notes", "")
+
+        cart = GroceryCart.objects.filter(customer_id=customer_id).select_related("vendor_store").first()
+        if not cart or not cart.vendor_store or not cart.items.exists():
+            return Response({"error": "Cart is empty."}, status=status.HTTP_400_BAD_REQUEST)
+
+        store = cart.vendor_store
+        if not store.is_accepting_orders:
+            return Response({"error": "This store is currently not accepting new orders."}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            # Concurrency row-locking for each inventory item
+            cart_items = list(cart.items.select_related("inventory_item").all())
+            item_ids = [ci.inventory_item_id for ci in cart_items]
+            locked_items = {
+                item.id: item
+                for item in cart.vendor_store.company.inventory_items.select_for_update().filter(id__in=item_ids)
+            }
+
+            # Verify availability
+            for ci in cart_items:
+                inv = locked_items.get(ci.inventory_item_id)
+                if not inv or not inv.is_available or inv.available_quantity < ci.quantity:
+                    return Response({
+                        "error": {
+                            "code": "STOCK_UNAVAILABLE",
+                            "message": f"Requested quantity of {inv.display_name if inv else 'item'} is no longer available in stock.",
+                        }
+                    }, status=status.HTTP_409_CONFLICT)
+
+            # Calculate server pricing snapshot
+            pricing_data = [
+                {"inventory_item": locked_items[ci.inventory_item_id], "quantity": ci.quantity}
+                for ci in cart_items
+            ]
+            summary = GroceryPricingService.calculate_order_summary(
+                store=store,
+                cart_items=pricing_data,
+                coupon_code=coupon_code,
+                customer_id=customer_id,
+            )
+
+            # Generate order number
+            order_num = f"GRO-{uuid.uuid4().hex[:8].upper()}"
+
+            order = GroceryOrder.objects.create(
+                order_number=order_num,
+                customer_id=customer_id,
+                customer_name=customer_name,
+                customer_phone=customer_phone,
+                delivery_address=delivery_address,
+                vendor_store=store,
+                status=GroceryOrder.Status.CONFIRMED if payment_method == "COD" else GroceryOrder.Status.PENDING_PAYMENT,
+                payment_method=payment_method,
+                payment_status=GroceryOrder.PaymentStatus.PENDING,
+                subtotal=Decimal(str(summary["subtotal"])),
+                deal_discount=Decimal(str(summary["deal_discount"])),
+                vendor_coupon_discount=Decimal(str(summary["coupon_discount"])),
+                delivery_fee=Decimal(str(summary["delivery_fee"])),
+                tax=Decimal(str(summary["tax"])),
+                total_amount=Decimal(str(summary["total_amount"])),
+                applied_coupon_code=summary["coupon_code"] or "",
+                delivery_notes=delivery_notes,
+            )
+
+            # Reserve inventory & create line item snapshots
+            for item_calc in summary["items"]:
+                inv = locked_items[item_calc["inventory_item_id"]]
+                qty = Decimal(str(item_calc["quantity"]))
+
+                # Update reserved_quantity
+                inv.reserved_quantity = (inv.reserved_quantity or Decimal("0.000")) + qty
+                inv.save(update_fields=["reserved_quantity", "updated_at"])
+
+                # Write transaction ledger
+                InventoryTransaction.objects.create(
+                    inventory_item=inv,
+                    transaction_type=InventoryTransaction.TransactionType.RESERVATION,
+                    quantity=qty,
+                    balance_after=inv.available_quantity,
+                    reference_id=order.order_number,
+                    notes=f"Reserved for Order #{order.order_number}",
+                )
+
+                # Snapshot order item
+                GroceryOrderItem.objects.create(
+                    order=order,
+                    inventory_item=inv,
+                    product_name_snapshot=item_calc["product_name"],
+                    sku_snapshot=item_calc["sku"],
+                    unit_snapshot=item_calc["unit"],
+                    quantity=qty,
+                    mrp_snapshot=Decimal(str(item_calc["mrp"])),
+                    regular_price_snapshot=Decimal(str(item_calc["regular_unit_price"])),
+                    deal_price_snapshot=Decimal(str(item_calc["deal"]["deal_price"])) if item_calc["deal"] else None,
+                    final_unit_price=Decimal(str(item_calc["final_unit_price"])),
+                    total_price=Decimal(str(item_calc["line_total"])),
+                )
+
+            # Record coupon redemption if applied
+            if summary["coupon_code"]:
+                coupon_obj = VendorCoupon.objects.filter(company=store.company, code__iexact=summary["coupon_code"]).first()
+                if coupon_obj:
+                    coupon_obj.times_used += 1
+                    coupon_obj.save(update_fields=["times_used"])
+                    CouponRedemption.objects.create(
+                        coupon=coupon_obj,
+                        customer_id=customer_id,
+                        order_id=order.order_number,
+                        discount_amount=Decimal(str(summary["coupon_discount"])),
+                    )
+
+            # Status history entry
+            GroceryOrderStatusHistory.objects.create(
+                order=order,
+                from_status="NONE",
+                to_status=order.status,
+                actor=customer_name,
+                notes="Order placed by customer",
+            )
+
+            # Create Delivery Record
+            import random
+            otp = f"{random.randint(1000, 9999)}"
+            GroceryDelivery.objects.create(
+                order=order,
+                fulfillment_method=GroceryDelivery.FulfillmentMethod.VENDOR_DELIVERY,
+                status=GroceryDelivery.DeliveryStatus.UNASSIGNED,
+                delivery_otp=otp,
+            )
+
+            # Clear cart
+            cart.items.all().delete()
+            cart.vendor_store = None
+            cart.save(update_fields=["vendor_store", "updated_at"])
+
+        from workforce_api.serializers import GroceryOrderSerializer
+        return Response({
+            "success": True,
+            "message": f"Order #{order.order_number} placed successfully!",
+            "order": GroceryOrderSerializer(order).data,
+        }, status=status.HTTP_201_CREATED)
+
+
+class PublicGroceryOrderTrackingView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, order_number):
+        from workforce_api.models import GroceryOrder
+        from workforce_api.serializers import GroceryOrderSerializer
+        order = GroceryOrder.objects.filter(order_number=order_number).select_related("vendor_store", "delivery").prefetch_related("items", "status_history").first()
+        if not order:
+            return Response({"error": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(GroceryOrderSerializer(order).data)
+
+
+class PublicGroceryOrderReviewView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, order_number):
+        from workforce_api.models import GroceryOrder, VendorStoreReview
+        from django.db.models import Avg
+
+        order = GroceryOrder.objects.filter(order_number=order_number).select_related("vendor_store").first()
+        if not order:
+            return Response({"error": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
+        if order.status != GroceryOrder.Status.DELIVERED:
+            return Response({"error": "Reviews can only be submitted for delivered orders."}, status=status.HTTP_400_BAD_REQUEST)
+        if hasattr(order, "review"):
+            return Response({"error": "You have already reviewed this order."}, status=status.HTTP_400_BAD_REQUEST)
+
+        rating = int(request.data.get("rating", 5))
+        review_text = request.data.get("review_text", "")
+        customer_name = request.data.get("customer_name") or order.customer_name or "Anonymous"
+
+        review = VendorStoreReview.objects.create(
+            vendor_store=order.vendor_store,
+            customer_id=order.customer_id,
+            customer_name=customer_name,
+            order=order,
+            rating=max(1, min(5, rating)),
+            review_text=review_text,
+        )
+
+        # Update cached rating average on store
+        store = order.vendor_store
+        avg_rating = VendorStoreReview.objects.filter(vendor_store=store).aggregate(Avg("rating"))["rating__avg"] or 5.0
+        total_revs = VendorStoreReview.objects.filter(vendor_store=store).count()
+        store.rating_average = round(Decimal(str(avg_rating)), 2)
+        store.total_reviews = total_revs
+        store.save(update_fields=["rating_average", "total_reviews"])
+
+        return Response({"success": True, "message": "Review submitted successfully!"})
+
+
+# ── Vendor Order Management Endpoints (IsGrocerySupplier Protected) ────────────
+
+class VendorOrderListView(APIView):
+    """
+    Vendor view for monitoring orders received by their store.
+    """
+    permission_classes = [IsGrocerySupplier]
+
+    def get(self, request):
+        from workforce_api.models import GroceryOrder
+        from workforce_api.serializers import GroceryOrderSerializer
+
+        emp = getattr(request.user, "employee_profile", None)
+        company_id = emp.company_id if (emp and emp.company_id) else getattr(request.user, "company_id", None)
+        if not company_id:
+            return Response({"error": "Company context required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        orders = GroceryOrder.objects.filter(vendor_store__company_id=company_id).select_related("vendor_store", "delivery").prefetch_related("items")
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            orders = orders.filter(status=status_filter.upper())
+
+        serializer = GroceryOrderSerializer(orders, many=True)
+        return Response(serializer.data)
+
+
+class VendorOrderAcceptView(APIView):
+    """
+    Vendor accepts a newly received order.
+    """
+    permission_classes = [IsGrocerySupplier]
+
+    def post(self, request, pk):
+        from workforce_api.models import GroceryOrder, GroceryOrderStatusHistory
+        from django.utils import timezone
+
+        emp = getattr(request.user, "employee_profile", None)
+        company_id = emp.company_id if (emp and emp.company_id) else getattr(request.user, "company_id", None)
+
+        order = GroceryOrder.objects.filter(id=pk, vendor_store__company_id=company_id).first()
+        if not order:
+            return Response({"error": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        old_status = order.status
+        order.status = GroceryOrder.Status.ACCEPTED
+        order.accepted_at = timezone.now()
+        order.save(update_fields=["status", "accepted_at", "updated_at"])
+
+        GroceryOrderStatusHistory.objects.create(
+            order=order,
+            from_status=old_status,
+            to_status=order.status,
+            actor=request.user.get_full_name() or "Vendor Admin",
+            notes="Order accepted by vendor store",
+        )
+        return Response({"success": True, "message": "Order accepted."})
+
+
+class VendorOrderRejectView(APIView):
+    """
+    Vendor rejects an order. Automatically releases reserved stock back to available pool.
+    """
+    permission_classes = [IsGrocerySupplier]
+
+    def post(self, request, pk):
+        from workforce_api.models import GroceryOrder, GroceryOrderStatusHistory, InventoryTransaction
+        from django.db import transaction
+        from django.utils import timezone
+
+        emp = getattr(request.user, "employee_profile", None)
+        company_id = emp.company_id if (emp and emp.company_id) else getattr(request.user, "company_id", None)
+        reason = request.data.get("reason", "Vendor unable to fulfill order.")
+
+        with transaction.atomic():
+            order = GroceryOrder.objects.filter(id=pk, vendor_store__company_id=company_id).select_related("vendor_store").prefetch_related("items").first()
+            if not order:
+                return Response({"error": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            old_status = order.status
+            order.status = GroceryOrder.Status.VENDOR_REJECTED
+            order.cancelled_at = timezone.now()
+            order.rejection_reason = reason
+            order.save(update_fields=["status", "cancelled_at", "rejection_reason", "updated_at"])
+
+            # Release reserved stock atomically
+            for item in order.items.all():
+                inv = item.inventory_item
+                if inv:
+                    inv.reserved_quantity = max(Decimal("0.000"), (inv.reserved_quantity or Decimal("0.000")) - item.quantity)
+                    inv.save(update_fields=["reserved_quantity", "updated_at"])
+
+                    InventoryTransaction.objects.create(
+                        inventory_item=inv,
+                        transaction_type=InventoryTransaction.TransactionType.RESERVATION_RELEASE,
+                        quantity=item.quantity,
+                        balance_after=inv.available_quantity,
+                        reference_id=order.order_number,
+                        notes=f"Stock reservation released due to rejection of Order #{order.order_number}",
+                    )
+
+            GroceryOrderStatusHistory.objects.create(
+                order=order,
+                from_status=old_status,
+                to_status=order.status,
+                actor=request.user.get_full_name() or "Vendor Admin",
+                notes=f"Order rejected: {reason}",
+            )
+
+        return Response({"success": True, "message": "Order rejected and reserved stock released."})
+
+
+class VendorOrderStatusUpdateView(APIView):
+    """
+    Update order fulfillment status: PICKING, PACKED, READY_FOR_PICKUP, OUT_FOR_DELIVERY, DELIVERED.
+    When DELIVERED, commits stock deduction and creates Financial Ledger entry.
+    """
+    permission_classes = [IsGrocerySupplier]
+
+    def post(self, request, pk):
+        from workforce_api.models import (
+            GroceryOrder, GroceryOrderStatusHistory,
+            InventoryTransaction, FinancialLedgerEntry, CommissionRule
+        )
+        from django.db import transaction
+        from django.utils import timezone
+
+        emp = getattr(request.user, "employee_profile", None)
+        company_id = emp.company_id if (emp and emp.company_id) else getattr(request.user, "company_id", None)
+        target_status = request.data.get("status")
+
+        valid_statuses = [
+            GroceryOrder.Status.PICKING,
+            GroceryOrder.Status.PACKED,
+            GroceryOrder.Status.READY_FOR_PICKUP,
+            GroceryOrder.Status.OUT_FOR_DELIVERY,
+            GroceryOrder.Status.DELIVERED,
+        ]
+        if target_status not in valid_statuses:
+            return Response({"error": f"Invalid status. Must be one of {valid_statuses}."}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            order = GroceryOrder.objects.filter(id=pk, vendor_store__company_id=company_id).select_related("vendor_store__company", "delivery").prefetch_related("items").first()
+            if not order:
+                return Response({"error": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            old_status = order.status
+            order.status = target_status
+            now = timezone.now()
+
+            if target_status == GroceryOrder.Status.PACKED:
+                order.packed_at = now
+            elif target_status == GroceryOrder.Status.OUT_FOR_DELIVERY:
+                order.out_for_delivery_at = now
+                if hasattr(order, "delivery"):
+                    order.delivery.status = "OUT_FOR_DELIVERY"
+                    order.delivery.save(update_fields=["status"])
+            elif target_status == GroceryOrder.Status.DELIVERED:
+                # Security Check: Validate Delivery OTP
+                submitted_otp = str(request.data.get("delivery_otp", "")).strip()
+                if hasattr(order, "delivery") and order.delivery.delivery_otp:
+                    expected_otp = str(order.delivery.delivery_otp).strip()
+                    if not submitted_otp or submitted_otp != expected_otp:
+                        return Response({
+                            "error": {
+                                "code": "INVALID_DELIVERY_OTP",
+                                "message": "Invalid delivery OTP. Please verify the 4-digit OTP provided by the customer."
+                            }
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
+                order.delivered_at = now
+                order.payment_status = GroceryOrder.PaymentStatus.CAPTURED
+                if hasattr(order, "delivery"):
+                    order.delivery.status = "DELIVERED"
+                    order.delivery.delivered_at = now
+                    order.delivery.save(update_fields=["status", "delivered_at"])
+
+                # Permanently deduct inventory & write SALE ledger
+                for item in order.items.all():
+                    inv = item.inventory_item
+                    if inv:
+                        inv.quantity_in_stock = max(Decimal("0.000"), inv.quantity_in_stock - item.quantity)
+                        inv.reserved_quantity = max(Decimal("0.000"), (inv.reserved_quantity or Decimal("0.000")) - item.quantity)
+                        inv.save(update_fields=["quantity_in_stock", "reserved_quantity", "updated_at"])
+
+                        InventoryTransaction.objects.create(
+                            inventory_item=inv,
+                            transaction_type=InventoryTransaction.TransactionType.SALE,
+                            quantity=item.quantity,
+                            balance_after=inv.available_quantity,
+                            reference_id=order.order_number,
+                            notes=f"Sold in completed Order #{order.order_number}",
+                        )
+
+                # Commission calculation & immutable ledger credit
+                comm_rule = CommissionRule.objects.filter(company_id=company_id).first() or CommissionRule.objects.filter(company__isnull=True).first()
+                comm_percent = comm_rule.commission_percent if comm_rule else Decimal("5.00")
+                comm_amount = round((order.subtotal * comm_percent) / Decimal("100.00"), 2)
+                vendor_credit = order.subtotal - order.vendor_coupon_discount - comm_amount
+
+                FinancialLedgerEntry.objects.create(
+                    company=order.vendor_store.company,
+                    entry_type=FinancialLedgerEntry.EntryType.CREDIT,
+                    category=FinancialLedgerEntry.Category.SALE,
+                    amount=vendor_credit,
+                    balance_after=Decimal("0.00"),
+                    order=order,
+                    description=f"Net earnings for Order #{order.order_number} (Gross ₹{order.subtotal} - Comm ₹{comm_amount} - Disc ₹{order.vendor_coupon_discount})",
+                )
+
+            order.save()
+            GroceryOrderStatusHistory.objects.create(
+                order=order,
+                from_status=old_status,
+                to_status=order.status,
+                actor=request.user.get_full_name() or "Vendor Admin",
+                notes=f"Status transitioned to {target_status}",
+            )
+
+        return Response({"success": True, "message": f"Order status updated to {target_status}."})
+
+
+class VendorSettlementListView(APIView):
+    """
+    Vendor view for tracking settlements and financial ledger transactions.
+    """
+    permission_classes = [IsGrocerySupplier]
+
+    def get(self, request):
+        from workforce_api.models import FinancialLedgerEntry, VendorSettlement
+        from workforce_api.serializers import FinancialLedgerEntrySerializer, VendorSettlementSerializer
+
+        emp = getattr(request.user, "employee_profile", None)
+        company_id = emp.company_id if (emp and emp.company_id) else getattr(request.user, "company_id", None)
+
+        entries = FinancialLedgerEntry.objects.filter(company_id=company_id).order_by("-created_at")[:50]
+        settlements = VendorSettlement.objects.filter(vendor_store__company_id=company_id).order_by("-created_at")[:20]
+
+        return Response({
+            "ledger_entries": FinancialLedgerEntrySerializer(entries, many=True).data,
+            "settlements": VendorSettlementSerializer(settlements, many=True).data,
+        })
+
+
+class VendorInventoryLedgerView(APIView):
+    """
+    Audit ledger of all physical stock reservations, sales, purchases, and releases.
+    """
+    permission_classes = [IsGrocerySupplier]
+
+    def get(self, request):
+        from workforce_api.models import InventoryTransaction
+        from workforce_api.serializers import InventoryTransactionSerializer
+
+        emp = getattr(request.user, "employee_profile", None)
+        company_id = emp.company_id if (emp and emp.company_id) else getattr(request.user, "company_id", None)
+
+        txs = InventoryTransaction.objects.filter(inventory_item__company_id=company_id).select_related("inventory_item").order_by("-created_at")[:100]
+        return Response(InventoryTransactionSerializer(txs, many=True).data)
+
+
 
 
 

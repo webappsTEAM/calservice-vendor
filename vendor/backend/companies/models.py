@@ -46,6 +46,7 @@ class Company(models.Model):
     region = models.ForeignKey(Region, on_delete=models.SET_NULL, null=True, blank=True, related_name="companies")
     default_state = models.CharField(max_length=100, blank=True, null=True)
     industry = models.CharField(max_length=100, blank=True, null=True)
+    business_type = models.CharField(max_length=50, default="service_provider")
     website = models.URLField(max_length=255, blank=True, null=True)
     timezone = models.CharField(max_length=50, default="UTC")
     data_region = models.CharField(max_length=50, default="us-east")
