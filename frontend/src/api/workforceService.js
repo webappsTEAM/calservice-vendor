@@ -206,6 +206,23 @@ export async function apiTransitionJob(jobId, targetStatus) {
   });
 }
 
+// Hold and resume are not plain status transitions: they also open and close
+// the Break that keeps held time out of the technician's worked hours, so they
+// have dedicated endpoints rather than going through /transition/.
+export async function apiHoldJob(jobId, reason) {
+  return await apiRequest(`/workforce/jobs/${jobId}/hold/`, {
+    method: 'POST',
+    json: { reason },
+  });
+}
+
+export async function apiResumeJob(jobId) {
+  return await apiRequest(`/workforce/jobs/${jobId}/resume/`, {
+    method: 'POST',
+    json: {},
+  });
+}
+
 export async function apiAcceptJobOffer(jobId) {
   return await apiRequest(`/workforce/jobs/${jobId}/accept-offer/`, {
     method: 'POST',
@@ -1175,104 +1192,5 @@ export async function apiGetAdminQuoteMetrics() {
 export async function apiAdminRetryQuoteConversion(quoteId) {
   return await apiRequest(`/workforce/admin/quotes/${quoteId}/retry-conversion/`, {
     method: 'POST',
-  });
-}
-
-
-// ---------------------------------------------------------------------------
-// Estimation workflow: customer decision, SEVO approval, invoicing, pricing
-// ---------------------------------------------------------------------------
-
-/** The customer's view of a quotation. The token in the URL is the credential. */
-export async function apiGetQuoteByToken(token) {
-  return await apiRequest(`/workforce/quotes/decision/${token}/`);
-}
-
-/** action: 'ACCEPT' | 'DECLINE' | 'REQUEST_CHANGES' */
-export async function apiDecideQuoteByToken(token, action, notes = '', reason = '') {
-  return await apiRequest(`/workforce/quotes/decision/${token}/`, {
-    method: 'POST',
-    json: { action, notes, reason },
-  });
-}
-
-/** Quotes the customer has accepted, awaiting SEVO authorisation. */
-export async function apiGetQuotesAwaitingApproval(companyId = '') {
-  const q = companyId ? `?company_id=${encodeURIComponent(companyId)}` : '';
-  return await apiRequest(`/workforce/quotes/pending-approval/${q}`);
-}
-
-/** Approving creates the work booking and issues the invoice. */
-export async function apiAdminReviewQuote(quoteId, approve, notes = '', reason = '') {
-  return await apiRequest(`/workforce/quotes/${quoteId}/admin-review/`, {
-    method: 'POST',
-    json: { action: approve ? 'APPROVE' : 'REJECT', notes, reason },
-  });
-}
-
-/** Quotes held before the customer sees them (high-value or structural). */
-export async function apiGetQuotesAwaitingPreSendReview() {
-  return await apiRequest('/workforce/quotes/pending-review/');
-}
-
-export async function apiReleaseQuoteForSending(quoteId, approve, notes = '') {
-  return await apiRequest(`/workforce/quotes/${quoteId}/pre-send-review/`, {
-    method: 'POST',
-    json: { action: approve ? 'APPROVE' : 'REJECT', notes },
-  });
-}
-
-export async function apiGetInvoices(params = {}) {
-  const query = new URLSearchParams();
-  if (params.status) query.append('status', params.status);
-  if (params.job_id) query.append('job_id', params.job_id);
-  if (params.quote_id) query.append('quote_id', params.quote_id);
-  if (params.search) query.append('search', params.search);
-  const qStr = query.toString() ? `?${query.toString()}` : '';
-  return await apiRequest(`/workforce/invoices/${qStr}`);
-}
-
-export async function apiGetInvoiceDetail(invoiceId) {
-  return await apiRequest(`/workforce/invoices/${invoiceId}/`);
-}
-
-/**
- * Record a customer payment. `reference` makes this idempotent: replaying a
- * gateway callback with the same reference returns the original payment rather
- * than charging again.
- */
-export async function apiRecordInvoicePayment(invoiceId, { amount, method = 'ONLINE', reference = '', gateway = '', notes = '' }) {
-  return await apiRequest(`/workforce/invoices/${invoiceId}/payments/`, {
-    method: 'POST',
-    json: { amount, method, reference, gateway, notes },
-  });
-}
-
-export async function apiCancelInvoice(invoiceId, reason = '') {
-  return await apiRequest(`/workforce/invoices/${invoiceId}/cancel/`, {
-    method: 'POST',
-    json: { reason },
-  });
-}
-
-export async function apiGetPricingPolicies() {
-  return await apiRequest('/workforce/settings/pricing-policies/');
-}
-
-export async function apiUpdatePricingPolicy(policyId, patch) {
-  return await apiRequest(`/workforce/settings/pricing-policies/${policyId}/`, {
-    method: 'PATCH',
-    json: patch,
-  });
-}
-
-/**
- * Ask the backend what a rate-card line costs. Slab, band and minimum-quantity
- * rules live in one place on the server; the builder must not reimplement them.
- */
-export async function apiPriceRateCardLine(rateCardId, quantity, tier = null) {
-  return await apiRequest('/workforce/rate-cards/price/', {
-    method: 'POST',
-    json: { rate_card_id: rateCardId, quantity, tier },
   });
 }
