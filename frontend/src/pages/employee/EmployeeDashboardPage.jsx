@@ -1345,6 +1345,8 @@ export function EmployeeDashboardPage() {
             liveLocation={liveLocation}
             locationError={locationError}
             actionLoading={actionLoading}
+            error={error}
+            successMsg={successMsg}
             handleAcceptOffer={handleAcceptOffer}
             handleRejectOffer={handleRejectOffer}
             handleJobAction={handleJobAction}
@@ -1773,11 +1775,17 @@ export function EmployeeDashboardPage() {
                         maxLength={6}
                         required
                         value={paymentOtpInput}
-                        onChange={(e) => setPaymentOtpInput(e.target.value)}
+                        onChange={(e) => setPaymentOtpInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
                         placeholder="• • • • • •"
                         className="w-full border border-slate-300 rounded-lg p-2.5 font-mono text-base font-bold text-slate-900 tracking-[0.3em] text-center outline-none focus:border-slate-800"
                       />
                     </div>
+
+                    {error && (
+                      <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold">
+                        {error}
+                      </div>
+                    )}
 
                     <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
                       <button
@@ -1790,7 +1798,7 @@ export function EmployeeDashboardPage() {
                       <button
                         type="button"
                         onClick={() => handleVerifyPaymentOtpSubmit(cashModalJob.id, paymentOtpInput)}
-                        disabled={isVerifyingPaymentOtp || !paymentOtpInput || paymentOtpInput.trim().length !== 6}
+                        disabled={isVerifyingPaymentOtp || !paymentOtpInput || String(paymentOtpInput).replace(/\D/g, '').length !== 6}
                         className="px-5 py-2 rounded-lg bg-emerald-600 disabled:opacity-50 text-white font-bold hover:bg-emerald-700 shadow-sm cursor-pointer flex items-center gap-1.5"
                       >
                         {isVerifyingPaymentOtp ? <RotateCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}

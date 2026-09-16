@@ -3301,6 +3301,16 @@ class WorkforceJobPaymentVerifyOTPView(APIView):
                 }, status=status.HTTP_400_BAD_REQUEST)
 
             if pmt.payment_status == JobPayment.PaymentStatus.PAID:
+                if job.payment_status != "paid":
+                    job.payment_status = "paid"
+                    job.save(update_fields=["payment_status"])
+                if hasattr(job, "_payment_record_cache"):
+                    delattr(job, "_payment_record_cache")
+                if job.status == "proof_submitted":
+                    try:
+                        apply_transition(job, "completed", actor=request.user)
+                    except Exception as comp_err:
+                        logger.warning("Could not complete already-PAID job #%s: %s", job.id, comp_err)
                 return Response({
                     "message": "Payment has already been marked PAID.",
                     "payment_status": "PAID",
@@ -3378,6 +3388,11 @@ class WorkforceJobPaymentVerifyOTPView(APIView):
             )
 
             job.payment_status = "paid"
+            job.save(update_fields=["payment_status"])
+
+            # Clear cached reverse relation so is_ready_to_complete sees updated pmt
+            if hasattr(job, "_payment_record_cache"):
+                delattr(job, "_payment_record_cache")
 
             # Fixes X-01: let the customer app know cash was collected and
             # confirmed, mirroring the ONLINE-gateway payment.collected event

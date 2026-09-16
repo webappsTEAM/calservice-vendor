@@ -91,6 +91,8 @@ export function PortalCockpitLayout({
   liveLocation,
   locationError,
   actionLoading,
+  error = '',
+  successMsg = '',
   handleAcceptOffer,
   handleRejectOffer,
   handleJobAction,
@@ -163,7 +165,7 @@ export function PortalCockpitLayout({
     activeJob?.payment_status === 'collected' ||
     activeJob?.payment?.payment_status === 'PAID'
   );
-  const isCashPending = (
+  const isCashPending = !isPaid && (
     activeJob?.payment_status === 'cash_pending' ||
     activeJob?.payment?.payment_status === 'CASH_PENDING'
   );
@@ -560,6 +562,13 @@ export function PortalCockpitLayout({
                         </p>
                       </div>
 
+                      {error && (
+                        <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-center gap-2">
+                          <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+                          <span>{error}</span>
+                        </div>
+                      )}
+
                       <form
                         onSubmit={(e) => {
                           e.preventDefault();
@@ -574,14 +583,17 @@ export function PortalCockpitLayout({
                             type="text"
                             maxLength={6}
                             value={paymentOtpInput || ''}
-                            onChange={(e) => setPaymentOtpInput && setPaymentOtpInput(e.target.value)}
+                            onChange={(e) => {
+                              const val = e.target.value.replace(/\D/g, '').slice(0, 6);
+                              if (setPaymentOtpInput) setPaymentOtpInput(val);
+                            }}
                             placeholder="• • • • • •"
                             className="flex-1 px-4 py-2.5 bg-white border border-amber-300 rounded-xl font-mono text-base font-black text-slate-900 tracking-[0.3em] text-center outline-none focus:border-amber-600 shadow-2xs"
                             required
                           />
                           <button
                             type="submit"
-                            disabled={isVerifyingPaymentOtp || !paymentOtpInput || paymentOtpInput.trim().length !== 6}
+                            disabled={isVerifyingPaymentOtp || !paymentOtpInput || String(paymentOtpInput).replace(/\D/g, '').length !== 6}
                             className="px-5 py-2.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 shrink-0"
                           >
                             {isVerifyingPaymentOtp ? (
@@ -589,7 +601,7 @@ export function PortalCockpitLayout({
                             ) : (
                               <CheckCircle2 className="w-3.5 h-3.5" />
                             )}
-                            <span>Verify &amp; Complete</span>
+                            <span>Verify & Complete</span>
                           </button>
                         </div>
                       </form>
@@ -715,8 +727,8 @@ export function PortalCockpitLayout({
                             type="text"
                             maxLength={6}
                             value={otpInput || ''}
-                            onChange={(e) => setOtpInput(e.target.value)}
-                            placeholder="4-digit OTP *"
+                            onChange={(e) => setOtpInput && setOtpInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                            placeholder="6-digit OTP *"
                             className="flex-1 px-3 py-2 bg-slate-100/90 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-900 outline-none focus:bg-white focus:border-slate-400"
                           />
                           <button

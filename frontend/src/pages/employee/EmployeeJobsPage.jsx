@@ -738,8 +738,11 @@ export function EmployeeJobsPage() {
               const statusTag = getStatusTag(job.status);
               const CategoryIcon = catMeta.icon;
 
-              const mapUrl = job.address
-                ? `https://maps.google.com/?q=${encodeURIComponent(job.address)}`
+              // Prefer high-precision GPS coordinates when available, fallback to textual address
+              const mapUrl = (job.latitude != null && job.longitude != null)
+                ? `https://www.google.com/maps/search/?api=1&query=${job.latitude},${job.longitude}`
+                : job.address
+                ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(job.address)}`
                 : null;
 
               // Bug found: job.estimated_price / job.price are not fields the
@@ -861,7 +864,7 @@ export function EmployeeJobsPage() {
                             customer_phone as a harmless second fallback. */}
                         {(job.phone || job.customer_phone) ? (
                           <a
-                            href={`tel:${job.phone || job.customer_phone}`}
+                            href={`tel:${(() => { const p = String(job.phone || job.customer_phone || '').trim(); return p.startsWith('+') ? p : (p.length === 10 ? `+91${p}` : p); })()}`}
                             className="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg inline-flex items-center gap-1.5 shadow-2xs transition-all shrink-0 cursor-pointer"
                           >
                             <Phone className="w-3 h-3" />

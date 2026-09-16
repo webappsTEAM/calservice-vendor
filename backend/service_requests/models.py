@@ -460,7 +460,8 @@ class ServiceRequest(models.Model):
         # 4. Check payment state machine: Payment must be verified as PAID before closing job
         try:
             from workforce_api.models import JobPayment
-            pmt = getattr(self, "payment_record", None) or JobPayment.objects.filter(job=self).first()
+            # Always query fresh from DB to avoid stale cached reverse relation
+            pmt = JobPayment.objects.filter(job_id=self.pk).first()
             if pmt:
                 if pmt.payment_status == JobPayment.PaymentStatus.CASH_PENDING:
                     pending_dependencies.append("Cash payment collection has been reported but is awaiting customer confirmation.")
