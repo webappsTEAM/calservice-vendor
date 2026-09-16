@@ -76,7 +76,6 @@ export function ClockInCard({
             };
             setLiveLocation(newLoc);
             if (onLocationUpdate) onLocationUpdate(newLoc);
-            apiUpdateLocationFull(latitude, longitude, accuracy, speed, heading, captured_at).catch(() => {});
           }
         } catch (_) {}
       })();

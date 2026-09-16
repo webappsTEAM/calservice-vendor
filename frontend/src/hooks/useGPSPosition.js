@@ -64,7 +64,7 @@ export function getGPSPosition(preferHighAccuracy = true) {
         (pos) => resolve(pos),
         (err) => {
           if (!isFallback && (err.code === 3 || err.code === 2 || err.code === err.TIMEOUT || err.code === err.POSITION_UNAVAILABLE)) {
-            tryPosition(false, 10000, 300000, true);
+            tryPosition(false, 10000, 30000, true);
             return;
           }
 
@@ -128,35 +128,72 @@ export function useGPSPosition() {
  * Location Adapter Abstraction (Mobile & Web Architecture)
  */
 export class WebGeolocationAdapter {
+  constructor() {
+    this._watchId = null;
+    this._stopped = false;
+  }
+
   watch(onSuccess, onError, options) {
     if (typeof window === 'undefined' || !navigator.geolocation) {
       if (onError) onError({ code: 'UNSUPPORTED', message: 'Geolocation not supported.' });
-      return null;
+      return { stop: () => {} };
     }
-    return navigator.geolocation.watchPosition(
-      onSuccess,
+    this._stopped = false;
+    this._watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        if (!this._stopped && onSuccess) onSuccess(pos);
+      },
       (err) => {
+        if (this._stopped) return;
         if (options?.enableHighAccuracy && (err.code === 2 || err.code === 3)) {
           try {
             navigator.geolocation.clearWatch(this._watchId);
           } catch (_) {}
-          this._watchId = navigator.geolocation.watchPosition(onSuccess, onError, {
-            enableHighAccuracy: false,
-            timeout: 20000,
-            maximumAge: 60000,
-          });
+          this._watchId = navigator.geolocation.watchPosition(
+            (fallbackPos) => {
+              if (!this._stopped && onSuccess) onSuccess(fallbackPos);
+            },
+            onError,
+            {
+              enableHighAccuracy: false,
+              timeout: 20000,
+              maximumAge: 30000,
+            }
+          );
           return;
         }
         if (onError) onError(err);
       },
       options
     );
+
+    return {
+      stop: () => {
+        this._stopped = true;
+        if (this._watchId != null) {
+          try {
+            navigator.geolocation.clearWatch(this._watchId);
+          } catch (_) {}
+          this._watchId = null;
+        }
+      },
+    };
   }
 
-  clearWatch(id) {
-    if (typeof window !== 'undefined' && navigator.geolocation && id != null) {
+  clearWatch(handleOrId) {
+    if (handleOrId && typeof handleOrId.stop === 'function') {
+      handleOrId.stop();
+      return;
+    }
+    if (this._watchId != null) {
       try {
-        navigator.geolocation.clearWatch(id);
+        navigator.geolocation.clearWatch(this._watchId);
+      } catch (_) {}
+      this._watchId = null;
+    }
+    if (typeof window !== 'undefined' && navigator.geolocation && typeof handleOrId === 'number') {
+      try {
+        navigator.geolocation.clearWatch(handleOrId);
       } catch (_) {}
     }
   }

@@ -67,6 +67,7 @@ export function useRealtimeStream({
   const wasReconnectingRef = useRef(false);
   const isMountedRef = useRef(true);
   const isConnectingRef = useRef(false);
+  const lastEventIdRef = useRef(null);
 
   // Helper to deduplicate incoming events
   const isDuplicateEvent = useCallback((eventData) => {
@@ -223,7 +224,8 @@ export function useRealtimeStream({
       setConnectionState((prev) => (prev === SSE_STATE.DISCONNECTED ? SSE_STATE.CONNECTING : SSE_STATE.RECONNECTING));
       console.info(`[Realtime CONNECT] generation=${currentGen}`);
 
-      const streamUrl = `/api/workforce/realtime/stream/?token=${encodeURIComponent(token)}`;
+      const lastIdQuery = lastEventIdRef.current ? `&last_event_id=${encodeURIComponent(lastEventIdRef.current)}` : '';
+      const streamUrl = `/api/workforce/realtime/stream/?token=${encodeURIComponent(token)}${lastIdQuery}`;
       const es = new EventSource(streamUrl);
       activeEventSourceRef.current = es;
 
@@ -253,6 +255,11 @@ export function useRealtimeStream({
 
         try {
           const eventData = JSON.parse(e.data);
+          if (e.lastEventId) {
+            lastEventIdRef.current = e.lastEventId;
+          } else if (eventData?.id) {
+            lastEventIdRef.current = eventData.id;
+          }
           if (!isDuplicateEvent(eventData)) {
             if (onEventRef.current) {
               onEventRef.current(eventData);

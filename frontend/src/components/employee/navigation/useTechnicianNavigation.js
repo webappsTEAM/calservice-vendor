@@ -68,6 +68,19 @@ export function useTechnicianNavigation({
   const lastCapturedAtRef = useRef(technicianLocation?.captured_at ? new Date(technicianLocation.captured_at).getTime() : 0);
   const lastRoutingTimeRef = useRef(0);
   const lastRoutedCoordsRef = useRef({ lat: null, lng: null });
+  const isRoutingInFlightRef = useRef(false);
+  const custLatRef = useRef(custLat);
+  custLatRef.current = custLat;
+  const custLonRef = useRef(custLon);
+  custLonRef.current = custLon;
+  const routeStepsRef = useRef(routeSteps);
+  routeStepsRef.current = routeSteps;
+  const activeStepIndexRef = useRef(activeStepIndex);
+  activeStepIndexRef.current = activeStepIndex;
+  const directionsResultRef = useRef(directionsResult);
+  directionsResultRef.current = directionsResult;
+  const onLocationReportRef = useRef(onLocationReport);
+  onLocationReportRef.current = onLocationReport;
   const prevPositionRef = useRef(technicianLocation ? { lat: technicianLocation.latitude, lng: technicianLocation.longitude } : null);
   const directionsServiceRef = useRef(null);
 
@@ -132,6 +145,10 @@ export function useTechnicianNavigation({
       }
 
       // Check distance movement threshold (unless forced)
+      if (isRoutingInFlightRef.current && !force) {
+        return; // Guard: single in-flight route request
+      }
+
       if (!force && lastRoutedCoordsRef.current.lat != null) {
         const movedMeters = calculateDistanceMeters(
           lastRoutedCoordsRef.current.lat,
@@ -150,6 +167,7 @@ export function useTechnicianNavigation({
 
       lastRoutingTimeRef.current = now;
       lastRoutedCoordsRef.current = { lat: originLat, lng: originLng };
+      isRoutingInFlightRef.current = true;
       setIsRecalculating(true);
 
       directionsServiceRef.current.route(
@@ -159,6 +177,7 @@ export function useTechnicianNavigation({
           travelMode: window.google.maps.TravelMode.DRIVING,
         },
         (result, status) => {
+          isRoutingInFlightRef.current = false;
           setIsRecalculating(false);
           if (status === window.google.maps.DirectionsStatus.OK && result?.routes?.[0]?.legs?.[0]) {
             setDirectionsResult(result);
@@ -225,36 +244,41 @@ export function useTechnicianNavigation({
       setTechnicianLocation(newCoords);
 
       // Notify parent if callback provided
-      if (onLocationReport) {
-        onLocationReport(newCoords);
+      if (onLocationReportRef.current) {
+        onLocationReportRef.current(newCoords);
       }
 
+      const curSteps = routeStepsRef.current;
+      const curStepIdx = activeStepIndexRef.current;
+      const cLat = custLatRef.current;
+      const cLon = custLonRef.current;
+
       // Check step progression
-      if (routeSteps.length > 0) {
-        const nextIdx = findActiveStepIndex(routeSteps, lat, lng, activeStepIndex);
-        if (nextIdx !== activeStepIndex) {
+      if (curSteps.length > 0) {
+        const nextIdx = findActiveStepIndex(curSteps, lat, lng, curStepIdx);
+        if (nextIdx !== curStepIdx) {
           setActiveStepIndex(nextIdx);
         }
 
         // Off-route check
-        const activeStep = routeSteps[activeStepIndex];
+        const activeStep = curSteps[curStepIdx];
         if (activeStep?.startLocation && activeStep?.endLocation) {
           const crossTrackDist = computeCrossTrackDistanceMeters(
             { lat, lng },
             activeStep.startLocation,
             activeStep.endLocation
           );
-          if (crossTrackDist > OFF_ROUTE_THRESHOLD_METERS && custLat != null && custLon != null) {
-            requestRoadRoute(lat, lng, custLat, custLon, true);
+          if (crossTrackDist > OFF_ROUTE_THRESHOLD_METERS && cLat != null && cLon != null) {
+            requestRoadRoute(lat, lng, cLat, cLon, true);
           }
         }
       }
 
       // Check if routing should be requested
-      if (custLat != null && custLon != null && !directionsResult) {
-        requestRoadRoute(lat, lng, custLat, custLon, true);
-      } else if (custLat != null && custLon != null) {
-        requestRoadRoute(lat, lng, custLat, custLon, false);
+      if (cLat != null && cLon != null && !directionsResultRef.current) {
+        requestRoadRoute(lat, lng, cLat, cLon, true);
+      } else if (cLat != null && cLon != null) {
+        requestRoadRoute(lat, lng, cLat, cLon, false);
       }
     };
 
@@ -262,7 +286,7 @@ export function useTechnicianNavigation({
     return () => {
       window.removeEventListener('workforce:location-updated', handleLocationUpdate);
     };
-  }, [activeStepIndex, custLat, custLon, directionsResult, onLocationReport, requestRoadRoute, routeSteps]);
+  }, [requestRoadRoute]);
 
   // Load Google Maps API Script
   useEffect(() => {
@@ -310,6 +334,7 @@ export function useTechnicianNavigation({
 
   // Total route metrics
   const totalLeg = directionsResult?.routes?.[0]?.legs?.[0];
+  const isDegradedEta = Boolean(directionsFailed || !totalLeg?.duration?.value);
   const totalDistanceMeters = totalLeg?.distance?.value ?? calculateDistanceMeters(
     technicianLocation?.latitude,
     technicianLocation?.longitude,
@@ -320,11 +345,11 @@ export function useTechnicianNavigation({
 
   const displayDistanceText = !directionsFailed && totalLeg?.distance?.text
     ? totalLeg.distance.text
-    : formatDistance(totalDistanceMeters);
+    : (totalDistanceMeters != null ? `${formatDistance(totalDistanceMeters)} (est)` : 'Calculating...');
 
   const displayEtaText = !directionsFailed && totalLeg?.duration?.text
     ? totalLeg.duration.text
-    : formatEtaMinutes(totalDurationSeconds);
+    : (totalDurationSeconds != null ? `${formatEtaMinutes(totalDurationSeconds)} (approx)` : 'Calculating...');
 
   const arrivalClockText = useMemo(() => {
     return computeArrivalTimeClock(totalDurationSeconds);
