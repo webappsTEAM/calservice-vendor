@@ -120,7 +120,10 @@ export function PortalCockpitLayout({
   const isBreak = timeTracking?.shift_status === 'on_break';
 
   // Authoritative Primary Active Job and Incoming Offer Resolution
-  const offer = incomingOffers && incomingOffers.length > 0 ? incomingOffers[0] : null;
+  const [selectedOfferIndex, setSelectedOfferIndex] = useState(0);
+  const totalOffers = incomingOffers?.length || 0;
+  const safeOfferIdx = totalOffers > 0 ? Math.min(selectedOfferIndex, totalOffers - 1) : 0;
+  const offer = totalOffers > 0 ? incomingOffers[safeOfferIdx] : null;
   const activeJob = activeAssignedJob || null;
   const isOffer = Boolean(offer && !activeJob);
   const job = activeJob || offer || null;
@@ -404,6 +407,18 @@ export function PortalCockpitLayout({
                       {isOffer ? 'NEW JOB OFFER' : isArrived ? 'SITE ARRIVAL' : isEnRoute ? 'EN ROUTE' : isInProgress ? 'IN PROGRESS' : 'ACTIVE ASSIGNMENT'}
                     </span>
                     <div className="flex items-center gap-2">
+                      {isOffer && totalOffers > 1 && (
+                        <div className="flex items-center gap-1 bg-amber-50 border border-amber-200 rounded px-2 py-0.5 text-[10px] font-bold text-amber-900">
+                          <span>Offer {safeOfferIdx + 1} of {totalOffers}</span>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedOfferIndex((i) => (i + 1) % totalOffers)}
+                            className="ml-1 px-1.5 py-0.5 bg-amber-200 hover:bg-amber-300 rounded text-[9px] font-mono font-bold"
+                          >
+                            Next →
+                          </button>
+                        </div>
+                      )}
                       {isOffer && (job.offer_expires_at || job.active_offer?.expires_at) && (
                         <CountdownBadge
                           targetTime={job.offer_expires_at || job.active_offer?.expires_at}

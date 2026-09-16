@@ -181,6 +181,10 @@ export function App() {
             <Route path="jobs" element={<EmployeeJobsPage />} />
             <Route path="estimates" element={<EmployeeEstimatesPage />} />
             <Route path="estimates/:id" element={<EmployeeEstimatesPage />} />
+            <Route path="estimation" element={<Navigate to="/workforce/employee/estimates" replace />} />
+            <Route path="estimation/:id" element={<EmployeeEstimatesPage />} />
+            <Route path="estimations" element={<Navigate to="/workforce/employee/estimates" replace />} />
+            <Route path="estimations/:id" element={<EmployeeEstimatesPage />} />
             <Route path="schedule" element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="attendance" element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="leave" element={<Navigate to="/workforce/employee/dashboard" replace />} />
