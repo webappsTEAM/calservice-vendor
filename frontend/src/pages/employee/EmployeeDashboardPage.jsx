@@ -1369,6 +1369,13 @@ export function EmployeeDashboardPage() {
             onClockOut={handleClockOutAction}
             onStartBreak={handleStartBreakAction}
             onEndBreak={handleEndBreakAction}
+            /* Fix #2: when offer countdown hits zero, force a refresh so the
+               stale offer card disappears without waiting for user interaction */
+            onOfferExpired={() => {
+              if (typeof refreshActiveJobs === 'function') {
+                refreshActiveJobs({ force: true }).catch(() => {});
+              }
+            }}
           />
 
           {/* Real-Time Live Camera Viewfinder & Snapshot Modal */}
@@ -3640,103 +3647,122 @@ export function EmployeeDashboardPage() {
                               </span>
                             </div>
 
-                            {/* Logistics Trip Stepper */}
-                            <div className="bg-slate-950/60 rounded-md p-2.5 border border-slate-800/80">
-                              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Trip Progression</div>
-                              <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5 text-center">
-                                {[
-                                  { key: 'EN_ROUTE_PICKUP', label: '1. To Pickup' },
-                                  { key: 'LOADING', label: '2. Loading' },
-                                  { key: 'EN_ROUTE_DROP', label: '3. To Drop' },
-                                  { key: 'UNLOADING', label: '4. Unloading' },
-                                  { key: 'DELIVERED', label: '5. Delivered' },
-                                ].map((step, idx, arr) => {
-                                  const currentLeg = selectedJob.logistics_leg || 'EN_ROUTE_PICKUP';
-                                  const legOrder = arr.map(s => s.key);
-                                  const currentIdx = legOrder.indexOf(currentLeg);
-                                  const isCurrent = currentLeg === step.key;
-                                  const isPast = currentIdx > idx;
+                            {/* Fix #3: Dynamic trip sequence based on service type.
+                                GT jobs: 5-step sequence (unchanged behaviour).
+                                PM (packers_movers) jobs: 13-step relocation sequence.
+                                The advance button is derived from the sequence so no
+                                new per-leg button maintenance is needed. */}
+                            {(() => {
+                              const isPM = (selectedJob.service_category || '').toLowerCase() === 'packers_movers';
+                              const legSequence = isPM ? [
+                                { key: 'ASSIGNED',       label: '1. Assigned' },
+                                { key: 'TEAM_EN_ROUTE',  label: '2. Team En Route' },
+                                { key: 'ARRIVED_PICKUP', label: '3. At Pickup' },
+                                { key: 'PACKING',        label: '4. Packing' },
+                                { key: 'DISMANTLING',    label: '5. Dismantling' },
+                                { key: 'LOADING',        label: '6. Loading' },
+                                { key: 'IN_TRANSIT',     label: '7. In Transit' },
+                                { key: 'ARRIVED_DROP',   label: '8. At Drop' },
+                                { key: 'UNLOADING',      label: '9. Unloading' },
+                                { key: 'REASSEMBLY',     label: '10. Reassembly' },
+                                { key: 'UNPACKING',      label: '11. Unpacking' },
+                                { key: 'DELIVERED',      label: '12. Delivered' },
+                                { key: 'COMPLETED',      label: '13. Completed' },
+                              ] : [
+                                { key: 'EN_ROUTE_PICKUP', label: '1. To Pickup' },
+                                { key: 'LOADING',         label: '2. Loading' },
+                                { key: 'EN_ROUTE_DROP',   label: '3. To Drop' },
+                                { key: 'UNLOADING',       label: '4. Unloading' },
+                                { key: 'DELIVERED',       label: '5. Delivered' },
+                              ];
 
-                                  return (
-                                    <div
-                                      key={step.key}
-                                      className={`px-2 py-1.5 rounded text-[11px] font-bold flex items-center justify-center gap-1 border transition-colors ${
-                                        isPast
-                                          ? 'bg-emerald-950/40 border-emerald-700/50 text-emerald-400'
-                                          : isCurrent
-                                          ? 'bg-blue-600/30 border-blue-500 text-blue-300 ring-1 ring-blue-500'
-                                          : 'bg-slate-900/50 border-slate-800 text-slate-500'
-                                      }`}
-                                    >
-                                      {isPast && <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />}
-                                      <span>{step.label}</span>
+                              const currentLeg = selectedJob.logistics_leg || legSequence[0].key;
+                              const currentIdx = legSequence.findIndex(s => s.key === currentLeg);
+                              const nextStep = currentIdx >= 0 && currentIdx < legSequence.length - 1
+                                ? legSequence[currentIdx + 1]
+                                : null;
+
+                              // Final legs that open the proof-of-delivery flow
+                              const proofLegs = isPM
+                                ? new Set(['DELIVERED', 'COMPLETED'])
+                                : new Set(['UNLOADING', 'DELIVERED']);
+                              const isAtProofLeg = proofLegs.has(currentLeg);
+
+                              const colClass = isPM
+                                ? 'grid-cols-2 sm:grid-cols-4'
+                                : 'grid-cols-2 sm:grid-cols-5';
+
+                              return (
+                                <>
+                                  {/* Trip Stepper */}
+                                  <div className="bg-slate-950/60 rounded-md p-2.5 border border-slate-800/80">
+                                    <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">
+                                      Trip Progression
                                     </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
+                                    <div className={`grid ${colClass} gap-1.5 text-center`}>
+                                      {legSequence.map((step, idx) => {
+                                        const isCurrent = currentLeg === step.key;
+                                        const isPast = currentIdx > idx;
+                                        return (
+                                          <div
+                                            key={step.key}
+                                            className={`px-2 py-1.5 rounded text-[11px] font-bold flex items-center justify-center gap-1 border transition-colors ${
+                                              isPast
+                                                ? 'bg-emerald-950/40 border-emerald-700/50 text-emerald-400'
+                                                : isCurrent
+                                                ? 'bg-blue-600/30 border-blue-500 text-blue-300 ring-1 ring-blue-500'
+                                                : 'bg-slate-900/50 border-slate-800 text-slate-500'
+                                            }`}
+                                          >
+                                            {isPast && <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />}
+                                            <span>{step.label}</span>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
 
-                            {/* Next Leg Action Buttons */}
-                            <div className="flex flex-wrap items-center gap-2 pt-1">
-                              {(!selectedJob.logistics_leg || selectedJob.logistics_leg === 'EN_ROUTE_PICKUP') && (
-                                <button
-                                  type="button"
-                                  disabled={isAdvancingLeg}
-                                  onClick={() => handleAdvanceLogisticsLeg('LOADING')}
-                                  className="px-4 py-2 rounded bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold text-xs shadow transition-colors inline-flex items-center gap-2 cursor-pointer"
-                                >
-                                  <Truck className="w-4 h-4" />
-                                  <span>{isAdvancingLeg ? 'Updating...' : 'Arrived at Pickup — Start Loading Goods →'}</span>
-                                </button>
-                              )}
+                                  {/* Next Leg Action Buttons */}
+                                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                                    {/* Primary action: advance to next leg OR open proof modal at final leg */}
+                                    {isAtProofLeg ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => setProofModalJob(selectedJob)}
+                                        className="px-4 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow transition-colors inline-flex items-center gap-2 cursor-pointer animate-pulse"
+                                      >
+                                        <Camera className="w-4 h-4" />
+                                        <span>Done — Submit Proof of Delivery (POD)</span>
+                                      </button>
+                                    ) : nextStep ? (
+                                      <button
+                                        type="button"
+                                        disabled={isAdvancingLeg}
+                                        onClick={() => handleAdvanceLogisticsLeg(nextStep.key)}
+                                        className="px-4 py-2 rounded bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold text-xs shadow transition-colors inline-flex items-center gap-2 cursor-pointer"
+                                      >
+                                        <Truck className="w-4 h-4" />
+                                        <span>
+                                          {isAdvancingLeg ? 'Updating...' : `Advance to ${nextStep.label} →`}
+                                        </span>
+                                      </button>
+                                    ) : null}
 
-                              {selectedJob.logistics_leg === 'LOADING' && (
-                                <button
-                                  type="button"
-                                  disabled={isAdvancingLeg}
-                                  onClick={() => handleAdvanceLogisticsLeg('EN_ROUTE_DROP')}
-                                  className="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold text-xs shadow transition-colors inline-flex items-center gap-2 cursor-pointer"
-                                >
-                                  <Navigation className="w-4 h-4" />
-                                  <span>{isAdvancingLeg ? 'Updating...' : 'Finished Loading — Depart to Drop Site →'}</span>
-                                </button>
-                              )}
-
-                              {selectedJob.logistics_leg === 'EN_ROUTE_DROP' && (
-                                <button
-                                  type="button"
-                                  disabled={isAdvancingLeg}
-                                  onClick={() => handleAdvanceLogisticsLeg('UNLOADING')}
-                                  className="px-4 py-2 rounded bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-bold text-xs shadow transition-colors inline-flex items-center gap-2 cursor-pointer"
-                                >
-                                  <MapPin className="w-4 h-4" />
-                                  <span>{isAdvancingLeg ? 'Updating...' : 'Arrived at Drop — Start Unloading Goods →'}</span>
-                                </button>
-                              )}
-
-                              {selectedJob.logistics_leg === 'UNLOADING' && (
-                                <button
-                                  type="button"
-                                  onClick={() => setProofModalJob(selectedJob)}
-                                  className="px-4 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow transition-colors inline-flex items-center gap-2 cursor-pointer animate-pulse"
-                                >
-                                  <Camera className="w-4 h-4" />
-                                  <span>Unloading Done — Submit Proof of Delivery (POD)</span>
-                                </button>
-                              )}
-
-                              {/* Always allow submitting proof if needed */}
-                              {selectedJob.logistics_leg !== 'UNLOADING' && (
-                                <button
-                                  type="button"
-                                  onClick={() => setProofModalJob(selectedJob)}
-                                  className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-colors inline-flex items-center gap-1.5 cursor-pointer"
-                                >
-                                  <Camera className="w-3.5 h-3.5" />
-                                  <span>Proof of Delivery</span>
-                                </button>
-                              )}
-                            </div>
+                                    {/* Escape-hatch: always allow proof submission */}
+                                    {!isAtProofLeg && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setProofModalJob(selectedJob)}
+                                        className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-colors inline-flex items-center gap-1.5 cursor-pointer"
+                                      >
+                                        <Camera className="w-3.5 h-3.5" />
+                                        <span>Proof of Delivery</span>
+                                      </button>
+                                    )}
+                                  </div>
+                                </>
+                              );
+                            })()}
 
                             {/* Multi-Stop Waypoints (GT-D-01) */}
                             {jobStops && jobStops.length > 0 && (

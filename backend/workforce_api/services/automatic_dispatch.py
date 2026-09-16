@@ -477,6 +477,30 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
             gate_results["G3"] = False
             logger.debug(f"[9GATE_REJECT_GATE3_NO_VEHICLE] Employee #{emp.id} has no active vehicle on file for logistics job '{service_name}'.")
             return False, "Gate 3: No active vehicle on file for this logistics job.", gate_results
+
+        # Enforce vehicle type compatibility for the specific logistics category
+        if service_name_clean == "goods_transport_two_wheeler":
+            compatible_vehicles = [v for v in vehicles if v.vehicle_type == "two_wheeler"]
+            if not compatible_vehicles:
+                gate_results["G3"] = False
+                logger.debug(f"[9GATE_REJECT_GATE3_VEHICLE_TYPE_MISMATCH] Employee #{emp.id} has no active two-wheeler vehicle for job '{service_name}'.")
+                return False, "Gate 3: Two-wheeler vehicle required for this delivery job.", gate_results
+            vehicles = compatible_vehicles
+        elif service_name_clean == "goods_transport_truck":
+            compatible_vehicles = [v for v in vehicles if v.vehicle_type in ("mini_truck", "pickup", "truck", "three_wheeler")]
+            if not compatible_vehicles:
+                gate_results["G3"] = False
+                logger.debug(f"[9GATE_REJECT_GATE3_VEHICLE_TYPE_MISMATCH] Employee #{emp.id} has no active truck/pickup vehicle for job '{service_name}'.")
+                return False, "Gate 3: Truck or commercial vehicle required for this cargo job.", gate_results
+            vehicles = compatible_vehicles
+        elif service_name_clean == "packers_movers":
+            compatible_vehicles = [v for v in vehicles if v.vehicle_type in ("mini_truck", "pickup", "truck")]
+            if not compatible_vehicles:
+                gate_results["G3"] = False
+                logger.debug(f"[9GATE_REJECT_GATE3_VEHICLE_TYPE_MISMATCH] Employee #{emp.id} has no active relocation vehicle for job '{service_name}'.")
+                return False, "Gate 3: Commercial relocation vehicle required for Packers & Movers job.", gate_results
+            vehicles = compatible_vehicles
+
         if not any(v.is_document_current() for v in vehicles):
             gate_results["G3"] = False
             logger.debug(f"[9GATE_REJECT_GATE3_VEHICLE_DOCS_EXPIRED] Employee #{emp.id} has no vehicle with current insurance/permit/PUC.")
@@ -1367,14 +1391,23 @@ def _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids):
         service_label = job_obj.issue_title or job_obj.service_category or "Service Request"
         expiry_str = expires_at.strftime("%H:%M:%S UTC")
 
-        WorkforceNotification.objects.create(
+        # Avoid spamming duplicate notifications for the same job offer if an unread one is already pending
+        existing_notif = WorkforceNotification.objects.filter(
             recipient=top_emp.user,
-            title="New Job Offer Available!",
-            message=f"You have a new exclusive job offer for '{service_label}'{req_id_str}{loc_str} ({top_dist_km:.1f} km away). Expiry: {expiry_str}. Open your dashboard to Accept or Decline.",
-            notification_type="JOB_OFFER",
-            company=job_obj.company,
             related_object_id=str(job_obj.id),
-        )
+            notification_type="JOB_OFFER",
+            is_read=False,
+        ).exists()
+
+        if not existing_notif:
+            WorkforceNotification.objects.create(
+                recipient=top_emp.user,
+                title="New Job Offer Available!",
+                message=f"You have a new exclusive job offer for '{service_label}'{req_id_str}{loc_str} ({top_dist_km:.1f} km away). Expiry: {expiry_str}. Open your dashboard to Accept or Decline.",
+                notification_type="JOB_OFFER",
+                company=job_obj.company,
+                related_object_id=str(job_obj.id),
+            )
 
         logger.info(
             f"[DISPATCH_DECISION] job={job_obj.id} employee={top_emp.id} "

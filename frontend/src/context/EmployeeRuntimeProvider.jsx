@@ -399,7 +399,12 @@ export function EmployeeRuntimeProvider({ children }) {
   const clearAllNotifications = useCallback(
     async (notificationIds = []) => {
       try {
-        await apiClearNotifications(notificationIds);
+        if (!notificationIds || (Array.isArray(notificationIds) && notificationIds.length === 0)) {
+          await apiClearNotifications(null, null, true);
+        } else {
+          const ids = Array.isArray(notificationIds) ? notificationIds : [notificationIds];
+          await apiClearNotifications(null, ids);
+        }
         await syncNotifications();
       } catch (_) {}
     },
@@ -413,6 +418,23 @@ export function EmployeeRuntimeProvider({ children }) {
       syncNotifications();
     }
   }, [isAuthenticated, isApprovedEmployee, refreshActiveJobs, syncNotifications]);
+
+  // Fix #5: 30-second background polling so new offers dispatched after an
+  // expiry appear on the vendor dashboard without requiring user interaction.
+  // Rules (AGENTS.md §22):
+  //  - Only fires when authenticated + approved.
+  //  - Skips silently when the tab is hidden (visibilityState === 'hidden').
+  //  - Uses { silent: true } so there is no loading spinner.
+  //  - Does not overlap with an already in-flight refresh because
+  //    refreshActiveJobs is itself guarded by inFlightActiveJobsPromiseRef.
+  useEffect(() => {
+    if (!isAuthenticated || !isApprovedEmployee) return;
+    const pollInterval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      refreshActiveJobs({ silent: true });
+    }, 30_000);
+    return () => clearInterval(pollInterval);
+  }, [isAuthenticated, isApprovedEmployee, refreshActiveJobs]);
 
   // ── 7. Single Authoritative Live GPS Watcher (Correction 1 & 3) ────────────
   const [liveLocation, setLiveLocation] = useState(() => {

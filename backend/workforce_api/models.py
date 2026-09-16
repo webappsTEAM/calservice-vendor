@@ -440,6 +440,13 @@ class WorkforceJobOffer(models.Model):
     class Meta:
         db_table = "workforce_job_offer"
         ordering = ["-offered_at"]
+        constraints = [
+            models.UniqueConstraint(
+                condition=models.Q(status="OFFERED"),
+                fields=("job", "employee"),
+                name="unique_active_job_offer_per_employee",
+            ),
+        ]
 
     def __str__(self):
         return f"Offer Job #{self.job_id} to {self.employee} ({self.status})"

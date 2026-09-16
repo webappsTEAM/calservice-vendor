@@ -2527,23 +2527,62 @@ class WorkforceJobTransitionView(APIView):
             ]
         )
         try:
-            # "Start Service Execution" lands here for home services.
-            # Logistics jobs do not have hourly TimeLog or PreServiceVerification gates.
-            if str(target_status).lower() == "in_progress" and target_emp and not is_logistics:
-                time_log, start_err = ensure_job_started(
-                    job, target_emp, request.user,
-                    notes="Clock-in on Start Service Execution",
-                )
-                if start_err:
-                    return Response({"error": start_err}, status=status.HTTP_400_BAD_REQUEST)
-                job.refresh_from_db()
-                return Response({
-                    "message": "Job transitioned to IN_PROGRESS.",
-                    "job_id": job.id,
-                    "status": job.status,
-                    "clock_in": time_log.clock_in.isoformat() if time_log and time_log.clock_in else None,
-                    "time_log_id": time_log.id if time_log else None,
-                }, status=status.HTTP_200_OK)
+            # "Start Service Execution" lands here.
+            if str(target_status).lower() == "in_progress" and target_emp:
+                # If the job is not yet in arrived/service_started, the state machine
+                # won't allow → in_progress. Silently advance it to arrived so the
+                # technician doesn't need to manually click every intermediate step when
+                # they've already completed all pre-service gates and pressed Start.
+                _current = str(job.status).lower()
+                _in_progress_allowed_from = {"arrived", "service_started", "in_progress"}
+                if _current not in _in_progress_allowed_from:
+                    _advance_path = []
+                    if _current in {"accepted", "unassigned", "assigned", "received",
+                                    "confirmed", "offering", "dispatching", "redispatching",
+                                    "rescheduled", "draft", "new_request"}:
+                        _advance_path = ["on_the_way", "arrived"]
+                    elif _current in {"on_the_way", "en_route"}:
+                        _advance_path = ["arrived"]
+                    for _step in _advance_path:
+                        try:
+                            apply_transition(job, _step, actor=request.user)
+                            job.refresh_from_db()
+                        except Exception as _adv_err:
+                            logger.warning(
+                                "Could not auto-advance job %s to %s before in_progress: %s",
+                                job.pk, _step, _adv_err,
+                            )
+                            break
+
+                _has_psv = PreServiceVerification.objects.filter(job=job).exists()
+                if _has_psv or not is_logistics:
+                    time_log, start_err = ensure_job_started(
+                        job, target_emp, request.user,
+                        notes="Clock-in on Start Service Execution",
+                    )
+                    if start_err:
+                        return Response({"error": start_err}, status=status.HTTP_400_BAD_REQUEST)
+                    job.refresh_from_db()
+                    return Response({
+                        "message": "Job transitioned to IN_PROGRESS.",
+                        "job_id": job.id,
+                        "status": job.status,
+                        "clock_in": time_log.clock_in.isoformat() if time_log and time_log.clock_in else None,
+                        "time_log_id": time_log.id if time_log else None,
+                    }, status=status.HTTP_200_OK)
+                else:
+                    new_status = apply_transition(job, "in_progress", actor=request.user)
+                    try:
+                        from service_requests.models import EmployeeJob
+                        EmployeeJob.objects.filter(service_request=job, employee=target_emp).update(status="IN_PROGRESS")
+                    except Exception:
+                        pass
+                    job.refresh_from_db()
+                    return Response({
+                        "message": f"Job transitioned to {new_status.upper()}.",
+                        "job_id": job.id,
+                        "status": new_status,
+                    }, status=status.HTTP_200_OK)
 
             new_status = apply_transition(job, target_status, actor=request.user)
             try:
@@ -3878,6 +3917,20 @@ class WorkforceJobAcceptOfferView(APIView):
             if not emp_obj:
                 return Response({"error": "Employee profile not found.", "code": "PROFILE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
+            # Reject acceptance if job was already cancelled by the customer
+            if job_obj.status in ["cancelled", "canceled"]:
+                from workforce_api.models import WorkforceJobOffer
+                WorkforceJobOffer.objects.filter(
+                    job=job_obj, employee=emp_obj, status=WorkforceJobOffer.Status.OFFERED
+                ).update(
+                    status=WorkforceJobOffer.Status.CANCELLED,
+                    rejection_reason="Customer cancelled booking before offer acceptance."
+                )
+                return Response({
+                    "error": "Cannot accept offer: Booking has already been cancelled by the customer.",
+                    "code": "JOB_ALREADY_CANCELLED"
+                }, status=status.HTTP_409_CONFLICT)
+
             # Prevent duplicate acceptance by the same employee on the same job (Idempotent success)
             if job_obj.assigned_employee == emp_obj and job_obj.status in ACTIVE_WORKLOAD_STATUSES:
                 return Response({
@@ -3957,7 +4010,18 @@ class WorkforceJobAcceptOfferView(APIView):
 
             job_obj.assigned_employee = emp_obj
             job_obj.save(update_fields=["assigned_employee"])
-            apply_transition(job_obj, "accepted", actor=request.user)
+            try:
+                apply_transition(job_obj, "accepted", actor=request.user)
+            except Exception as ve:
+                if job_obj.status in ["cancelled", "canceled"]:
+                    return Response({
+                        "error": "Cannot accept offer: Booking has already been cancelled by the customer.",
+                        "code": "JOB_ALREADY_CANCELLED"
+                    }, status=status.HTTP_409_CONFLICT)
+                return Response({
+                    "error": f"Cannot accept offer: {getattr(ve, 'detail', str(ve))}",
+                    "code": "INVALID_STATE_TRANSITION"
+                }, status=status.HTTP_409_CONFLICT)
 
             # Atomically mark employee availability as BUSY
             emp_obj.current_availability = "busy"
@@ -6719,6 +6783,14 @@ class WorkforceJobLiveTrackingView(APIView):
                 "job_id": job.id,
                 "request_id": job.request_id,
                 "status": "FINDING_NEW_PROFESSIONAL" if job.status == "redispatching" else job.status.upper(),
+                # GT-TRACKING-1: include service_category + logistics fields so the
+                # customer tracking page can detect GT bookings and render the correct
+                # UI even after the job reaches a terminal state.
+                "service_category": job.service_category or "",
+                "logistics_leg": job.logistics_leg or "",
+                "drop_address": getattr(job, "drop_address", "") or "",
+                "drop_latitude": float(job.drop_latitude) if getattr(job, "drop_latitude", None) else None,
+                "drop_longitude": float(job.drop_longitude) if getattr(job, "drop_longitude", None) else None,
                 "customer_location": {
                     "latitude": cust_lat,
                     "longitude": cust_lon,
@@ -6794,14 +6866,27 @@ class WorkforceJobLiveTrackingView(APIView):
                     pass
 
         distance_m = None
-        if tech_loc and tech_loc.get("latitude") and tech_loc.get("longitude") and cust_lat and cust_lon:
+        target_dest_lat = cust_lat
+        target_dest_lon = cust_lon
+        from workforce_api.services.automatic_dispatch import LOGISTICS_SERVICE_CATEGORIES
+        if (job.service_category or "").strip().lower() in LOGISTICS_SERVICE_CATEGORIES:
+            post_pickup_legs = {
+                "EN_ROUTE_DROP", "UNLOADING", "DELIVERED",
+                "IN_TRANSIT", "ARRIVED_DROP", "REASSEMBLY", "UNPACKING", "COMPLETED"
+            }
+            if (job.logistics_leg or "").strip().upper() in post_pickup_legs:
+                if getattr(job, "drop_latitude", None) and getattr(job, "drop_longitude", None):
+                    target_dest_lat = float(job.drop_latitude)
+                    target_dest_lon = float(job.drop_longitude)
+
+        if tech_loc and tech_loc.get("latitude") and tech_loc.get("longitude") and target_dest_lat and target_dest_lon:
             try:
                 from time_tracking.geo import haversine_distance
                 distance_m = round(haversine_distance(
                     float(tech_loc["latitude"]),
                     float(tech_loc["longitude"]),
-                    cust_lat,
-                    cust_lon
+                    target_dest_lat,
+                    target_dest_lon
                 ), 1)
             except Exception:
                 pass
@@ -6812,17 +6897,36 @@ class WorkforceJobLiveTrackingView(APIView):
             verification = PreServiceVerification.objects.filter(job=job).first()
         geofence_passed = bool(verification and verification.geofence_passed)
 
-        # Include Work Start OTP only for authorized customer / admin when unverified
+        # Include Work Start OTP for authorized customer / admin
         start_otp = None
-        if (is_owner_customer or is_tenant_admin) and verification and verification.otp_code and not verification.otp_verified:
+        if (is_owner_customer or is_tenant_admin) and verification and verification.otp_code:
             start_otp = verification.otp_code
+        elif (is_owner_customer or is_tenant_admin) and getattr(job, "start_otp", None):
+            start_otp = getattr(job, "start_otp", None)
 
         tech_photo = ""
         tech_rating = None
+        tech_vehicle_num = ""
+        tech_vehicle_type = ""
+        tech_phone = ""
         if tech:
+            tech_phone = (
+                getattr(tech, "phone", "")
+                or getattr(getattr(tech, "user", None), "phone", "")
+                or getattr(job, "technician_phone", "")
+                or ""
+            )
             profile_img = getattr(tech, "profile_photo", None) or getattr(tech, "photo", "")
             tech_photo = profile_img.url if hasattr(profile_img, "url") else str(profile_img or "")
             tech_rating = getattr(tech, "rating", None)
+            if hasattr(tech, "vehicles"):
+                try:
+                    veh = tech.vehicles.filter(is_active=True).first()
+                    if veh:
+                        tech_vehicle_num = veh.registration_number or ""
+                        tech_vehicle_type = veh.get_vehicle_type_display() or ""
+                except Exception:
+                    pass
 
         logger.info(f"[MAP_RECONCILIATION] job_id={job.id} freshness_state={freshness_state} distance_m={distance_m} age_seconds={age_seconds}")
 
@@ -6830,6 +6934,14 @@ class WorkforceJobLiveTrackingView(APIView):
             "job_id": job.id,
             "request_id": job.request_id,
             "status": job.status.upper(),
+            # GT-TRACKING-1: logistics metadata so the customer tracking page can
+            # detect GT bookings (isLogistics) and switch the map destination from
+            # pickup to drop once the driver is post-pickup (EN_ROUTE_DROP leg).
+            "service_category": job.service_category or "",
+            "logistics_leg": job.logistics_leg or "",
+            "drop_address": getattr(job, "drop_address", "") or "",
+            "drop_latitude": float(job.drop_latitude) if getattr(job, "drop_latitude", None) else None,
+            "drop_longitude": float(job.drop_longitude) if getattr(job, "drop_longitude", None) else None,
             "customer_location": {
                 "latitude": cust_lat,
                 "longitude": cust_lon,
@@ -6838,12 +6950,16 @@ class WorkforceJobLiveTrackingView(APIView):
             "assigned_technician": {
                 "id": tech.id if tech else None,
                 "name": (tech.user.get_full_name() or tech.user.username) if tech and tech.user else None,
-                "phone": tech.phone if tech else "",
+                "phone": tech_phone,
                 "title": (tech.title or "Service Partner") if tech else "",
                 "photo": tech_photo,
                 "rating": tech_rating,
                 "location": tech_loc,
+                "vehicle_number": tech_vehicle_num,
+                "vehicle_type": tech_vehicle_type,
             } if tech else None,
+            "vehicle_number": tech_vehicle_num,
+            "vehicle_type": tech_vehicle_type,
             "technician_photo": tech_photo,
             "technician_rating": tech_rating,
             "start_otp": start_otp,
@@ -10085,8 +10201,19 @@ class WorkforceJobLogisticsLegView(APIView):
     assigned to this technician, be a logistics-category job, and not
     already be in a terminal status.
 
-    POST body: {"leg": "EN_ROUTE_PICKUP" | "LOADING" | "EN_ROUTE_DROP" |
-    "UNLOADING" | "DELIVERED"}
+    Valid POST body: {"leg": "<LogisticsLeg value>"}
+
+    Goods & Transport (trucks, two_wheeler, goods_transport) — 5 legs:
+        EN_ROUTE_PICKUP → LOADING → EN_ROUTE_DROP → UNLOADING → DELIVERED
+
+    Packers & Movers (packers_movers) — 13 legs:
+        ASSIGNED → TEAM_EN_ROUTE → ARRIVED_PICKUP → PACKING → DISMANTLING
+        → LOADING → IN_TRANSIT → ARRIVED_DROP → UNLOADING → REASSEMBLY
+        → UNPACKING → DELIVERED → COMPLETED
+
+    See ServiceRequest.LogisticsLeg in service_requests/models.py for the
+    full enum.  The GET endpoint returns {"logistics_leg", "sequence"} so
+    the caller can always derive which legs are valid for the current job.
     """
     permission_classes = [IsApprovedTechnician]
 

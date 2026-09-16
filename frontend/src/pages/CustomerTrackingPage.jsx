@@ -170,8 +170,59 @@ export function CustomerTrackingPage() {
     return 'Calculating ETA...';
   }, [rawStatus, roadMetrics.etaText, trackingData?.distance_m]);
 
+  // GT-TRACKING-1: isLogistics uses the now-available service_category field that
+  // was missing from the tracking API response. The string-match fallback is kept so
+  // old response shapes (during rolling deploys) remain correct.
+  const serviceCategory = (trackingData?.service_category || '').toLowerCase();
+  const isLogistics = Boolean(
+    serviceCategory.includes('goods') ||
+    serviceCategory.includes('truck') ||
+    serviceCategory.includes('two_wheeler') ||
+    serviceCategory.includes('packers') ||
+    serviceCategory.includes('transport')
+  );
+
+  // GT-TRACKING-1: After the driver finishes loading and begins driving to the drop
+  // site, switch the map destination from pickup to drop so the customer can see where
+  // their goods are heading. Switches on EN_ROUTE_DROP (or later) because that is the
+  // first leg where the vehicle is definitively moving away from the pickup.
+  const postPickupLegs = ['EN_ROUTE_DROP', 'UNLOADING', 'DELIVERED', 'IN_TRANSIT', 'ARRIVED_DROP', 'REASSEMBLY', 'UNPACKING', 'COMPLETED'];
+  const isPostPickup = isLogistics &&
+    postPickupLegs.includes((trackingData?.logistics_leg || '').toUpperCase());
+  const mapDestination = (
+    isPostPickup &&
+    trackingData?.drop_latitude != null &&
+    trackingData?.drop_longitude != null
+  ) ? {
+    latitude: trackingData.drop_latitude,
+    longitude: trackingData.drop_longitude,
+    address: trackingData.drop_address || 'Drop Location',
+  } : custLoc;
+
   // Customer-friendly Headline Status Message
   const statusHeadline = useMemo(() => {
+    if (isLogistics) {
+      if (rawStatus === 'completed') {
+        return { title: 'Goods Delivered', subtitle: 'Consignment successfully delivered!', tone: 'emerald' };
+      }
+      if (rawStatus === 'cancelled') {
+        return { title: 'Delivery Cancelled', subtitle: 'This transport request was cancelled.', tone: 'rose' };
+      }
+      if (rawStatus === 'in_progress') {
+        return { title: 'Goods in Transit', subtitle: 'Your consignment is moving towards the destination.', tone: 'blue' };
+      }
+      if (rawStatus === 'arrived') {
+        return { title: 'Driver Has Arrived', subtitle: 'Driver has arrived at the pickup location.', tone: 'emerald' };
+      }
+      if (rawStatus === 'on_the_way') {
+        return { title: 'Driver is on the way', subtitle: 'Navigating to pickup site', tone: 'blue' };
+      }
+      if (rawStatus === 'accepted') {
+        return { title: 'Driver Assigned', subtitle: 'Your driver has accepted and is preparing to depart', tone: 'blue' };
+      }
+      return { title: 'Booking Confirmed', subtitle: 'Searching nearby verified commercial vehicles', tone: 'slate' };
+    }
+
     if (rawStatus === 'completed') {
       return { title: 'Service Completed', subtitle: 'Thank you for choosing CalServices!', tone: 'emerald' };
     }
@@ -194,11 +245,18 @@ export function CustomerTrackingPage() {
       return { title: 'Technician Assigned', subtitle: 'Your service partner is preparing to depart', tone: 'blue' };
     }
     return { title: 'Booking Confirmed', subtitle: 'We are assigning the best technician for your service', tone: 'slate' };
-  }, [rawStatus, freshness]);
+  }, [rawStatus, freshness, isLogistics]);
 
   // Status timeline steps
   const timelineSteps = useMemo(() => {
-    const steps = [
+    const steps = isLogistics ? [
+      { key: 'confirmed', label: 'Booking Confirmed' },
+      { key: 'assigned', label: 'Driver Assigned' },
+      { key: 'on_the_way', label: 'En Route to Pickup' },
+      { key: 'arrived', label: 'Arrived at Pickup' },
+      { key: 'in_progress', label: 'Goods In Transit' },
+      { key: 'completed', label: 'Goods Delivered' },
+    ] : [
       { key: 'confirmed', label: 'Booking Confirmed' },
       { key: 'assigned', label: 'Technician Assigned' },
       { key: 'on_the_way', label: 'On The Way' },
@@ -343,7 +401,8 @@ export function CustomerTrackingPage() {
             </button>
             <div>
               <h1 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                <span>Track Your Technician</span>
+                {/* GT-TRACKING-1: contextual header title */}
+                <span>{isLogistics ? 'Track Your Driver' : 'Track Your Technician'}</span>
               </h1>
               <p className="text-[11px] text-slate-500">
                 Booking #{trackingData?.request_id || jobId}
@@ -414,9 +473,10 @@ export function CustomerTrackingPage() {
         </div>
 
         {/* ── Live Map Component ── */}
+        {/* GT-TRACKING-1: mapDestination switches to drop address when driver is post-pickup */}
         <CustomerTrackingMap
           technicianCoords={techCoords}
-          serviceLocation={custLoc}
+          serviceLocation={mapDestination}
           technicianInfo={{
             name: techName,
             title: techTitle,
@@ -460,8 +520,14 @@ export function CustomerTrackingPage() {
                   <p className="text-xs text-slate-500 mt-0.5">
                     {techTitle}
                   </p>
+                  {/* GT-TRACKING-1: vehicle info for logistics bookings */}
+                  {isLogistics && (trackingData?.vehicle_number || trackingData?.vehicle_type) && (
+                    <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-1">
+                      <span>🚛</span>
+                      <span>{[trackingData.vehicle_type, trackingData.vehicle_number].filter(Boolean).join(' · ')}</span>
+                    </p>
+                  )}
                 </div>
-              </div>
 
               {/* Contact Actions (rendered only if phone number is provided) */}
               {techPhone && (

@@ -27,7 +27,7 @@ import { TechnicianNavigationView } from '../navigation/TechnicianNavigationView
 /**
  * Real-time Countdown Badge for Offer Expiration & Cancellation Window
  */
-function CountdownBadge({ targetTime, prefix = '', expiredText = 'Expired', tone = 'amber' }) {
+function CountdownBadge({ targetTime, prefix = '', expiredText = 'Expired', tone = 'amber', onExpired }) {
   const [remaining, setRemaining] = useState(() => {
     if (!targetTime) return 0;
     return Math.max(0, Math.floor((new Date(targetTime).getTime() - Date.now()) / 1000));
@@ -38,10 +38,15 @@ function CountdownBadge({ targetTime, prefix = '', expiredText = 'Expired', tone
     const interval = setInterval(() => {
       const diff = Math.max(0, Math.floor((new Date(targetTime).getTime() - Date.now()) / 1000));
       setRemaining(diff);
-      if (diff <= 0) clearInterval(interval);
+      if (diff <= 0) {
+        clearInterval(interval);
+        // Fix #2: notify caller when the countdown hits zero so they can
+        // trigger a refresh and remove the stale offer card immediately.
+        onExpired?.();
+      }
     }, 1000);
     return () => clearInterval(interval);
-  }, [targetTime]);
+  }, [targetTime, onExpired]);
 
   if (remaining <= 0) {
     return (
@@ -110,6 +115,9 @@ export function PortalCockpitLayout({
   onClockOut,
   onStartBreak,
   onEndBreak,
+  // Fix #2: called when an offer's countdown hits zero so the stale card can be
+  // dismissed without waiting for the next user-triggered refresh.
+  onOfferExpired,
 }) {
   const navigate = useNavigate();
   const [shiftElapsedSeconds, setShiftElapsedSeconds] = useState(0);
@@ -420,6 +428,7 @@ export function PortalCockpitLayout({
                           targetTime={job.offer_expires_at || job.active_offer?.expires_at}
                           prefix="Expires in "
                           tone="amber"
+                          onExpired={onOfferExpired}
                         />
                       )}
                       <span className="font-mono text-xs font-bold text-slate-400">
@@ -603,6 +612,43 @@ export function PortalCockpitLayout({
                       </span>
                     </div>
 
+                    {/* ── CUSTOMER DETAILS CARD ── */}
+                    <div className="p-3.5 rounded-xl border border-blue-200 bg-blue-50/50 space-y-2.5">
+                      <div className="flex items-center gap-2 pb-1 border-b border-blue-100">
+                        <User className="w-3.5 h-3.5 text-blue-700 shrink-0" />
+                        <span className="text-[11px] font-black text-blue-900 uppercase tracking-wider">
+                          Customer Details
+                        </span>
+                      </div>
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-2">
+                          <User className="w-3 h-3 text-slate-500 shrink-0" />
+                          <span className="text-xs font-bold text-slate-900">
+                            {customerName}
+                          </span>
+                        </div>
+                        {customerPhone && (
+                          <div className="flex items-center gap-2">
+                            <Phone className="w-3 h-3 text-slate-500 shrink-0" />
+                            <a
+                              href={`tel:${customerPhone}`}
+                              className="text-xs font-bold text-blue-700 hover:underline"
+                            >
+                              {customerPhone}
+                            </a>
+                          </div>
+                        )}
+                        {(job?.address || job?.drop_address) && (
+                          <div className="flex items-start gap-2">
+                            <MapPin className="w-3 h-3 text-slate-500 shrink-0 mt-0.5" />
+                            <span className="text-[11px] text-slate-600 font-medium leading-snug">
+                              {job?.address || job?.drop_address}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
                     {/* 1. Location Check-In (≤250m) * (Required) */}
                     <div className={`p-3.5 rounded-xl border space-y-1 transition-all ${
                       isGeofencePassed ? 'bg-emerald-50/40 border-emerald-300' : 'bg-white border-slate-200'
@@ -619,18 +665,21 @@ export function PortalCockpitLayout({
                         ) : (
                           <button
                             type="button"
-                            onClick={() => handleManualVerifyArrival(job)}
+                            onClick={() => handleManualVerifyArrival && handleManualVerifyArrival(job)}
                             disabled={actionLoading}
-                            className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded text-[11px] cursor-pointer"
+                            className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded text-[11px] cursor-pointer transition-colors shadow-sm disabled:opacity-50"
                           >
                             Verify GPS
                           </button>
                         )}
                       </div>
                       <p className="text-[11px] text-slate-500">
-                        Technician GPS coordinates verified within customer site geofence.
+                        {isGeofencePassed
+                          ? 'GPS coordinates verified within 250m of customer site.'
+                          : 'Move within 250m of the customer site to verify location.'}
                       </p>
                     </div>
+
 
                     {/* 2. Customer Start OTP * (Required) */}
                     <div className={`p-3.5 rounded-xl border space-y-2 transition-all ${

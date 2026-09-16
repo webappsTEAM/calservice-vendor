@@ -570,6 +570,15 @@ export async function apiGetNotifications() {
 }
 
 export async function apiMarkNotificationRead(id = null, ids = null) {
+  if (Array.isArray(id)) {
+    if (id.length === 0) {
+      return await apiRequest('/workforce/notifications/mark-read/', { method: 'POST' });
+    }
+    return await apiRequest('/workforce/notifications/mark-read/', {
+      method: 'POST',
+      json: { ids: id },
+    });
+  }
   if (id) {
     return await apiRequest(`/workforce/notifications/${id}/mark-read/`, { method: 'POST' });
   }
@@ -583,6 +592,18 @@ export async function apiMarkNotificationRead(id = null, ids = null) {
 }
 
 export async function apiClearNotifications(id = null, ids = null, clearAll = false) {
+  if (Array.isArray(id)) {
+    if (id.length === 0 || clearAll) {
+      return await apiRequest('/workforce/notifications/clear/', {
+        method: 'POST',
+        json: { all: true },
+      });
+    }
+    return await apiRequest('/workforce/notifications/clear/', {
+      method: 'POST',
+      json: { ids: id },
+    });
+  }
   if (id) {
     return await apiRequest(`/workforce/notifications/${id}/clear/`, { method: 'POST' });
   }
