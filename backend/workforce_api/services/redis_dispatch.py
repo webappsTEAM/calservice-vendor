@@ -28,6 +28,12 @@ REDIS_GEO_KEY = getattr(settings, "REDIS_GEO_KEY", "workforce:technicians:geo")
 REDIS_TECH_LAST_SEEN_KEY = getattr(settings, "REDIS_TECH_LAST_SEEN_KEY", "workforce:technicians:last_seen")
 REDIS_DISPATCH_STREAM = getattr(settings, "REDIS_DISPATCH_STREAM", "workforce:dispatch:jobs")
 REDIS_DISPATCH_GROUP = getattr(settings, "REDIS_DISPATCH_GROUP", "workforce:dispatch:workers")
+REDIS_DISPATCH_DEAD_LETTER_STREAM = getattr(
+    settings, "REDIS_DISPATCH_DEAD_LETTER_STREAM", "workforce:dispatch:dead_letter"
+)
+MAX_DISPATCH_DELIVERY_ATTEMPTS = int(
+    getattr(settings, "MAX_DISPATCH_DELIVERY_ATTEMPTS", 5)
+)
 
 DISPATCH_LOCATION_MAX_AGE_SECONDS = int(
     getattr(settings, "DISPATCH_LOCATION_MAX_AGE_SECONDS", 120)
@@ -336,14 +342,56 @@ def recover_pending_dispatch_messages(
         )
 
         claim_msg_ids = []
+        poison_msg_ids = []
         for p in pending_range:
             p_msg_id = p.get("message_id") if isinstance(p, dict) else (p[0] if isinstance(p, (list, tuple)) else None)
             p_idle = p.get("time_since_delivered", p.get("idle", 0)) if isinstance(p, dict) else (p[2] if isinstance(p, (list, tuple)) and len(p) > 2 else 0)
+            p_deliveries = p.get("times_delivered", 0) if isinstance(p, dict) else (p[3] if isinstance(p, (list, tuple)) and len(p) > 3 else 0)
             if p_msg_id and p_idle >= min_idle_ms:
                 if isinstance(p_msg_id, bytes):
                     p_msg_id = p_msg_id.decode("utf-8")
-                claim_msg_ids.append(p_msg_id)
+                if p_deliveries >= MAX_DISPATCH_DELIVERY_ATTEMPTS:
+                    poison_msg_ids.append((p_msg_id, p_deliveries))
+                else:
+                    claim_msg_ids.append(p_msg_id)
 
+        # 1a. Handle poison messages -> claim and route to DLQ
+        if poison_msg_ids:
+            poison_ids = [pid for pid, _ in poison_msg_ids]
+            claimed_poison = client.xclaim(
+                REDIS_DISPATCH_STREAM,
+                REDIS_DISPATCH_GROUP,
+                worker_id,
+                min_idle_time=min_idle_ms,
+                message_ids=poison_ids
+            )
+            for item in claimed_poison:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    m_id = item[0].decode("utf-8") if isinstance(item[0], bytes) else str(item[0])
+                    m_data = {
+                        (k.decode("utf-8") if isinstance(k, bytes) else str(k)):
+                        (v.decode("utf-8") if isinstance(v, bytes) else str(v))
+                        for k, v in item[1].items()
+                    }
+                    attempts = next((d for pid, d in poison_msg_ids if pid == m_id), MAX_DISPATCH_DELIVERY_ATTEMPTS)
+                    dl_payload = {
+                        **m_data,
+                        "original_msg_id": m_id,
+                        "delivery_attempts": str(attempts),
+                        "dead_lettered_at": timezone.now().isoformat(),
+                        "reason": f"Exceeded maximum delivery attempts ({attempts}/{MAX_DISPATCH_DELIVERY_ATTEMPTS})",
+                    }
+                    try:
+                        client.xadd(REDIS_DISPATCH_DEAD_LETTER_STREAM, dl_payload)
+                    except Exception as dl_err:
+                        logger.error(f"[REDIS_DLQ_ERR] Failed writing to DLQ: {dl_err}")
+                    acknowledge_dispatch_job(m_id)
+                    logger.warning(
+                        f"[REDIS_DISPATCH_POISON_DROPPED] Message {m_id} exceeded {attempts} attempts. "
+                        f"Routed to dead letter stream '{REDIS_DISPATCH_DEAD_LETTER_STREAM}'."
+                    )
+
+        # 1b. Normal claim of pending messages
         if claim_msg_ids:
             claimed_msgs = client.xclaim(
                 REDIS_DISPATCH_STREAM,
@@ -377,7 +425,7 @@ def process_dispatch_stream_events(
 ) -> int:
     """
     Consumes and processes a batch of dispatch events from Redis Stream:
-    1. Reclaims any abandoned pending messages.
+    1. Reclaims any abandoned pending messages (routing poison messages to DLQ).
     2. Reads new messages using XREADGROUP.
     3. Executes bounded, single-job dispatch for each event.
     4. Calls XACK only after successful processing.
@@ -434,12 +482,30 @@ def process_dispatch_stream_events(
     for msg_id, data in messages_to_process:
         raw_job_id = data.get("job_id")
         if not raw_job_id:
+            try:
+                client.xadd(REDIS_DISPATCH_DEAD_LETTER_STREAM, {
+                    **data,
+                    "original_msg_id": msg_id,
+                    "dead_lettered_at": timezone.now().isoformat(),
+                    "reason": "Missing job_id in dispatch message payload",
+                })
+            except Exception as dl_err:
+                logger.error(f"[REDIS_DLQ_ERR] Failed writing missing job_id to DLQ: {dl_err}")
             acknowledge_dispatch_job(msg_id)
             continue
 
         try:
             job_id = int(raw_job_id)
         except ValueError:
+            try:
+                client.xadd(REDIS_DISPATCH_DEAD_LETTER_STREAM, {
+                    **data,
+                    "original_msg_id": msg_id,
+                    "dead_lettered_at": timezone.now().isoformat(),
+                    "reason": f"Non-integer job_id: '{raw_job_id}'",
+                })
+            except Exception as dl_err:
+                logger.error(f"[REDIS_DLQ_ERR] Failed writing non-integer job_id to DLQ: {dl_err}")
             acknowledge_dispatch_job(msg_id)
             continue
 

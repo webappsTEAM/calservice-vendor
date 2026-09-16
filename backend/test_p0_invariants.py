@@ -82,6 +82,25 @@ def test_offer_and_assignment_webhook_semantics():
     assert '"technician.offer_sent"' in content
     print("PASS: Offer creation emits technician.offer_sent.")
 
+def test_dlq_poison_routing():
+    from workforce_api.services.redis_dispatch import (
+        REDIS_DISPATCH_DEAD_LETTER_STREAM,
+        MAX_DISPATCH_DELIVERY_ATTEMPTS,
+        recover_pending_dispatch_messages,
+        process_dispatch_stream_events,
+    )
+    assert REDIS_DISPATCH_DEAD_LETTER_STREAM == "workforce:dispatch:dead_letter"
+    assert MAX_DISPATCH_DELIVERY_ATTEMPTS == 5
+
+    redis_dispatch_path = os.path.join(os.path.dirname(__file__), "workforce_api", "services", "redis_dispatch.py")
+    with open(redis_dispatch_path, "r", encoding="utf-8") as f:
+        code = f.read()
+
+    assert "poison_msg_ids" in code
+    assert "REDIS_DISPATCH_DEAD_LETTER_STREAM" in code
+    assert "Exceeded maximum delivery attempts" in code
+    print("PASS: DLQ and poison message policy verified.")
+
 if __name__ == "__main__":
     test_empty_service_fails_closed()
     test_ac_vs_painter_service_matching()
@@ -89,5 +108,6 @@ if __name__ == "__main__":
     test_models_save_no_sync_fallback()
     test_acceptance_and_redispatch_audit()
     test_offer_and_assignment_webhook_semantics()
+    test_dlq_poison_routing()
     print("ALL TESTS PASSED!")
 
