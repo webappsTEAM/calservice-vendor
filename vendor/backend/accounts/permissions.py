@@ -36,6 +36,12 @@ def is_admin_role(user) -> bool:
     return role in ADMIN_ROLES or getattr(user, "is_superuser", False) or getattr(user, "is_staff", False)
 
 
+class IsVendorAdmin(BasePermission):
+    """Vendor-app stock management endpoints: this vendor's own admin/manager only."""
+    def has_permission(self, request, view):
+        return is_vendor_admin(getattr(request, "user", None))
+
+
 class IsWorkforceAdmin(BasePermission):
     def has_permission(self, request, view):
         return is_admin_role(getattr(request, "user", None))

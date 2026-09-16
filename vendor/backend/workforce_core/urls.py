@@ -23,6 +23,8 @@ urlpatterns = [
     # Vendor AC Inspection & Estimation module (/api/vendor/ and /api/workforce/vendor/)
     path("api/vendor/", include("service_requests.vendor_urls")),
     path("api/workforce/vendor/", include("service_requests.vendor_urls")),
+    # Vendor Stock Management (VENDOR_STOCK_MANAGEMENT_IMPLEMENTATION_PLAN.md)
+    path("api/vendor/", include("inventory.urls")),
     # Shared /api/auth/ endpoints for login/me/logout
     path("api/auth/", include("accounts.urls")),
 ]

@@ -74,6 +74,28 @@ def _money(v):
 
 
 def _serialize_invoice(inv, full=False):
+    company_name = "SEVO"
+    if inv.company:
+        company_name = getattr(inv.company, "company_name", None) or getattr(inv.company, "name", "SEVO")
+
+    technician_name = None
+    if inv.technician:
+        t_user = getattr(inv.technician, "user", None)
+        if t_user and hasattr(t_user, "get_full_name") and t_user.get_full_name():
+            technician_name = t_user.get_full_name()
+        elif t_user and getattr(t_user, "first_name", None):
+            technician_name = f"{t_user.first_name} {getattr(t_user, 'last_name', '')}".strip()
+        else:
+            technician_name = getattr(inv.technician, "employee_id", None) or f"Emp #{inv.technician_id}"
+    elif inv.technician_id:
+        technician_name = f"Emp #{inv.technician_id}"
+
+    job_req_id = None
+    if inv.job:
+        job_req_id = getattr(inv.job, "request_id", None) or f"SR-{inv.job.id}"
+    elif inv.job_id:
+        job_req_id = f"SR-{inv.job_id}"
+
     data = {
         "id": inv.id,
         "invoice_number": inv.invoice_number,
@@ -82,9 +104,12 @@ def _serialize_invoice(inv, full=False):
         "quote_id": inv.quote_id,
         "quote_number": inv.quote.quote_number if inv.quote_id else None,
         "job_id": inv.job_id,
+        "job_request_id": job_req_id,
         "customer_id": inv.customer_id,
         "company_id": inv.company_id,
+        "company_name": company_name,
         "technician_id": inv.technician_id,
+        "technician_name": technician_name,
         "bill_to_name": inv.bill_to_name,
         "bill_to_phone": inv.bill_to_phone,
         "bill_to_email": inv.bill_to_email,
@@ -761,11 +786,9 @@ class InvoicePdfView(APIView):
     Reachable two ways: signed in (normal tenancy scoping applies), or with the
     quotation's decision token as ?token=, so a customer who never created an
     account can still get their own invoice from the same link the quote came
-    in on. The token is checked against this invoice's own quote, so it grants
-    nothing beyond the document it belongs to.
+    in on.
     """
     permission_classes = [AllowAny]
-    authentication_classes = []
 
     def get(self, request, pk):
         from django.http import HttpResponse
@@ -790,6 +813,6 @@ class InvoicePdfView(APIView):
         pdf = render_invoice_pdf(invoice)
         response = HttpResponse(pdf, content_type="application/pdf")
         response["Content-Disposition"] = (
-            f'inline; filename="{invoice.invoice_number}.pdf"'
+            f'attachment; filename="{invoice.invoice_number}.pdf"'
         )
         return response

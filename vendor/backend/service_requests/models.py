@@ -1107,3 +1107,46 @@ class SettingsHubInvoice(models.Model):
 
     def __str__(self):
         return f"Invoice {self.invoice_number} - ₹{self.amount} ({self.status})"
+
+
+class PackageStatus(models.TextChoices):
+    DRAFT    = "DRAFT",    "Draft"
+    ACTIVE   = "ACTIVE",   "Active"
+    INACTIVE = "INACTIVE", "Inactive"
+    ARCHIVED = "ARCHIVED", "Archived"
+
+
+class Package(models.Model):
+    """
+    Vendor-facing mirror of Customer/backend/service_requests/models.py's
+    Package -- unmanaged, same shared table. Only carries the fields the
+    Vendor Stock Management feature needs (price, stock linkage); Customer
+    backend remains the owner of every other Package field (reviews, faqs,
+    includes/excludes, customization, etc.) and this app never migrates
+    this table.
+    """
+    service = models.ForeignKey(Service, on_delete=models.CASCADE, related_name="packages", db_column="service_id")
+    name = models.CharField(max_length=200)
+    slug = models.SlugField(unique=True)
+    base_price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    offer_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    duration = models.CharField(max_length=50, blank=True)
+    image = models.CharField(max_length=500, blank=True)
+    tag = models.CharField(max_length=50, blank=True)
+    status = models.CharField(max_length=20, choices=PackageStatus.choices, default=PackageStatus.DRAFT)
+    sort_order = models.PositiveIntegerField(default=0)
+    stock_item = models.OneToOneField(
+        "inventory.InventoryItem",
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="vendor_vegetable_package",
+        db_column="stock_item_id",
+    )
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_package"
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return self.name

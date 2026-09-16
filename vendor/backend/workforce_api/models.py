@@ -4,6 +4,7 @@ Relational database models for Workforce Scheduling, Skills, Compliance, Notific
 """
 from decimal import Decimal
 import uuid
+import django
 from django.conf import settings
 from django.db import IntegrityError, models, transaction
 from django.utils import timezone
@@ -447,8 +448,12 @@ class WorkforceJobOffer(models.Model):
         # database.
         constraints = [
             models.CheckConstraint(
-                check=models.Q(wave_number__gte=1, wave_number__lte=6),
-                name="valid_wave_number_1_to_6",
+                **{
+                    ("condition" if django.VERSION >= (5, 1) else "check"): (
+                        models.Q(wave_number__gte=1, wave_number__lte=6)
+                    ),
+                    "name": "valid_wave_number_1_to_6",
+                }
             ),
             models.UniqueConstraint(
                 fields=("job", "employee"),
@@ -1558,11 +1563,13 @@ class WalletAccount(models.Model):
         db_table = "workforce_wallet_account"
         constraints = [
             models.CheckConstraint(
-                check=(
-                    models.Q(account_type="PROVIDER_HEAD", company__isnull=False, employee__isnull=True)
-                    | models.Q(account_type="INDIVIDUAL_WORKER", employee__isnull=False, company__isnull=True)
-                ),
-                name="wallet_account_type_matches_owner",
+                **{
+                    ("condition" if django.VERSION >= (5, 1) else "check"): (
+                        models.Q(account_type="PROVIDER_HEAD", company__isnull=False, employee__isnull=True)
+                        | models.Q(account_type="INDIVIDUAL_WORKER", employee__isnull=False, company__isnull=True)
+                    ),
+                    "name": "wallet_account_type_matches_owner",
+                }
             ),
         ]
         indexes = [

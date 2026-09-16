@@ -60,7 +60,7 @@ def render_invoice_pdf(invoice):
 
     header = Table(
         [[
-            Paragraph("<b>SEVO</b><br/>Caldim Engineering", body),
+            Paragraph("<b>SEVO</b><br/>On-Demand Workforce Network", body),
             Paragraph(
                 f"<b>TAX INVOICE</b><br/>{invoice.invoice_number}<br/>"
                 f"{invoice.issued_at.strftime('%d %b %Y') if invoice.issued_at else ''}",
@@ -81,11 +81,25 @@ def render_invoice_pdf(invoice):
         ] if x
     ) or "&mdash;"
 
+    job_ref = (
+        invoice.job.request_id
+        if (invoice.job and getattr(invoice.job, "request_id", None))
+        else (f"SR-{invoice.job_id}" if invoice.job_id else None)
+    )
+    tech_info = None
+    if invoice.technician:
+        t_user = getattr(invoice.technician, "user", None)
+        t_name = t_user.get_full_name() if t_user else invoice.technician.employee_id
+        tech_info = f"{t_name} (#{invoice.technician.id})"
+    elif invoice.technician_id:
+        tech_info = f"#{invoice.technician_id}"
+
     meta = "<br/>".join(x for x in [
         f"Service: {invoice.service_name}" if invoice.service_name else None,
+        f"Booking ID: {job_ref}" if job_ref else None,
+        f"Technician: {tech_info}" if tech_info else None,
         f"Quotation: {invoice.quote.quote_number}" if invoice.quote_id else None,
-        f"Booking: #{invoice.job_id}",
-        f"Due: {invoice.due_at.strftime('%d %b %Y')}" if invoice.due_at else None,
+        f"Due Date: {invoice.due_at.strftime('%d %b %Y')}" if invoice.due_at else None,
     ] if x)
 
     parties = Table(
@@ -155,16 +169,9 @@ def render_invoice_pdf(invoice):
     ]))
     story += [totals_table, Spacer(1, 10 * mm)]
 
-    story.append(Paragraph(
-        f"Status: {invoice.get_status_display()}."
-        + (f" {invoice.notes}" if invoice.notes else ""),
-        small,
-    ))
-    story.append(Spacer(1, 3 * mm))
-    story.append(Paragraph(
-        "This is a computer-generated invoice issued through the SEVO platform.",
-        small,
-    ))
+    if invoice.notes and not invoice.notes.startswith("Issued for Job"):
+        story.append(Paragraph(invoice.notes, small))
+        story.append(Spacer(1, 3 * mm))
 
     doc.build(story)
     return buffer.getvalue()

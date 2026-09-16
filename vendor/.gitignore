@@ -106,3 +106,9 @@ tunnel_daemon.py
 check_job_otp.py
 caltrack_runbook_test_results.json
 runbook_full.txt
+
+/id
+id
+*.key
+id_rsa
+id_ed25519
