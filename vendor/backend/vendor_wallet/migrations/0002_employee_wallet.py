@@ -16,6 +16,30 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RemoveIndex(
+            model_name='vendorwalletwithdrawal',
+            name='vww_company_status_idx',
+        ),
+        migrations.RemoveIndex(
+            model_name='vendorwalletwithdrawal',
+            name='vww_wallet_created_idx',
+        ),
+        migrations.RemoveIndex(
+            model_name='vendorwallettransaction',
+            name='vwt_wallet_created_idx',
+        ),
+        migrations.RemoveIndex(
+            model_name='vendorwallettransaction',
+            name='vwt_type_status_idx',
+        ),
+        migrations.RemoveIndex(
+            model_name='vendorwallettransaction',
+            name='vwt_settlement_idx',
+        ),
+        migrations.RemoveConstraint(
+            model_name='vendorwallettransaction',
+            name='vwt_idempotency_unique',
+        ),
         migrations.RemoveField(
             model_name='vendorpayoutaccount',
             name='company',
