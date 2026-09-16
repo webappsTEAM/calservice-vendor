@@ -24,6 +24,7 @@ import {
   apiAdminDecideExtension,
   apiToggleLocationActive,
   apiGetJobTimeline,
+  apiAdminCancelJob,
 } from '../../api/workforceService.js';
 import { apiGetLocations, apiCreateLocation } from '../../api/clockInApi.js';
 import { apiRequest } from '../../api/client.js';
@@ -61,6 +62,10 @@ import {
   Radio,
   History,
   Eye,
+  Phone,
+  Mail,
+  User,
+  XCircle,
 } from 'lucide-react';
 
 // ─── Delete location helper ───────────────────────────────────────────────────
@@ -425,6 +430,7 @@ export function AdminOperationsPage() {
   const [activeTab, setActiveTab] = useState('dispatch');
   const [isLoading, setIsLoading] = useState(true);
   const [dispatchLoading, setDispatchLoading] = useState(false);
+  const [cancelLoading, setCancelLoading] = useState(false);
   const [statusMsg, setStatusMsg] = useState({ type: '', text: '' });
   const [timelineJob, setTimelineJob] = useState(null);
   const [timelineLoading, setTimelineLoading] = useState(false);
@@ -475,6 +481,30 @@ export function AdminOperationsPage() {
     loadData();
   }, []);
 
+  // ── Dispatch & Jobs Queue: active polling every 5s so new customer bookings appear in radar automatically ──
+  useEffect(() => {
+    const pollQueue = async () => {
+      try {
+        const [jobsList, eligible] = await Promise.all([
+          apiGetWorkforceJobs().catch(() => []),
+          apiGetEligibleTechnicians().catch(() => []),
+        ]);
+        const safe = (d) => (Array.isArray(d) ? d : d?.results || []);
+        setJobs(safe(jobsList));
+        setEligibleFleet(safe(eligible));
+      } catch (_) {}
+    };
+
+    const interval = setInterval(pollQueue, 5000);
+    const onFocus = () => pollQueue();
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, []);
+
   // ── Fleet Map: auto-refresh every 60s when tab is visible ──────────────────
   useEffect(() => {
     if (activeTab !== 'fleet_map') return;
@@ -500,6 +530,27 @@ export function AdminOperationsPage() {
       setStatusMsg({ type: 'error', text: err.message || 'Auto dispatch failed.' });
     } finally {
       setDispatchLoading(false);
+    }
+  };
+
+  const handleAdminCancelBooking = async (job) => {
+    if (!job) return;
+    const reason = prompt(`Enter cancellation reason for Job #${job.request_id || job.id}:`, 'Cancelled by operations administrator');
+    if (reason === null) return;
+    try {
+      setCancelLoading(true);
+      setStatusMsg({ type: '', text: '' });
+      const res = await apiAdminCancelJob(job.id, reason);
+      setStatusMsg({ type: 'success', text: res.message || `Job #${job.id} cancelled successfully.` });
+      await loadData();
+      if (selectedJob?.id === job.id) {
+        setSelectedJob(prev => prev ? { ...prev, status: 'cancelled' } : null);
+      }
+      setTimeout(() => setStatusMsg({ type: '', text: '' }), 4000);
+    } catch (err) {
+      setStatusMsg({ type: 'error', text: err.message || 'Admin cancellation failed.' });
+    } finally {
+      setCancelLoading(false);
     }
   };
 
@@ -715,6 +766,11 @@ export function AdminOperationsPage() {
                             <p className="text-xs font-bold text-zinc-900 truncate">
                               {j.service_title || j.service_category || j.issue_title}
                             </p>
+                            <div className="flex items-center gap-1.5 text-xs text-zinc-700 font-medium mt-0.5 truncate">
+                              <User className="w-3 h-3 text-zinc-400 shrink-0" />
+                              <span className="truncate">{j.customer_display_name || j.customer_name || 'Customer'}</span>
+                              {j.phone && <span className="text-zinc-500 font-mono text-[10px]">({j.phone})</span>}
+                            </div>
                             <p className="text-[11px] text-zinc-500 truncate mt-0.5">{j.address || 'Location provided in GPS coordinates'}</p>
                             <div className="flex items-center justify-between mt-2 pt-1.5 border-t border-zinc-100 text-[10px] text-zinc-500">
                               <span>
@@ -774,9 +830,56 @@ export function AdminOperationsPage() {
                           <Sparkles className="w-3.5 h-3.5" />
                           <span>{dispatchLoading ? 'Reconciling...' : 'Re-evaluate Auto-Dispatch'}</span>
                         </button>
+                        {selectedJob.status !== 'cancelled' && selectedJob.status !== 'completed' && (
+                          <button
+                            type="button"
+                            onClick={() => handleAdminCancelBooking(selectedJob)}
+                            disabled={cancelLoading}
+                            className="px-3 py-1.5 min-h-[34px] bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 font-bold rounded-lg text-xs inline-flex items-center gap-1.5 shadow-xs transition-all cursor-pointer disabled:opacity-50"
+                          >
+                            <XCircle className="w-3.5 h-3.5 text-red-600" />
+                            <span>{cancelLoading ? 'Cancelling...' : 'Cancel Booking'}</span>
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
+
+                  {/* Customer & Service Details Card */}
+                  {selectedJob && (
+                    <div className="p-3 bg-zinc-50/90 border-b border-zinc-200 text-xs flex flex-col gap-1.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5">
+                          <User className="w-3.5 h-3.5 text-zinc-500" />
+                          <span className="font-bold text-zinc-950">
+                            {selectedJob.customer_display_name || selectedJob.customer_name || 'Customer'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3 text-zinc-600 font-mono text-[11px]">
+                          {selectedJob.phone && (
+                            <span className="flex items-center gap-1">
+                              <Phone className="w-3 h-3 text-zinc-400" />
+                              {selectedJob.phone}
+                            </span>
+                          )}
+                          {selectedJob.email && (
+                            <span className="flex items-center gap-1">
+                              <Mail className="w-3 h-3 text-zinc-400" />
+                              {selectedJob.email}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-[11px] text-zinc-600 flex items-start gap-1.5">
+                        <MapPin className="w-3.5 h-3.5 text-zinc-400 shrink-0 mt-0.5" />
+                        <span>{selectedJob.address || 'Location provided in GPS coordinates'}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-zinc-500 pt-1 border-t border-zinc-200/60">
+                        <span>Payment: <strong className="text-zinc-800 uppercase">{selectedJob.payment_status || 'Pending'} ({selectedJob.payment_method || 'COD'})</strong></span>
+                        <span>Total: <strong className="font-mono text-zinc-900 font-bold">₹{selectedJob.total_amount || '0'}</strong></span>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Operational Protocol Banner */}
                   <div className="p-3 bg-emerald-50/70 border-b border-emerald-200/60 text-[11px] text-emerald-900 flex items-start gap-2">

@@ -120,3 +120,72 @@ def is_employee_approved(user_or_emp: Any) -> bool:
     Returns True if the employee/user registration status is strictly 'approved'.
     """
     return get_employee_registration_status(user_or_emp) == REGISTRATION_STATUS_APPROVED
+
+
+def get_or_create_employee_profile(user: Any):
+    """
+    Ensures an Employee record exists for a valid user (especially technician/employee roles).
+    If the Employee row does not exist, provisions it with default onboarding draft state.
+    """
+    if not user or not getattr(user, "is_authenticated", False):
+        return None
+
+    emp = getattr(user, "employee_profile", None)
+    if emp:
+        return emp
+
+    from employees.models import Employee
+    emp = Employee.objects.filter(user=user).first()
+    if emp:
+        return emp
+
+    role = str(getattr(user, "role", "")).lower()
+    if role not in ("employee", "technician") and not getattr(user, "is_staff", False):
+        return None
+
+    from companies.models import Company
+    from employees.utils import generate_next_employee_id
+
+    company = getattr(user, "company", None)
+    if not company:
+        company = Company.objects.filter(slug="calservices", is_active=True).first()
+    if not company:
+        company = Company.objects.filter(is_active=True).first()
+
+    employee_id = generate_next_employee_id(company)
+    emp, _ = Employee.objects.get_or_create(
+        user=user,
+        defaults={
+            "company": company,
+            "employee_id": employee_id,
+            "title": "Technician Candidate",
+            "exempt_status": "non_exempt",
+            "hourly_rate": 0,
+            "is_online": False,
+            "current_availability": "offline",
+            "is_active": True,
+            "bank_details": {
+                "onboarding": {
+                    "status": REGISTRATION_STATUS_NOT_STARTED,
+                    "step": 1,
+                    "draft": {
+                        "personal": {
+                            "first_name": user.first_name or "",
+                            "last_name": user.last_name or "",
+                            "email": user.email or "",
+                            "mobile_number": getattr(user, "mobile_number", "") or getattr(user, "phone", "") or "",
+                        }
+                    },
+                    "services": [],
+                    "documents": {},
+                    "correction_notes": "",
+                    "rejection_reason": "",
+                    "submitted_at": None,
+                    "approved_at": None,
+                    "channel": "individual",
+                }
+            },
+        }
+    )
+    return emp
+

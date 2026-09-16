@@ -162,18 +162,26 @@ export function classifyApiError(err) {
       msg = 'You already have an active job. Complete it before accepting another job.';
       action = 'View Current Job';
     } else if (
+      rawCode === 'CANCELLATION_LOCKED_AFTER_OTP' ||
+      rawMsg.toLowerCase().includes('otp has been verified') ||
+      rawMsg.toLowerCase().includes('otp is verified')
+    ) {
+      title = 'Cancellation Locked';
+      msg = 'Cancellation is locked because customer OTP has been verified. Please contact Dispatch Support.';
+      action = 'Contact Support';
+    } else if (
       rawCode === 'CANCELLATION_WINDOW_EXPIRED' ||
       rawMsg.toLowerCase().includes('cancellation window')
     ) {
       title = 'Cancellation Window Closed';
-      msg = 'The 5-minute cancellation window has expired. Please coordinate with support if assistance is needed.';
+      msg = 'The 5-minute cancellation window has expired. Please contact dispatch support.';
       action = 'Dismiss';
     } else if (
       rawCode === 'CANCELLATION_NOT_ALLOWED_IN_CURRENT_STATE' ||
       rawMsg.toLowerCase().includes('cannot cancel')
     ) {
       title = 'Cancellation Not Allowed';
-      msg = 'Jobs cannot be cancelled once arrived on-site or service has started.';
+      msg = 'Cancellation is not permitted in the current job state.';
       action = 'Dismiss';
     }
 

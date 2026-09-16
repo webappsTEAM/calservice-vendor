@@ -163,10 +163,29 @@ export async function apiRequest(path, options = {}) {
   const data = isJson ? await response.json() : await response.text();
 
   if (!response.ok) {
-    const errorMsg =
+    let rawError =
       (data && data.error) ||
       (data && data.detail) ||
       (data && typeof data === 'object' ? JSON.stringify(data) : 'Request failed');
+
+    if (Array.isArray(rawError)) {
+      rawError = rawError[0] || 'Request failed';
+    }
+    if (typeof rawError === 'object' && rawError !== null) {
+      try {
+        rawError = rawError.detail || rawError.message || rawError.string || JSON.stringify(rawError);
+      } catch (_) {
+        rawError = 'Request failed';
+      }
+    }
+    let errorMsg = String(rawError || 'Request failed');
+    if (errorMsg.includes('ErrorDetail')) {
+      const match = errorMsg.match(/string=['"]([^'"]+)['"]/);
+      if (match && match[1]) {
+        errorMsg = match[1];
+      }
+    }
+    errorMsg = errorMsg.replace(/^\[['"]?|['"]?\]$/g, '').trim();
 
     const error = new Error(errorMsg);
     error.status = response.status;

@@ -2216,6 +2216,8 @@ class WorkforceJobListView(APIView):
             extensions_map = {}
             active_extensions_map = {}
             payments_map = {}
+            quotes_map = {}
+            psvs_map = {}
 
             if job_ids:
                 # 1. Bulk fetch employee job offers

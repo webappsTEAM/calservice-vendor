@@ -539,3 +539,135 @@ class QuoteApiFieldTests(QuoteRulesTests):
         self.assertEqual(pricing_policy.advance_percent("painting"), Decimal("100.00"))
         self.assertEqual(invoice.advance_percent, Decimal("50.00"))
         self.assertEqual(invoice.advance_amount, Decimal("590.00"))
+
+
+class EstimationProjectionTests(QuoteRulesTests):
+    """
+    A quote raised in the workforce builder must appear in the tables the
+    customer application reads, and must not appear there twice.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from service_requests.models import Estimation, EstimationQuotation
+        self.Estimation = Estimation
+        self.EstimationQuotation = EstimationQuotation
+
+    def _sent_quote(self, amount=1000):
+        quote = self._quote(amount)
+        quotation_service.send_quote_to_customer(quote.id)
+        quote.refresh_from_db()
+        return quote
+
+    def test_sending_a_quote_creates_the_customer_projection(self):
+        quote = self._sent_quote()
+
+        projected = self.EstimationQuotation.objects.get(
+            quote_ref=f"{quote.quote_number}-V1"
+        )
+        self.assertEqual(projected.status, "SENT")
+        self.assertEqual(projected.total_amount, quote.net_payable)
+        self.assertEqual(projected.subtotal, quote.subtotal_amount)
+        self.assertEqual(projected.tax_amount, quote.tax_amount)
+        self.assertEqual(projected.items.count(), 1)
+        self.assertEqual(projected.version, 1)
+
+    def test_a_painting_job_is_not_given_invented_ac_specifications(self):
+        self._sent_quote()
+        est = self.Estimation.objects.get(service_request=self.job)
+        self.assertEqual(est.ac_type, "OTHER")
+        self.assertEqual(est.ac_capacity, "OTHER")
+        self.assertEqual(est.ac_brand, "")
+        self.assertIn("not applicable", est.customer_notes)
+        self.assertEqual(est.status, "QUOTATION_SENT")
+
+    def test_the_projection_follows_the_customer_decision(self):
+        quote = self._sent_quote()
+        quotation_service.record_customer_decision(
+            quote.id, "ACCEPT", token=quote.decision_token
+        )
+        projected = self.EstimationQuotation.objects.get(quote_ref=f"{quote.quote_number}-V1")
+        self.assertEqual(projected.status, "APPROVED")
+        self.assertIsNotNone(projected.customer_approved_at)
+        self.assertEqual(
+            self.Estimation.objects.get(service_request=self.job).status, "CUSTOMER_APPROVED"
+        )
+
+    def test_a_decline_is_projected_with_its_reason(self):
+        quote = self._sent_quote()
+        quotation_service.record_customer_decision(
+            quote.id, "DECLINE", reason="too expensive", token=quote.decision_token
+        )
+        projected = self.EstimationQuotation.objects.get(quote_ref=f"{quote.quote_number}-V1")
+        self.assertEqual(projected.status, "REJECTED")
+        self.assertEqual(projected.rejection_note, "too expensive")
+
+    def test_a_revision_is_projected_as_its_own_reference(self):
+        quote = self._sent_quote()
+        _, revised = quotation_service.record_customer_decision(
+            quote.id, "REQUEST_CHANGES", notes="cheaper paint", token=quote.decision_token
+        )
+        refs = set(
+            self.EstimationQuotation.objects
+            .filter(quote_ref__startswith=quote.quote_number)
+            .values_list("quote_ref", flat=True)
+        )
+        self.assertEqual(refs, {f"{quote.quote_number}-V1", f"{quote.quote_number}-V2"})
+        v1 = self.EstimationQuotation.objects.get(quote_ref=f"{quote.quote_number}-V1")
+        v2 = self.EstimationQuotation.objects.get(quote_ref=f"{quote.quote_number}-V2")
+        self.assertEqual(v1.status, "SUPERSEDED")
+        self.assertEqual(v2.status, "DRAFT")
+        self.assertEqual(v2.version, 2)
+        self.assertEqual(revised.quote_version, 2)
+
+    def test_projecting_twice_does_not_duplicate(self):
+        quote = self._sent_quote()
+        quotation_service.send_quote_to_customer(quote.id)
+        self.assertEqual(
+            self.EstimationQuotation.objects.filter(
+                quote_ref=f"{quote.quote_number}-V1"
+            ).count(),
+            1,
+        )
+
+    def test_a_quote_from_the_ac_path_is_not_projected_back(self):
+        """
+        vendor_views._sync_workforce_quote already created that WorkforceQuote
+        from an EstimationQuotation. Projecting it back would give the customer
+        the same quotation twice, under QTE-...-V1-V1.
+        """
+        from service_requests.models import Estimation, EstimationQuotation
+
+        est = Estimation.objects.create(
+            service_request=self.job, ac_type="SPLIT", ac_brand="General",
+            ac_capacity="1.5_TON", ac_quantity=1, status="INSPECTION_COMPLETED",
+        )
+        EstimationQuotation.objects.create(
+            estimation=est, version=1, quote_ref="QTE-AC1-V1", status="SENT",
+            subtotal=Decimal("100"), total_amount=Decimal("118"),
+        )
+        quote = WorkforceQuote.objects.create(
+            job=self.job, technician=self.tech, company=self.company,
+            customer=self.customer, quote_number="QTE-AC1-V1", quote_version=1,
+            service_category="painting",
+        )
+        quotation_service.send_quote_to_customer(quote.id)
+
+        self.assertFalse(
+            EstimationQuotation.objects.filter(quote_ref="QTE-AC1-V1-V1").exists(),
+            "the AC-originated quote was projected back and duplicated",
+        )
+        self.assertEqual(EstimationQuotation.objects.filter(quote_ref="QTE-AC1-V1").count(), 1)
+
+    def test_a_projection_failure_never_breaks_the_quote(self):
+        """The projection is a convenience copy; the quote is the commitment."""
+        from unittest.mock import patch
+
+        quote = self._quote(1000)
+        with patch(
+            "workforce_api.services.estimation_projection.project_quote",
+            side_effect=RuntimeError("customer tables unavailable"),
+        ):
+            sent = quotation_service.send_quote_to_customer(quote.id)
+        self.assertEqual(sent.status, WorkforceQuote.Status.SENT_TO_CUSTOMER)
+        self.assertIsNotNone(sent.decision_token)

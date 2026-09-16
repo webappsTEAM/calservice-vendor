@@ -30,6 +30,7 @@ import { EmployeePerformancePage } from './pages/employee/EmployeePerformancePag
 import { EmployeeEarningsPage } from './pages/employee/EmployeeEarningsPage.jsx';
 import { EmployeeLocationPage } from './pages/employee/EmployeeLocationPage.jsx';
 import EmployeeEstimatesPage from './pages/employee/estimates/EmployeeEstimatesPage.jsx';
+import VendorEstimationsPage from './pages/vendor/estimations/VendorEstimationsPage.jsx';
 import { MyVendorNetworkPage } from './pages/employee/MyVendorNetworkPage.jsx';
 import { TechnicianInvitationsPage } from './pages/employee/TechnicianInvitationsPage.jsx';
 

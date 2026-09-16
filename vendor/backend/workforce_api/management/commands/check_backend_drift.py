@@ -21,9 +21,10 @@ That has already cost, at minimum:
     quote approval assigned subtotal_amount, discount_amount, final_amount and
     payment_collected_at and saved none of them
 
-Run this in CI. It turns a defect nobody finds for months into a failing build.
-Delete it the day the duplicate directory goes away -- that is the real fix,
-and this is the tourniquet.
+The duplicate was removed on 8 Sep 2026, vendor/backend/ surviving. This
+command now passes with a note rather than failing, and stays in CI as a
+regression guard: if anyone re-creates the second copy, it starts comparing
+again on its own.
 """
 import hashlib
 import os
@@ -77,31 +78,60 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         root = options["repo_root"]
         if not root:
-            # Walk up until we find the directory holding BOTH copies, so the
-            # command works from either one. Checking only for "backend" is not
-            # enough: vendor/ contains a directory of that name too.
-            probe = os.path.abspath(os.getcwd())
-            root = None
-            for _ in range(5):
-                probe = os.path.dirname(probe)
-                if not probe:
-                    break
-                if os.path.isdir(os.path.join(probe, "backend")) and os.path.isdir(
-                    os.path.join(probe, "vendor", "backend")
-                ):
-                    root = probe
-                    break
+            # Walk up looking for a directory that holds either copy. Checking
+            # only for "backend" is not enough on its own: vendor/ contains a
+            # directory of that name too.
+            def ancestors():
+                probe = os.path.abspath(os.getcwd())
+                for _ in range(5):
+                    parent = os.path.dirname(probe)
+                    if not parent or parent == probe:
+                        return
+                    probe = parent
+                    yield probe
+
+            def has_both(d):
+                return os.path.isdir(os.path.join(d, "backend")) and os.path.isdir(
+                    os.path.join(d, "vendor", "backend")
+                )
+
+            def has_either(d):
+                return os.path.isdir(os.path.join(d, "backend")) or os.path.isdir(
+                    os.path.join(d, "vendor", "backend")
+                )
+
+            # Two passes, and the order matters. Running from vendor/backend/,
+            # the nearest ancestor holding "backend" is vendor/ itself -- so a
+            # single pass would stop there, decide there is only one copy, and
+            # pass cleanly even after someone re-created the duplicate at the
+            # real root. Look for a root holding BOTH first; only if no
+            # ancestor does, settle for one holding either.
+            root = next((d for d in ancestors() if has_both(d)), None)
+            if not root:
+                root = next((d for d in ancestors() if has_either(d)), None)
             if not root:
                 raise CommandError(
-                    "Could not locate the repository root holding both backend/ and "
-                    "vendor/backend/. Pass --repo-root."
+                    "Could not locate the repository root. Pass --repo-root."
                 )
 
         shipped = os.path.join(root, "backend")
         dev = os.path.join(root, "vendor", "backend")
-        for path, label in ((shipped, "backend/"), (dev, "vendor/backend/")):
-            if not os.path.isdir(path):
-                raise CommandError(f"Could not find {label} under {root}. Pass --repo-root.")
+
+        # The duplicate has been removed -- which is the outcome this command
+        # existed to make safe. Succeed and say so, rather than failing a build
+        # because the problem is gone. If a second copy ever reappears, the
+        # comparison below starts running again automatically.
+        present = [p for p in (shipped, dev) if os.path.isdir(p)]
+        if len(present) < 2:
+            if not present:
+                raise CommandError(
+                    f"Found neither backend/ nor vendor/backend/ under {root}. Pass --repo-root."
+                )
+            self.stdout.write(self.style.SUCCESS(
+                f"One backend copy only ({os.path.relpath(present[0], root)}). "
+                "The duplicate is gone, so there is nothing to drift."
+            ))
+            return
 
         a, b = _collect(shipped), _collect(dev)
 

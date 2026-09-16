@@ -4,15 +4,26 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../core/location/location_service.dart';
 import '../../../../core/network/api_error.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../shared/widgets/loading_button.dart';
 import '../../../../shared/widgets/photo_source_sheet.dart';
 import '../../data/job_actions_repository.dart';
 import '../../domain/job.dart';
+import '../../domain/trip_stop.dart';
 import '../jobs_providers.dart';
+import '../providers/trip_stops_provider.dart';
 
 /// Modal bottom sheet for submitting after-service completion proof matching web app.
+///
+/// For Goods & Transport jobs this is also the proof of delivery: the same
+/// endpoint, the same sheet, with the delivery-specific evidence the
+/// backend's `job.completion_proof_submitted` event carries — who received
+/// the goods, at which stop, and where the driver was standing. Submitting
+/// it is what moves the trip to DELIVERED, which is why the trip section
+/// offers no "mark delivered" button of its own: a delivery cannot be
+/// claimed without the evidence for it.
 class ProofSubmissionSheet extends ConsumerStatefulWidget {
   const ProofSubmissionSheet({super.key, required this.job});
 
@@ -39,18 +50,41 @@ class _ProofSubmissionSheetState extends ConsumerState<ProofSubmissionSheet> {
   String? _afterAppliancePath;
   String? _afterWorkAreaPath;
   final TextEditingController _notesController = TextEditingController();
+  final TextEditingController _recipientNameController = TextEditingController();
+  final TextEditingController _recipientPhoneController = TextEditingController();
+  int? _selectedStopId;
   bool _isSubmitting = false;
   String? _error;
+
+  bool get _isDelivery => widget.job.isLogistics;
 
   @override
   void dispose() {
     _notesController.dispose();
+    _recipientNameController.dispose();
+    _recipientPhoneController.dispose();
     super.dispose();
+  }
+
+  /// Which stop this proof belongs to. Defaults to the first stop still
+  /// open, which on a normal run is the drop the driver is standing at.
+  /// Null on a trip with no stop rows at all — the backend simply omits the
+  /// stop from the event in that case rather than inventing one.
+  int? _effectiveStopId(TripStopsSnapshot? snapshot) {
+    if (_selectedStopId != null) return _selectedStopId;
+    if (snapshot == null || snapshot.stops.isEmpty) return null;
+    return (snapshot.nextStop ?? snapshot.stops.last).id;
   }
 
   Future<void> _submit() async {
     if (_afterPresencePath == null) {
       setState(() => _error = 'After Face Selfie is required before submitting proof.');
+      return;
+    }
+    final recipientName = _recipientNameController.text.trim();
+    if (_isDelivery && recipientName.isEmpty) {
+      setState(() => _error =
+          'Who received the goods? Enter the recipient name (or how the goods were left) before submitting.');
       return;
     }
 
@@ -59,6 +93,27 @@ class _ProofSubmissionSheetState extends ConsumerState<ProofSubmissionSheet> {
       _error = null;
     });
 
+    // Best-effort GPS stamp on the delivery. Deliberately not fatal: a
+    // driver in a basement loading bay with no fix must still be able to
+    // submit proof, and a coordinate is never guessed or defaulted — the
+    // request simply goes without one.
+    double? lat;
+    double? lng;
+    if (_isDelivery) {
+      try {
+        final position = await ref.read(locationServiceProvider).getCurrentPosition();
+        lat = position.latitude;
+        lng = position.longitude;
+      } catch (_) {
+        lat = null;
+        lng = null;
+      }
+    }
+
+    final stopId = _isDelivery
+        ? _effectiveStopId(ref.read(tripStopsProvider(widget.job.id)).valueOrNull)
+        : null;
+
     try {
       final message = await ref.read(jobActionsRepositoryProvider).uploadProof(
         widget.job.id,
@@ -66,10 +121,18 @@ class _ProofSubmissionSheetState extends ConsumerState<ProofSubmissionSheet> {
         afterAppliancePhotoPath: _afterAppliancePath,
         afterWorkAreaPhotoPath: _afterWorkAreaPath,
         notes: _notesController.text.trim().isNotEmpty ? _notesController.text.trim() : null,
+        recipientName: _isDelivery && recipientName.isNotEmpty ? recipientName : null,
+        recipientPhone: _isDelivery && _recipientPhoneController.text.trim().isNotEmpty
+            ? _recipientPhoneController.text.trim()
+            : null,
+        stopId: stopId,
+        latitude: lat,
+        longitude: lng,
       );
 
       ref.invalidate(activeJobsProvider);
       ref.invalidate(completedJobsProvider);
+      if (_isDelivery) ref.invalidate(tripStopsProvider(widget.job.id));
 
       if (mounted) {
         Navigator.of(context).pop(true);
@@ -82,6 +145,9 @@ class _ProofSubmissionSheetState extends ConsumerState<ProofSubmissionSheet> {
       }
     } on DioException catch (e) {
       if (mounted) {
+        // Retrying is safe: the backend upserts a single proof row per job
+        // and tolerates a re-submit in `proof_submitted`, so a lost response
+        // on a patchy connection does not create a second delivery.
         setState(() => _error = describeDioError(e, fallback: 'Failed to submit completion proof.'));
       }
     } catch (_) {
@@ -111,7 +177,9 @@ class _ProofSubmissionSheetState extends ConsumerState<ProofSubmissionSheet> {
                 const SizedBox(width: AppSpacing.sm),
                 Expanded(
                   child: Text(
-                    'Proof of Work Completion — ${widget.job.requestId}',
+                    _isDelivery
+                        ? 'Proof of Delivery — ${widget.job.requestId}'
+                        : 'Proof of Work Completion — ${widget.job.requestId}',
                     style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
                   ),
                 ),
@@ -122,9 +190,11 @@ class _ProofSubmissionSheetState extends ConsumerState<ProofSubmissionSheet> {
               ],
             ),
             const SizedBox(height: AppSpacing.xs),
-            const Text(
-              'Capture completion photos to verify service execution before collecting customer payment.',
-              style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+            Text(
+              _isDelivery
+                  ? 'Capture the handover. Submitting this marks the trip DELIVERED and is what the customer sees as proof.'
+                  : 'Capture completion photos to verify service execution before collecting customer payment.',
+              style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
             ),
             const SizedBox(height: AppSpacing.md),
 
@@ -187,6 +257,46 @@ class _ProofSubmissionSheetState extends ConsumerState<ProofSubmissionSheet> {
               onRemove: () => setState(() => _afterWorkAreaPath = null),
             ),
 
+            if (_isDelivery) ...[
+              const SizedBox(height: AppSpacing.md),
+              const Text(
+                'RECIPIENT',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 0.5,
+                  color: Color(0xFF475569),
+                ),
+              ),
+              const SizedBox(height: AppSpacing.xs),
+              TextField(
+                controller: _recipientNameController,
+                textCapitalization: TextCapitalization.words,
+                decoration: const InputDecoration(
+                  labelText: 'Received by *',
+                  hintText: 'Name of the person who took delivery',
+                  border: OutlineInputBorder(),
+                  contentPadding: EdgeInsets.all(12),
+                ),
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              TextField(
+                controller: _recipientPhoneController,
+                keyboardType: TextInputType.phone,
+                decoration: const InputDecoration(
+                  labelText: 'Recipient phone (optional)',
+                  border: OutlineInputBorder(),
+                  contentPadding: EdgeInsets.all(12),
+                ),
+              ),
+              _StopPicker(
+                jobId: widget.job.id,
+                selectedStopId: _selectedStopId,
+                resolveDefault: _effectiveStopId,
+                onChanged: (id) => setState(() => _selectedStopId = id),
+              ),
+            ],
+
             const SizedBox(height: AppSpacing.md),
 
             // Work Notes
@@ -204,7 +314,7 @@ class _ProofSubmissionSheetState extends ConsumerState<ProofSubmissionSheet> {
             const SizedBox(height: AppSpacing.lg),
 
             LoadingButton(
-              label: 'SUBMIT COMPLETION PROOF',
+              label: _isDelivery ? 'SUBMIT PROOF OF DELIVERY' : 'SUBMIT COMPLETION PROOF',
               icon: Icons.check_circle_outline_rounded,
               isLoading: _isSubmitting,
               onPressed: _afterPresencePath != null ? _submit : null,
@@ -217,6 +327,59 @@ class _ProofSubmissionSheetState extends ConsumerState<ProofSubmissionSheet> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Lets the driver say which stop the goods were handed over at, on a trip
+/// that has more than one. Hidden entirely when the trip has no stop rows,
+/// so an ordinary pickup-to-drop run is not cluttered with a control that
+/// has one option.
+class _StopPicker extends ConsumerWidget {
+  const _StopPicker({
+    required this.jobId,
+    required this.selectedStopId,
+    required this.resolveDefault,
+    required this.onChanged,
+  });
+
+  final int jobId;
+  final int? selectedStopId;
+  final int? Function(TripStopsSnapshot?) resolveDefault;
+  final ValueChanged<int?> onChanged;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final snapshot = ref.watch(tripStopsProvider(jobId)).valueOrNull;
+    final stops = snapshot?.stops ?? const <TripStop>[];
+    if (stops.length < 2) return const SizedBox.shrink();
+
+    final value = selectedStopId ?? resolveDefault(snapshot);
+    return Padding(
+      padding: const EdgeInsets.only(top: AppSpacing.sm),
+      child: DropdownButtonFormField<int>(
+        initialValue: stops.any((s) => s.id == value) ? value : null,
+        isExpanded: true,
+        decoration: const InputDecoration(
+          labelText: 'Delivered at stop',
+          border: OutlineInputBorder(),
+          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        ),
+        items: [
+          for (final stop in stops)
+            DropdownMenuItem<int>(
+              value: stop.id,
+              child: Text(
+                'Stop ${stop.sequence} — ${stop.typeLabel}'
+                '${stop.address != null ? ' · ${stop.address}' : ''}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12.5),
+              ),
+            ),
+        ],
+        onChanged: onChanged,
       ),
     );
   }

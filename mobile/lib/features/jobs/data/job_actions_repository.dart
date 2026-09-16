@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../domain/job_payment.dart';
 import '../domain/pre_service_status.dart';
+import '../domain/trip_stop.dart';
 import 'job_actions_api.dart';
 
 class JobActionsRepository {
@@ -63,6 +64,11 @@ class JobActionsRepository {
     String? afterAppliancePhotoPath,
     String? afterWorkAreaPhotoPath,
     String? notes,
+    String? recipientName,
+    String? recipientPhone,
+    int? stopId,
+    double? latitude,
+    double? longitude,
   }) async {
     final json = await _api.uploadProof(
       jobId,
@@ -70,8 +76,52 @@ class JobActionsRepository {
       afterAppliancePhotoPath: afterAppliancePhotoPath,
       afterWorkAreaPhotoPath: afterWorkAreaPhotoPath,
       notes: notes,
+      recipientName: recipientName,
+      recipientPhone: recipientPhone,
+      stopId: stopId,
+      latitude: latitude,
+      longitude: longitude,
     );
     return _message(json, 'Completion proof submitted.');
+  }
+
+  // ---------------------------------------------------------------------
+  // Goods & Transport trip
+  // ---------------------------------------------------------------------
+
+  Future<TripStopsSnapshot> fetchTripStops(int jobId) async {
+    final json = await _api.fetchTripStops(jobId);
+    return TripStopsSnapshot.fromJson(json);
+  }
+
+  /// Advance the trip to [leg].
+  ///
+  /// Refuses locally, without a request, any move the backend would reject
+  /// as backwards. That is not a substitute for the server rule -- the
+  /// server stays the authority and the UI never offers such a button
+  /// anyway -- it just stops a stale screen from firing a request that can
+  /// only fail.
+  Future<LogisticsLegResult> setLogisticsLeg(
+    int jobId,
+    String leg, {
+    String? currentLeg,
+  }) async {
+    if (currentLeg != null && !canAdvanceLeg(currentLeg, leg)) {
+      throw ArgumentError(
+        'Cannot move the trip backwards from $currentLeg to $leg.',
+      );
+    }
+    final json = await _api.setLogisticsLeg(jobId, leg);
+    return LogisticsLegResult.fromJson(json);
+  }
+
+  Future<TripStopProgressResult> updateTripStop(
+    int jobId, {
+    required int stopId,
+    required bool completed,
+  }) async {
+    final json = await _api.updateTripStop(jobId, stopId: stopId, completed: completed);
+    return TripStopProgressResult.fromJson(json);
   }
 
   Future<JobPaymentInfo> fetchPayment(int jobId) async {

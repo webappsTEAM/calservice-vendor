@@ -20,6 +20,7 @@ export const CONFLICT_CODES = {
   EMPLOYEE_ALREADY_BUSY: 'EMPLOYEE_ALREADY_BUSY',
   CANCELLATION_WINDOW_EXPIRED: 'CANCELLATION_WINDOW_EXPIRED',
   CANCELLATION_NOT_ALLOWED_IN_CURRENT_STATE: 'CANCELLATION_NOT_ALLOWED_IN_CURRENT_STATE',
+  CANCELLATION_LOCKED_AFTER_OTP: 'CANCELLATION_LOCKED_AFTER_OTP',
   STALE_LOCATION: 'STALE_LOCATION',
   INVALID_STATE: 'INVALID_STATE',
 };
@@ -64,6 +65,9 @@ export function getFriendlyErrorMessage(error) {
 
   if (status === 409) {
     const code = data?.code;
+    if (code === CONFLICT_CODES.CANCELLATION_LOCKED_AFTER_OTP) {
+      return 'Cancellation is locked because customer OTP has been verified.';
+    }
     if (code === CONFLICT_CODES.JOB_ALREADY_ACCEPTED) {
       return 'This job has already been accepted by another technician.';
     }

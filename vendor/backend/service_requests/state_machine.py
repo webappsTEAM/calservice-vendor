@@ -144,6 +144,32 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
         except Exception as webhook_err:
             logger.info("Could not notify Customer app of transition to '%s': %s", target, webhook_err)
 
+    # GT-B-03: start the logistics trip the moment a driver accepts.
+    #
+    # The leg endpoint has always existed, but nothing set the FIRST leg --
+    # so a trip stayed on a blank leg until the driver app explicitly sent
+    # one, and the customer's leg-aware tracking destination had nothing to
+    # act on for the whole run to pickup. Accepting a transport job
+    # unambiguously means "on the way to collect", so it is set here rather
+    # than depending on one more request the driver app may never send.
+    #
+    # Only the FIRST leg is inferred. LOADING / EN_ROUTE_DROP / UNLOADING
+    # are genuine driver signals about physical progress and are never
+    # guessed from a status change. DELIVERED is set when proof of delivery
+    # is submitted (see WorkforceJobProofView).
+    if target == "accepted":
+        try:
+            from workforce_api.services.automatic_dispatch import LOGISTICS_SERVICE_CATEGORIES
+            from workforce_api.services.logistics_events import set_logistics_leg
+
+            if (service_request.service_category or "").strip().lower() in LOGISTICS_SERVICE_CATEGORIES:
+                set_logistics_leg(service_request, "EN_ROUTE_PICKUP", actor=actor)
+        except Exception as leg_err:
+            logger.info(
+                "Could not set the initial logistics leg on job %s: %s",
+                getattr(service_request, "id", None), leg_err,
+            )
+
     # Sync EmployeeJob status and timestamps
     try:
         from service_requests.models import EmployeeJob
