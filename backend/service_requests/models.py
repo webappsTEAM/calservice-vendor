@@ -426,16 +426,10 @@ class ServiceRequest(models.Model):
                     from workforce_api.services.redis_dispatch import enqueue_dispatch_job
                     msg_id = enqueue_dispatch_job(_job_id, event_type="NEW_JOB", company_id=_comp_id)
                     if not msg_id:
-                        # Redis unavailable: execute bounded single-job targeted fallback
-                        _log.info(f"[DISPATCH_FALLBACK_DB] Redis unavailable for Job #{_job_id}. Executing bounded DB reconciliation.")
-                        from workforce_api.services.automatic_dispatch import reconcile_booking_for_dispatch
-                        from service_requests.models import ServiceRequest as _SR
-                        _job = _SR.objects.filter(pk=_job_id).first()
-                        if _job:
-                            reconcile_booking_for_dispatch(_job, use_redis_geo=False)
+                        _log.info(f"[DISPATCH_ENQUEUE_INFO] Redis stream unavailable for Job #{_job_id}. Dispatch worker will process unassigned job.")
                 except Exception as _exc:
                     _log.exception(
-                        f"[AUTO_DISPATCH_TRIGGER_FAILED] Post-commit dispatch failed for Job #{_job_id}: {_exc}"
+                        f"[AUTO_DISPATCH_TRIGGER_FAILED] Post-commit dispatch enqueue failed for Job #{_job_id}: {_exc}"
                     )
 
             from django.db import transaction

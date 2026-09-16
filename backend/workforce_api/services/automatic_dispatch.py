@@ -154,41 +154,39 @@ def canonical_service_match(requested_service: str, approved_services: List[str]
     """
     Evaluates whether a requested service matches an employee's authorized services or verified skills.
     Returns (is_match, match_method, matched_term).
+    Strict matching: empty service fails closed; no permissive substring cross-matching between trades.
     """
-    if not requested_service:
-        return True, "EMPTY_SERVICE_BYPASS", ""
+    if not requested_service or not str(requested_service).strip():
+        return False, "EMPTY_SERVICE_FAIL_CLOSED", ""
 
     req_clean = requested_service.lower().replace("—", " ").replace("-", " ").strip()
-    req_words = set(w for w in req_clean.split() if len(w) >= 2)
 
-    # 1. Check exact or direct match against approved employee services
+    # 1. Exact match against approved employee services
     for it in approved_services:
         if not it:
             continue
         it_clean = it.lower().replace("—", " ").replace("-", " ").strip()
-        if req_clean == it_clean or req_clean in it_clean or it_clean in req_clean:
-            return True, "EXACT_OR_SUBSTRING_SERVICE", it
+        if req_clean == it_clean:
+            return True, "EXACT_SERVICE_MATCH", it
 
-    # 2. Check verified skills
+    # 2. Exact match against verified skills
     for sk in verified_skills:
         if not sk:
             continue
         sk_clean = sk.lower().replace("—", " ").replace("-", " ").strip()
-        if req_clean == sk_clean or req_clean in sk_clean or sk_clean in req_clean:
-            return True, "VERIFIED_SKILL_MATCH", sk
+        if req_clean == sk_clean:
+            return True, "VERIFIED_SKILL_EXACT_MATCH", sk
 
-    # 3. Check explicit canonical alias table
+    # 3. Canonical alias group match (both requested service and technician service/skill must belong to the exact alias group)
     for alias_key, alias_group in EXPLICIT_SERVICE_ALIASES.items():
-        # If requested service matches this alias key/group
-        if req_clean == alias_key or req_clean in alias_group or any(req_word in alias_group for req_word in req_words):
-            # Check if employee has any matching service in that alias group
+        if req_clean == alias_key or req_clean in alias_group:
             for it in approved_services:
                 it_clean = it.lower().replace("—", " ").replace("-", " ").strip()
-                if it_clean in alias_group or any(w in alias_group for w in it_clean.split() if len(w) >= 2):
+                if it_clean in alias_group:
                     return True, "EXPLICIT_ALIAS_SERVICE", it
             for sk in verified_skills:
                 sk_clean = sk.lower().replace("—", " ").replace("-", " ").strip()
-                if sk_clean in alias_group or any(w in alias_group for w in sk_clean.split() if len(w) >= 2):
+                if sk_clean in alias_group:
                     return True, "EXPLICIT_ALIAS_SKILL", sk
 
     return False, "NO_MATCH", ""
@@ -353,6 +351,37 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
             return False, f"Gate 5: Technician is outside scheduled working hours ({sched.start_time.strftime('%H:%M')}-{sched.end_time.strftime('%H:%M')}).", gate_results
 
     # ── Gate 6: Service / Skill Authorization ─────────────────────────────────
+    if not service_name or not str(service_name).strip():
+        gate_results["G6"] = False
+        logger.debug(f"[9GATE_REJECT_GATE6_EMPTY_SERVICE] Missing requested service name/category for Employee #{emp.id}.")
+        return False, "Gate 6: Service category/name required for dispatch (fail closed).", gate_results
+
+    # Check relational WorkforceServiceSkillRequirement if defined for this service
+    from workforce_api.models import WorkforceServiceSkillRequirement
+    service_clean = service_name.strip()
+    mandatory_reqs = list(
+        WorkforceServiceSkillRequirement.objects.filter(
+            service__name__iexact=service_clean,
+            is_mandatory=True,
+        ).select_related("skill")
+    )
+    if not mandatory_reqs:
+        mandatory_reqs = list(
+            WorkforceServiceSkillRequirement.objects.filter(
+                service__category__name__iexact=service_clean,
+                is_mandatory=True,
+            ).select_related("skill")
+        )
+    if mandatory_reqs:
+        emp_verified_skill_ids = set(
+            WorkforceEmployeeSkill.objects.filter(employee=emp, is_verified=True).values_list("skill_id", flat=True)
+        )
+        for req in mandatory_reqs:
+            if req.skill_id not in emp_verified_skill_ids:
+                gate_results["G6"] = False
+                logger.debug(f"[9GATE_REJECT_GATE6_SKILL_REQUIREMENT_MISSING] Employee #{emp.id} missing mandatory skill '{req.skill.name}' for service '{service_name}'.")
+                return False, f"Gate 6: Missing verified mandatory skill '{req.skill.name}' for service '{service_name}'.", gate_results
+
     approved_svcs = []
     for s in onboarding.get("services", []):
         if s.get("status") == "approved":
@@ -368,13 +397,12 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
             WorkforceEmployeeSkill.objects.filter(employee=emp, is_verified=True).values_list("skill__name", flat=True)
         )
 
-    if service_name:
-        is_match, method, matched = canonical_service_match(service_name, approved_svcs, verified_skills)
-        logger.info(f"[DISPATCH_SERVICE_MATCH] job_service=\"{service_name}\" employee_services={approved_svcs} verified_skills={verified_skills} match_method={method} result={'PASS' if is_match else 'FAIL'}")
-        if not is_match:
-            gate_results["G6"] = False
-            logger.debug(f"[9GATE_REJECT_GATE6_SKILL_MISMATCH] Employee #{emp.id} not authorized/verified for '{service_name}'.")
-            return False, f"Gate 6: Technician is not authorized or verified for requested service '{service_name}'.", gate_results
+    is_match, method, matched = canonical_service_match(service_name, approved_svcs, verified_skills)
+    logger.info(f"[DISPATCH_SERVICE_MATCH] job_service=\"{service_name}\" employee_services={approved_svcs} verified_skills={verified_skills} match_method={method} result={'PASS' if is_match else 'FAIL'}")
+    if not is_match:
+        gate_results["G6"] = False
+        logger.debug(f"[9GATE_REJECT_GATE6_SKILL_MISMATCH] Employee #{emp.id} not authorized/verified for '{service_name}'.")
+        return False, f"Gate 6: Technician is not authorized or verified for requested service '{service_name}'.", gate_results
 
     # ── Gate 7: Live Presence (Online & Available) ────────────────────────────
     if not emp.is_online or emp.current_availability != "available":
@@ -824,10 +852,14 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
             if job_obj.status != "unassigned":
                 apply_transition(job_obj, "unassigned")
             logger.warning(f"[DISPATCH_GPS_MISSING] Job #{job_id} is missing coordinates.")
-        # Ensure default platform company context if unassigned
+        # Validate company/tenant ownership — do not guess or silently fallback
         if not job_obj.company_id:
-            job_obj.company_id = 1
-            job_obj.save(update_fields=["company_id"])
+            logger.error(f"[DISPATCH_DATA_INTEGRITY] Job #{job_id} is missing company/tenant ID. Cannot auto-dispatch.")
+            WorkforceEventLog.objects.create(
+                event_type="DISPATCH_UNASSIGNED_REASON",
+                payload={"job_id": job_obj.id, "reason_code": "MISSING_COMPANY_TENANT", "reason_message": "Job is missing company/tenant ownership."}
+            )
+            return False, f"Job #{job_id} is missing company/tenant ownership. Automatic dispatch refused."
 
         WorkforceEventLog.objects.create(
             event_type="DISPATCH_STARTED",

@@ -2043,13 +2043,6 @@ class WorkforcePresenceToggleView(APIView):
         reconcile_employee_availability(emp)
         emp.refresh_from_db(fields=["current_availability", "is_online"])
 
-        if emp.is_online and emp.current_availability == "available":
-            try:
-                import threading
-                from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
-                threading.Thread(target=reconsider_jobs_for_employee, args=(emp.id,), daemon=True).start()
-            except Exception as e:
-                logger.debug(f"[PRESENCE_TOGGLE_DISPATCH_ERR] {e}")
 
         try:
             PresenceLog.objects.create(
@@ -2126,12 +2119,6 @@ class WorkforceJobListView(APIView):
             from workforce_api.services.workload import ACTIVE_QUEUE_STATUSES, WORKLOAD_OCCUPIED_STATUSES
             from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee, expire_and_reassign_offers
 
-            # 1. Sweep expired offers asynchronously so response returns instantly
-            try:
-                import threading
-                threading.Thread(target=expire_and_reassign_offers, daemon=True).start()
-            except Exception:
-                pass
 
             # 2. Hard Single Active Job Invariant: Check if technician already has an active assignment
             from workforce_api.services.workload import get_employee_active_job
@@ -2148,14 +2135,6 @@ class WorkforceJobListView(APIView):
             if has_active_job:
                 offered_job_ids_qs = ServiceRequest.objects.none().values("id")
             else:
-                # Reconsider pending customer bookings in Supabase for this available technician
-                if emp.is_active and emp.is_online and emp.current_availability == "available":
-                    try:
-                        import threading
-                        from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
-                        threading.Thread(target=reconsider_jobs_for_employee, args=(emp.id,), daemon=True).start()
-                    except Exception as e:
-                        logger.debug(f"[DISPATCH_RECONSIDER_ERROR] {e}")
 
                 offered_job_ids_qs = WorkforceJobOffer.objects.filter(
                     employee=emp,
@@ -6161,13 +6140,6 @@ class WorkforceLocationUpdateView(APIView):
             except Exception as e:
                 logger.error(f"[LOCATION_UPDATE_ERROR] Error evaluating Job #{job.id}: {e}", exc_info=True)
 
-        # Reconsider pending dispatchable customer jobs upon fresh GPS update asynchronously
-        try:
-            import threading
-            from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
-            threading.Thread(target=reconsider_jobs_for_employee, args=(emp.id,), daemon=True).start()
-        except Exception:
-            pass
 
         return Response({
             "message": "Live GPS coordinates updated.",
@@ -7025,18 +6997,6 @@ class WorkforceRealtimeStreamView(APIView):
                         logger.debug("[Realtime SSE HEARTBEAT] Sending keepalive ping to user_id=%s.", user_id_val)
                         yield f": heartbeat\n\n"
 
-                    # Periodic Discovery / Reconciliation for connected technician (every 10s)
-                    if not is_admin and (loop_now - last_reconcile_time >= 10):
-                        last_reconcile_time = loop_now
-                        try:
-                            emp_obj = getattr(user, "employee_profile", None)
-                            if emp_obj and emp_obj.is_online and emp_obj.current_availability == "available":
-                                from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
-                                reconsider_jobs_for_employee(emp_obj)
-                        except Exception as rec_err:
-                            logger.debug(f"[Realtime SSE RECONCILE ERR] {rec_err}")
-                        finally:
-                            connection.close()
 
                     # Fetch newly emitted events using pure dictionary projection
                     try:
