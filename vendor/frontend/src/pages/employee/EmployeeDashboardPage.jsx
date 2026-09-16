@@ -482,7 +482,7 @@ export function EmployeeDashboardPage() {
   ]);
 
   const handleVerifyOtpSubmit = async (jobOverride = null) => {
-    const targetJob = jobOverride || activeAssignedJob || selectedJob;
+    const targetJob = jobOverride || activeAssignedJob;
     if (!targetJob || !otpInput.trim()) return;
     try {
       setActionLoading(targetJob.id);
@@ -505,7 +505,7 @@ export function EmployeeDashboardPage() {
   };
 
   const handleResendOtp = async (jobOverride = null) => {
-    const targetJob = jobOverride || activeAssignedJob || selectedJob;
+    const targetJob = jobOverride || activeAssignedJob;
     if (!targetJob) return;
     try {
       setActionLoading(targetJob.id);
@@ -520,7 +520,7 @@ export function EmployeeDashboardPage() {
   };
 
   const handlePhotoUploadSubmit = async (photoType, file, jobOverride = null) => {
-    const targetJob = jobOverride || activeAssignedJob || selectedJob;
+    const targetJob = jobOverride || activeAssignedJob;
     if (!targetJob || !file) return;
     try {
       setActionLoading(targetJob.id);
@@ -553,7 +553,7 @@ export function EmployeeDashboardPage() {
 
   const isClockingInRef = useRef(false);
   const handleDirectJobClockIn = async (jobOverride = null) => {
-    const jobToClockIn = jobOverride || activeAssignedJob || selectedJob;
+    const jobToClockIn = jobOverride || activeAssignedJob;
     if (!jobToClockIn || isClockingInRef.current) return;
     isClockingInRef.current = true;
     setActionLoading(jobToClockIn.id);
@@ -654,7 +654,7 @@ export function EmployeeDashboardPage() {
   };
 
   const handleManualVerifyArrival = async (jobOverride = null) => {
-    const targetJob = jobOverride || activeAssignedJob || selectedJob;
+    const targetJob = jobOverride || activeAssignedJob;
     if (!targetJob?.id) return;
     try {
       setActionLoading(targetJob.id);
@@ -1281,8 +1281,8 @@ export function EmployeeDashboardPage() {
             completedJobs={completedJobs}
             allJobs={allJobs}
             incomingOffers={incomingOffers}
-            activeAssignedJob={activeAssignedJob || selectedJob}
-            hasActiveJob={hasActiveJob || Boolean(selectedJob)}
+            activeAssignedJob={activeAssignedJob}
+            hasActiveJob={hasActiveJob}
             liveLocation={liveLocation}
             locationError={locationError}
             actionLoading={actionLoading}
@@ -1292,8 +1292,8 @@ export function EmployeeDashboardPage() {
             handleManualVerifyArrival={handleManualVerifyArrival}
             handleDirectJobClockIn={handleDirectJobClockIn}
             onOpenCancelModal={handleOpenCancelModal}
-            onOpenProofModal={(j) => setProofModalJob(j || activeAssignedJob || selectedJob)}
-            onOpenCashModal={(j) => setCashModalJob(j || activeAssignedJob || selectedJob)}
+            onOpenProofModal={(j) => setProofModalJob(j || activeAssignedJob)}
+            onOpenCashModal={(j) => setCashModalJob(j || activeAssignedJob)}
             preServiceState={preServiceState}
             otpInput={otpInput}
             setOtpInput={setOtpInput}

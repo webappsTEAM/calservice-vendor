@@ -31,10 +31,11 @@ User=REPLACE_WITH_DEPLOY_USER
 # CHANGE ME: absolute path to this repo's vendor/backend directory.
 WorkingDirectory=REPLACE_WITH_ABSOLUTE_PATH/vendor/backend
 # CHANGE ME: absolute path to the virtualenv's python for this project.
-ExecStart=REPLACE_WITH_ABSOLUTE_PATH/venv/bin/python manage.py dispatch_pending_workforce_jobs --loop --interval 5
+ExecStart=REPLACE_WITH_ABSOLUTE_PATH/venv/bin/python -u manage.py dispatch_pending_workforce_jobs --loop --interval 5
 # CHANGE ME (optional): if secrets/DB config live in a separate env file
 # rather than being exported by the shell already.
 # EnvironmentFile=REPLACE_WITH_ABSOLUTE_PATH/vendor/backend/.env
+Environment=PYTHONUNBUFFERED=1
 
 # This is the actual fix for X-11: if the loop process dies for any reason
 # (exception outside the loop's own try/except, OOM kill, host reboot),
