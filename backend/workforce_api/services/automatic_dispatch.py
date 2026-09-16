@@ -670,8 +670,8 @@ def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AG
             "score": total_score,
         })
 
-    # Sort primarily by nearest distance (ascending), then by highest score (descending)
-    ranked_candidates.sort(key=lambda x: (x["distance_km"], -x["score"]))
+    # Sort primarily by highest composite score (descending), then nearest distance (ascending)
+    ranked_candidates.sort(key=lambda x: (-x["score"], x["distance_km"]))
     return ranked_candidates
 
 
@@ -861,9 +861,11 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
             )
             return False, f"Job #{job_id} is missing company/tenant ownership. Automatic dispatch refused."
 
-        WorkforceEventLog.objects.create(
+        from workforce_api.services.realtime import publish_workforce_event
+        publish_workforce_event(
             event_type="DISPATCH_STARTED",
-            payload={"job_id": job_obj.id, "service": job_obj.service_category}
+            payload={"job_id": job_obj.id, "service": job_obj.service_category},
+            company=job_obj.company,
         )
 
         # Progressive radius widening (Booking Dispatch Framework section 4):
@@ -971,7 +973,7 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
         try:
             from workforce_api.services.customer_webhook import notify_customer_app
             notify_customer_app(
-                "technician.assigned",
+                "technician.offer_sent",
                 job_obj,
                 technician_id=str(top_emp.id),
                 vendor_name=getattr(job_obj.company, "company_name", "") if getattr(job_obj, "company", None) else "",
@@ -979,10 +981,11 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
         except Exception as webhook_err:
             logger.info(f"Could not notify Customer app of offer for Job #{job_obj.id}: {webhook_err}")
 
-        WorkforceEventLog.objects.create(
-            user=top_emp.user,
+        publish_workforce_event(
             event_type="OFFER_CREATED",
-            payload={"job_id": job_obj.id, "offer_id": offer.id, "employee_id": top_emp.id, "distance_km": round(top_dist_km, 2)}
+            payload={"job_id": job_obj.id, "offer_id": offer.id, "employee_id": top_emp.id, "distance_km": round(top_dist_km, 2)},
+            user=top_emp.user,
+            company=job_obj.company,
         )
 
         loc_str = f" at {job_obj.address}" if job_obj.address else ""

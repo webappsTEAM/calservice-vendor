@@ -55,9 +55,39 @@ def test_models_save_no_sync_fallback():
     assert "reconcile_booking_for_dispatch(_job, use_redis_geo=False)" not in content, "Synchronous dispatch fallback still in ServiceRequest.save!"
     print("PASS: ServiceRequest.save verified free of synchronous dispatch fallback.")
 
+def test_acceptance_and_redispatch_audit():
+    views_path = os.path.join(os.path.dirname(__file__), "workforce_api", "views.py")
+    with open(views_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    # Verify previous_offer_status captured before mutation
+    assert "previous_offer_status = offer.status if offer else \"OFFERED\"" in content
+    assert "previous_status=previous_offer_status" in content
+
+    # Verify handleAcceptOffer does not call apiTransitionJob
+    frontend_jobs_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "src", "pages", "employee", "EmployeeJobsPage.jsx")
+    with open(frontend_jobs_path, "r", encoding="utf-8") as f:
+        frontend_content = f.read()
+
+    accept_fn = frontend_content.split("const handleAcceptOffer =")[1].split("const handleRejectOffer =")[0]
+    assert "apiTransitionJob" not in accept_fn, "handleAcceptOffer still auto-transitions on acceptance!"
+    print("PASS: Acceptance lifecycle and previous_status audit verified.")
+
+def test_offer_and_assignment_webhook_semantics():
+    dispatch_path = os.path.join(os.path.dirname(__file__), "workforce_api", "services", "automatic_dispatch.py")
+    with open(dispatch_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    # Offer creation emits technician.offer_sent
+    assert '"technician.offer_sent"' in content
+    print("PASS: Offer creation emits technician.offer_sent.")
+
 if __name__ == "__main__":
     test_empty_service_fails_closed()
     test_ac_vs_painter_service_matching()
     test_presence_and_jobs_get_code_audit()
     test_models_save_no_sync_fallback()
-    print("ALL P0 CHECKS PASSED!")
+    test_acceptance_and_redispatch_audit()
+    test_offer_and_assignment_webhook_semantics()
+    print("ALL TESTS PASSED!")
+

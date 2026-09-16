@@ -230,10 +230,15 @@ export function EmployeeJobsPage() {
   const [actionLoadingId, setActionLoadingId] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
 
-  // Sync state if runtime cached jobs update before loadJobs completes
+  // Sync state if runtime cached jobs update (prevent stale jobs on realtime events)
   useEffect(() => {
-    if (cachedJobs.length > 0 && jobs.length === 0) {
-      setJobs(cachedJobs);
+    if (cachedJobs.length > 0) {
+      setJobs((prev) => {
+        const map = new Map();
+        prev.forEach((j) => map.set(j.id, j));
+        cachedJobs.forEach((j) => map.set(j.id, j));
+        return Array.from(map.values());
+      });
       setIsLoading(false);
     }
   }, [cachedJobs]);
@@ -280,15 +285,9 @@ export function EmployeeJobsPage() {
     try {
       setActionLoadingId(jobId);
       await apiAcceptJobOffer(jobId);
-      // Auto-start transit for immediate live first-person navigation
-      try {
-        await apiTransitionJob(jobId, 'ON_THE_WAY');
-      } catch (err) {
-        // Continue if transition already initiated
-      }
       if (selectedJobForDetails?.id === jobId) setSelectedJobForDetails(null);
-      // Immediately place into active navigation cockpit
-      navigate(`/workforce/employee/dashboard?job_id=${jobId}&nav=1`);
+      // Navigate to dashboard with accepted job (trip start is explicit)
+      navigate(`/workforce/employee/dashboard?job_id=${jobId}`);
     } catch (err) {
       alert(err.message || 'Could not accept job offer.');
     } finally {

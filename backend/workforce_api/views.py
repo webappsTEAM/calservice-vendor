@@ -3595,17 +3595,23 @@ class WorkforceJobAcceptOfferView(APIView):
             now = timezone.now()
             cancellation_deadline = now + timedelta(minutes=5)
 
+            previous_offer_status = offer.status if offer else "OFFERED"
+
             if offer and offer.status == WorkforceJobOffer.Status.OFFERED:
                 if offer.expires_at < now:
                     offer.status = WorkforceJobOffer.Status.EXPIRED
-                    offer.save()
-                    run_automatic_dispatch(job_obj)
+                    offer.save(update_fields=["status"])
+                    _job_id = job_obj.id
+                    _comp_id = job_obj.company_id
+                    from django.db import transaction
+                    from workforce_api.services.redis_dispatch import enqueue_dispatch_job
+                    transaction.on_commit(lambda: enqueue_dispatch_job(_job_id, event_type="OFFER_EXPIRED", company_id=_comp_id))
                     return Response({
                         "error": "Job offer has expired.",
                         "code": "OFFER_EXPIRED"
                     }, status=status.HTTP_409_CONFLICT)
                 offer.status = "ACCEPTED"
-                offer.save()
+                offer.save(update_fields=["status"])
 
             # Hard Single Active Job Rule: Check if employee has a conflicting active job
             conflicting = ServiceRequest.objects.filter(
@@ -3688,6 +3694,19 @@ class WorkforceJobAcceptOfferView(APIView):
                 }
             )
 
+            try:
+                from workforce_api.services.customer_webhook import notify_customer_app
+                notify_customer_app(
+                    "technician.assigned",
+                    job_obj,
+                    technician_id=str(emp_obj.id),
+                    technician_name=emp_obj.user.get_full_name() or emp_obj.user.username,
+                    technician_phone=getattr(emp_obj.user, "phone", "") or "",
+                    vendor_name=getattr(job_obj.company, "company_name", "") if getattr(job_obj, "company", None) else "",
+                )
+            except Exception as webhook_err:
+                logger.info(f"Could not notify Customer app of assignment for Job #{job_obj.id}: {webhook_err}")
+
             # Log immutable lifecycle audit event
             WorkforceJobLifecycleEvent.objects.create(
                 job=job_obj,
@@ -3695,32 +3714,35 @@ class WorkforceJobAcceptOfferView(APIView):
                 company=job_obj.company,
                 actor_user=request.user,
                 event_type=WorkforceJobLifecycleEvent.EventType.EMPLOYEE_JOB_ACCEPTED,
-                previous_status=offer.status if offer else "OFFERED",
+                previous_status=previous_offer_status,
                 new_status="accepted",
                 accepted_at=now,
                 cancellation_deadline=cancellation_deadline,
                 metadata={"offer_id": offer.id if offer else None}
             )
 
-            WorkforceEventLog.objects.create(
-                user=emp_obj.user,
+            from workforce_api.services.realtime import publish_workforce_event
+            publish_workforce_event(
                 event_type="EMPLOYEE_JOB_ACCEPTED",
                 payload={
                     "job_id": job_obj.id,
                     "employee_id": emp_obj.id,
                     "accepted_at": now.isoformat(),
                     "cancellation_deadline": cancellation_deadline.isoformat(),
-                }
+                },
+                user=emp_obj.user,
+                company=job_obj.company,
             )
-            WorkforceEventLog.objects.create(
-                user=job_obj.customer if hasattr(job_obj, "customer") else None,
+            publish_workforce_event(
                 event_type="NEW_EMPLOYEE_ASSIGNED",
                 payload={
                     "job_id": job_obj.id,
                     "employee_id": emp_obj.id,
                     "employee_name": emp_obj.user.get_full_name() or emp_obj.user.username,
                     "status": "ACCEPTED",
-                }
+                },
+                user=job_obj.customer if hasattr(job_obj, "customer") else None,
+                company=job_obj.company,
             )
 
             create_notification(
@@ -3965,14 +3987,18 @@ class WorkforceJobCancelAssignmentView(APIView):
                 }
             )
 
-            # Trigger automatic redispatch excluding the cancelling technician
-            success, msg = run_automatic_dispatch(job_obj, excluded_employee_ids=[emp_obj.id])
+            # Trigger asynchronous redispatch excluding the cancelling technician after commit
+            _job_id = job_obj.id
+            _comp_id = job_obj.company_id
+            from django.db import transaction
+            from workforce_api.services.redis_dispatch import enqueue_dispatch_job
+            transaction.on_commit(lambda: enqueue_dispatch_job(_job_id, event_type="TECH_CANCELLED", company_id=_comp_id))
 
             return Response({
-                "message": f"Job #{job_obj.id} assignment cancelled successfully. Redispatch status: {msg}",
+                "message": f"Job #{job_obj.id} assignment cancelled successfully. Redispatch scheduled.",
                 "job_id": job_obj.id,
                 "status": job_obj.status,
-                "redispatch_message": msg,
+                "redispatch_message": "Redispatch queued",
             }, status=status.HTTP_200_OK)
 
 
@@ -4120,15 +4146,15 @@ class WorkforceJobTechnicianCancelView(APIView):
                 }
             )
 
-            # 6. Automatic redispatch to next eligible candidate, excluding this technician
-            try:
-                from workforce_api.services.automatic_dispatch import dispatch_job
-                dispatch_job(job, exclude_employee_ids=[emp.id])
-            except Exception as e:
-                logger.error(f"[REDISPATCH_ERROR] Failed to auto-dispatch job #{job.id} after tech cancellation: {e}")
+            # 6. Automatic redispatch to next eligible candidate after commit
+            _job_id = job.id
+            _comp_id = job.company_id
+            from django.db import transaction
+            from workforce_api.services.redis_dispatch import enqueue_dispatch_job
+            transaction.on_commit(lambda: enqueue_dispatch_job(_job_id, event_type="TECH_CANCELLED", company_id=_comp_id))
 
             return Response({
-                "message": f"Job #{job.id} cancelled successfully. Redispatch started for next professional.",
+                "message": f"Job #{job.id} cancelled successfully. Redispatch scheduled for next professional.",
                 "job_id": job.id,
                 "status": "CANCELLED_BY_TECHNICIAN",
             }, status=status.HTTP_200_OK)
@@ -4309,22 +4335,15 @@ class WorkforceJobRejectOfferView(APIView):
                 payload={"job_id": job_obj.id, "employee_id": emp.id, "reason": reason}
             )
 
-            # Trigger immediate dispatch to next ranked technician
-            success, msg = run_automatic_dispatch(job_obj)
-
-            # Ensure job is properly marked unassigned if no other candidate received it
-            job_obj.refresh_from_db()
-            has_new_offer = WorkforceJobOffer.objects.filter(
-                job=job_obj,
-                status="OFFERED",
-                expires_at__gt=timezone.now()
-            ).exists()
-            if not has_new_offer and job_obj.assigned_employee is None and job_obj.status == "assigned":
-                job_obj.status = "unassigned"
-                job_obj.save(update_fields=["status"])
+            # Trigger immediate redispatch to next ranked technician after commit
+            _job_id = job_obj.id
+            _comp_id = job_obj.company_id
+            from django.db import transaction
+            from workforce_api.services.redis_dispatch import enqueue_dispatch_job
+            transaction.on_commit(lambda: enqueue_dispatch_job(_job_id, event_type="OFFER_REJECTED", company_id=_comp_id))
 
             return Response({
-                "message": f"Job offer declined. Next candidate dispatch status: {msg}",
+                "message": "Job offer declined. Next candidate redispatch scheduled.",
                 "job_id": job_obj.id,
                 "status": job_obj.status,
             }, status=status.HTTP_200_OK)
