@@ -2117,7 +2117,6 @@ class WorkforceJobListView(APIView):
             now = timezone.now()
             from workforce_api.models import WorkforceJobOffer, WorkforceJobLifecycleEvent, WorkforceWorkExtension, JobPayment
             from workforce_api.services.workload import ACTIVE_QUEUE_STATUSES, WORKLOAD_OCCUPIED_STATUSES
-            from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee, expire_and_reassign_offers
 
 
             # 2. Hard Single Active Job Invariant: Check if technician already has an active assignment
