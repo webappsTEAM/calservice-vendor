@@ -17,7 +17,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env", override=True)
 
 _raw_secret = os.getenv("SECRET_KEY") or os.getenv("DJANGO_SECRET_KEY")
-DEBUG = (os.getenv("DEBUG") or os.getenv("DJANGO_DEBUG") or "True").lower() in ("true", "1", "t")
+# SECURITY: DEBUG defaults to FALSE. A missing or misspelled env var must never
+# silently place a production deployment into debug mode, which would expose full
+# stack traces, SQL and settings values on every error page -- and would also
+# disarm the DEBUG-gated interlock in workforce_api/services/payouts.py that stops
+# mock (fabricated) payouts from running against real money. Local development
+# opts IN explicitly via DJANGO_DEBUG=1 in backend/.env.
+DEBUG = (os.getenv("DEBUG") or os.getenv("DJANGO_DEBUG") or "False").strip().lower() in ("true", "1", "t", "yes")
 
 if not _raw_secret:
     if DEBUG:
@@ -27,7 +33,12 @@ if not _raw_secret:
 else:
     SECRET_KEY = _raw_secret
 
-_allowed_hosts_env = os.getenv("ALLOWED_HOSTS")
+# Accept BOTH spellings. .env.example, the production .env and backend-ci.yml all
+# use DJANGO_ALLOWED_HOSTS, but this block previously read only ALLOWED_HOSTS --
+# so the configured value was silently ignored and the fallback below was used
+# instead. SECRET_KEY and DEBUG above already accept both prefixes; this one was
+# the odd omission.
+_allowed_hosts_env = os.getenv("ALLOWED_HOSTS") or os.getenv("DJANGO_ALLOWED_HOSTS")
 if _allowed_hosts_env:
     ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
 else:
@@ -55,6 +66,7 @@ INSTALLED_APPS = [
     "workforce_api",
     "time_tracking",
     "vendor_wallet",
+    "inventory",
 ]
 
 MIDDLEWARE = [
@@ -91,11 +103,30 @@ WSGI_APPLICATION = "workforce_core.wsgi.application"
 ASGI_APPLICATION = "workforce_core.asgi.application"
 
 # ─── Database Configuration (Shared Supabase PostgreSQL) ──────────────────────
+#
+# `manage.py test` used to force SQLite unconditionally. That's wrong for
+# this project specifically: several tables this backend queries in tests
+# (accounts_user, companies_company, employees_employee, and everything
+# service_requests mirrors) are `managed=False` -- owned and migrated by
+# Customer/backend against the one shared Postgres database, never created
+# by this project's own `migrate`. On SQLite those tables simply never
+# exist, so any test touching them (which is most of them -- they all
+# create a User/Company first) fails with "no such table", independent of
+# whatever the test is actually trying to verify.
+#
+# Postgres is now the default test backend too, using the exact same
+# connection this process already has configured (DB_HOST/DB_NAME/etc) --
+# `manage.py test` wraps it in a throwaway `test_<DB_NAME>` database it
+# creates and tears down itself, same as Django does for any Postgres
+# project. Set DJANGO_TEST_SQLITE=1 to force the old SQLite-only behavior
+# back (e.g. for a quick syntax/logic check of code that never touches a
+# managed=False table) -- but that's the exception now, not the default.
 
 IS_TESTING = "test" in sys.argv or os.getenv("DJANGO_TEST_SQLITE") == "1"
 USE_POSTGRES = bool(os.getenv("DB_NAME") or os.getenv("DB_HOST"))
+FORCE_SQLITE_TESTS = os.getenv("DJANGO_TEST_SQLITE") == "1"
 
-if IS_TESTING:
+if IS_TESTING and (FORCE_SQLITE_TESTS or not USE_POSTGRES):
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
@@ -128,7 +159,7 @@ elif USE_POSTGRES:
             "HOST": os.getenv("DB_HOST", "localhost"),
             "PORT": os.getenv("DB_PORT", "6543"),
             "OPTIONS": _db_options,
-            "CONN_MAX_AGE": int(os.getenv("DB_CONN_MAX_AGE", "0")),
+            "CONN_MAX_AGE": int(os.getenv("DB_CONN_MAX_AGE", "600")),
             "CONN_HEALTH_CHECKS": True,
             "DISABLE_SERVER_SIDE_CURSORS": True,
         }
@@ -140,6 +171,23 @@ else:
             "NAME": BASE_DIR / "db.sqlite3",
         }
     }
+
+_cache_backend = "django.core.cache.backends.locmem.LocMemCache"
+try:
+    import redis  # noqa: F401
+    _cache_backend = "django.core.cache.backends.redis.RedisCache"
+except ImportError:
+    pass
+
+_cache_url = os.getenv("CACHE_URL", "redis://127.0.0.1:6379/1")
+CACHES = {
+    "default": {
+        "BACKEND": _cache_backend,
+        "LOCATION": _cache_url if "redis" in _cache_backend else "workforce-local-cache",
+        "TIMEOUT": 300,
+        "KEY_PREFIX": "workforce",
+    }
+}
 
 AUTH_USER_MODEL = "accounts.User"
 

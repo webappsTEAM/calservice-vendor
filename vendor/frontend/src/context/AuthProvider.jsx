@@ -20,10 +20,33 @@ import {
   clearAuthTokens,
 } from '../utils/authTokens.js';
 
+const CACHED_USER_KEY = 'calservice_workforce_cached_user';
+const CACHED_EMP_KEY = 'calservice_workforce_cached_emp';
+
 export function AuthProvider({ children }) {
-  const [isReady, setIsReady] = useState(false);
-  const [user, setUser] = useState(null);
-  const [employee, setEmployee] = useState(null);
+  const [cachedUser] = useState(() => {
+    try {
+      const saved = localStorage.getItem(CACHED_USER_KEY);
+      const token = getAccessToken();
+      return (saved && token) ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const [cachedEmp] = useState(() => {
+    try {
+      const saved = localStorage.getItem(CACHED_EMP_KEY);
+      const token = getAccessToken();
+      return (saved && token) ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const [user, setUser] = useState(cachedUser);
+  const [employee, setEmployee] = useState(cachedEmp);
+  const [isReady, setIsReady] = useState(() => Boolean(cachedUser && getAccessToken()));
   const inFlightRefreshRef = React.useRef(null);
 
   const refreshProfile = useCallback(async (force = false) => {
@@ -35,6 +58,8 @@ export function AuthProvider({ children }) {
       try {
         const token = getAccessToken();
         if (!token) {
+          localStorage.removeItem(CACHED_USER_KEY);
+          localStorage.removeItem(CACHED_EMP_KEY);
           setUser(null);
           setEmployee(null);
           return null;
@@ -49,15 +74,7 @@ export function AuthProvider({ children }) {
             (!isPlatformAdmin && ['admin', 'manager'].includes((me.role || '').toLowerCase()))
           );
           const isAdmin = isPlatformAdmin || isVendorAdmin;
-          let empData = null;
-
-          if (!isAdmin) {
-            try {
-              empData = await apiGetOnboardingProfile();
-            } catch (_) {
-              // Non-admin user without onboarding record
-            }
-          }
+          const empData = isAdmin ? null : await apiGetOnboardingProfile().catch(() => null);
 
           const isEmployee = Boolean(empData) || (!isAdmin && (me.role || '').toLowerCase() === 'employee');
           const isTiedWorker = isEmployee && Boolean(me.is_tied_worker || empData?.is_tied || empData?.workforce_type === 'TIED');
@@ -86,9 +103,17 @@ export function AuthProvider({ children }) {
 
           setUser(u);
           setEmployee(empData);
+          try {
+            localStorage.setItem(CACHED_USER_KEY, JSON.stringify(u));
+            if (empData) localStorage.setItem(CACHED_EMP_KEY, JSON.stringify(empData));
+          } catch (_) {}
           return u;
         } else {
           clearAuthTokens();
+          try {
+            localStorage.removeItem(CACHED_USER_KEY);
+            localStorage.removeItem(CACHED_EMP_KEY);
+          } catch (_) {}
           setUser(null);
           setEmployee(null);
           return null;
@@ -97,6 +122,10 @@ export function AuthProvider({ children }) {
         // Only wipe auth tokens if server explicitly rejected with 401
         if (e && e.status === 401) {
           clearAuthTokens();
+          try {
+            localStorage.removeItem(CACHED_USER_KEY);
+            localStorage.removeItem(CACHED_EMP_KEY);
+          } catch (_) {}
           setUser(null);
           setEmployee(null);
         }
@@ -189,6 +218,10 @@ export function AuthProvider({ children }) {
     }
     try {
       await apiWorkforceLogout();
+    } catch (_) {}
+    try {
+      localStorage.removeItem(CACHED_USER_KEY);
+      localStorage.removeItem(CACHED_EMP_KEY);
     } catch (_) {}
     setUser(null);
     setEmployee(null);

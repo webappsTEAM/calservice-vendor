@@ -291,12 +291,41 @@ def handle_payout_webhook(raw_body: str, signature: str) -> bool:
         return False
 
     with transaction.atomic():
+        # Re-fetch under a row lock before deciding anything. RazorpayX delivers
+        # webhooks at least once and retries on timeout or a non-2xx response,
+        # so the same event legitimately arrives more than once -- and can
+        # arrive twice concurrently. Without the lock, two deliveries can both
+        # read the pre-update status and both apply their effects.
+        withdrawal = (
+            WithdrawalRequest.objects.select_for_update()
+            .select_related("wallet")
+            .get(id=withdrawal.id)
+        )
+
         if event == "payout.processed":
+            if withdrawal.status == WithdrawalRequest.Status.SUCCESS:
+                logger.info(
+                    f"[PAYOUT_WEBHOOK] Ignoring duplicate {event} for withdrawal "
+                    f"#{withdrawal.id} -- already SUCCESS."
+                )
+                return True
             withdrawal.status = WithdrawalRequest.Status.SUCCESS
             withdrawal.razorpayx_utr = payout_entity.get("utr", "")
             withdrawal.processed_at = timezone.now()
             withdrawal.save(update_fields=["status", "razorpayx_utr", "processed_at"])
         elif event in ("payout.failed", "payout.reversed"):
+            if withdrawal.status == WithdrawalRequest.Status.FAILED:
+                # Already reversed by an earlier delivery of this same event.
+                # Falling through would create a SECOND REFUND_ADJUSTMENT entry
+                # below, crediting the wallet twice for one failed payout --
+                # real money the technician was never owed, withdrawable on the
+                # next request. There is no uniqueness constraint on
+                # WalletLedgerEntry to catch this at the database level.
+                logger.info(
+                    f"[PAYOUT_WEBHOOK] Ignoring duplicate {event} for withdrawal "
+                    f"#{withdrawal.id} -- already FAILED and reversed."
+                )
+                return True
             withdrawal.status = WithdrawalRequest.Status.FAILED
             withdrawal.failure_reason = f"RazorpayX {event}"
             withdrawal.processed_at = timezone.now()

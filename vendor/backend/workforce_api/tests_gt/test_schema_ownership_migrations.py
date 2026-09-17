@@ -29,7 +29,7 @@ def _load(dotted):
 
 
 EMPLOYEES_MIG = "employees.migrations.0002_own_employee_tables"
-WORKFORCE_MIG = "workforce_api.migrations.0023_own_workforce_mirror_tables"
+WORKFORCE_MIG = "workforce_api.migrations.0027_own_workforce_mirror_tables"
 
 
 class _FakeCursor:

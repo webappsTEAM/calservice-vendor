@@ -27,7 +27,7 @@ MAX_GPS_AGE_SECONDS: int = 120
 DISTANCE_TOLERANCE_KM: float = 0.005  # 5 meters numerical precision buffer for boundary testing
 
 # Arrival, Geofence, and Tracking Telemetry Constants
-ARRIVAL_RADIUS_METERS: float = 250.0
+ARRIVAL_RADIUS_METERS: float = 10.0
 ARRIVAL_MAX_ACCURACY_METERS: float = 200.0
 ARRIVAL_MAX_GPS_AGE_SECONDS: float = 30.0
 ARRIVAL_REQUIRED_FIXES: int = 2

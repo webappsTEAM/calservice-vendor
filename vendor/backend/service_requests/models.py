@@ -1044,3 +1044,126 @@ class SettingsHubInvoice(models.Model):
 
     def __str__(self):
         return f"Invoice {self.invoice_number} - ₹{self.amount} ({self.status})"
+
+
+# ---------------------------------------------------------------------------
+# Quotation Service Classification Utility
+# (gokul branch: used by workforce_api.services.quotation_service)
+# ---------------------------------------------------------------------------
+
+# Canonical Service IDs for Quotation/Estimation-based services.
+# A ServiceRequest for any of these IDs triggers the full inspection →
+# estimation → quotation approval flow instead of the standard direct flow.
+QUOTATION_SERVICE_IDS = {
+    # Painting
+    91: "Interior Painting",
+    92: "Exterior Painting",
+    93: "Waterproofing",
+    94: "Wood & Metal",
+    95: "Texture Decor",
+    # Civil/Masonry
+    35: "Brick & Block Work",
+    36: "Plastering & Wall Repair",
+    37: "Wall & Partition Construction",
+    38: "Wall Breaking & Demolition",
+    # HVAC / AC (estimation flow only, added here for completeness)
+    10: "AC Installation",
+    11: "AC Service",
+    12: "AC Repair",
+}
+
+# Slugs / name fragments that mark a service as quotation-based (fallback when
+# the service_id is not in QUOTATION_SERVICE_IDS above).
+QUOTATION_CATEGORY_SLUGS = {
+    "painting", "waterproofing", "civil_work", "masonry",
+    "renovation", "interior_design",
+}
+
+
+def is_quotation_service(service_id=None, name=None, category=None):
+    """
+    Return True if the given service_id / name / category slug belongs to
+    the Quotation/Estimation workflow (i.e. requires an inspection before
+    a price can be confirmed).
+
+    Called by workforce_api.services.quotation_service to gate whether a
+    job can enter the quotation flow.
+
+    Args:
+        service_id: integer or string Service.pk
+        name:       the ServiceRequest.issue_title or service name string
+        category:   the ServiceRequest.service_category slug string
+    """
+    if service_id is not None:
+        try:
+            if int(service_id) in QUOTATION_SERVICE_IDS:
+                return True
+        except (TypeError, ValueError):
+            pass
+
+    if category:
+        cat_lower = str(category).lower().replace(" ", "_")
+        if cat_lower in QUOTATION_CATEGORY_SLUGS:
+            return True
+        # Also check partial match on known quotation service names
+        for v in QUOTATION_SERVICE_IDS.values():
+            if v.lower() in cat_lower or cat_lower in v.lower():
+                return True
+
+    if name:
+        name_lower = str(name).lower()
+        for v in QUOTATION_SERVICE_IDS.values():
+            if v.lower() in name_lower:
+                return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Package Model (Grocery / Produce Stock Management)
+# (gokul branch: mirrors Customer app's service_requests_package table)
+# ---------------------------------------------------------------------------
+
+class Package(models.Model):
+    """
+    A saleable grocery / produce package listing (service_requests_package).
+
+    Mirrors the Customer app's Package model (managed=False).
+    Ownership of physical stock flows through Package.stock_item.org
+    (see inventory.models.InventoryItem / inventory.services).
+    """
+    name = models.CharField(max_length=255)
+    slug = models.SlugField(max_length=255, unique=True)
+    image = models.CharField(max_length=500, blank=True, default="")
+    tag = models.CharField(max_length=100, blank=True, default="")
+    description = models.TextField(blank=True, default="")
+    duration = models.CharField(max_length=100, blank=True, default="500 g")
+    base_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    offer_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    service = models.ForeignKey(
+        Service,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="packages",
+        db_column="service_id",
+    )
+    stock_item = models.OneToOneField(
+        "inventory.InventoryItem",
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="package",
+        db_column="stock_item_id",
+    )
+    is_active = models.BooleanField(default=True)
+    sort_order = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = "service_requests_package"
+        ordering = ["sort_order", "name"]
+
+    def __str__(self):
+        return f"{self.name} (₹{self.base_price or '—'})"
+

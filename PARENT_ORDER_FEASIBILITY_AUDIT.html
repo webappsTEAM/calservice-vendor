@@ -1,0 +1,562 @@
+<title>Parent Order Feasibility Audit</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+  :root{
+    --bg:#f5f6f1; --surface:#ffffff; --surface-2:#eef1e9;
+    --ink:#1c2620; --ink-soft:#4c5750; --line:#dde2d5; --line-soft:#e8ebe1;
+    --primary:#2f6b3c; --primary-ink:#dff0e2;
+    --amber:#a8641c; --amber-ink:#fbead9;
+    --red:#a3311f; --red-ink:#fbe1dc;
+    --blue:#2f5a8a; --blue-ink:#e1ebf6;
+    --purple:#6b4f9c; --purple-ink:#ece3f7;
+    --mono-bg:#eef1e9;
+    --shadow: 0 1px 2px rgba(28,38,32,0.06), 0 8px 24px -12px rgba(28,38,32,0.15);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#141a15; --surface:#1a221b; --surface-2:#202a21;
+      --ink:#e8ede4; --ink-soft:#aab5a3; --line:#2c3830; --line-soft:#232d25;
+      --primary:#7cbb84; --primary-ink:#173222;
+      --amber:#e3a75c; --amber-ink:#3a2c15;
+      --red:#e18979; --red-ink:#3a1f19;
+      --blue:#8fb3dd; --blue-ink:#1c2c40;
+      --purple:#b7a1de; --purple-ink:#2a2140;
+      --mono-bg:#202a21;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -12px rgba(0,0,0,0.5);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#141a15; --surface:#1a221b; --surface-2:#202a21;
+    --ink:#e8ede4; --ink-soft:#aab5a3; --line:#2c3830; --line-soft:#232d25;
+    --primary:#7cbb84; --primary-ink:#173222;
+    --amber:#e3a75c; --amber-ink:#3a2c15;
+    --red:#e18979; --red-ink:#3a1f19;
+    --blue:#8fb3dd; --blue-ink:#1c2c40;
+    --purple:#b7a1de; --purple-ink:#2a2140;
+    --mono-bg:#202a21;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -12px rgba(0,0,0,0.5);
+  }
+
+  *{box-sizing:border-box;}
+  body{ background:var(--bg); color:var(--ink); font-family:'Public Sans', system-ui, sans-serif; margin:0; line-height:1.6; }
+  ::selection{ background:var(--primary); color:var(--primary-ink); }
+  .wrap{ max-width:960px; margin:0 auto; padding:56px 24px 140px; }
+  h1,h2,h3,h4{ font-family:'Fraunces', Georgia, serif; text-wrap:balance; color:var(--ink); margin:0; }
+  code, .mono{ font-family:'IBM Plex Mono', ui-monospace, monospace; }
+  p{ margin:0 0 10px; }
+  a{ color:var(--primary); }
+
+  header.doc{ margin-bottom:20px; }
+  .eyebrow{ font-family:'IBM Plex Mono', monospace; font-size:12.5px; letter-spacing:0.09em; text-transform:uppercase; color:var(--primary); font-weight:500; margin-bottom:14px; display:flex; align-items:center; gap:10px; }
+  .eyebrow::before{ content:""; width:20px; height:2px; background:var(--primary); display:inline-block; }
+  header.doc h1{ font-size:clamp(28px,4vw,40px); font-weight:600; line-height:1.14; }
+  header.doc .sub{ font-size:16.5px; color:var(--ink-soft); margin-top:14px; max-width:66ch; }
+
+  .scope-box{ margin-top:26px; padding:16px 20px; border:1px solid var(--line); border-radius:10px; background:var(--surface); display:grid; grid-template-columns:1fr 1fr; gap:10px 24px; }
+  @media (max-width:640px){ .scope-box{grid-template-columns:1fr;} }
+  .scope-box div{ font-size:13.5px; color:var(--ink-soft); }
+  .scope-box b{ display:block; color:var(--ink); font-size:13.5px; font-weight:700; margin-bottom:2px; }
+
+  nav.toc{ margin-top:28px; padding:16px 20px; border:1px dashed var(--line); border-radius:10px; font-size:13px; }
+  nav.toc b{ display:block; font-size:11.5px; text-transform:uppercase; letter-spacing:0.06em; color:var(--ink-soft); margin-bottom:8px; }
+  nav.toc ul{ margin:0; padding:0; list-style:none; columns:2; column-gap:24px; }
+  @media (max-width:640px){ nav.toc ul{columns:1;} }
+  nav.toc li{ margin-bottom:5px; }
+  nav.toc a{ text-decoration:none; color:var(--ink-soft); }
+  nav.toc a:hover{ color:var(--primary); }
+  nav.toc .n{ font-family:'IBM Plex Mono',monospace; color:var(--primary); margin-right:6px; }
+
+  section{ margin-top:52px; scroll-margin-top:20px; }
+  .section-head{ display:flex; align-items:baseline; gap:14px; margin-bottom:18px; border-bottom:1px solid var(--line); padding-bottom:14px; }
+  .section-num{ font-family:'IBM Plex Mono', monospace; font-size:13px; color:var(--primary); background:var(--primary-ink); padding:2px 8px; border-radius:5px; font-weight:600; }
+  section h2{ font-size:23px; font-weight:600; }
+  .section-note{ font-size:14.5px; color:var(--ink-soft); margin:-6px 0 20px; max-width:70ch; }
+
+  h3.sub-h{ font-size:16px; font-family:'Public Sans',sans-serif; font-weight:700; margin-top:26px; margin-bottom:10px; }
+
+  .fact-grid{ display:grid; grid-template-columns:180px 1fr; gap:2px 18px; font-size:14px; margin:14px 0 18px; }
+  .fact-grid dt{ color:var(--ink-soft); font-weight:600; padding:6px 0; border-bottom:1px solid var(--line-soft); }
+  .fact-grid dd{ margin:0; padding:6px 0; border-bottom:1px solid var(--line-soft); }
+
+  pre.code{
+    background:var(--mono-bg); border:1px solid var(--line); border-radius:8px; padding:14px 16px;
+    font-family:'IBM Plex Mono',monospace; font-size:12.5px; overflow-x:auto; line-height:1.55; margin:12px 0 18px;
+  }
+  pre.code .path{ color:var(--ink-soft); display:block; margin-bottom:6px; font-size:11.5px; }
+  .cite{ font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--ink-soft); background:var(--surface-2); padding:1px 6px; border-radius:4px; white-space:nowrap; }
+
+  .callout{ border:1px solid var(--line); background:var(--surface); border-radius:10px; padding:16px 20px; box-shadow:var(--shadow); margin:16px 0; }
+  .callout.warn{ border-color:color-mix(in srgb, var(--amber) 45%, var(--line)); background:var(--amber-ink); }
+  .callout.danger{ border-color:color-mix(in srgb, var(--red) 45%, var(--line)); background:var(--red-ink); }
+  .callout.good{ border-color:color-mix(in srgb, var(--primary) 40%, var(--line)); background:var(--primary-ink); }
+  .callout p{ font-size:14px; margin:0 0 6px; }
+  .callout p:last-child{ margin-bottom:0; }
+  .callout b{ color:var(--ink); }
+
+  .table-scroll{ overflow-x:auto; border:1px solid var(--line); border-radius:10px; margin:14px 0 20px; }
+  table{ border-collapse:collapse; width:100%; min-width:760px; font-size:13.5px; background:var(--surface); }
+  thead th{ text-align:left; font-family:'Public Sans',sans-serif; font-weight:700; font-size:11.5px; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-soft); background:var(--surface-2); padding:11px 13px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  tbody td{ padding:12px 13px; border-bottom:1px solid var(--line-soft); vertical-align:top; }
+  tbody tr:last-child td{ border-bottom:none; }
+
+  .badge{ font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:0.02em; text-transform:uppercase; padding:3px 9px; border-radius:5px; font-weight:600; border:1px solid transparent; white-space:nowrap; display:inline-block; }
+  .badge.ready{ background:var(--primary-ink); color:var(--primary); border-color:color-mix(in srgb, var(--primary) 30%, transparent); }
+  .badge.high{ background:var(--blue-ink); color:var(--blue); border-color:color-mix(in srgb, var(--blue) 30%, transparent); }
+  .badge.medium{ background:var(--amber-ink); color:var(--amber); border-color:color-mix(in srgb, var(--amber) 30%, transparent); }
+  .badge.low{ background:var(--amber-ink); color:var(--amber); border-color:color-mix(in srgb, var(--amber) 30%, transparent); }
+  .badge.notready, .badge.veryhigh{ background:var(--red-ink); color:var(--red); border-color:color-mix(in srgb, var(--red) 30%, transparent); }
+  .badge.accepted{ background:var(--red-ink); color:var(--red); }
+
+  .verdict-card{ display:flex; align-items:center; gap:20px; border:1px solid var(--line); border-radius:12px; padding:22px 26px; background:var(--surface); box-shadow:var(--shadow); margin:16px 0; }
+  .verdict-pill{ font-family:'IBM Plex Mono',monospace; font-size:15px; font-weight:700; letter-spacing:0.03em; padding:8px 18px; border-radius:8px; white-space:nowrap; }
+  .verdict-pill.ready{ background:var(--primary-ink); color:var(--primary); }
+  .verdict-pill.high{ background:var(--blue-ink); color:var(--blue); }
+  .verdict-pill.medium{ background:var(--amber-ink); color:var(--amber); }
+  .verdict-card .vtext{ font-size:14.5px; color:var(--ink-soft); }
+  .verdict-card .vtext b{ color:var(--ink); }
+
+  .diagram{ font-family:'IBM Plex Mono',monospace; font-size:13px; background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:20px 24px; white-space:pre; overflow-x:auto; line-height:1.7; margin:14px 0 20px; }
+  .diagram .unchanged{ color:var(--primary); }
+  .diagram .new{ color:var(--amber); }
+
+  .risk-grid{ display:flex; flex-direction:column; gap:0; }
+  .risk-row{ display:grid; grid-template-columns:220px 90px 1fr; gap:16px; padding:12px 0; border-top:1px solid var(--line-soft); align-items:start; }
+  .risk-row:first-child{ border-top:1px solid var(--line); }
+  .risk-row .area{ font-weight:700; font-size:14px; }
+  .risk-row p{ font-size:13.5px; color:var(--ink-soft); margin:0; }
+
+  ul.plain{ margin:0 0 16px; padding-left:20px; font-size:14.5px; }
+  ul.plain li{ margin-bottom:6px; }
+  ul.plain.tight li{ margin-bottom:3px; }
+
+  footer.doc{ margin-top:64px; padding-top:24px; border-top:1px solid var(--line); }
+  footer.doc p{ font-size:13px; color:var(--ink-soft); margin:0; }
+</style>
+
+<div class="wrap">
+
+  <header class="doc">
+    <div class="eyebrow">Read-Only Architecture Audit · SEVO / CalServices</div>
+    <h1>Can a Parent Order sit above AC, Painting and Mason without touching them?</h1>
+    <p class="sub">A static inspection of the actual <code>ServiceRequest</code>, category, quotation and payment code — file paths, models, and functions as they exist today. No code was changed to produce this document.</p>
+    <div class="scope-box">
+      <div><b>Method</b>Direct reading of models, serializers, views, state machine and services — no code modified, no tests executed against a live database.</div>
+      <div><b>Repos inspected</b><code>Customer/backend/service_requests</code> and <code>vendor/backend/workforce_api</code>, sharing one Postgres/Supabase database.</div>
+      <div><b>Characterization tests</b>Reasoned from a full static trace of the intake → save → downstream-read chain, not executed — see the note in §01.</div>
+      <div><b>Date</b>9 September 2026</div>
+    </div>
+
+    <nav class="toc">
+      <b>Contents</b>
+      <ul>
+        <li><span class="n">01</span><a href="#s01">ServiceRequest architecture</a></li>
+        <li><span class="n">02</span><a href="#s02">Category registry</a></li>
+        <li><span class="n">03</span><a href="#s03">Category normalization</a></li>
+        <li><span class="n">04</span><a href="#s04">AC / Painting / Mason workflows</a></li>
+        <li><span class="n">05</span><a href="#s05">Quotation / estimation relationship</a></li>
+        <li><span class="n">06</span><a href="#s06">Payment ownership</a></li>
+        <li><span class="n">07</span><a href="#s07">Cart / checkout architecture</a></li>
+        <li><span class="n">08</span><a href="#s08">Parent Order feasibility</a></li>
+        <li><span class="n">09</span><a href="#s09">Impact / risk analysis</a></li>
+        <li><span class="n">A–D</span><a href="#verdicts">Architecture &amp; Parent Order verdicts</a></li>
+        <li><span class="n">▸</span><a href="#grocery">Grocery / Daily Essentials fit</a></li>
+        <li><span class="n">▸</span><a href="#final">Final verdict &amp; sequence</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <section id="s01">
+    <div class="section-head"><span class="section-num">01</span><h2>ServiceRequest architecture</h2></div>
+
+    <p><code>ServiceRequest</code> exists and is the single master record for every booking of every kind. <span class="cite">Customer/backend/service_requests/models.py:225</span> — <em>"Master record: created by public booking, driven through state machine."</em></p>
+
+    <h3 class="sub-h">The exact field</h3>
+    <pre class="code"><span class="path">Customer/backend/service_requests/models.py — inside class ServiceRequest</span>service_category = models.CharField(max_length=150)</pre>
+
+    <dl class="fact-grid">
+      <dt>Field type</dt><dd>Plain <code>CharField</code>. Nothing more specific — no <code>SlugField</code>, no FK, no <code>IntegerChoices</code>.</dd>
+      <dt>max_length</dt><dd><code>150</code></dd>
+      <dt>choices=</dt><dd>Not set. Compare to <code>status</code>, <code>priority</code>, <code>payment_method</code>, <code>payment_status</code>, <code>logistics_leg</code> and <code>request_kind</code> on the same model — every one of those <em>does</em> declare <code>choices=</code>. <code>service_category</code> is the one identity-defining field on the model that doesn't.</dd>
+      <dt>Enum usage</dt><dd>None. No <code>TextChoices</code>/<code>IntegerChoices</code> class exists for it anywhere in the codebase.</dd>
+      <dt>ForeignKey</dt><dd>None. It does not reference <code>CatalogCategory</code> or <code>Service</code> (the models that <em>do</em> exist for the generic Package catalog — see §02).</dd>
+      <dt>null / blank</dt><dd>Neither kwarg is set → both default to <code>False</code>. The field is required at the model layer (DB column is <code>NOT NULL</code>, empty string is the only way to violate "required" since Django CharFields never store SQL <code>NULL</code>).</dd>
+      <dt>DB constraint</dt><dd>Plain <code>varchar(150) NOT NULL</code>. No <code>CheckConstraint</code>, no <code>UniqueConstraint</code>, no index targets this column.</dd>
+      <dt>Serializer validation</dt><dd>Passthrough. It appears in several serializers' <code>Meta.fields</code> (<span class="cite">serializers.py:194,379,438,782</span>) as a plain field; no <code>validate_service_category()</code> method exists anywhere in <code>serializers.py</code>.</dd>
+      <dt>Model-level validation</dt><dd>None. No <code>clean()</code> override touches this field; <code>save()</code> only uses it read-only, to pick an ID prefix (below).</dd>
+    </dl>
+
+    <div class="callout warn">
+      <p><b>So it's exactly the weaker option:</b> <code>service_category = models.CharField(max_length=150)</code> — a bare string, not a strongly-typed field. It is the only categorical identity field on <code>ServiceRequest</code> without <code>choices=</code>.</p>
+    </div>
+
+    <h3 class="sub-h">Characterization: can <code>"totally-not-a-real-category"</code> be saved?</h3>
+    <p><b>Verdict: Accepted.</b> Reasoned from a full static trace rather than executed against a live database — the audit brief asked not to modify the codebase, and running a Django test against the shared Supabase instance wasn't a risk worth taking for this check. The trace is deterministic enough that inspection settles it:</p>
+    <ul class="plain">
+      <li>The serializer field has no <code>choices</code>/validators restricting the value (confirmed above).</li>
+      <li>The model field has no <code>choices</code>, no <code>validators=</code>, no DB check constraint.</li>
+      <li><code>save()</code> only reads <code>service_category</code> to compute <code>request_id</code>'s prefix, via <code>_generate_request_id()</code> (<span class="cite">models.py:52-70</span>) — and that function is built to <em>never fail</em> on an unrecognized value: <code>CATEGORY_PREFIX_MAP.get(slug_clean)</code> returns <code>None</code> for <code>"totally-not-a-real-category"</code>, and the fallback branch derives a 2-letter prefix from the first two words instead (here: <code>"TN"</code>, from <code>totally</code>/<code>not</code>). The booking would be saved as e.g. <code>TN0001</code>.</li>
+      <li>No downstream category-comparison site (§03) recognizes it either, so it simply behaves like a generic/standard booking — it does not error, and it does not get routed into any category-specific business rule (no consultation gate, no advance-payment gate, no structural clearance).</li>
+    </ul>
+  </section>
+
+  <section id="s02">
+    <div class="section-head"><span class="section-num">02</span><h2>Category model / category registry</h2></div>
+    <p class="section-note">There is no centralized <code>ServiceCategory</code> model or enum. Four independent, non-overlapping category lists exist, each serving a different purpose, and none of them constrain what can be written into <code>service_category</code>.</p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Name</th><th>Location</th><th>Shape</th><th>Actually used for</th></tr></thead>
+        <tbody>
+          <tr><td><code>CATEGORY_PREFIX_MAP</code></td><td><code class="cite">Customer/service_requests/models.py:15</code></td><td>dict, ~30 slug→2-letter-prefix entries</td><td><b>ID generation only.</b> <code>_generate_request_id()</code> falls back to a derived prefix when a slug isn't in the map — it never rejects anything. Also duplicated verbatim in <code class="cite">migrations/0049_convert_legacy_sr_ids.py</code>.</td></tr>
+          <tr><td><code>SERVICE_CATEGORIES</code></td><td><code class="cite">Customer/service_requests/models.py:98</code></td><td>list of 10 (slug, label) tuples</td><td>Display-name fallback only, inside <code>notifications.py</code>'s <code>_get_category_display_name()</code> — tier 2 of a 3-tier lookup (CatalogCategory table → this list → title-cased raw string). Does not include <code>mason</code>, <code>vegetables</code>, or any logistics category.</td></tr>
+          <tr><td><code>LOGISTICS_CATEGORIES</code></td><td><code class="cite">Customer/service_requests/services/logistics_pricing.py:19</code></td><td>a set of 3-4 slugs</td><td>Gates server-side distance-fare resolution and cargo-description validation for Goods &amp; Transport bookings. The closest thing to real validation, but scoped to logistics only.</td></tr>
+          <tr><td><code>WorkforceServicePricingPolicy</code></td><td><code class="cite">vendor/workforce_api/models.py:2980</code></td><td>real DB table, admin-editable, <code>service_category</code> unique</td><td>Drives consultation fee, advance %, admin-approval requirement — looked up case-insensitively via <code>pricing_policy.policy_for()</code>. A missing row is not an error; it silently returns a conservative default (see §04).</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout danger">
+      <p><b>Documented proof this already broke once.</b> A code comment in <code>logistics_pricing.py:23-34</code> explains that the bare <code>"goods_transport"</code> slug was missing from <code>LOGISTICS_CATEGORIES</code> while present in three sibling category sets — so <code>resolve_logistics_fare</code> silently passed through the client-submitted price unchanged for that one category, while the vendor side still treated it as logistics for dispatch. This is the exact scattered-registry failure mode this audit was asked to check for, and it is not hypothetical — it happened.</p>
+    </div>
+
+    <p><b><code>CATEGORY_PREFIX_MAP</code> — ID generation, not validation, confirmed.</b> Nothing calls it in a way that blocks a save; every call site is inside <code>_generate_request_id()</code>, and that function's own fallback logic exists specifically to keep working when a lookup misses.</p>
+  </section>
+
+  <section id="s03">
+    <div class="section-head"><span class="section-num">03</span><h2>Category normalization</h2></div>
+    <p class="section-note">Every place <code>service_category</code> is compared, with exact evidence of whether it's normalized first.</p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Site</th><th>Pattern</th><th>Normalized?</th></tr></thead>
+        <tbody>
+          <tr><td><code class="cite">views.py:448</code></td><td><code>.strip().lower()</code> before the zone-eligibility check</td><td>Yes — but a local variable only; not written back before <code>serializer.save()</code>.</td></tr>
+          <tr><td><code class="cite">views.py:549-558</code></td><td><code>_service_category in [...]</code> classifying painting/mason at booking creation, for the distance-based consultation-fee gate</td><td>Yes, locally — same caveat: the raw client-submitted casing is what actually lands in the DB column.</td></tr>
+          <tr><td><code class="cite">state_machine.py:159-160</code></td><td><code>service_request.service_category in ["mason","masonry"]</code> — the Mason advance-payment gate</td><td><b>No.</b> Reads the raw stored field directly.</td></tr>
+          <tr><td><code class="cite">views.py:4034, 4058, 4190</code></td><td>Three more <code>in ["mason","masonry"]</code> / <code>in ["painting", ...]</code> checks for invoice generation and waterproofing detection</td><td><b>No.</b> Same raw-field pattern, copied independently at each site.</td></tr>
+          <tr><td><code class="cite">services/logistics_pricing.py:404</code></td><td><code>service_category == "packers_movers"</code></td><td>No — exact raw match.</td></tr>
+          <tr><td><code class="cite">vendor/workforce_api/services/pricing_policy.py</code> <code>_normalise()</code>+<code>policy_for()</code></td><td><code>.strip().lower()</code> then a DB <code>__iexact</code> lookup</td><td><b>Yes</b> — the one path that is actually robust to case and whitespace.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <ul class="plain">
+      <li><b>How many places contain category logic?</b> At least 7 distinct comparison sites across 3 files in 2 apps, found in this pass alone.</li>
+      <li><b>Duplicated?</b> Yes — the literal <code>["mason", "masonry"]</code> list is hand-copied at four separate call sites with no shared constant.</li>
+      <li><b>Aliases supported?</b> Inconsistently. <code>"masonry"</code> is treated as an alias for <code>"mason"</code> in the four hardcoded lists, but is <em>absent</em> from <code>CATEGORY_PREFIX_MAP</code> (which only has <code>"mason": "MS"</code>) — so a <code>"masonry"</code> booking gets a different, inconsistent ID prefix than a <code>"mason"</code> booking for what the business considers the same service.</li>
+      <li><b>Normalization centralized?</b> No — each site independently decides whether to normalize.</li>
+      <li><b>Case normalization?</b> Present at 3 of 7 sites; absent at the 4 sites that gate money and invoicing.</li>
+      <li><b>Legacy names supported?</b> No evidence of a deprecated-slug migration table; only the ad-hoc alias pairs seen above.</li>
+      <li><b>Unknown category?</b> Never rejected — the booking is created as a generic job with no category-specific rule applied.</li>
+      <li><b>Typo?</b> Silently treated as "not this category" by every case-sensitive site.</li>
+    </ul>
+
+    <h3 class="sub-h">Traced inputs</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Input</th><th>Accepted?</th><th>Normalized?</th><th>Workflow</th><th>Risk</th></tr></thead>
+        <tbody>
+          <tr><td><code>mason</code></td><td>Yes</td><td>N/A (exact)</td><td>Recognized everywhere; correct ID prefix (MS); advance-payment gate applies</td><td><span class="badge low">Low</span></td></tr>
+          <tr><td><code>masonry</code></td><td>Yes</td><td>Alias, hardcoded</td><td>Recognized by the 4 hardcoded lists (payment gate <b>does</b> apply); NOT in <code>CATEGORY_PREFIX_MAP</code> → inconsistent ID prefix</td><td><span class="badge medium">Medium</span></td></tr>
+          <tr><td><code>masonary</code> <i>(typo)</i></td><td>Yes (nothing rejects it)</td><td>Not recognized anywhere</td><td>Not classified as painting/mason at creation; <code>request_kind</code> stays standard; <b>the state_machine.py advance-payment block is silently skipped</b> because <code>is_mason</code> evaluates <code>False</code></td><td><span class="badge notready">High</span></td></tr>
+          <tr><td><code>painting</code></td><td>Yes</td><td>N/A (exact)</td><td>Recognized consistently across all painting lists (same 7-item alias set at each site)</td><td><span class="badge low">Low</span></td></tr>
+          <tr><td><code>ac</code></td><td>Yes</td><td>N/A</td><td>Not classified as painting/mason; goes straight to standard booking + technician dispatch — no category-string-keyed money gate exists for AC, so this is safe by absence of a gate rather than by correctness</td><td><span class="badge low">Low</span></td></tr>
+          <tr><td><code>goods_transport</code></td><td>Yes</td><td>N/A</td><td>Currently present in <code>LOGISTICS_CATEGORIES</code> — but see the callout above: this exact slug was missing there before and silently broke fare resolution for a period</td><td><span class="badge medium">Medium (history)</span></td></tr>
+          <tr><td><code>goods_transport_truck</code></td><td>Yes</td><td>N/A</td><td>In both <code>LOGISTICS_CATEGORIES</code> and <code>CATEGORY_PREFIX_MAP</code> ("GT")</td><td><span class="badge low">Low</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="s04">
+    <div class="section-head"><span class="section-num">04</span><h2>Existing AC / Painting / Mason workflows</h2></div>
+    <p class="section-note">Traced as they exist. No rewrite is proposed for any of them — none of what follows is a blocker, only a description.</p>
+
+    <h3 class="sub-h">AC</h3>
+    <div class="diagram">Customer → Booking → <span class="unchanged">ServiceRequest (request_kind="standard")</span> → BookingAssignment → technician → status machine → COMPLETED</div>
+    <p>Category identified by a bare string at intake, classified nowhere as painting/mason, so it never enters the consultation/quote branch. No category-string-keyed payment gate exists for AC — the generic <code>ALLOWED_TRANSITIONS</code> / <code>STATUS_COMBINATION_RULES</code> tables in <code>state_machine.py</code> enforce payment-status preconditions for every category uniformly.</p>
+
+    <h3 class="sub-h">Painting</h3>
+    <div class="diagram">Customer → Booking → <span class="unchanged">ServiceRequest</span> (classified is_painting_booking=True at intake, views.py:551)
+    → technician inspects → <span class="unchanged">WorkforceQuote</span> (vendor app) + <span class="unchanged">WorkforcePaintingQuote</span> (1:1 detail)
+    → customer decision (signed decision_token, no login) → SEVO admin approval
+    → CONVERTED → new <span class="unchanged">ServiceRequest(request_kind="quoted_work", parent_request=original)</span>
+    → Payment (advance, per policy) → Work → Completion → WorkforceInvoice</div>
+    <p><b>One correction to the brief's assumed flow:</b> a dedicated <code>request_kind="inspection"</code> value is declared in the choices tuple (<span class="cite">models.py:465-468</span>), but no code path in this pass was found that ever sets it — the original booking stays <code>request_kind="standard"</code> and is identified as "the inspection job" only by being the target of <code>WorkforceQuote.job</code>. The <code>"quoted_work"</code> kind, by contrast, is genuinely used, for the converted work booking. Worth flagging as either dead code (the inspection choice) or an incomplete wiring — not asserted as a blocker either way.</p>
+
+    <h3 class="sub-h">Mason</h3>
+    <p>Same shape as Painting, with two Mason-specific gates layered on top, both traced precisely:</p>
+    <ul class="plain">
+      <li><b>Structural clearance</b> — driven entirely by <code>WorkforceQuote.structural_impact</code> (a field set explicitly when the quote is created), <em>not</em> by the category string at all. <code>requires_structural_clearance</code> / <code>is_structurally_cleared</code> (<span class="cite">vendor/workforce_api/models.py</span>, on <code>WorkforceQuote</code>) never reference <code>service_category</code>. This gate cannot be bypassed by a category typo, because it doesn't consult the category in the first place.</li>
+      <li><b>Advance-payment requirement</b> — this is the one that <i>can</i> be affected by category spelling, and it exists in two independent, inconsistent implementations:
+        <ul class="plain tight" style="margin-top:8px">
+          <li><b>Vendor app</b> (<code class="cite">workforce_api/services/pricing_policy.py</code>): case-insensitive, DB-driven, fails <i>safe</i> — an unmatched category defaults to <code>DEFAULT_POLICY</code> (100% advance, admin approval on), which is <i>more</i> conservative than Masonry's configured 50%, not less.</li>
+          <li><b>Customer app</b> (<code class="cite">state_machine.py:157-182</code>, inside <code>apply_transition()</code>): case-<i>sensitive</i>, hardcoded <code>["mason","masonry"]</code>, and — critically — fails <i>open</i>: <pre class="code"><span class="path">Customer/backend/service_requests/state_machine.py:157-163</span>if service_request.request_kind == "quoted_work" and new_status not in [S.CONFIRMED, S.REJECTED, S.CANCELLED]:
+    is_mason = (
+        service_request.service_category in ["mason", "masonry"] or
+        (service_request.parent_request and service_request.parent_request.service_category in ["mason", "masonry"])
+    )
+    if is_mason:
+        <span class="path" style="color:var(--red)"># ...checks Payment.objects sum against PaintingQuote.advance_amount...</span></pre>
+          If <code>is_mason</code> evaluates <code>False</code> — which it will for <code>"Masonry"</code>, <code>"MASON"</code>, or <code>"masonary"</code> — <b>the entire advance-payment block is skipped</b>, and the transition proceeds with no payment check at all. This is the one place in the audit where a category-string mismatch produces an actual bypass, not just a wrong price.</li>
+        </ul>
+      </li>
+    </ul>
+    <div class="callout danger">
+      <p><b>Direct answer to the brief's question:</b> a mistyped or differently-cased Mason category cannot be used to underpay through the <i>vendor-side</i> pricing policy (it fails toward charging more). It <i>can</i> be used to skip the Customer-app's transition-time advance-payment check entirely, because that check's category match is case-sensitive and un-normalized. Whether this is exploitable in practice depends on whether anything upstream can actually cause <code>service_category</code> to be stored as something other than exactly <code>"mason"</code>/<code>"masonry"</code> — the intake path in §01 shows nothing prevents it.</p>
+    </div>
+  </section>
+
+  <section id="s05">
+    <div class="section-head"><span class="section-num">05</span><h2>Quotation / estimation relationship</h2></div>
+    <p class="section-note">At least three quote-shaped models exist across the two apps. This section reports what was directly confirmed; the exact bidirectional sync mechanics between them were not re-verified line-by-line in this pass and are flagged rather than asserted.</p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Model</th><th>Location</th><th>Role (as found)</th></tr></thead>
+        <tbody>
+          <tr><td><code>WorkforceQuote</code> + <code>WorkforceQuoteItem</code>/<code>WorkforceQuoteMeasurement</code>/<code>WorkforceQuotePhoto</code></td><td><code class="cite">vendor/workforce_api/models.py:2228</code></td><td><b>Canonical.</b> Created by the technician/vendor side. Own 15-state status machine (DRAFT → ... → CONVERTED), a cryptographic <code>decision_token</code> for passwordless customer accept/decline, and <code>job</code>/<code>work_job</code> FKs to <code>ServiceRequest</code> (inspection job and resulting work booking, respectively).</td></tr>
+          <tr><td><code>WorkforcePaintingQuote</code> / <code>WorkforceMasonQuote</code></td><td><code class="cite">vendor/workforce_api/models.py:2519, 2553</code></td><td>1:1 category-specific detail satellites on <code>WorkforceQuote</code> (room measurements vs. structural/demolition fields). Discriminated by which related object exists, not by re-checking the category string.</td></tr>
+          <tr><td><code>PaintingQuote</code> + <code>PaintingQuoteItem</code>/<code>PaintingMeasurement</code>/<code>PaintingMaterial</code></td><td><code class="cite">Customer/backend/service_requests/models.py:~2144</code></td><td>A Customer-app-side quote representation. This is the model <code>state_machine.py</code>'s Mason advance-payment gate actually reads (<code>PaintingQuote.objects.filter(service_request=..., status=APPROVED)</code>) — <i>not</i> <code>WorkforceQuote</code> directly.</td></tr>
+          <tr><td><code>EstimationQuotation</code> + <code>EstimationQuotationItem</code></td><td><code class="cite">vendor/backend/service_requests/models.py:944, 997</code></td><td>Per project memory (Sep 2026 estimation-engine notes), documented as the customer-app-facing projection of <code>WorkforceQuote</code>, synced both ways. Located in the vendor app's own <code>managed=False</code> mirror of the shared <code>service_requests</code> tables — not re-traced in this pass.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p><b>Owner of quote creation:</b> the technician/vendor side, via <code>WorkforceQuote</code> — confirmed by the FK shape (<code>technician</code>, <code>company</code> FKs on the model) and by <code>quotation_service.py</code>'s creation functions.</p>
+    <p><b>Invoice generation:</b> confirmed — <code>WorkforceInvoice</code> (<span class="cite">vendor/workforce_api/models.py:2672</span>) has a <code>PROTECT</code> FK to <code>WorkforceQuote</code> and a <code>CASCADE</code> FK to the <i>work</i> <code>ServiceRequest</code> ("not the inspection job", per its own code comment), with line items frozen at issue time via <code>WorkforceInvoiceItem</code> so a later quote revision can't rewrite an issued invoice.</p>
+    <p><b>Quotation-specific states:</b> yes, extensively — <code>WorkforceQuote.Status</code> has 15 values including a distinct SEVO-admin-approval gate (<code>PENDING_ADMIN_APPROVAL</code>/<code>ADMIN_APPROVED</code>/<code>ADMIN_REJECTED</code>) sitting between customer acceptance and conversion — a real second-party authorization step, not just customer approval.</p>
+  </section>
+
+  <section id="s06">
+    <div class="section-head"><span class="section-num">06</span><h2>Payment ownership</h2></div>
+    <p class="section-note">This is the load-bearing finding for Parent Order feasibility: payment is not owned by one model. Three independent payment/financial records were confirmed, all keyed off <code>ServiceRequest</code> directly, none linked to each other by FK.</p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Model</th><th>Location</th><th>Linked to</th><th>What it tracks</th></tr></thead>
+        <tbody>
+          <tr><td><code>Payment</code></td><td><code class="cite">Customer/service_requests/models.py:1740</code></td><td><code>ForeignKey(ServiceRequest)</code>, one-to-many</td><td>Razorpay order/payment id + signature, own <code>status</code> (shares <code>ServiceRequest.PaymentStatus</code>). The customer-facing gateway record.</td></tr>
+          <tr><td><code>JobPayment</code></td><td><code class="cite">vendor/workforce_api/models.py:1149</code></td><td><code>OneToOneField(ServiceRequest, related_name="payment_record", unique=True)</code></td><td>Its own <code>PaymentMethod</code>/<code>PaymentStatus</code> enums (different values than the Customer app's), online vs. cash-on-service, cash collection by employee, <code>amount_due</code>/<code>amount_paid</code>/<code>amount_received</code>/<code>change_returned</code>.</td></tr>
+          <tr><td><code>WorkforceInvoice</code></td><td><code class="cite">vendor/workforce_api/models.py:2672</code></td><td><code>ForeignKey(WorkforceQuote, PROTECT)</code> + <code>ForeignKey(ServiceRequest)</code></td><td>Its own <code>advance_percent</code>/<code>advance_amount</code>/<code>balance_amount</code>/<code>amount_paid</code>/<code>balance_due</code>, own <code>Status</code> (DRAFT→ISSUED→PARTIALLY_PAID→PAID).</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout warn">
+      <p><b>No FK connects these three.</b> The Mason advance-payment gate in §04 sums <code>Payment</code> rows (Customer app) against an amount read from <code>PaintingQuote</code> (also Customer app) — it does not consult <code>JobPayment</code> or <code>WorkforceInvoice</code> (both vendor app) at all. Whether those three stay consistent for a given booking depends on application-level discipline across two codebases with two different Django versions (Customer: <code>Django==6.0.8</code>; Vendor: <code>Django&gt;=4.2,&lt;5.1</code>), not on any database constraint.</p>
+    </div>
+
+    <p><b>Trace: Customer → Booking → Payment → ServiceRequest.</b> Confirmed via <code>payment_views.py</code>: <code>PaymentInitiateView</code> creates a Razorpay order against the amount due on a specific <code>ServiceRequest</code>; <code>PaymentVerifyView</code> is explicitly documented (its own docstring) as amount-checked, ownership-checked, HMAC-signature-verified when a live gateway is configured, and idempotent — "a Payment row can only be consumed once (idempotent on repeat calls)."</p>
+    <p>No recommendation is made here about moving payment ownership — only reporting that it is currently split three ways, each anchored to <code>ServiceRequest</code>, with no shared parent record above it today.</p>
+  </section>
+
+  <section id="s07">
+    <div class="section-head"><span class="section-num">07</span><h2>Cart / checkout architecture</h2></div>
+    <p class="section-note">Confirmed by direct search: <b>no <code>Cart</code>, <code>CartItem</code>, <code>Order</code>, <code>ParentOrder</code>, or <code>OrderItem</code> model exists anywhere in either backend</b> — searched across <code>service_requests</code>, <code>companies</code>, <code>common</code>, <code>inventory</code>, <code>logistics</code> (Customer app) and <code>workforce_api</code>, <code>service_requests</code>, <code>companies</code>, <code>employees</code> (Vendor app). Zero matches in every case.</p>
+
+    <div class="diagram">Customer
+  ↓
+<span class="new">"cart" (frontend-only React state; router-passed, never persisted server-side pre-checkout)</span>
+  ↓
+Checkout (same generic flow for every category, including Vegetables)
+  ↓
+<span class="unchanged">ServiceRequest.cart_data</span>  <span class="path" style="color:var(--ink-soft)"># JSONField(list) — line items with no package_id/addon_id back-reference</span>
+  ↓
+<span class="unchanged">Payment</span> (ForeignKey to the same ServiceRequest)</div>
+
+    <ul class="plain">
+      <li><b>Does a cart exist?</b> Only as client-side state, passed through React Router's navigation state into the checkout page. No server-side cart resource, no persistence before submission.</li>
+      <li><b>Is checkout service-specific?</b> No — one generic checkout flow (<code>routes.booking_checkout</code>) handles AC, Painting, Mason, Logistics, and Vegetables alike.</li>
+      <li><b>Does checkout create ServiceRequest directly?</b> Yes, one row, synchronously, on submit.</li>
+      <li><b>Does checkout create Payment directly?</b> Yes, via the flow in §06, against that one <code>ServiceRequest</code>.</li>
+      <li><b>Cart data: relational or JSON?</b> JSON — <code>ServiceRequest.cart_data = models.JSONField(default=list)</code>. Its own code comments confirm items "don't carry a <code>package_id</code>/<code>addon_id</code> back" to the catalog.</li>
+      <li><b>Can a cart contain multiple services today?</b> Structurally, <code>cart_data</code> is a list and could hold heterogeneous line items, but every booking still resolves to exactly <b>one</b> <code>ServiceRequest</code> with exactly <b>one</b> <code>service_category</code> — there is no code path that splits one cart into multiple <code>ServiceRequest</code> rows of different categories today.</li>
+      <li><b>Does an Order concept already exist?</b> No, in name or in structure — see §08.</li>
+    </ul>
+  </section>
+
+  <section id="s08">
+    <div class="section-head"><span class="section-num">08</span><h2>Parent Order feasibility</h2></div>
+
+    <p><b>No <code>Order</code>/<code>ParentOrder</code>/<code>OrderItem</code> exists today</b> (§07). But the codebase does already have one real, working precedent for exactly this shape of relationship — just scoped narrowly:</p>
+
+    <pre class="code"><span class="path">Customer/backend/service_requests/models.py:464-467 — on ServiceRequest itself</span>parent_request = models.ForeignKey("self", on_delete=models.SET_NULL,
+                                   null=True, blank=True,
+                                   related_name="child_requests")
+request_kind   = models.CharField(max_length=30, default="standard", db_index=True,
+                                  choices=[("standard", "Standard"),
+                                           ("inspection", "Inspection"),
+                                           ("quoted_work", "Quoted Work")])</pre>
+
+    <p>This self-referential FK is actively used (confirmed in <code>views.py</code>, <code>state_machine.py</code>, and <code>tests/test_painting_module.py</code>) to link a Painting/Mason inspection <code>ServiceRequest</code> to the <code>ServiceRequest(request_kind="quoted_work")</code> created when its quote converts. It is a genuine parent→child pattern already living on the model the brief is asking about — evidence that "one commercial event produces more than one ServiceRequest row, linked together" is not a foreign idea to this codebase. It is, however, <b>one parent → one child</b> in every usage found, and same-model self-reference rather than a distinct commerce-layer entity.</p>
+
+    <h3 class="sub-h">Would this relationship be possible?</h3>
+    <div class="diagram">Order
+  └── OrderItem
+        └── ServiceRequest</div>
+    <p>Structurally: yes, and with less friction than a from-scratch design would suggest, for one specific reason — <b>every payment, quote, and invoice model in §05/§06 already points at <code>ServiceRequest</code>, never at a booking-level concept above it.</b> An <code>Order</code>/<code>OrderItem</code> pair introduced purely as a thin wrapper — <code>OrderItem.service_request = ForeignKey(ServiceRequest)</code>, nothing more — would not require touching <code>Payment</code>, <code>WorkforceQuote</code>, <code>JobPayment</code>, or <code>WorkforceInvoice</code> at all, because none of them would need to know the wrapper exists. It would sit strictly above the existing graph, not inside it.</p>
+    <p>The multi-category version — <code>Order → OrderItem → {AC, Painting, Mason} ServiceRequest</code> in one order — is a different claim: it requires one checkout to create <i>multiple</i> <code>ServiceRequest</code> rows and <i>multiple</i> <code>Payment</code> rows (or one payment split across several), and nothing in §06/§07 shows that split ever happening today. That is the part that needs new logic, not just a new table.</p>
+  </section>
+
+  <section id="s09">
+    <div class="section-head"><span class="section-num">09</span><h2>Parent Order impact / risk analysis</h2></div>
+    <p class="section-note">Assuming the narrow introduction — one <code>Order</code> wrapping exactly one <code>ServiceRequest</code>, additive only, no existing column changed.</p>
+
+    <div class="risk-grid">
+      <div class="risk-row"><div class="area">Existing ServiceRequest</div><div><span class="badge low">Low</span></div><p>Additive nullable FK (<code>ServiceRequest.order</code>) or a new join table — no existing column touched.</p></div>
+      <div class="risk-row"><div class="area">AC workflow</div><div><span class="badge low">Low</span></div><p>Doesn't reference Order at all unless deliberately wired in later.</p></div>
+      <div class="risk-row"><div class="area">Painting workflow</div><div><span class="badge low">Low</span></div><p>Its own parent_request/quote graph is untouched; Order sits one layer above it.</p></div>
+      <div class="risk-row"><div class="area">Mason workflow</div><div><span class="badge low">Low</span></div><p>Same as Painting — the advance-payment gate in §04 doesn't need to know Order exists.</p></div>
+      <div class="risk-row"><div class="area">Quotation (WorkforceQuote / PaintingQuote)</div><div><span class="badge low">Low</span></div><p>Neither model needs a new FK for the 1:1 case.</p></div>
+      <div class="risk-row"><div class="area">Invoice (WorkforceInvoice)</div><div><span class="badge low">Low</span></div><p>Unaffected in the 1:1 case; becomes relevant only once one Order can span multiple invoices.</p></div>
+      <div class="risk-row"><div class="area">Payment</div><div><span class="badge medium">Medium</span></div><p>Fine for 1:1. Becomes the hardest problem the moment one Order needs to fund multiple ServiceRequests from a single customer charge — three independent payment records (§06) would all need reconciling against one Order total.</p></div>
+      <div class="risk-row"><div class="area">Checkout</div><div><span class="badge medium">Medium</span></div><p>Today's single generic checkout would need to create the Order first, then the ServiceRequest — a sequencing change, not a rewrite, for the 1:1 case.</p></div>
+      <div class="risk-row"><div class="area">Customer history</div><div><span class="badge low">Low</span></div><p>Additive — existing booking-history views keep working unchanged; an Order view is new, not a replacement.</p></div>
+      <div class="risk-row"><div class="area">Vendor/technician workflow</div><div><span class="badge low">Low</span></div><p>The vendor app never needs to know Order exists for the 1:1 case — it already only ever sees ServiceRequest/WorkforceQuote/JobPayment.</p></div>
+      <div class="risk-row"><div class="area">Admin workflow</div><div><span class="badge medium">Medium</span></div><p>New admin surface needed to see/manage Orders; not a change to existing admin screens.</p></div>
+      <div class="risk-row"><div class="area">Existing IDs (SR-prefix scheme)</div><div><span class="badge low">Low</span></div><p><code>_generate_request_id()</code> is untouched; an Order would need its own ID scheme, additively.</p></div>
+      <div class="risk-row"><div class="area">Existing APIs</div><div><span class="badge low">Low</span></div><p>No existing serializer field is removed or renamed in the 1:1 case.</p></div>
+      <div class="risk-row"><div class="area">Existing frontend</div><div><span class="badge low">Low</span></div><p>Unaffected until a screen chooses to surface Order — nothing forces every existing page to change.</p></div>
+      <div class="risk-row"><div class="area">Database migrations</div><div><span class="badge low">Low</span></div><p>One additive table + one nullable FK column — reversible, no data backfill required for new bookings.</p></div>
+      <div class="risk-row"><div class="area">Tests</div><div><span class="badge medium">Medium</span></div><p>No existing test in <code>test_painting_module.py</code> or the vendor suite references an Order concept — none would break, but none currently protect the new layer either.</p></div>
+      <div class="risk-row"><div class="area">Multi-ServiceRequest Order (Phase 2 shape)</div><div><span class="badge veryhigh">Very High</span></div><p>Requires solving the 3-way split payment-ownership problem in §06 first. Not assessed as safe to attempt until that's designed — this matches the brief's own stated constraint.</p></div>
+    </div>
+  </section>
+
+  <section id="verdicts">
+    <div class="section-head"><span class="section-num">A–D</span><h2>Architecture &amp; Parent Order verdicts</h2></div>
+
+    <h3 class="sub-h">A. Current architecture, as found</h3>
+    <div class="diagram">Customer
+  ↓
+"Cart" (frontend state only)
+  ↓
+Checkout (one generic flow, all categories)
+  ↓
+<span class="unchanged">ServiceRequest</span>  (service_category: free-text CharField)
+  ├── <span class="unchanged">parent_request</span> self-FK  (used today: inspection job ←→ quoted_work job, Painting/Mason only)
+  ├── <span class="unchanged">Payment</span>          (Customer app, Razorpay, FK → ServiceRequest)
+  ├── <span class="unchanged">WorkforceQuote</span>    (Vendor app, canonical quote, FK → ServiceRequest)
+  │     └── <span class="unchanged">WorkforceInvoice</span>  (FK → WorkforceQuote + ServiceRequest)
+  └── <span class="unchanged">JobPayment</span>        (Vendor app, OneToOne → ServiceRequest)</div>
+
+    <h3 class="sub-h">B. Category architecture verdict</h3>
+    <div class="verdict-card"><div class="verdict-pill medium">MEDIUM</div><div class="vtext"><b>Is <code>ServiceRequest.service_category</code> safely managed? No — not today.</b> It is a bare, unconstrained <code>CharField</code>, validated nowhere, backed by four uncoordinated category lists instead of one registry, and at least one of those gaps (the Customer-app Mason advance-payment gate, §04) fails <i>open</i> rather than safe. It is rated Medium rather than Low/Not-Ready because nothing found in this audit is silently losing money in production today — the one open-fail path requires a category string that never occurs through the normal Painting/Mason booking UI, which does classify correctly at intake (§03). The risk is latent, not active.</div></div>
+
+    <h3 class="sub-h">C. Parent Order verdict</h3>
+    <div class="verdict-card"><div class="verdict-pill high">HIGH</div><div class="vtext"><b>Can a Parent Order be introduced above ServiceRequest without rewriting AC, Painting or Mason? Yes, for the constrained 1-Order-to-1-ServiceRequest shape.</b> Evidence: every financial and workflow model in §05/§06 already terminates at <code>ServiceRequest</code>, none of them reach "above" it, and a precedent for parent/child <code>ServiceRequest</code> linking already exists and works in production (§08). Not rated READY only because the admin/reporting surface and the checkout sequencing change are real, if small, additions — not because anything found is a blocker.</div></div>
+
+    <h3 class="sub-h">D. Parent Order proposed placement</h3>
+    <div class="diagram">Customer
+ ↓
+Cart
+ ↓
+Checkout
+ ↓
+<span class="new">Parent Order</span>  (new, thin: id, customer, created_at, status)
+ ├── <span class="new">OrderItem</span> → <span class="unchanged">AC ServiceRequest</span>        (existing workflow, byte-for-byte unchanged)
+ ├── <span class="new">OrderItem</span> → <span class="unchanged">Painting ServiceRequest</span>  (existing workflow, byte-for-byte unchanged)
+ └── <span class="new">OrderItem</span> → <span class="unchanged">Mason ServiceRequest</span>      (existing workflow, byte-for-byte unchanged)</div>
+    <p><b>What stays unchanged:</b> <code>ServiceRequest</code>'s fields, state machine, <code>parent_request</code> self-FK, every category-comparison site in §03/§04, <code>WorkforceQuote</code>/<code>PaintingQuote</code>/<code>WorkforceInvoice</code>, <code>Payment</code>/<code>JobPayment</code>, the entire Vendor app, and every existing serializer/API/frontend screen. <b>What's new:</b> the <code>Order</code> and <code>OrderItem</code> tables, one additive FK, and whatever checkout-sequencing change is needed to create the Order first.</p>
+  </section>
+
+  <section id="grocery">
+    <div class="section-head"><span class="section-num">▸</span><h2>Grocery / Daily Essentials architecture fit</h2></div>
+    <p class="section-note">Evaluated against the actual code above, not against the target diagram in isolation.</p>
+
+    <h3 class="sub-h">Can <code>service_category = "grocery"</code> work without a separate ServiceRequest subclass?</h3>
+    <p><b>Yes, structurally trivially</b> — §01 already showed <code>service_category</code> accepts any string up to 150 characters, so <code>"grocery"</code> requires no schema change at all. The real question is whether anything <i>downstream</i> needs to recognize it, and the answer from §03/§04 is: only if Grocery needs a category-specific gate the way Mason does. Given this audit's own evidence that hardcoded, scattered category lists are already a live source of bugs (the <code>goods_transport</code> incident), a new category should not be added as a fifth hardcoded list — it's the right moment to introduce one shared, normalized category constant/set, even without touching the field's type.</p>
+
+    <h3 class="sub-h">Product model</h3>
+    <p>The existing generic catalog — <code>CatalogCategory → Service → Package → AddOn</code> (confirmed in the companion Vegetables audit, 8 Sep 2026) — already has the exact shape requested: <code>Package.name</code>, <code>base_price</code>/<code>offer_price</code>, <code>image</code>, <code>status</code> (DRAFT/ACTIVE/INACTIVE/ARCHIVED). It is missing only a <code>product_category</code>-style discriminator (Vegetable vs. Rice vs. Dal) and a <code>sku</code>/<code>unit</code> field — both additive columns, not a new model. <b>Reusable as the Product model; no new Product table is architecturally necessary.</b></p>
+
+    <h3 class="sub-h">Inventory</h3>
+    <p><b>Not safe today, confirmed by direct inspection.</b> <code>Package</code> has no stock field of any kind. The existing <code>inventory</code> app's <code>InventoryItem</code> (<code class="cite">Customer/backend/inventory/models.py</code>) is scoped to internal operational supplies (equipment/PPE/vehicles/tools) for a Workforce company — its <code>Category</code> choices don't include a customer product, and it has no relationship to <code>Package</code>. Reserve/release-on-cancel requires a genuinely new model: a stock ledger keyed to <code>Package</code>, with <code>physical_stock</code>/<code>reserved_stock</code>/<code>available_stock</code> (or an append-only ledger deriving those). This is new, not a repurpose.</p>
+
+    <h3 class="sub-h">Delivery slot / fulfillment policy</h3>
+    <p>No <code>DeliverySlot</code>, <code>DeliveryWindow</code>, or <code>DeliverySchedule</code> model exists anywhere in either backend (not found in this pass's searches of <code>service_requests</code>, <code>logistics</code>, or <code>workforce_api</code>). However, <b>the closest existing precedent for a configurable, per-category policy table is <code>WorkforceServicePricingPolicy</code></b> (§02/§04) — a real, admin-editable, DB-backed policy row keyed by category. A <code>FulfillmentPolicy</code> model (<code>cutoff_time</code>, <code>delivery_start_time</code>, <code>delivery_end_time</code>, <code>delivery_days</code>, <code>capacity</code>) is architecturally the same shape as that existing table, and could reasonably live beside it rather than be invented from nothing. The Vegetables module's current 12 PM/6-8 PM logic lives only in a frontend utility (<code>vegetableSchedule.js</code>, per the 8 Sep audit) with no server-side enforcement — exactly the gap a <code>FulfillmentPolicy</code> table would close.</p>
+
+    <h3 class="sub-h">Batch fulfillment vs. on-demand dispatch</h3>
+    <p>Confirmed: the existing dispatch pipeline (<code>BookingAssignment</code>, the Vendor app's eligibility/candidate-ranking/job-offer chain) is built for one technician accepting one job on demand. Nothing in it models a picking/packing/dispatch <i>batch</i>. This is a genuinely separate fulfillment mode from anything in the codebase today — it should not be forced through <code>BookingAssignment</code>, and building it as a distinct, simpler status progression on the Grocery <code>ServiceRequest</code> (or on <code>OrderItem</code>, if Parent Order ships first) avoids distorting the technician-dispatch model that AC/Painting/Mason correctly depend on.</p>
+
+    <h3 class="sub-h">Phase 2 multi-vendor: does Phase 1's data model block it later?</h3>
+    <p><b>No, provided Phase 1 is built the way this audit's evidence points: as a real, separate line-item concept (OrderItem/Product rows), not folded into <code>cart_data</code> JSON the way Vegetables works today.</b> The reason this matters concretely: §07 showed <code>cart_data</code> items don't carry a <code>package_id</code> back to the catalog, which is precisely what makes later per-item vendor allocation, per-item stock reservation, or per-item refunds hard to retrofit. A grocery <code>OrderItem</code> row with a real FK to <code>Product</code>/<code>Package</code> from day one costs nothing extra in Phase 1 and is what makes "add a <code>vendor</code> FK to that same row later" a genuinely additive Phase 2 change rather than a rebuild.</p>
+
+    <h3 class="sub-h">Final grocery architecture fit check</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Component</th><th>Existing code</th><th>Target</th><th>Fit</th></tr></thead>
+        <tbody>
+          <tr><td>ServiceRequest</td><td>Generic, free-text category</td><td><code>service_category="grocery"</code></td><td><span class="badge ready">Ready</span></td></tr>
+          <tr><td>Product</td><td><code>Package</code> (generic catalog)</td><td>+ <code>product_category</code>, <code>sku</code>, <code>unit</code></td><td><span class="badge high">Minor add</span></td></tr>
+          <tr><td>Cart</td><td>Frontend-only, JSON, unlinked to catalog</td><td>Relational, linked to Product</td><td><span class="badge medium">Needs rework</span></td></tr>
+          <tr><td>Order / OrderItem</td><td>Does not exist</td><td>Thin wrapper, per §D</td><td><span class="badge medium">New, but low-risk (§09)</span></td></tr>
+          <tr><td>Inventory</td><td><code>InventoryItem</code> — wrong layer entirely</td><td>Stock/reserve/release ledger on Product</td><td><span class="badge notready">New model required</span></td></tr>
+          <tr><td>Vendor (single, Phase 1)</td><td>"Company IS Vendor" model built for technicians, per the 8 Sep audit</td><td>One fulfillment hub</td><td><span class="badge medium">Needs an explicit decision</span> — see that audit's Stage 1</td></tr>
+          <tr><td>DeliverySlot / cutoff</td><td>None server-side; frontend-only for Vegetables today</td><td>12 PM cutoff, 6-8 PM window</td><td><span class="badge notready">New model required</span></td></tr>
+          <tr><td>FulfillmentPolicy</td><td>No generic policy model, but <code>WorkforceServicePricingPolicy</code> is a strong precedent shape</td><td>Configurable per-category policy</td><td><span class="badge high">Precedent exists</span></td></tr>
+          <tr><td>Fulfillment mode</td><td>On-demand technician dispatch only</td><td>Scheduled/batch picking-packing-dispatch</td><td><span class="badge notready">Genuinely new</span></td></tr>
+          <tr><td>Phase 2 multi-vendor</td><td>N/A</td><td>Future extension</td><td><span class="badge ready">Not blocked, if OrderItem is relational from Phase 1</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="final">
+    <div class="section-head"><span class="section-num">▸</span><h2>Final verdict</h2></div>
+
+    <div class="verdict-card"><div class="verdict-pill medium">MEDIUM</div><div class="vtext"><b>1. Category architecture.</b> Functions correctly for the categories in active use today, but is unvalidated and scattered across 4 uncoordinated lists with one confirmed historical production bug and one latent open-fail path (Mason). Fix before extending, don't block on it.</div></div>
+
+    <div class="verdict-card"><div class="verdict-pill high">HIGH</div><div class="vtext"><b>2. Parent Order.</b> Can be introduced above AC/Painting/Mason without rewriting any of them, for the constrained 1-Order-to-1-ServiceRequest case the brief itself asks to start with. The multi-ServiceRequest case is real future work, correctly deferred.</div></div>
+
+    <div class="verdict-card"><div class="verdict-pill medium">MEDIUM CHANGES</div><div class="vtext"><b>3. Grocery / Daily Essentials.</b> The category and Product layers fit with minor additions; Cart, Inventory, DeliverySlot, FulfillmentPolicy, and batch fulfillment are genuinely new models — not a rewrite of anything existing, but not a thin layer either.</div></div>
+
+    <h3 class="sub-h">What can be reused</h3>
+    <ul class="plain">
+      <li><code>ServiceRequest</code> as the execution record for a Grocery order (one row = one fulfillment run), unchanged.</li>
+      <li>The generic <code>CatalogCategory → Service → Package → AddOn</code> catalog as the Product model, with additive fields.</li>
+      <li>The <code>parent_request</code> self-FK pattern and <code>request_kind</code> enum as prior art for how Parent Order → ServiceRequest linking should look.</li>
+      <li><code>WorkforceServicePricingPolicy</code>'s shape as the template for a new <code>FulfillmentPolicy</code> model.</li>
+      <li><code>Payment</code>'s Razorpay/idempotency pattern, unchanged, for Grocery checkout.</li>
+    </ul>
+
+    <h3 class="sub-h">What needs modification</h3>
+    <ul class="plain">
+      <li>Cart: from frontend-only JSON to a relational structure carrying a real Product FK per line — needed regardless of Parent Order, because it's also what blocks per-item refunds and vendor picking lists today (per the 8 Sep Vegetables audit).</li>
+      <li>Category comparison logic: consolidate the 4 scattered lists (§02) into one shared, normalized source before adding a 5th category family.</li>
+      <li>The Customer-app Mason advance-payment gate in <code>state_machine.py</code>: normalize its category comparison to match the vendor app's case-insensitive approach, independent of anything Grocery-related.</li>
+    </ul>
+
+    <h3 class="sub-h">What should NOT be changed</h3>
+    <ul class="plain">
+      <li><code>ServiceRequest</code>'s existing fields, state machine, or the AC/Painting/Mason status flows themselves — no architectural blocker was found that requires touching them.</li>
+      <li><code>WorkforceQuote</code>, <code>PaintingQuote</code>, <code>WorkforceInvoice</code>, <code>Payment</code>, <code>JobPayment</code> — none need to become aware of Order or Grocery for Phase 1.</li>
+      <li>The Vendor app's technician-dispatch pipeline — Grocery's batch fulfillment should be built beside it, not through it.</li>
+    </ul>
+
+    <h3 class="sub-h">What should be added</h3>
+    <ul class="plain">
+      <li><code>Order</code> / <code>OrderItem</code> (thin, 1:1 with ServiceRequest to start).</li>
+      <li>A stock/reservation ledger on Product (physical/reserved/available).</li>
+      <li><code>FulfillmentPolicy</code> (cutoff, delivery window, days, capacity) — modeled on <code>WorkforceServicePricingPolicy</code>.</li>
+      <li>A batch picking → packing → dispatch status progression, separate from <code>BookingAssignment</code>.</li>
+      <li>One shared, normalized category registry, used by every existing comparison site as it's touched.</li>
+    </ul>
+
+    <h3 class="sub-h">What stays Phase 2</h3>
+    <ul class="plain">
+      <li>Multi-vendor allocation and any <code>VendorOrder</code>/vendor-split concept.</li>
+      <li>One Order spanning multiple <code>ServiceRequest</code>s of different categories in a single checkout/payment.</li>
+    </ul>
+
+    <h3 class="sub-h">Recommended sequence</h3>
+    <p>Preserve existing AC/Painting/Mason (change nothing) → introduce the thin 1:1 Parent Order → build the generic Grocery/Daily-Essentials foundation (Product fields, stock ledger, FulfillmentPolicy) → implement Vegetables as Phase 1 on top of that foundation, replacing its current JSON-cart implementation rather than extending it further.</p>
+  </section>
+
+  <footer class="doc">
+    <p>Parent Order Feasibility Audit · SEVO / CalServices · 9 September 2026 · Read-only — no code was modified to produce this document. Companion to VEGETABLES_GAP_ANALYSIS.html (8 Sep) and SEVO_GAP_ANALYSIS.html (27 Aug).</p>
+  </footer>
+
+</div>

@@ -3,6 +3,8 @@ workforce-app/backend/workforce_api/urls.py
 Route registrations for Workforce API (/api/workforce/*).
 """
 from django.urls import include, path
+from . import quote_views
+from . import invoice_views
 from .views import (
     WorkforceDispatchHealthView,
     WorkforceSignupView,
@@ -89,13 +91,11 @@ from .views import (
     WorkforceJobRejectOfferView,
     WorkforceJobTechnicianCancelView,
     WorkforceJobCustomerCancelSyncView,
+    WorkforceJobAdminCancelView,
     WorkforceJobClawbackSyncView,
     WorkforceAutoDispatchTriggerView,
-    WorkforceCrossServiceDispatchView,
-    WorkforceCustomerBookingQuoteView,
     WorkforceJobArriveView,
     WorkforceJobLogisticsLegView,
-    WorkforceJobTripStopsView,
     WorkforceJobMessagesView,
     WorkforceJobVerifyOTPView,
     WorkforceJobResendOTPView,
@@ -105,7 +105,6 @@ from .views import (
     WorkforceJobResumeView,
     WorkforceJobPreServiceStatusView,
     WorkforceJobLiveTrackingView,
-    WorkforceTechnicianFeedbackView,
     WorkforceJobTimelineView,
     WorkforceReportsView,
     WorkforceLatencyAuditView,
@@ -127,6 +126,10 @@ from .views import (
     WorkforceAccountDeactivateView,
     WorkforcePerformanceMeView,
     WorkforceJobFeedbackSubmitView,
+    WorkforceTechnicianFeedbackView,
+    WorkforceCrossServiceDispatchView,
+    WorkforceJobTripStopsView,
+    WorkforceCustomerBookingQuoteView,
     WorkforceMyServicesView,
     WorkforceEmployeeSavedLocationsView,
     WorkforceEmployeeSavedLocationDetailView,
@@ -159,6 +162,30 @@ from .views import (
     PlatformRelievingRequestsView,
     PlatformApproveRelievingView,
     RelievingLegalSignoffView,
+    # Inventory Management
+    InventoryItemListView,
+    InventoryItemDetailView,
+    InventoryCatalogueBrowseView,
+    InventoryBulkSyncView,
+    # Vendor Store & Promotions
+    VendorStoreProfileView,
+    VendorDealListView,
+    VendorDealDetailView,
+    VendorCouponListView,
+    VendorCouponDetailView,
+    PublicStoreListView,
+    PublicStoreDetailView,
+    VendorOrderListView,
+    VendorOrderAcceptView,
+    VendorOrderRejectView,
+    VendorOrderStatusUpdateView,
+    VendorSettlementListView,
+    VendorInventoryLedgerView,
+    PublicGroceryCartView,
+    PublicGroceryCartClearView,
+    PublicGroceryCheckoutView,
+    PublicGroceryOrderTrackingView,
+    PublicGroceryOrderReviewView,
 )
 
 
@@ -226,6 +253,7 @@ urlpatterns = [
     path("jobs/<int:pk>/cancel-assignment/", WorkforceJobCancelAssignmentView.as_view(), name="workforce-job-cancel-assignment"),
     path("jobs/<int:pk>/reject-offer/", WorkforceJobRejectOfferView.as_view(), name="workforce-job-reject-offer"),
     path("jobs/<int:pk>/cancel/", WorkforceJobTechnicianCancelView.as_view(), name="workforce-job-technician-cancel"),
+    path("jobs/<int:pk>/admin-cancel/", WorkforceJobAdminCancelView.as_view(), name="workforce-job-admin-cancel"),
     path("jobs/<int:pk>/customer-cancel-sync/", WorkforceJobCustomerCancelSyncView.as_view(), name="workforce-job-customer-cancel-sync"),
     path("jobs/<int:pk>/clawback-sync/", WorkforceJobClawbackSyncView.as_view(), name="workforce-job-clawback-sync"),
     path("jobs/<int:pk>/arrive/", WorkforceJobArriveView.as_view(), name="workforce-job-arrive"),
@@ -239,9 +267,12 @@ urlpatterns = [
     path("jobs/<int:pk>/hold/", WorkforceJobHoldView.as_view(), name="workforce-job-hold"),
     path("jobs/<int:pk>/resume/", WorkforceJobResumeView.as_view(), name="workforce-job-resume"),
     path("jobs/<int:pk>/pre-service-status/", WorkforceJobPreServiceStatusView.as_view(), name="workforce-job-pre-service-status"),
-    path("jobs/<str:pk>/live-tracking/", WorkforceJobLiveTrackingView.as_view(), name="workforce-job-live-tracking"),
+    path("jobs/<int:pk>/live-tracking/", WorkforceJobLiveTrackingView.as_view(), name="workforce-job-live-tracking"),
+    path("jobs/<str:pk>/live-tracking/", WorkforceJobLiveTrackingView.as_view(), name="workforce-job-live-tracking-str"),
     path("jobs/<int:pk>/timeline/", WorkforceJobTimelineView.as_view(), name="workforce-job-timeline"),
-    path("customer/jobs/<str:pk>/tracking/", WorkforceJobLiveTrackingView.as_view(), name="workforce-customer-job-tracking"),
+    path("customer/jobs/<int:pk>/tracking/", WorkforceJobLiveTrackingView.as_view(), name="workforce-customer-job-tracking"),
+    path("customer/jobs/<str:pk>/tracking/", WorkforceJobLiveTrackingView.as_view(), name="workforce-customer-job-tracking-str"),
+    path("customer/bookings/<str:booking_id>/quote/", WorkforceCustomerBookingQuoteView.as_view(), name="workforce-customer-booking-quote"),
 
     # Work Extensions & Scope Approvals
     path("jobs/<int:pk>/extension/", WorkforceJobExtensionView.as_view(), name="workforce-job-extension"),
@@ -260,7 +291,6 @@ urlpatterns = [
     path("customer/jobs/<int:pk>/extension/<int:ext_id>/decide/", WorkforceCustomerExtensionDecideView.as_view(), name="workforce-customer-extension-decide-dedicated"),
     path("customer/extension-token/<str:token>/", WorkforceCustomerExtensionDetailView.as_view(), name="workforce-customer-token-extension-detail"),
     path("customer/extension-token/<str:token>/decide/", WorkforceTokenExtensionDecideView.as_view(), name="workforce-customer-token-extension-decide"),
-    path("customer/bookings/<str:booking_id>/quote/", WorkforceCustomerBookingQuoteView.as_view(), name="workforce-customer-booking-quote"),
 
     # Supplemental Billing & Invoices
     path("jobs/<int:pk>/extension/<int:ext_id>/create-supplemental-invoice/", WorkforceCreateSupplementalInvoiceView.as_view(), name="workforce-create-supplemental-invoice"),
@@ -406,6 +436,83 @@ urlpatterns = [
     path("platform/relieving-requests/", PlatformRelievingRequestsView.as_view(), name="platform-relieving-requests"),
     path("platform/relieving-requests/<int:pk>/approve/", PlatformApproveRelievingView.as_view(), name="platform-approve-relieving"),
     path("relieving-requests/<int:pk>/signoff/", RelievingLegalSignoffView.as_view(), name="relieving-legal-signoff"),
+
+    # -- Estimation / Quotation routes -----------------------------------------
+    # The models behind these were deleted by 7204699 and restored in dade298;
+    # the HTTP layer had never been written, so the vendor Estimates screen was
+    # calling ten endpoints that did not exist. Views live in quote_views.py.
+    path("quotes/", quote_views.QuoteListCreateView.as_view(), name="workforce-quotes"),
+    path("quotes/<int:pk>/", quote_views.QuoteDetailView.as_view(), name="workforce-quote-detail"),
+    path("quotes/<int:pk>/items/bulk/", quote_views.QuoteItemsBulkView.as_view(), name="workforce-quote-items-bulk"),
+    path("quotes/<int:pk>/measurements/bulk/", quote_views.QuoteMeasurementsBulkView.as_view(), name="workforce-quote-measurements-bulk"),
+    path("quotes/<int:pk>/inspection/", quote_views.QuoteInspectionView.as_view(), name="workforce-quote-inspection"),
+    path("quotes/<int:pk>/send/", quote_views.QuoteSendView.as_view(), name="workforce-quote-send"),
+    path("quotes/<int:pk>/revise/", quote_views.QuoteReviseView.as_view(), name="workforce-quote-revise"),
+
+    # --- estimation workflow: customer decision -> SEVO admin -> invoice ---
+    # NB: the literal "pending-approval" route must precede "<int:pk>" style
+    # patterns it could otherwise be swallowed by; it is distinct here, but the
+    # decision route is deliberately namespaced under quotes/decision/ so a
+    # token can never be mistaken for a primary key.
+    path("quotes/pending-approval/", invoice_views.QuotePendingApprovalView.as_view(), name="workforce-quotes-pending-approval"),
+    path("quotes/decision/<str:token>/", invoice_views.QuoteCustomerDecisionView.as_view(), name="workforce-quote-decision"),
+    path("quotes/<int:pk>/admin-review/", invoice_views.QuoteAdminReviewView.as_view(), name="workforce-quote-admin-review"),
+
+    path("invoices/", invoice_views.InvoiceListView.as_view(), name="workforce-invoices"),
+    path("invoices/<int:pk>/", invoice_views.InvoiceDetailView.as_view(), name="workforce-invoice-detail"),
+    path("invoices/<int:pk>/payments/", invoice_views.InvoicePaymentView.as_view(), name="workforce-invoice-payments"),
+    path("invoices/<int:pk>/cancel/", invoice_views.InvoiceCancelView.as_view(), name="workforce-invoice-cancel"),
+    path("invoices/<int:pk>/pdf/", invoice_views.InvoicePdfView.as_view(), name="workforce-invoice-pdf"),
+
+    # --- SEVO commercial settings and the pre-send review queue ---
+    path("quotes/pending-review/", invoice_views.QuotePendingPreSendReviewView.as_view(), name="workforce-quotes-pending-review"),
+    path("quotes/<int:pk>/pre-send-review/", invoice_views.QuotePreSendReleaseView.as_view(), name="workforce-quote-pre-send-review"),
+    path("settings/pricing-policies/", invoice_views.PricingPolicyListView.as_view(), name="workforce-pricing-policies"),
+    path("settings/pricing-policies/<int:pk>/", invoice_views.PricingPolicyDetailView.as_view(), name="workforce-pricing-policy-detail"),
+    path("rate-cards/", invoice_views.RateCardListView.as_view(), name="workforce-rate-cards"),
+    path("rate-cards/price/", invoice_views.RateCardPriceView.as_view(), name="workforce-rate-card-price"),
+
+    # --- aliases the vendor frontend already calls (api/workforceService.js) ---
+    # The customer opens the same view whether the link carries a token or the
+    # quote id; the view decides what the value is, so one page serves both.
+    path("customer/quotes/<str:token>/", invoice_views.QuoteCustomerDecisionView.as_view(), name="workforce-customer-quote"),
+    path("customer/quote-token/<str:token>/", invoice_views.QuoteCustomerDecisionView.as_view(), name="workforce-customer-quote-token"),
+    path("customer/quotes/<str:token>/decide/", invoice_views.QuoteCustomerDecisionView.as_view(), name="workforce-customer-quote-decide"),
+    path("customer/quote-token/<str:token>/decide/", invoice_views.QuoteCustomerDecisionView.as_view(), name="workforce-customer-quote-token-decide"),
+
+    path("admin/quotes/metrics/", invoice_views.AdminQuoteMetricsView.as_view(), name="workforce-admin-quote-metrics"),
+    path("admin/quotes/<int:pk>/clear-structural/", invoice_views.AdminClearStructuralView.as_view(), name="workforce-admin-clear-structural"),
+    path("admin/quotes/<int:pk>/retry-conversion/", invoice_views.AdminRetryQuoteConversionView.as_view(), name="workforce-admin-retry-conversion"),
+
+    # ── Inventory Management ───────────────────────────────────────────────────
+    path("inventory/", InventoryItemListView.as_view(), name="workforce-inventory-list"),
+    path("inventory/<int:pk>/", InventoryItemDetailView.as_view(), name="workforce-inventory-detail"),
+    path("inventory/catalogue/", InventoryCatalogueBrowseView.as_view(), name="workforce-inventory-catalogue"),
+    path("inventory/sync-catalogue/", InventoryBulkSyncView.as_view(), name="workforce-inventory-sync"),
+
+    # ── Vendor Store & Promotions (Multi-Vendor Marketplace) ─────────────
+    path("store/profile/", VendorStoreProfileView.as_view(), name="workforce-store-profile"),
+    path("promotions/deals/", VendorDealListView.as_view(), name="workforce-vendor-deals"),
+    path("promotions/deals/<int:pk>/", VendorDealDetailView.as_view(), name="workforce-vendor-deal-detail"),
+    path("promotions/coupons/", VendorCouponListView.as_view(), name="workforce-vendor-coupons"),
+    path("promotions/coupons/<int:pk>/", VendorCouponDetailView.as_view(), name="workforce-vendor-coupon-detail"),
+    path("public/stores/", PublicStoreListView.as_view(), name="workforce-public-stores"),
+    path("public/stores/<slug:slug>/", PublicStoreDetailView.as_view(), name="workforce-public-store-detail"),
+
+    # ── Vendor Order Management & Financials (Grocery Supplier Isolated) ───────
+    path("orders/grocery/", VendorOrderListView.as_view(), name="workforce-grocery-orders"),
+    path("orders/grocery/<int:pk>/accept/", VendorOrderAcceptView.as_view(), name="workforce-grocery-order-accept"),
+    path("orders/grocery/<int:pk>/reject/", VendorOrderRejectView.as_view(), name="workforce-grocery-order-reject"),
+    path("orders/grocery/<int:pk>/status/", VendorOrderStatusUpdateView.as_view(), name="workforce-grocery-order-status"),
+    path("settlements/", VendorSettlementListView.as_view(), name="workforce-settlements"),
+    path("inventory/ledger/", VendorInventoryLedgerView.as_view(), name="workforce-inventory-ledger"),
+
+    # ── Public Customer Marketplace Cart, Checkout & Order Tracking ────────────
+    path("public/cart/", PublicGroceryCartView.as_view(), name="workforce-public-cart"),
+    path("public/cart/clear/", PublicGroceryCartClearView.as_view(), name="workforce-public-cart-clear"),
+    path("public/checkout/", PublicGroceryCheckoutView.as_view(), name="workforce-public-checkout"),
+    path("public/orders/<str:order_number>/", PublicGroceryOrderTrackingView.as_view(), name="workforce-public-order-tracking"),
+    path("public/orders/<str:order_number>/review/", PublicGroceryOrderReviewView.as_view(), name="workforce-public-order-review"),
 ]
 
 

@@ -17,8 +17,40 @@ Priority tables and patterns:
 Note: ServiceRequest (jobs) and Employee tables are managed=False (Supabase-owned).
       Their indexes must be created via Supabase SQL editor, not Django migrations.
       Those patterns are documented in a comment at the bottom of this file.
+
+Cross-database note (added 2026-09-16): every index below was originally a
+migrations.RunSQL using Postgres's `CREATE INDEX CONCURRENTLY IF NOT EXISTS`
+(non-blocking index build -- the whole point of `atomic = False` on this
+migration). SQLite has no CONCURRENTLY keyword at all, which broke
+`manage.py test` outright. _make_index_ops() below keeps the exact original
+Postgres DDL (byte-for-byte, same non-concurrent-safe behavior in
+production) and only swaps in a plain `CREATE INDEX IF NOT EXISTS` (no
+CONCURRENTLY -- meaningless on SQLite's single-writer model anyway) when
+running on SQLite.
 """
 from django.db import migrations
+
+
+def _make_index_ops(name, postgres_sql, reverse_sql, sqlite_sql=None):
+    """
+    Returns a migrations.RunPython pair that runs `postgres_sql` verbatim on
+    Postgres and `sqlite_sql` (or `postgres_sql` with "CONCURRENTLY " simply
+    stripped, when no override is given) on every other backend.
+    """
+    sqlite_fallback = sqlite_sql or postgres_sql.replace("CONCURRENTLY ", "")
+
+    def forwards(apps, schema_editor):
+        if schema_editor.connection.vendor == "postgresql":
+            schema_editor.execute(postgres_sql)
+        else:
+            schema_editor.execute(sqlite_fallback)
+
+    def backwards(apps, schema_editor):
+        schema_editor.execute(reverse_sql)
+
+    forwards.__name__ = f"forwards_{name}"
+    backwards.__name__ = f"backwards_{name}"
+    return migrations.RunPython(forwards, backwards)
 
 
 class Migration(migrations.Migration):
@@ -33,107 +65,107 @@ class Migration(migrations.Migration):
         # ── WorkforceNotification ──────────────────────────────────────────────
         # Used by: WorkforceNotificationListView
         #   filter(recipient=user).order_by("-created_at")[:50]
-        migrations.RunSQL(
-            sql="""
+        _make_index_ops(
+            "notification_recipient_created",
+            """
                 CREATE INDEX CONCURRENTLY IF NOT EXISTS
                     idx_workforce_notification_recipient_created
                 ON workforce_notification (recipient_id, created_at DESC);
             """,
-            reverse_sql="DROP INDEX IF EXISTS idx_workforce_notification_recipient_created;",
-            hints={"target_db": "default"},
+            "DROP INDEX IF EXISTS idx_workforce_notification_recipient_created;",
         ),
 
         # ── WorkforceJobOffer: active offer lookup ─────────────────────────────
         # Used by: WorkforceJobListView (employee path)
         #   filter(employee=emp, status="OFFERED", expires_at__gt=now)
-        migrations.RunSQL(
-            sql="""
+        _make_index_ops(
+            "joboffer_employee_status_expires",
+            """
                 CREATE INDEX CONCURRENTLY IF NOT EXISTS
                     idx_workforcejoboffer_employee_status_expires
                 ON workforce_job_offer (employee_id, status, expires_at)
                 WHERE status = 'OFFERED';
             """,
-            reverse_sql="DROP INDEX IF EXISTS idx_workforcejoboffer_employee_status_expires;",
-            hints={"target_db": "default"},
+            "DROP INDEX IF EXISTS idx_workforcejoboffer_employee_status_expires;",
         ),
 
         # ── WorkforceJobOffer: per-job offer retrieval ─────────────────────────
         # Used by: WorkforceJobSerializer._get_emp_offer and bulk fetch
         #   filter(job_id__in=job_ids, employee=emp)
-        migrations.RunSQL(
-            sql="""
+        _make_index_ops(
+            "joboffer_job_employee",
+            """
                 CREATE INDEX CONCURRENTLY IF NOT EXISTS
                     idx_workforcejoboffer_job_employee
                 ON workforce_job_offer (job_id, employee_id);
             """,
-            reverse_sql="DROP INDEX IF EXISTS idx_workforcejoboffer_job_employee;",
-            hints={"target_db": "default"},
+            "DROP INDEX IF EXISTS idx_workforcejoboffer_job_employee;",
         ),
 
         # ── WorkforceJobLifecycleEvent: acceptance event lookup ───────────────
         # Used by: WorkforceJobListView (employee path) bulk fetch
         #   filter(job_id__in=job_ids, employee=emp, event_type=EMPLOYEE_JOB_ACCEPTED)
-        migrations.RunSQL(
-            sql="""
+        _make_index_ops(
+            "joblifecycle_job_emp_type",
+            """
                 CREATE INDEX CONCURRENTLY IF NOT EXISTS
                     idx_workforcejob_lifecycle_job_emp_type
                 ON workforce_job_lifecycle_event (job_id, employee_id, event_type);
             """,
-            reverse_sql="DROP INDEX IF EXISTS idx_workforcejob_lifecycle_job_emp_type;",
-            hints={"target_db": "default"},
+            "DROP INDEX IF EXISTS idx_workforcejob_lifecycle_job_emp_type;",
         ),
 
         # ── WorkforceWorkExtension: bulk fetch per job list ────────────────────
         # Used by: WorkforceJobListView (employee path)
         #   filter(job_id__in=job_ids).order_by("-created_at")
-        migrations.RunSQL(
-            sql="""
+        _make_index_ops(
+            "workextension_job_created",
+            """
                 CREATE INDEX CONCURRENTLY IF NOT EXISTS
                     idx_workforceworkextension_job_created
                 ON workforce_work_extension (job_id, created_at DESC);
             """,
-            reverse_sql="DROP INDEX IF EXISTS idx_workforceworkextension_job_created;",
-            hints={"target_db": "default"},
+            "DROP INDEX IF EXISTS idx_workforceworkextension_job_created;",
         ),
 
         # ── JobPayment: bulk fetch per job list ────────────────────────────────
         # Used by: WorkforceJobListView (employee path)
         #   filter(job_id__in=job_ids)
-        migrations.RunSQL(
-            sql="""
+        _make_index_ops(
+            "jobpayment_job_id",
+            """
                 CREATE INDEX CONCURRENTLY IF NOT EXISTS
                     idx_jobpayment_job_id
                 ON workforce_job_payment (job_id);
             """,
-            reverse_sql="DROP INDEX IF EXISTS idx_jobpayment_job_id;",
-            hints={"target_db": "default"},
+            "DROP INDEX IF EXISTS idx_jobpayment_job_id;",
         ),
 
         # ── WorkforceEmployeeCompliance: eligibility gate G4 ──────────────────
         # Used by: WorkforceDispatchEligibleListView prefetch
         #   filter(requirement__is_mandatory=True) on employee
-        migrations.RunSQL(
-            sql="""
+        _make_index_ops(
+            "compliance_emp_req",
+            """
                 CREATE INDEX CONCURRENTLY IF NOT EXISTS
                     idx_workforce_compliance_emp_req
                 ON workforce_employee_compliance (employee_id, requirement_id);
             """,
-            reverse_sql="DROP INDEX IF EXISTS idx_workforce_compliance_emp_req;",
-            hints={"target_db": "default"},
+            "DROP INDEX IF EXISTS idx_workforce_compliance_emp_req;",
         ),
 
         # ── WorkforceNotification: is_read flag lookup ─────────────────────────
         # Used by: mark-read and clear operations
         #   filter(recipient=user, is_read=False)
-        migrations.RunSQL(
-            sql="""
+        _make_index_ops(
+            "notification_recipient_unread",
+            """
                 CREATE INDEX CONCURRENTLY IF NOT EXISTS
                     idx_workforce_notification_recipient_unread
                 ON workforce_notification (recipient_id, is_read)
                 WHERE is_read = FALSE;
             """,
-            reverse_sql="DROP INDEX IF EXISTS idx_workforce_notification_recipient_unread;",
-            hints={"target_db": "default"},
+            "DROP INDEX IF EXISTS idx_workforce_notification_recipient_unread;",
         ),
     ]
 

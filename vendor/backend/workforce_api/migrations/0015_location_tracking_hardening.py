@@ -11,6 +11,43 @@ Safe data migration + schema migration for location tracking hardening:
 from django.db import migrations, models
 
 
+def _add_unique_active_tracking_session_index(apps, schema_editor):
+    """
+    Postgres gets the original idempotent DO $$ guarded CREATE UNIQUE INDEX
+    (kept byte-for-byte so production behavior is unchanged). SQLite (used
+    by `manage.py test`) doesn't support DO $$ PL/pgSQL blocks or the
+    pg_indexes catalog, but it does support "CREATE UNIQUE INDEX IF NOT
+    EXISTS ... WHERE ..." directly, which is the same end state.
+    """
+    if schema_editor.connection.vendor == "postgresql":
+        schema_editor.execute(
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_indexes
+                    WHERE tablename = 'workforce_job_tracking_session'
+                      AND indexname = 'unique_active_tracking_session_per_job'
+                ) THEN
+                    CREATE UNIQUE INDEX unique_active_tracking_session_per_job
+                    ON workforce_job_tracking_session (job_id)
+                    WHERE (status = 'ACTIVE');
+                END IF;
+            END
+            $$;
+            """
+        )
+    else:
+        schema_editor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS unique_active_tracking_session_per_job "
+            "ON workforce_job_tracking_session (job_id) WHERE (status = 'ACTIVE')"
+        )
+
+
+def _drop_unique_active_tracking_session_index(apps, schema_editor):
+    schema_editor.execute("DROP INDEX IF EXISTS unique_active_tracking_session_per_job")
+
+
 def deduplicate_active_sessions(apps, schema_editor):
     """
     Safely close duplicate ACTIVE tracking sessions.
@@ -110,23 +147,9 @@ class Migration(migrations.Migration):
         ),
 
         # Step 4: Add DB-level partial unique constraint (idempotent — uses IF NOT EXISTS)
-        migrations.RunSQL(
-            sql="""
-                DO $$
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 FROM pg_indexes
-                        WHERE tablename = 'workforce_job_tracking_session'
-                          AND indexname = 'unique_active_tracking_session_per_job'
-                    ) THEN
-                        CREATE UNIQUE INDEX unique_active_tracking_session_per_job
-                        ON workforce_job_tracking_session (job_id)
-                        WHERE (status = 'ACTIVE');
-                    END IF;
-                END
-                $$;
-            """,
-            reverse_sql=migrations.RunSQL.noop,
+        migrations.RunPython(
+            _add_unique_active_tracking_session_index,
+            _drop_unique_active_tracking_session_index,
         ),
 
         # Step 5–7: Add indexes (idempotent — uses IF NOT EXISTS)

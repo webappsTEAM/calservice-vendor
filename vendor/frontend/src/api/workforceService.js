@@ -194,7 +194,7 @@ export async function apiGetPresenceStatus() {
   return await apiRequest('/workforce/presence/status/');
 }
 
-export async function apiGetWorkforceJobs(status = 'active') {
+export async function apiGetWorkforceJobs(status = 'all') {
   const query = status ? `?status=${encodeURIComponent(status)}` : '';
   return await apiRequest(`/workforce/jobs/${query}`);
 }
@@ -362,6 +362,13 @@ export async function apiCustomerConfirmPayment(jobId, payload) {
 export async function apiTriggerAutoDispatch(jobId) {
   return await apiRequest(`/workforce/dispatch/auto-dispatch/${jobId}/`, {
     method: 'POST',
+  });
+}
+
+export async function apiAdminCancelJob(jobId, reason = '') {
+  return await apiRequest(`/workforce/jobs/${jobId}/admin-cancel/`, {
+    method: 'POST',
+    json: { reason },
   });
 }
 
@@ -1194,3 +1201,332 @@ export async function apiAdminRetryQuoteConversion(quoteId) {
     method: 'POST',
   });
 }
+
+
+// ---------------------------------------------------------------------------
+// Estimation workflow: customer decision, SEVO approval, invoicing, pricing
+// ---------------------------------------------------------------------------
+
+/** The customer's view of a quotation. The token in the URL is the credential. */
+export async function apiGetQuoteByToken(token) {
+  return await apiRequest(`/workforce/quotes/decision/${token}/`);
+}
+
+/** action: 'ACCEPT' | 'DECLINE' | 'REQUEST_CHANGES' */
+export async function apiDecideQuoteByToken(token, action, notes = '', reason = '') {
+  return await apiRequest(`/workforce/quotes/decision/${token}/`, {
+    method: 'POST',
+    json: { action, notes, reason },
+  });
+}
+
+/** Quotes the customer has accepted, awaiting SEVO authorisation. */
+export async function apiGetQuotesAwaitingApproval(companyId = '') {
+  const q = companyId ? `?company_id=${encodeURIComponent(companyId)}` : '';
+  return await apiRequest(`/workforce/quotes/pending-approval/${q}`);
+}
+
+/** Approving creates the work booking and issues the invoice. */
+export async function apiAdminReviewQuote(quoteId, approve, notes = '', reason = '') {
+  return await apiRequest(`/workforce/quotes/${quoteId}/admin-review/`, {
+    method: 'POST',
+    json: { action: approve ? 'APPROVE' : 'REJECT', notes, reason },
+  });
+}
+
+/** Quotes held before the customer sees them (high-value or structural). */
+export async function apiGetQuotesAwaitingPreSendReview() {
+  return await apiRequest('/workforce/quotes/pending-review/');
+}
+
+export async function apiReleaseQuoteForSending(quoteId, approve, notes = '') {
+  return await apiRequest(`/workforce/quotes/${quoteId}/pre-send-review/`, {
+    method: 'POST',
+    json: { action: approve ? 'APPROVE' : 'REJECT', notes },
+  });
+}
+
+export async function apiGetInvoices(params = {}) {
+  const query = new URLSearchParams();
+  if (params.status) query.append('status', params.status);
+  if (params.job_id) query.append('job_id', params.job_id);
+  if (params.quote_id) query.append('quote_id', params.quote_id);
+  if (params.search) query.append('search', params.search);
+  const qStr = query.toString() ? `?${query.toString()}` : '';
+  return await apiRequest(`/workforce/invoices/${qStr}`);
+}
+
+export async function apiGetInvoiceDetail(invoiceId) {
+  return await apiRequest(`/workforce/invoices/${invoiceId}/`);
+}
+
+/**
+ * Record a customer payment. `reference` makes this idempotent: replaying a
+ * gateway callback with the same reference returns the original payment rather
+ * than charging again.
+ */
+export async function apiRecordInvoicePayment(invoiceId, { amount, method = 'ONLINE', reference = '', gateway = '', notes = '' }) {
+  return await apiRequest(`/workforce/invoices/${invoiceId}/payments/`, {
+    method: 'POST',
+    json: { amount, method, reference, gateway, notes },
+  });
+}
+
+export async function apiCancelInvoice(invoiceId, reason = '') {
+  return await apiRequest(`/workforce/invoices/${invoiceId}/cancel/`, {
+    method: 'POST',
+    json: { reason },
+  });
+}
+
+export async function apiGetPricingPolicies() {
+  return await apiRequest('/workforce/settings/pricing-policies/');
+}
+
+export async function apiUpdatePricingPolicy(policyId, patch) {
+  return await apiRequest(`/workforce/settings/pricing-policies/${policyId}/`, {
+    method: 'PATCH',
+    json: patch,
+  });
+}
+
+/**
+ * Ask the backend what a rate-card line costs. Slab, band and minimum-quantity
+ * rules live in one place on the server; the builder must not reimplement them.
+ */
+export async function apiPriceRateCardLine(rateCardId, quantity, tier = null) {
+  return await apiRequest('/workforce/rate-cards/price/', {
+    method: 'POST',
+    json: { rate_card_id: rateCardId, quantity, tier },
+  });
+}
+
+// ── Inventory Management ─────────────────────────────────────────────────────
+
+/** List all inventory items for the authenticated company. Supports params: search, category, status */
+export async function apiGetInventoryItems(params = {}) {
+  const qs = new URLSearchParams();
+  if (params.search) qs.set('search', params.search);
+  if (params.category) qs.set('category', params.category);
+  if (params.status) qs.set('status', params.status);
+  const query = qs.toString() ? `?${qs.toString()}` : '';
+  return await apiRequest(`/workforce/inventory/${query}`);
+}
+
+/** Get a single inventory item by ID */
+export async function apiGetInventoryItem(id) {
+  return await apiRequest(`/workforce/inventory/${id}/`);
+}
+
+/** Add an item from the catalogue to inventory */
+export async function apiAddInventoryItem(payload) {
+  return await apiRequest('/workforce/inventory/', {
+    method: 'POST',
+    json: payload,
+  });
+}
+
+/** Update an inventory item (stock qty, price, availability, etc.) */
+export async function apiUpdateInventoryItem(id, payload) {
+  return await apiRequest(`/workforce/inventory/${id}/`, {
+    method: 'PATCH',
+    json: payload,
+  });
+}
+
+/** Remove an item from inventory */
+export async function apiDeleteInventoryItem(id) {
+  return await apiRequest(`/workforce/inventory/${id}/`, {
+    method: 'DELETE',
+  });
+}
+
+/** Browse the service catalogue to pick items to add to inventory */
+export async function apiGetInventoryCatalogue(search = '') {
+  const qs = search ? `?search=${encodeURIComponent(search)}` : '';
+  return await apiRequest(`/workforce/inventory/catalogue/${qs}`);
+}
+
+/** Re-sync catalogue snapshots (name, image) for all company inventory items */
+export async function apiSyncInventoryCatalogue() {
+  return await apiRequest('/workforce/inventory/sync-catalogue/', {
+    method: 'POST',
+    json: {},
+  });
+}
+
+// ── Vendor Store & Promotions (Amazon-style Multi-Vendor) ─────────────────────
+
+/** Fetch the authenticated vendor's seller store profile */
+export async function apiGetVendorStoreProfile() {
+  return await apiRequest('/workforce/store/profile/');
+}
+
+/** Update store branding, address, operating hours, and active status */
+export async function apiUpdateVendorStoreProfile(payload) {
+  return await apiRequest('/workforce/store/profile/', {
+    method: 'PATCH',
+    json: payload,
+  });
+}
+
+/** List active promotional deals for this vendor */
+export async function apiGetVendorDeals() {
+  return await apiRequest('/workforce/promotions/deals/');
+}
+
+/** Create a new deal (strike-through, flash sale) on an inventory item */
+export async function apiCreateVendorDeal(payload) {
+  return await apiRequest('/workforce/promotions/deals/', {
+    method: 'POST',
+    json: payload,
+  });
+}
+
+/** Delete / end a promotional deal */
+export async function apiDeleteVendorDeal(id) {
+  return await apiRequest(`/workforce/promotions/deals/${id}/`, {
+    method: 'DELETE',
+  });
+}
+
+/** List vendor store-scoped coupons */
+export async function apiGetVendorCoupons() {
+  return await apiRequest('/workforce/promotions/coupons/');
+}
+
+/** Create a new vendor store coupon */
+export async function apiCreateVendorCoupon(payload) {
+  return await apiRequest('/workforce/promotions/coupons/', {
+    method: 'POST',
+    json: payload,
+  });
+}
+
+/** Delete a vendor store coupon */
+export async function apiDeleteVendorCoupon(id) {
+  return await apiRequest(`/workforce/promotions/coupons/${id}/`, {
+    method: 'DELETE',
+  });
+}
+
+/** Customer-facing: List public grocery stores delivering to location */
+export async function apiGetPublicStores() {
+  return await apiRequest('/workforce/public/stores/');
+}
+
+/** Customer-facing: Get detailed store page with catalog & deals */
+export async function apiGetPublicStoreDetail(slug) {
+  return await apiRequest(`/workforce/public/stores/${slug}/`);
+}
+
+// ── Multi-Vendor Orders & Fulfillment (Grocery Supplier Isolated) ──────────────
+
+/** List orders for the authenticated grocery vendor's store */
+export async function apiGetGroceryOrders(status = null) {
+  const qs = status ? `?status=${status}` : '';
+  return await apiRequest(`/workforce/orders/grocery/${qs}`);
+}
+
+/** Vendor accepts a new grocery order */
+export async function apiAcceptGroceryOrder(orderId) {
+  return await apiRequest(`/workforce/orders/grocery/${orderId}/accept/`, {
+    method: 'POST',
+  });
+}
+
+/** Vendor rejects an order and auto-releases reserved stock */
+export async function apiRejectGroceryOrder(orderId, reason = '') {
+  return await apiRequest(`/workforce/orders/grocery/${orderId}/reject/`, {
+    method: 'POST',
+    json: { reason },
+  });
+}
+
+/** Advance grocery order status: PICKING, PACKED, READY_FOR_PICKUP, OUT_FOR_DELIVERY, DELIVERED */
+export async function apiUpdateGroceryOrderStatus(orderId, status) {
+  return await apiRequest(`/workforce/orders/grocery/${orderId}/status/`, {
+    method: 'POST',
+    json: { status },
+  });
+}
+
+/** List vendor settlements and financial ledger entries */
+export async function apiGetGrocerySettlements() {
+  return await apiRequest('/workforce/settlements/');
+}
+
+/** Audit ledger of physical stock reservations, sales, purchases, and releases */
+export async function apiGetInventoryLedger() {
+  return await apiRequest('/workforce/inventory/ledger/');
+}
+
+// ── Customer Public Marketplace Cart, Checkout & Order Tracking ───────────────
+
+/** Get customer cart with server-calculated price summary */
+export async function apiGetPublicCart(customerId, couponCode = null) {
+  const qs = new URLSearchParams({ customer_id: customerId });
+  if (couponCode) qs.set('coupon_code', couponCode);
+  return await apiRequest(`/workforce/public/cart/?${qs.toString()}`);
+}
+
+/** Add or update item in customer cart (returns 409 CART_STORE_CONFLICT if from another store) */
+export async function apiAddToPublicCart(customerId, inventoryItemId, quantity = 1, forceReplace = false) {
+  return await apiRequest('/workforce/public/cart/', {
+    method: 'POST',
+    json: {
+      customer_id: customerId,
+      inventory_item_id: inventoryItemId,
+      quantity,
+      force_replace: forceReplace,
+    },
+  });
+}
+
+/** Clear all items in customer cart */
+export async function apiClearPublicCart(customerId) {
+  return await apiRequest('/workforce/public/cart/clear/', {
+    method: 'POST',
+    json: { customer_id: customerId },
+  });
+}
+
+/** Atomic server-driven checkout with stock reservation */
+export async function apiCheckoutPublicCart(payload) {
+  return await apiRequest('/workforce/public/checkout/', {
+    method: 'POST',
+    json: payload,
+  });
+}
+
+/** Customer order live tracking by order number */
+export async function apiGetPublicOrderTracking(orderNumber) {
+  return await apiRequest(`/workforce/public/orders/${orderNumber}/`);
+}
+
+/** Submit customer review after order delivery */
+export async function apiSubmitPublicOrderReview(orderNumber, payload) {
+  return await apiRequest(`/workforce/public/orders/${orderNumber}/review/`, {
+    method: 'POST',
+    json: payload,
+  });
+}
+
+// Named object export for convenient namespace usage
+export const workforceService = {
+  getGroceryOrders: apiGetGroceryOrders,
+  acceptGroceryOrder: apiAcceptGroceryOrder,
+  rejectGroceryOrder: apiRejectGroceryOrder,
+  updateGroceryOrderStatus: apiUpdateGroceryOrderStatus,
+  getGrocerySettlements: apiGetGrocerySettlements,
+  getInventoryLedger: apiGetInventoryLedger,
+  getPublicCart: apiGetPublicCart,
+  addToPublicCart: apiAddToPublicCart,
+  clearPublicCart: apiClearPublicCart,
+  checkoutPublicCart: apiCheckoutPublicCart,
+  getPublicOrderTracking: apiGetPublicOrderTracking,
+  submitPublicOrderReview: apiSubmitPublicOrderReview,
+  getPublicStores: apiGetPublicStores,
+  getPublicStoreDetail: apiGetPublicStoreDetail,
+};
+

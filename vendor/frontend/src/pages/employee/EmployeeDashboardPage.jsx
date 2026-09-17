@@ -176,9 +176,26 @@ export function EmployeeDashboardPage() {
   const pathname = location.pathname;
   const hash = location.hash;
 
+  const CACHED_PROFILE_KEY = 'calservice_workforce_cached_profile';
+  const CACHED_TIMETRACKING_KEY = 'calservice_workforce_cached_timetracking';
+
   const [jobQueueTab, setJobQueueTab] = useState('active'); // 'active' | 'completed' | 'all'
-  const [profile, setProfile] = useState(null);
-  const [timeTracking, setTimeTracking] = useState(null);
+  const [profile, setProfile] = useState(() => {
+    try {
+      const saved = localStorage.getItem(CACHED_PROFILE_KEY);
+      return saved ? JSON.parse(saved) : (employee || null);
+    } catch {
+      return employee || null;
+    }
+  });
+  const [timeTracking, setTimeTracking] = useState(() => {
+    try {
+      const saved = localStorage.getItem(CACHED_TIMETRACKING_KEY);
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   const [skills, setSkills] = useState([]);
   const [selectedServiceIds, setSelectedServiceIds] = useState([]);
 
@@ -235,7 +252,13 @@ export function EmployeeDashboardPage() {
   );
   const [gpsErrorState, setGpsErrorState] = useState(null);
 
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(() => {
+    try {
+      return !(localStorage.getItem(CACHED_PROFILE_KEY) || employee);
+    } catch {
+      return true;
+    }
+  });
   const [actionLoading, setActionLoading] = useState(null);
   const [isTogglingOnline, setIsTogglingOnline] = useState(false);
   const [error, setError] = useState('');
@@ -431,8 +454,8 @@ export function EmployeeDashboardPage() {
     };
   }, [selectedJob?.id, selectedJob?.status, preServiceState.geofence_passed]);
 
-  // Centralized Auto Clock-In Effect: Triggers automatically only when ALL 4 mandatory fields are complete:
-  // geofence_passed && otp_verified && presence_photo && work_area_photo.
+  // Centralized Auto Clock-In Effect: Triggers automatically when mandatory pre-service gates are complete:
+  // geofence_passed && otp_verified && presence_photo.
   useEffect(() => {
     if (!selectedJob?.id) return;
     const st = (selectedJob.status || '').toLowerCase();
@@ -442,26 +465,24 @@ export function EmployeeDashboardPage() {
     const isAllReady = Boolean(
       preServiceState.geofence_passed &&
       preServiceState.otp_verified &&
-      preServiceState.presence_photo &&
-      preServiceState.work_area_photo
+      preServiceState.presence_photo
     );
 
     if (isAllReady) {
-      console.info(`[EmployeeDashboard] All 4 mandatory gates satisfied for Job #${selectedJob.id}. Executing auto clock-in...`);
+      console.info(`[EmployeeDashboard] Mandatory gates satisfied for Job #${selectedJob.id}. Executing auto clock-in...`);
       handleDirectJobClockIn();
     }
   }, [
     preServiceState.geofence_passed,
     preServiceState.otp_verified,
     preServiceState.presence_photo,
-    preServiceState.work_area_photo,
     selectedJob?.id,
     selectedJob?.status,
     isClockedIn,
   ]);
 
   const handleVerifyOtpSubmit = async (jobOverride = null) => {
-    const targetJob = jobOverride || activeAssignedJob || selectedJob;
+    const targetJob = jobOverride || activeAssignedJob;
     if (!targetJob || !otpInput.trim()) return;
     try {
       setActionLoading(targetJob.id);
@@ -470,9 +491,9 @@ export function EmployeeDashboardPage() {
       const updatedState = { ...preServiceState, otp_verified: true, is_complete: res.is_complete };
       setPreServiceState(updatedState);
       await loadDashboard();
-      // Auto Clock-In Trigger: only if ALL 4 mandatory gates are now satisfied
-      if (updatedState.geofence_passed && updatedState.presence_photo && updatedState.work_area_photo) {
-        console.info('[EmployeeDashboard] All 4 mandatory pre-checks complete after OTP verification. Triggering auto clock-in...');
+      // Auto Clock-In Trigger: if mandatory gates are now satisfied
+      if (updatedState.geofence_passed && updatedState.presence_photo) {
+        console.info('[EmployeeDashboard] Mandatory pre-checks complete after OTP verification. Triggering auto clock-in...');
         await handleDirectJobClockIn(targetJob);
       }
       setTimeout(() => setSuccessMsg(''), 4000);
@@ -484,7 +505,7 @@ export function EmployeeDashboardPage() {
   };
 
   const handleResendOtp = async (jobOverride = null) => {
-    const targetJob = jobOverride || activeAssignedJob || selectedJob;
+    const targetJob = jobOverride || activeAssignedJob;
     if (!targetJob) return;
     try {
       setActionLoading(targetJob.id);
@@ -499,7 +520,7 @@ export function EmployeeDashboardPage() {
   };
 
   const handlePhotoUploadSubmit = async (photoType, file, jobOverride = null) => {
-    const targetJob = jobOverride || activeAssignedJob || selectedJob;
+    const targetJob = jobOverride || activeAssignedJob;
     if (!targetJob || !file) return;
     try {
       setActionLoading(targetJob.id);
@@ -512,15 +533,14 @@ export function EmployeeDashboardPage() {
       };
       setPreServiceState(updatedState);
       await loadDashboard();
-      // Auto Clock-In Trigger: only if ALL 4 mandatory gates are now satisfied
-      const allFourSatisfied =
+      // Auto Clock-In Trigger: when mandatory gates are satisfied
+      const allSatisfied =
         updatedState.geofence_passed &&
         updatedState.otp_verified &&
-        (photoType === 'presence' || updatedState.presence_photo) &&
-        (photoType === 'work_area' || updatedState.work_area_photo);
+        (photoType === 'presence' || updatedState.presence_photo);
 
-      if (allFourSatisfied) {
-        console.info('[EmployeeDashboard] All 4 mandatory pre-checks complete after photo upload. Triggering auto clock-in...');
+      if (allSatisfied) {
+        console.info('[EmployeeDashboard] Mandatory pre-checks complete after photo upload. Triggering auto clock-in...');
         await handleDirectJobClockIn(targetJob);
       }
       setTimeout(() => setSuccessMsg(''), 4000);
@@ -533,7 +553,7 @@ export function EmployeeDashboardPage() {
 
   const isClockingInRef = useRef(false);
   const handleDirectJobClockIn = async (jobOverride = null) => {
-    const jobToClockIn = jobOverride || activeAssignedJob || selectedJob;
+    const jobToClockIn = jobOverride || activeAssignedJob;
     if (!jobToClockIn || isClockingInRef.current) return;
     isClockingInRef.current = true;
     setActionLoading(jobToClockIn.id);
@@ -634,7 +654,7 @@ export function EmployeeDashboardPage() {
   };
 
   const handleManualVerifyArrival = async (jobOverride = null) => {
-    const targetJob = jobOverride || activeAssignedJob || selectedJob;
+    const targetJob = jobOverride || activeAssignedJob;
     if (!targetJob?.id) return;
     try {
       setActionLoading(targetJob.id);
@@ -711,7 +731,8 @@ export function EmployeeDashboardPage() {
   const [serviceActionLoading, setServiceActionLoading] = useState(null);
 
   const loadDashboard = useCallback(async (options = {}) => {
-    const isSilent = options?.silent === true;
+    const hasCachedData = Boolean(localStorage.getItem(CACHED_PROFILE_KEY) || employee);
+    const isSilent = options?.silent === true || hasCachedData;
     try {
       if (!isSilent) setIsLoading(true);
       const [timeData, profileData] = await Promise.all([
@@ -719,13 +740,19 @@ export function EmployeeDashboardPage() {
         apiGetOnboardingProfile().catch(() => null),
         refreshActiveJobs(options),
       ]);
-      if (profileData) setProfile(profileData);
-      if (timeData) setTimeTracking(timeData);
+      if (profileData) {
+        setProfile(profileData);
+        try { localStorage.setItem(CACHED_PROFILE_KEY, JSON.stringify(profileData)); } catch (_) {}
+      }
+      if (timeData) {
+        setTimeTracking(timeData);
+        try { localStorage.setItem(CACHED_TIMETRACKING_KEY, JSON.stringify(timeData)); } catch (_) {}
+      }
     } catch (_) {
     } finally {
-      if (!isSilent) setIsLoading(false);
+      setIsLoading(false);
     }
-  }, [refreshActiveJobs]);
+  }, [refreshActiveJobs, employee]);
 
   // Initial dashboard load on mount
   useEffect(() => {
@@ -1282,8 +1309,8 @@ export function EmployeeDashboardPage() {
             handleManualVerifyArrival={handleManualVerifyArrival}
             handleDirectJobClockIn={handleDirectJobClockIn}
             onOpenCancelModal={handleOpenCancelModal}
-            onOpenProofModal={(j) => setProofModalJob(j || activeAssignedJob || selectedJob)}
-            onOpenCashModal={(j) => setCashModalJob(j || activeAssignedJob || selectedJob)}
+            onOpenProofModal={(j) => setProofModalJob(j || activeAssignedJob)}
+            onOpenCashModal={(j) => setCashModalJob(j || activeAssignedJob)}
             preServiceState={preServiceState}
             otpInput={otpInput}
             setOtpInput={setOtpInput}

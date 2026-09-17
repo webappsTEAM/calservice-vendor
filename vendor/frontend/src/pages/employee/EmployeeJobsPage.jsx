@@ -509,6 +509,7 @@ export function EmployeeJobsPage() {
       setOtpModalJob(null);
       setEnteredOtp('');
       await loadJobs();
+      navigate('/workforce/employee/dashboard');
     } catch (err) {
       setOtpError(cleanErrorMessage(err?.message || 'Invalid OTP code. Please check with customer.'));
     } finally {
@@ -1004,20 +1005,39 @@ export function EmployeeJobsPage() {
                         </button>
                       )}
 
-                      {/* ARRIVED -> VERIFY OTP */}
+                      {/* ARRIVED -> VERIFY OTP or OTP ALREADY VERIFIED */}
                       {isArrived && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setOtpModalJob(job);
-                            setEnteredOtp('');
-                            setOtpError('');
-                          }}
-                          className="px-5 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-2"
-                        >
-                          <ShieldCheck className="w-3.5 h-3.5" />
-                          <span>Enter Start OTP</span>
-                        </button>
+                        <>
+                          {job.otp_verified ? (
+                            <div className="flex items-center gap-2">
+                              <span className="px-3 py-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold rounded-xl flex items-center gap-1">
+                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                                <span>OTP Verified</span>
+                              </span>
+                              <Link
+                                to="/workforce/employee/dashboard"
+                                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
+                              >
+                                <Camera className="w-3.5 h-3.5" />
+                                <span>Complete Selfie in Cockpit</span>
+                                <ArrowRight className="w-3.5 h-3.5" />
+                              </Link>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOtpModalJob(job);
+                                setEnteredOtp('');
+                                setOtpError('');
+                              }}
+                              className="px-5 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-2"
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5" />
+                              <span>Enter Start OTP</span>
+                            </button>
+                          )}
+                        </>
                       )}
 
                       {/* IN PROGRESS -> COCKPIT */}
