@@ -48,14 +48,16 @@ class PayoutAccount {
   final bool isActive;
   final DateTime? createdAt;
 
-  bool get isVerified => verificationStatus.toUpperCase() == 'VERIFIED';
+  bool get isVerified =>
+      verificationStatus.toUpperCase() == 'VERIFIED' ||
+      verificationStatus.toUpperCase() == 'APPROVED';
   bool get isPending => verificationStatus.toUpperCase() == 'PENDING';
   bool get isRejected => verificationStatus.toUpperCase() == 'REJECTED';
 
-  /// Masked account representation `•••• 1234`
+  /// Masked account representation `•••• •••• •••• 1234`
   String get maskedAccountNumber {
     if (accountNumberLast4.isEmpty) return '••••';
-    return '•••• $accountNumberLast4';
+    return '•••• •••• •••• $accountNumberLast4';
   }
 
   /// Display text for account type.
@@ -75,6 +77,7 @@ class PayoutAccount {
   /// Status badge text.
   String get statusDisplay {
     switch (verificationStatus.toUpperCase()) {
+      case 'APPROVED':
       case 'VERIFIED':
         return 'Verified';
       case 'PENDING':

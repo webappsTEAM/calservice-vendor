@@ -59,7 +59,7 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: const WorkforceAppBar(
-        titleText: 'Technician Earnings & Wallet',
+        titleText: 'My Wallet & Earnings',
         showBrand: false,
         showStatusSubBar: false,
       ),
@@ -84,7 +84,16 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
                 AppSpacing.xxl,
               ),
               children: [
-                // ── Subtitle & Top Actions Row ───────────────────────────────
+                // ── Main Heading, Description & Top Actions Row ──────────────
+                const Text(
+                  'Technician Earnings & Wallet',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w900,
+                    color: Color(0xFF0A2540),
+                  ),
+                ),
+                const SizedBox(height: 3),
                 Text(
                   'Authoritative 60% job commission earnings, T+7 settlement releases, and bank payouts.',
                   style: TextStyle(
@@ -151,9 +160,9 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
                         amount: '₹${wallet.availableBalance.toStringAsFixed(2)}',
                         supportingText: 'Ready for withdrawal (min ₹5,000)',
                         icon: Icons.account_balance_wallet_rounded,
-                        iconColor: const Color(0xFF059669),
-                        accentBorderColor: const Color(0xFF10B981).withValues(alpha: 0.3),
-                        bgColor: const Color(0xFFECFDF5),
+                        iconColor: const Color(0xFF004E89),
+                        accentBorderColor: const Color(0xFF004E89).withValues(alpha: 0.25),
+                        bgColor: const Color(0xFFEFF6FF),
                       ),
                     ),
                     const SizedBox(width: 10),
@@ -181,9 +190,9 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
                         amount: '₹${wallet.lifetimeEarnings.toStringAsFixed(2)}',
                         supportingText: 'Cumulative 60% earnings',
                         icon: Icons.trending_up_rounded,
-                        iconColor: const Color(0xFF004E89),
-                        accentBorderColor: const Color(0xFF004E89).withValues(alpha: 0.25),
-                        bgColor: const Color(0xFFEFF6FF),
+                        iconColor: const Color(0xFF059669),
+                        accentBorderColor: const Color(0xFF10B981).withValues(alpha: 0.3),
+                        bgColor: const Color(0xFFECFDF5),
                       ),
                     ),
                     const SizedBox(width: 10),
@@ -193,9 +202,9 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
                         amount: '₹${wallet.totalWithdrawn.toStringAsFixed(2)}',
                         supportingText: 'Disbursed to bank accounts',
                         icon: Icons.outbox_rounded,
-                        iconColor: const Color(0xFF4F46E5),
-                        accentBorderColor: const Color(0xFF6366F1).withValues(alpha: 0.25),
-                        bgColor: const Color(0xFFF5F3FF),
+                        iconColor: const Color(0xFF004E89),
+                        accentBorderColor: const Color(0xFF94A3B8).withValues(alpha: 0.3),
+                        bgColor: const Color(0xFFF1F5F9),
                       ),
                     ),
                   ],
@@ -338,8 +347,14 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Expanded(
-                      child: _SectionTitle(title: 'Recent Ledger Entries'),
+                    Expanded(
+                      child: Row(
+                        children: const [
+                          Icon(Icons.receipt_long_outlined, size: 16, color: Color(0xFF004E89)),
+                          SizedBox(width: 6),
+                          Flexible(child: _SectionTitle(title: 'Recent Ledger Entries')),
+                        ],
+                      ),
                     ),
                     TextButton(
                       onPressed: () => context.push(AppRoutes.earningsTransactions),
@@ -367,14 +382,25 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
                     child: Center(
                       child: Padding(
                         padding: const EdgeInsets.symmetric(vertical: 8),
-                        child: Text(
-                          'No transactions recorded yet. Complete customer jobs to earn commission.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: AppColors.textMuted,
-                            height: 1.4,
-                          ),
+                        child: Column(
+                          children: [
+                            const Icon(Icons.receipt_long_outlined, size: 36, color: Color(0xFF94A3B8)),
+                            const SizedBox(height: 8),
+                            const Text(
+                              'No transactions recorded yet',
+                              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Complete customer jobs to earn commission.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                color: AppColors.textMuted,
+                                height: 1.4,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ),
@@ -393,8 +419,14 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Expanded(
-                      child: _SectionTitle(title: 'Bank Accounts'),
+                    Expanded(
+                      child: Row(
+                        children: const [
+                          Icon(Icons.account_balance_outlined, size: 16, color: Color(0xFF004E89)),
+                          SizedBox(width: 6),
+                          Flexible(child: _SectionTitle(title: 'Bank Accounts')),
+                        ],
+                      ),
                     ),
                     TextButton.icon(
                       onPressed: () async {
@@ -492,7 +524,7 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
                                         ),
                                       ),
                                       Text(
-                                        '${account.accountHolderName} • ${account.maskedAccountNumber}',
+                                        '${account.accountHolderName} • ${account.maskedAccountNumber}${account.ifscCode.isNotEmpty ? " • ${account.ifscCode}" : ""}',
                                         style: TextStyle(
                                           fontSize: 11.5,
                                           color: AppColors.textMuted,

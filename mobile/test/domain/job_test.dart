@@ -75,5 +75,78 @@ void main() {
       final job = Job.fromJson(json);
       expect(job.displayTitle, equals('Appliance Repair'));
     });
+
+    test('parses technician details from flat JSON fields', () {
+      final json = {
+        'id': 101,
+        'request_id': 'REQ-101',
+        'status': 'assigned',
+        'technician_name': 'Gokul',
+        'technician_phone': '9876543210',
+        'technician_email': 'gokul.m@caldimengg.in',
+        'technician_id': 42,
+        'is_offer': false,
+        'is_accepted_by_current_employee': false,
+        'is_assigned_to_current_employee': true,
+        'can_cancel': false,
+      };
+
+      final job = Job.fromJson(json);
+      expect(job.technicianName, equals('Gokul'));
+      expect(job.technicianPhone, equals('9876543210'));
+      expect(job.technicianEmail, equals('gokul.m@caldimengg.in'));
+      expect(job.technicianId, equals(42));
+    });
+
+    test('parses technician details from nested assigned_employee object', () {
+      final json = {
+        'id': 102,
+        'request_id': 'REQ-102',
+        'status': 'in_progress',
+        'assigned_employee': {
+          'id': 55,
+          'name': 'Priya Kumar',
+          'phone': '9123456780',
+          'email': 'priya.k@example.com',
+        },
+        'is_offer': false,
+        'is_accepted_by_current_employee': true,
+        'is_assigned_to_current_employee': true,
+        'can_cancel': false,
+      };
+
+      final job = Job.fromJson(json);
+      expect(job.technicianName, equals('Priya Kumar'));
+      expect(job.technicianPhone, equals('9123456780'));
+      expect(job.technicianEmail, equals('priya.k@example.com'));
+      expect(job.technicianId, equals(55));
+    });
+
+    test('parses technician details from nested technician object with user profile', () {
+      final json = {
+        'id': 103,
+        'request_id': 'REQ-103',
+        'status': 'assigned',
+        'technician': {
+          'id': 88,
+          'user': {
+            'first_name': 'Anand',
+            'last_name': 'Raj',
+            'email': 'anand.r@example.com',
+          },
+          'phone_number': '9988776655',
+        },
+        'is_offer': false,
+        'is_accepted_by_current_employee': false,
+        'is_assigned_to_current_employee': false,
+        'can_cancel': true,
+      };
+
+      final job = Job.fromJson(json);
+      expect(job.technicianName, equals('Anand Raj'));
+      expect(job.technicianPhone, equals('9988776655'));
+      expect(job.technicianEmail, equals('anand.r@example.com'));
+      expect(job.technicianId, equals(88));
+    });
   });
 }

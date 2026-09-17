@@ -115,7 +115,7 @@ class _BankAccountsScreenState extends ConsumerState<BankAccountsScreen> {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: const WorkforceAppBar(
-        titleText: 'Payout Bank Accounts',
+        titleText: 'Bank Accounts',
         showBrand: false,
         showStatusSubBar: false,
       ),
@@ -163,7 +163,7 @@ class _BankAccountsScreenState extends ConsumerState<BankAccountsScreen> {
 
             // ── Screen Title & Subtitle ─────────────────────────────────────
             const Text(
-              'Payout Bank Accounts',
+              'Bank Accounts',
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.w900,
@@ -172,7 +172,7 @@ class _BankAccountsScreenState extends ConsumerState<BankAccountsScreen> {
             ),
             const SizedBox(height: 2),
             Text(
-              'Manage your linked bank accounts for direct commission withdrawals.',
+              'Manage your linked bank accounts',
               style: TextStyle(
                 fontSize: 12,
                 color: AppColors.textMuted,
@@ -255,7 +255,7 @@ class _BankAccountsScreenState extends ConsumerState<BankAccountsScreen> {
                         ),
                         const SizedBox(height: 3),
                         Text(
-                          'Full bank account numbers are submitted via encrypted transport and discarded immediately after extracting the last 4 digits.',
+                          'Full bank account numbers are submitted via encrypted transport and discarded after extracting the last 4 digits.',
                           style: TextStyle(
                             fontSize: 11.5,
                             color: const Color(0xFF1E40AF).withValues(alpha: 0.85),

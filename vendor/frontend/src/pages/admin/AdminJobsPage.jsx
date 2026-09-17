@@ -19,32 +19,19 @@ export function AdminJobsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [liveTrackingJobId, setLiveTrackingJobId] = useState(null);
 
-  const loadJobs = async (showLoading = true) => {
+  const loadJobs = async () => {
     try {
-      if (showLoading) setIsLoading(true);
+      setIsLoading(true);
       const data = await apiGetWorkforceJobs();
       setJobs(data || []);
     } catch (_) {
     } finally {
-      if (showLoading) setIsLoading(false);
+      setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    loadJobs(true);
-
-    // Active real-time polling: refresh jobs every 5s so newly created customer bookings appear automatically
-    const interval = setInterval(() => {
-      loadJobs(false);
-    }, 5000);
-
-    const onFocus = () => loadJobs(false);
-    window.addEventListener('focus', onFocus);
-
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener('focus', onFocus);
-    };
+    loadJobs();
   }, []);
 
   const filteredData = useMemo(() => {

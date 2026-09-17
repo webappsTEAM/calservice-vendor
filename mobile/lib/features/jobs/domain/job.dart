@@ -107,21 +107,72 @@ class Job {
     this.cancellationDeadline,
     this.offerExpiresAt,
     required this.canCancel,
-    this.isLogistics = false,
-    this.dropAddress,
-    this.dropLatitude,
-    this.dropLongitude,
-    this.dropContactName,
-    this.dropContactPhone,
-    this.logisticsLeg,
-    this.logisticsLegUpdatedAt,
-    this.tripStopCount = 0,
+    this.technicianName,
+    this.technicianPhone,
+    this.technicianEmail,
+    this.technicianId,
   });
 
   factory Job.fromJson(Map<String, dynamic> json) {
     final activeOfferJson = json['active_offer'];
     final cancellationJson = json['cancellation_info'];
     final cartJson = json['cart_data'];
+
+    final techJson = json['technician'] is Map<String, dynamic>
+        ? json['technician'] as Map<String, dynamic>
+        : (json['assigned_technician'] is Map<String, dynamic>
+            ? json['assigned_technician'] as Map<String, dynamic>
+            : (json['assigned_employee'] is Map<String, dynamic>
+                ? json['assigned_employee'] as Map<String, dynamic>
+                : null));
+
+    final techUserJson = techJson != null && techJson['user'] is Map<String, dynamic>
+        ? techJson['user'] as Map<String, dynamic>
+        : null;
+
+    final parsedTechName = parseString(json['technician_name']) ??
+        parseString(json['assigned_technician_name']) ??
+        parseString(json['assigned_employee_name']) ??
+        (techJson != null
+            ? (parseString(techJson['name']) ??
+                parseString(techJson['full_name']) ??
+                (techUserJson != null
+                    ? (parseString(techUserJson['full_name']) ??
+                        (techUserJson['first_name'] != null
+                            ? '${techUserJson['first_name']} ${techUserJson['last_name'] ?? ''}'.trim()
+                            : null))
+                    : null) ??
+                parseString(techJson['employee_id']))
+            : null);
+
+    final parsedTechPhone = parseString(json['technician_phone']) ??
+        parseString(json['assigned_technician_phone']) ??
+        parseString(json['assigned_employee_phone']) ??
+        (techJson != null
+            ? (parseString(techJson['phone']) ??
+                parseString(techJson['phone_number']) ??
+                parseString(techJson['mobile_number']) ??
+                parseString(techJson['mobile']) ??
+                (techUserJson != null
+                    ? (parseString(techUserJson['mobile_number']) ??
+                        parseString(techUserJson['phone_number']) ??
+                        parseString(techUserJson['phone']) ??
+                        parseString(techUserJson['mobile']))
+                    : null))
+            : null);
+
+    final parsedTechEmail = parseString(json['technician_email']) ??
+        parseString(json['assigned_technician_email']) ??
+        parseString(json['assigned_employee_email']) ??
+        (techJson != null
+            ? (parseString(techJson['email']) ??
+                (techUserJson != null ? parseString(techUserJson['email']) : null))
+            : null);
+
+    final parsedTechId = parseInt(json['technician_id']) ??
+        parseInt(json['assigned_technician_id']) ??
+        parseInt(json['assigned_employee_id']) ??
+        (techJson != null ? parseInt(techJson['id']) : null);
 
     return Job(
       id: parseInt(json['id']) ?? 0,
@@ -162,15 +213,10 @@ class Job {
       cancellationDeadline: parseDateTime(json['cancellation_deadline']),
       offerExpiresAt: parseDateTime(json['offer_expires_at']),
       canCancel: parseBool(json['can_cancel']),
-      isLogistics: parseBool(json['is_logistics']),
-      dropAddress: parseString(json['drop_address']),
-      dropLatitude: parseDouble(json['drop_latitude']),
-      dropLongitude: parseDouble(json['drop_longitude']),
-      dropContactName: parseString(json['drop_contact_name']),
-      dropContactPhone: parseString(json['drop_contact_phone']),
-      logisticsLeg: parseString(json['logistics_leg']),
-      logisticsLegUpdatedAt: parseDateTime(json['logistics_leg_updated_at']),
-      tripStopCount: parseInt(json['trip_stop_count']) ?? 0,
+      technicianName: parsedTechName,
+      technicianPhone: parsedTechPhone,
+      technicianEmail: parsedTechEmail,
+      technicianId: parsedTechId,
     );
   }
 
@@ -205,6 +251,10 @@ class Job {
   final DateTime? cancellationDeadline;
   final DateTime? offerExpiresAt;
   final bool canCancel;
+  final String? technicianName;
+  final String? technicianPhone;
+  final String? technicianEmail;
+  final int? technicianId;
 
   // ── Goods & Transport ────────────────────────────────────────────────
   // A logistics job has a second location. Until these were added the

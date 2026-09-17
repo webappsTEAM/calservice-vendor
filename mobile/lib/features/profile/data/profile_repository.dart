@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/config/app_config.dart';
 import '../domain/employee_profile.dart';
 import '../domain/shift_status.dart';
 import 'profile_api.dart';
@@ -25,7 +26,8 @@ class ProfileRepository {
 
   Future<String> uploadAvatar(String filePath) async {
     final json = await _api.uploadAvatar(filePath);
-    return json['avatar_url'] as String? ?? '';
+    final rawUrl = json['avatar_url'] as String? ?? json['avatar'] as String?;
+    return AppConfig.resolveMediaUrl(rawUrl) ?? '';
   }
 
   Future<List<EmployeeChangeRequest>> fetchChangeRequests() async {

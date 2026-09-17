@@ -237,13 +237,14 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('Refresh Data'), findsOneWidget);
+      expect(find.text('Database Egress'), findsOneWidget);
       expect(find.text('Open Dispatch Console'), findsOneWidget);
 
       // Action Center Section
       expect(find.text('ACTION CENTER'), findsOneWidget);
       expect(find.byType(ActionCenterSection), findsOneWidget);
       expect(find.text('Pending Applications'), findsOneWidget);
-      expect(find.text('Documents to Verify'), findsOneWidget);
+      expect(find.text('Active Technicians'), findsOneWidget);
       expect(find.text('Jobs Awaiting Assignment'), findsOneWidget);
       expect(find.text('Corrections Pending Resubmission'), findsOneWidget);
 
@@ -434,10 +435,12 @@ void main() {
       addTearDown(() => tester.view.resetDevicePixelRatio());
 
       await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: SingleChildScrollView(
-              child: AdminTitleSection(onRefresh: () {}),
+        ProviderScope(
+          child: MaterialApp(
+            home: Scaffold(
+              body: SingleChildScrollView(
+                child: AdminTitleSection(onRefresh: () {}),
+              ),
             ),
           ),
         ),

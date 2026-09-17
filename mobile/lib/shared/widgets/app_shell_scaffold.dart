@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
-/// The Material 3 bottom-navigation shell for the four real, working tabs:
-/// Home, Jobs, Wallet, More. Wraps go_router's
-/// StatefulNavigationShell so each tab keeps its own navigation stack (e.g.
-/// pushing a job detail from the Jobs tab doesn't disturb Home).
+/// The Material 3 bottom-navigation shell for the five real, working tabs:
+/// Home, Jobs, Performance, Wallet, More. Wraps go_router's
+/// StatefulNavigationShell so each tab keeps its own navigation stack.
 class AppShellScaffold extends StatelessWidget {
   const AppShellScaffold({super.key, required this.navigationShell});
 
@@ -26,12 +25,17 @@ class AppShellScaffold extends StatelessWidget {
           NavigationDestination(
             icon: Icon(Icons.home_outlined),
             selectedIcon: Icon(Icons.home_rounded),
-            label: 'Home',
+            label: 'Dashboard',
           ),
           NavigationDestination(
             icon: Icon(Icons.work_outline_rounded),
             selectedIcon: Icon(Icons.work_rounded),
             label: 'Jobs',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.insights_outlined),
+            selectedIcon: Icon(Icons.insights_rounded),
+            label: 'Performance',
           ),
           NavigationDestination(
             icon: Icon(Icons.account_balance_wallet_outlined),

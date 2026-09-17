@@ -40,7 +40,7 @@ export function TechnicianNavigationMap({
   isFollowMode = true,
   onFollowModeChange,
   isFullscreen = false,
-  geofenceRadius = 10,
+  geofenceRadius = 250,
   className = 'w-full h-full min-h-[380px]',
 }) {
   const mapContainerRef = useRef(null);
@@ -201,7 +201,7 @@ export function TechnicianNavigationMap({
                 ${job?.address || 'Authorized Service Address'}
               </div>
               <div style="font-size: 10px; color: #10B981; font-weight: 700;">
-                10m Arrival Geofence Active
+                300m Arrival Geofence Active
               </div>
             </div>
           `;

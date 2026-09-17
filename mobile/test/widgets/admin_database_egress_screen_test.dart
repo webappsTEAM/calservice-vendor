@@ -345,7 +345,7 @@ void main() {
       expect(find.text('Database & Egress Monitoring'), findsWidgets);
     });
 
-    testWidgets('AdminDrawer contains MONITORING group with Database & Egress navigation item', (tester) async {
+    testWidgets('AdminDrawer contains TELEMETRY group with Database & Egress navigation item', (tester) async {
       const adminUser = AuthUser(
         id: 1,
         username: 'admin',
@@ -378,11 +378,11 @@ void main() {
       scaffoldState.openDrawer();
       await tester.pumpAndSettle();
 
-      final monitoringFinder = find.text('MONITORING');
-      await tester.scrollUntilVisible(monitoringFinder, 200, scrollable: find.byType(Scrollable).last);
+      final telemetryFinder = find.text('TELEMETRY');
+      await tester.scrollUntilVisible(telemetryFinder, 200, scrollable: find.byType(Scrollable).last);
       await tester.pumpAndSettle();
 
-      expect(monitoringFinder, findsOneWidget);
+      expect(telemetryFinder, findsOneWidget);
       expect(find.text('Database & Egress'), findsOneWidget);
     });
   });

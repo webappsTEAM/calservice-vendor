@@ -1,14 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../../core/theme/app_theme.dart';
 import '../../../../routing/app_routes.dart';
+import '../../../auth/presentation/auth_controller.dart';
 
 /// Clean Executive Header for Workforce Operations Center:
 /// - Title: Workforce Operations Center
 /// - Subtitle: Real-time personnel monitoring, dossier verifications, and dynamic dispatch
-/// - Actions: Refresh Data & Open Dispatch Console
-class AdminTitleSection extends StatelessWidget {
+/// - Actions: Refresh Data, Database Egress (Admin) & Open Dispatch Console
+class AdminTitleSection extends ConsumerWidget {
   const AdminTitleSection({
     super.key,
     required this.onRefresh,
@@ -19,7 +21,8 @@ class AdminTitleSection extends StatelessWidget {
   final bool isRefreshing;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isAdmin = ref.watch(authControllerProvider).user?.isAdmin == true;
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -145,6 +148,27 @@ class AdminTitleSection extends StatelessWidget {
                   ),
                 ),
               ),
+              // Database Egress Button (Admin only)
+              if (isAdmin)
+                OutlinedButton.icon(
+                  onPressed: () => context.push(AppRoutes.adminMonitoringDatabaseEgress),
+                  icon: const Icon(Icons.storage_rounded, size: 14, color: Color(0xFF059669)),
+                  label: const Text('Database Egress'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF065F46),
+                    backgroundColor: const Color(0xFFECFDF5),
+                    side: const BorderSide(color: Color(0xFFA7F3D0)),
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+                    textStyle: const TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w700,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                  ),
+                ),
               // Open Dispatch Console Button
               FilledButton.icon(
                 onPressed: () => context.push(AppRoutes.adminDispatch),

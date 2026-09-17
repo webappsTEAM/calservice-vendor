@@ -123,16 +123,20 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('WORKFORCE ADMIN'), findsOneWidget);
-      expect(find.text('Home'), findsOneWidget);
-      expect(find.text('Employees'), findsOneWidget);
+      expect(find.text('Company Home'), findsOneWidget);
+      expect(find.text('MY WORKFORCE'), findsOneWidget);
+      expect(find.text('Tied Technicians'), findsOneWidget);
+      expect(find.text('Send Invitations'), findsOneWidget);
+      expect(find.text('Employee Roster'), findsOneWidget);
       expect(find.text('Applications'), findsOneWidget);
-      expect(find.text('Services'), findsOneWidget);
-      expect(find.text('Skills'), findsOneWidget);
-      expect(find.text('Jobs'), findsOneWidget);
-      expect(find.text('Dispatch'), findsOneWidget);
-      expect(find.text('Live Workforce'), findsOneWidget);
-      expect(find.text('Reports'), findsOneWidget);
-      expect(find.text('Settings'), findsOneWidget);
+      expect(find.text('OPERATIONS'), findsOneWidget);
+      expect(find.text('Field Jobs'), findsOneWidget);
+      expect(find.text('Dispatch Radar'), findsOneWidget);
+      expect(find.text('Company Profile'), findsOneWidget);
+      expect(find.text('FINANCE & LEDGER'), findsOneWidget);
+      expect(find.text('Company Wallet'), findsOneWidget);
+      expect(find.text('TELEMETRY'), findsOneWidget);
+      expect(find.text('System Settings'), findsOneWidget);
       expect(find.text('Log Out'), findsOneWidget);
     });
 

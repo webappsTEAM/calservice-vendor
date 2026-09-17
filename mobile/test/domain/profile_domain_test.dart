@@ -127,5 +127,33 @@ void main() {
       expect(cr.status, 'PENDING');
       expect(cr.createdAt, isNotNull);
     });
+
+    test('EmployeeProfile.fromJson resolves relative avatar path to full backend URL', () {
+      final json = {
+        'first_name': 'Ravi',
+        'last_name': 'Kumar',
+        'avatar': '/media/avatars/ravi.jpg',
+      };
+
+      final profile = EmployeeProfile.fromJson(json);
+      expect(profile.avatar, isNotNull);
+      expect(profile.avatar!.startsWith('http'), isTrue);
+      expect(profile.avatar!.endsWith('/media/avatars/ravi.jpg'), isTrue);
+      expect(profile.avatar!.contains('/api/media/'), isFalse);
+    });
+
+    test('EmployeeProfile.fromJson supports canonical avatar and avatar_url response', () {
+      final p1 = EmployeeProfile.fromJson({
+        'first_name': 'Test',
+        'avatar': 'https://example.com/avatar1.png',
+      });
+      expect(p1.avatar, 'https://example.com/avatar1.png');
+
+      final p2 = EmployeeProfile.fromJson({
+        'first_name': 'Test',
+        'avatar_url': 'https://example.com/avatar2.png',
+      });
+      expect(p2.avatar, 'https://example.com/avatar2.png');
+    });
   });
 }

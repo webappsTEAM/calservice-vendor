@@ -330,7 +330,7 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
       }
       setShowNotifMenu(false);
       if (notif.notification_type === 'JOB_OFFER' || notif.notification_type === 'JOB_OFFERED') {
-        navigate('/workforce/employee/jobs?tab=offers');
+        navigate('/workforce/employee/dashboard');
       }
     } catch (_) {}
   };

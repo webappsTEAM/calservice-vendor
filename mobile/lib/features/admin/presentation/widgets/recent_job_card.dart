@@ -107,6 +107,31 @@ class RecentJobCard extends StatelessWidget {
               ),
               const SizedBox(height: 4),
             ],
+            if (job.technicianName != null && job.technicianName!.isNotEmpty) ...[
+              Row(
+                children: [
+                  const Icon(
+                    Icons.badge_outlined,
+                    size: 15,
+                    color: Color(0xFF059669),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Technician: ${job.technicianName!}${job.technicianPhone != null && job.technicianPhone!.isNotEmpty ? " • ${job.technicianPhone!}" : ""}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF059669),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+            ],
             Row(
               children: [
                 const Icon(

@@ -22,7 +22,7 @@ class AdminDashboardRepository {
                 .toList(),
             onError: (_) => <AdminApplication>[],
           ),
-      _api.fetchJobs().then(
+      _api.fetchJobs(statusFilter: 'active').then(
             (raw) => raw
                 .whereType<Map<String, dynamic>>()
                 .map(Job.fromJson)

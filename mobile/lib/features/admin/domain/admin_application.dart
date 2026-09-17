@@ -1,3 +1,4 @@
+import '../../../core/config/app_config.dart';
 import '../../../core/utils/json_parsing.dart';
 
 /// Represents a service requested or approved for a technician.
@@ -110,7 +111,9 @@ class AdminApplication {
     this.email,
     this.phone,
     required this.registrationStatus,
+    this.isActive = true,
     this.isOnline = false,
+    this.liveAvailability,
     this.allRequestedServices = const [],
     this.documentsList = const [],
     this.documentsStatus = const {},
@@ -119,6 +122,7 @@ class AdminApplication {
     this.companyId,
     this.companyName,
     this.dateOfBirth,
+    this.avatar,
   });
 
   factory AdminApplication.fromJson(Map<String, dynamic> json) {
@@ -202,6 +206,24 @@ class AdminApplication {
 
     final isOnlineVal = parseBool(json['is_online']) ||
         (userJson != null && parseBool(userJson['is_online']));
+    final liveAvailabilityVal = parseString(json['live_availability']) ??
+        parseString(json['availability']) ??
+        (userJson != null ? parseString(userJson['live_availability']) : null);
+    final regStatusVal = parseString(json['registration_status'])?.toLowerCase() ?? 'not_started';
+    final isActiveVal = json.containsKey('is_active')
+        ? parseBool(json['is_active'])
+        : (regStatusVal == 'approved' || regStatusVal == 'active');
+
+    final rawAvatar = parseString(json['avatar']) ??
+        parseString(json['avatar_url']) ??
+        parseString(json['profile_image']) ??
+        parseString(json['profile_picture']) ??
+        parseString(json['photo']) ??
+        (userJson != null
+            ? (parseString(userJson['avatar']) ??
+                parseString(userJson['avatar_url']) ??
+                parseString(userJson['profile_image']))
+            : null);
 
     return AdminApplication(
       id: parseInt(json['id']) ?? 0,
@@ -211,9 +233,10 @@ class AdminApplication {
       lastName: lastName,
       email: emailFromJson,
       phone: phoneFromJson,
-      registrationStatus:
-          parseString(json['registration_status'])?.toLowerCase() ?? 'not_started',
+      registrationStatus: regStatusVal,
+      isActive: isActiveVal,
       isOnline: isOnlineVal,
+      liveAvailability: liveAvailabilityVal,
       allRequestedServices: parsedServices,
       documentsList: parsedDocs,
       documentsStatus: json['documents_status'] is Map<String, dynamic>
@@ -224,6 +247,7 @@ class AdminApplication {
       companyId: parseInt(json['company']),
       companyName: parseString(json['company_name']),
       dateOfBirth: parseString(json['date_of_birth']),
+      avatar: AppConfig.resolveMediaUrl(rawAvatar),
     );
   }
 
@@ -235,7 +259,9 @@ class AdminApplication {
   final String? email;
   final String? phone;
   final String registrationStatus;
+  final bool isActive;
   final bool isOnline;
+  final String? liveAvailability;
   final List<AdminServiceItem> allRequestedServices;
   final List<AdminDocumentItem> documentsList;
   final Map<String, dynamic> documentsStatus;
@@ -244,15 +270,22 @@ class AdminApplication {
   final int? companyId;
   final String? companyName;
   final String? dateOfBirth;
+  final String? avatar;
 
   bool get isPending =>
-      registrationStatus == 'submitted' || registrationStatus == 'under_review';
+      registrationStatus == 'submitted' ||
+      registrationStatus == 'under_review' ||
+      registrationStatus == 'pending';
 
-  bool get isApproved => registrationStatus == 'approved';
+  bool get isApproved =>
+      registrationStatus == 'approved' || registrationStatus == 'active';
 
   bool get isCorrectionRequired => registrationStatus == 'correction_required';
 
   bool get isRejected => registrationStatus == 'rejected';
+
+  bool get isBusy =>
+      liveAvailability?.toLowerCase() == 'busy';
 
   String get initial {
     final n = (name ?? '').trim();

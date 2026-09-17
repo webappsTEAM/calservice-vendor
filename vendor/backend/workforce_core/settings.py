@@ -6,7 +6,6 @@ Shared database with primary backend, zero duplicated tables (managed=False).
 
 
 import os
-import sys
 from datetime import timedelta
 from pathlib import Path
 from dotenv import load_dotenv
@@ -66,7 +65,6 @@ INSTALLED_APPS = [
     "workforce_api",
     "time_tracking",
     "vendor_wallet",
-    "inventory",
 ]
 
 MIDDLEWARE = [
@@ -103,37 +101,10 @@ WSGI_APPLICATION = "workforce_core.wsgi.application"
 ASGI_APPLICATION = "workforce_core.asgi.application"
 
 # ─── Database Configuration (Shared Supabase PostgreSQL) ──────────────────────
-#
-# `manage.py test` used to force SQLite unconditionally. That's wrong for
-# this project specifically: several tables this backend queries in tests
-# (accounts_user, companies_company, employees_employee, and everything
-# service_requests mirrors) are `managed=False` -- owned and migrated by
-# Customer/backend against the one shared Postgres database, never created
-# by this project's own `migrate`. On SQLite those tables simply never
-# exist, so any test touching them (which is most of them -- they all
-# create a User/Company first) fails with "no such table", independent of
-# whatever the test is actually trying to verify.
-#
-# Postgres is now the default test backend too, using the exact same
-# connection this process already has configured (DB_HOST/DB_NAME/etc) --
-# `manage.py test` wraps it in a throwaway `test_<DB_NAME>` database it
-# creates and tears down itself, same as Django does for any Postgres
-# project. Set DJANGO_TEST_SQLITE=1 to force the old SQLite-only behavior
-# back (e.g. for a quick syntax/logic check of code that never touches a
-# managed=False table) -- but that's the exception now, not the default.
 
-IS_TESTING = "test" in sys.argv or os.getenv("DJANGO_TEST_SQLITE") == "1"
-USE_POSTGRES = bool(os.getenv("DB_NAME") or os.getenv("DB_HOST"))
-FORCE_SQLITE_TESTS = os.getenv("DJANGO_TEST_SQLITE") == "1"
+USE_POSTGRES = os.getenv("DB_NAME") or os.getenv("DB_HOST")
 
-if IS_TESTING and (FORCE_SQLITE_TESTS or not USE_POSTGRES):
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": ":memory:",
-        }
-    }
-elif USE_POSTGRES:
+if USE_POSTGRES:
     _db_options = {
         "keepalives": 1,
         "keepalives_idle": 30,
@@ -159,7 +130,7 @@ elif USE_POSTGRES:
             "HOST": os.getenv("DB_HOST", "localhost"),
             "PORT": os.getenv("DB_PORT", "6543"),
             "OPTIONS": _db_options,
-            "CONN_MAX_AGE": int(os.getenv("DB_CONN_MAX_AGE", "600")),
+            "CONN_MAX_AGE": int(os.getenv("DB_CONN_MAX_AGE", "0")),
             "CONN_HEALTH_CHECKS": True,
             "DISABLE_SERVER_SIDE_CURSORS": True,
         }
@@ -171,23 +142,6 @@ else:
             "NAME": BASE_DIR / "db.sqlite3",
         }
     }
-
-_cache_backend = "django.core.cache.backends.locmem.LocMemCache"
-try:
-    import redis  # noqa: F401
-    _cache_backend = "django.core.cache.backends.redis.RedisCache"
-except ImportError:
-    pass
-
-_cache_url = os.getenv("CACHE_URL", "redis://127.0.0.1:6379/1")
-CACHES = {
-    "default": {
-        "BACKEND": _cache_backend,
-        "LOCATION": _cache_url if "redis" in _cache_backend else "workforce-local-cache",
-        "TIMEOUT": 300,
-        "KEY_PREFIX": "workforce",
-    }
-}
 
 AUTH_USER_MODEL = "accounts.User"
 
@@ -317,44 +271,15 @@ else:
 # (workforce_integration/views.py) waiting for exactly this. See
 # workforce_api/services/customer_webhook.py for the sender.
 CUSTOMER_APP_BASE_URL = os.getenv("CUSTOMER_APP_BASE_URL", "http://localhost:8000").rstrip("/")
-# Fails closed in production, for the same reason WORKFORCE_WEBHOOK_SECRET
-# does below -- but this one is easier to miss, because getting it wrong is
-# SILENT. Webhook delivery is fire-and-forget on a background thread, so an
-# unset CUSTOMER_APP_BASE_URL in production means every event this app sends
-# (leg changes, stop progress, proof of delivery, GPS, the final-fare
-# reconciliation) is POSTed to localhost, fails, and is logged at INFO. The
-# vendor side looks perfectly healthy while the customer's live tracking
-# never moves and their fare is never reconciled. Confirmed unset in the
-# deployed vendor .env at the time of writing.
-if not DEBUG and CUSTOMER_APP_BASE_URL.startswith(("http://localhost", "http://127.0.0.1")):
-    raise ValueError(
-        "CRITICAL CONFIG ERROR: CUSTOMER_APP_BASE_URL still points at localhost "
-        "with DEBUG=False. Every webhook this app sends the Customer app -- leg "
-        "changes, stop progress, proof of delivery, live GPS, fare reconciliation "
-        "-- would be delivered nowhere, silently. Set CUSTOMER_APP_BASE_URL to the "
-        "Customer app's real base URL."
-    )
-# Must match the Customer app's WORKFORCE_WEBHOOK_SECRET env var exactly --
-# it authenticates the webhook calls this app sends to the Customer app's
-# receiver (workforce_integration/views.py, _verify_webhook_signature).
-# Fixed: this used to silently fall back to the well-known literal
-# "wf_webhook_secret_default" whenever the env var was unset -- and that's
-# confirmed to be exactly what's deployed today (unset on both apps' live
-# .env files), meaning the current webhook auth is effectively a
-# publicly-known skeleton key. (The customer-side bug this comment used to
-# describe -- unconditionally accepting that literal even when a real
-# secret was set -- was already fixed separately; see that file.) Mirrors
-# the SECRET_KEY pattern above: usable in local DEBUG dev without extra
-# setup, but fails closed in production so a real secret must be set on
-# BOTH apps before going live.
-_raw_webhook_secret = os.getenv("WORKFORCE_WEBHOOK_SECRET")
-if not _raw_webhook_secret:
-    if DEBUG:
-        WORKFORCE_WEBHOOK_SECRET = "dev-insecure-workforce-webhook-secret-local-testing-only"
-    else:
-        raise ValueError("CRITICAL SECURITY ERROR: WORKFORCE_WEBHOOK_SECRET environment variable is mandatory in production (DEBUG=False) -- it authenticates cross-app webhook calls with the Customer app.")
-else:
-    WORKFORCE_WEBHOOK_SECRET = _raw_webhook_secret
+# Must match the Customer app's WORKFORCE_WEBHOOK_SECRET env var exactly.
+# NOTE: the Customer app's receiver (workforce_integration/views.py,
+# _verify_webhook_signature) currently accepts the literal string
+# "wf_webhook_secret_default" as a valid secret unconditionally, regardless
+# of what WORKFORCE_WEBHOOK_SECRET is actually configured to on that side --
+# that is a bug on the receiving end (flagged separately, not fixed here)
+# and means a real secret should be set on BOTH apps before relying on this
+# for anything sensitive.
+WORKFORCE_WEBHOOK_SECRET = os.getenv("WORKFORCE_WEBHOOK_SECRET", "wf_webhook_secret_default")
 
 # ----------------------------------------------------------------------------
 # SEVO business plan (Section 1): RazorpayX Payouts for wallet withdrawals.

@@ -279,6 +279,44 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
           ],
         ),
 
+        // Assigned Technician Card (if assigned)
+        if (job.technicianName != null && job.technicianName!.isNotEmpty) ...[
+          const SizedBox(height: AppSpacing.md),
+          _SectionCard(
+            title: 'Assigned Technician',
+            icon: Icons.badge_outlined,
+            rows: [
+              _InfoRow(
+                icon: Icons.person_rounded,
+                label: 'Technician',
+                value: job.technicianName!,
+              ),
+              if (job.technicianPhone != null && job.technicianPhone!.isNotEmpty)
+                _InfoRow(
+                  icon: Icons.phone_outlined,
+                  label: 'Phone',
+                  value: job.technicianPhone!,
+                  action: IconButton(
+                    icon: const Icon(Icons.call_rounded, size: 18, color: Color(0xFF059669)),
+                    onPressed: () => _makePhoneCall(job.technicianPhone!),
+                    tooltip: 'Call Technician',
+                  ),
+                ),
+              if (job.technicianEmail != null && job.technicianEmail!.isNotEmpty)
+                _InfoRow(
+                  icon: Icons.email_outlined,
+                  label: 'Email',
+                  value: job.technicianEmail!,
+                  action: IconButton(
+                    icon: const Icon(Icons.mail_outline_rounded, size: 18, color: AppColors.primary),
+                    onPressed: () => _sendEmail(job.technicianEmail!),
+                    tooltip: 'Send Email',
+                  ),
+                ),
+            ],
+          ),
+        ],
+
         const SizedBox(height: AppSpacing.md),
 
         // Schedule Info Card

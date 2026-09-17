@@ -257,12 +257,10 @@ void main() {
       expect(find.text('Service Requests (1)'), findsOneWidget);
       expect(find.text('Work Locations (1)'), findsOneWidget);
 
-      // Tab 0 Content: Dispatch Monitor
-      expect(find.text('1. Customer Service Requests (2)'), findsOneWidget);
-      expect(find.text('PA3510'), findsOneWidget);
-      expect(find.text('Autonomous Dispatch Active'), findsOneWidget);
-      expect(find.text('20 KM Geographic Dispatch Active: Candidate pool evaluated across a 20 km circular radius using geodesic Haversine calculation and 9-Gate qualification.'), findsOneWidget);
-      expect(find.text('EMP-P3-001'), findsOneWidget);
+      // Tab 0 Content: Dispatch Monitor (Only active jobs are included in dispatch queue)
+      expect(find.text('1. Customer Service Requests (1)'), findsOneWidget);
+      expect(find.textContaining('Autonomous Dispatch Active: Jobs are automatically assigned to nearest eligible technicians using the 9-Gate Employee Eligibility Engine'), findsOneWidget);
+      expect(find.textContaining('EMP-P3-001'), findsOneWidget);
       expect(find.text('2.3 km away'), findsOneWidget);
       expect(find.text('Dispatch Offer'), findsOneWidget);
     });
@@ -288,7 +286,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('View Timeline'));
+      await tester.tap(find.text('Timeline'));
       await tester.pumpAndSettle();
 
       expect(find.text('Timeline — #PA3510'), findsOneWidget);

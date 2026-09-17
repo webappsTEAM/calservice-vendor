@@ -63,29 +63,27 @@ class ActionCenterSection extends StatelessWidget {
             final card1 = ActionCenterCard(
               title: 'Pending Applications',
               description:
-                  'Dossiers awaiting verification & service authorization',
+                  'Technician registrations requiring document review',
               count: data.pendingApplicationsCount,
               icon: Icons.assignment_ind_outlined,
               badgeBgColor: const Color(0xFFFEF3C7),
               badgeTextColor: const Color(0xFF92400E),
               iconBgColor: const Color(0xFFFFFBEB),
               iconColor: const Color(0xFFD97706),
-              onTap: () => context.push(
-                '${AppRoutes.adminApplications}?status=submitted',
-              ),
+              onTap: () => context.push(AppRoutes.adminApplications),
             );
 
             final card2 = ActionCenterCard(
-              title: 'Documents to Verify',
+              title: 'Active Technicians',
               description:
-                  'Identification & certification files in queue',
-              count: data.documentsToVerifyCount,
-              icon: Icons.file_copy_outlined,
-              badgeBgColor: const Color(0xFFDBEAFE),
-              badgeTextColor: const Color(0xFF1E40AF),
-              iconBgColor: const Color(0xFFEFF6FF),
-              iconColor: const Color(0xFF2563EB),
-              onTap: () => context.push(AppRoutes.adminApplications),
+                  'Approved workforce field technicians',
+              count: data.approvedAndActiveCount,
+              icon: Icons.how_to_reg_outlined,
+              badgeBgColor: const Color(0xFFDCFCE7),
+              badgeTextColor: const Color(0xFF166534),
+              iconBgColor: const Color(0xFFF0FDF4),
+              iconColor: const Color(0xFF16A34A),
+              onTap: () => context.push(AppRoutes.adminEmployees),
             );
 
             final card3 = ActionCenterCard(

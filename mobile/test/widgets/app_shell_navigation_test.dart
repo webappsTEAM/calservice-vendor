@@ -20,6 +20,10 @@ import 'package:mobile/features/profile/domain/employee_profile.dart';
 import 'package:mobile/features/profile/presentation/profile_providers.dart';
 import 'package:mobile/routing/app_router.dart';
 
+import 'package:mobile/features/performance/domain/performance_summary.dart';
+import 'package:mobile/features/performance/presentation/performance_providers.dart';
+import 'package:mobile/features/performance/presentation/performance_screen.dart';
+
 class _FakeOnboardingStorage extends OnboardingStorage {
   @override
   Future<bool> hasCompletedOnboarding() async => true;
@@ -113,6 +117,21 @@ void main() {
     ),
   );
 
+  const samplePerformance = PerformanceSummary(
+    metrics: PerformanceMetrics(
+      jobsCompleted: 3,
+      totalJobsAssigned: 4,
+      completionRate: 75.0,
+      averageRating: 4.5,
+      csatScore: 100.0,
+      feedbackSubmissionsCount: 2,
+      issueResolutionRate: 100.0,
+    ),
+    ratingDistribution: {5: 1, 4: 1, 3: 0, 2: 0, 1: 0},
+    feedbacks: [],
+    hasData: true,
+  );
+
   List<Override> buildOverrides() {
     return [
       onboardingStorageProvider.overrideWithValue(_FakeOnboardingStorage()),
@@ -125,6 +144,7 @@ void main() {
           ))),
       activeJobsProvider.overrideWith((ref) => Future.value(<Job>[])),
       completedJobsProvider.overrideWith((ref) => Future.value(<Job>[])),
+      performanceProvider.overrideWith((ref) => Future.value(samplePerformance)),
       employeeWalletProvider.overrideWith((ref) => Future.value(sampleWallet)),
       walletTransactionsProvider.overrideWith((ref) => Future.value(sampleTransactions)),
       walletWithdrawalsProvider.overrideWith((ref) => Future.value(sampleWithdrawals)),
@@ -134,7 +154,7 @@ void main() {
   }
 
   group('AppShellScaffold Navigation & Tabs', () {
-    testWidgets('renders exactly 4 navigation destinations: Home, Jobs, Wallet, More', (tester) async {
+    testWidgets('renders exactly 5 navigation destinations: Dashboard, Jobs, Performance, Wallet, More', (tester) async {
       tester.view.physicalSize = const Size(800, 1600);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(() => tester.view.resetPhysicalSize());
@@ -155,21 +175,22 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // Navigation destinations exist
-      expect(find.byType(NavigationBar), findsOneWidget);
-      expect(find.byType(NavigationDestination), findsNWidgets(4));
+      final navBarFinder = find.byType(NavigationBar);
+      expect(navBarFinder, findsOneWidget);
+      expect(find.byType(NavigationDestination), findsNWidgets(5));
 
-      // Required destinations are present
-      expect(find.text('Home'), findsOneWidget);
-      expect(find.text('Jobs'), findsOneWidget);
-      expect(find.text('Wallet'), findsOneWidget);
-      expect(find.text('More'), findsOneWidget);
+      // Required destinations are present in NavigationBar
+      expect(find.descendant(of: navBarFinder, matching: find.text('Dashboard')), findsOneWidget);
+      expect(find.descendant(of: navBarFinder, matching: find.text('Jobs')), findsOneWidget);
+      expect(find.descendant(of: navBarFinder, matching: find.text('Performance')), findsOneWidget);
+      expect(find.descendant(of: navBarFinder, matching: find.text('Wallet')), findsOneWidget);
+      expect(find.descendant(of: navBarFinder, matching: find.text('More')), findsOneWidget);
 
-      // Verify Wallet destination icon
-      expect(find.byIcon(Icons.account_balance_wallet_outlined), findsOneWidget);
+      // Verify destination icons
+      expect(find.descendant(of: navBarFinder, matching: find.byIcon(Icons.insights_outlined)), findsOneWidget);
+      expect(find.descendant(of: navBarFinder, matching: find.byIcon(Icons.account_balance_wallet_outlined)), findsOneWidget);
 
       // Verify Notifications is REMOVED from bottom navigation bar
-      final navBarFinder = find.byType(NavigationBar);
       expect(
         find.descendant(of: navBarFinder, matching: find.text('Notifications')),
         findsNothing,
@@ -181,6 +202,41 @@ void main() {
 
       // Header notification bell is still present with unread badge count
       expect(find.byTooltip('Notifications'), findsOneWidget);
+    });
+
+    testWidgets('tapping Performance tab navigates to PerformanceScreen', (tester) async {
+      tester.view.physicalSize = const Size(800, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() => tester.view.resetPhysicalSize());
+      addTearDown(() => tester.view.resetDevicePixelRatio());
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: buildOverrides(),
+          child: Consumer(
+            builder: (context, ref, _) {
+              final router = ref.watch(appRouterProvider);
+              return MaterialApp.router(
+                routerConfig: router,
+              );
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Initially on Home tab
+      expect(find.byType(PerformanceScreen), findsNothing);
+
+      // Tap Performance destination
+      await tester.tap(
+        find.descendant(of: find.byType(NavigationBar), matching: find.text('Performance')),
+      );
+      await tester.pumpAndSettle();
+
+      // Verify PerformanceScreen is displayed
+      expect(find.byType(PerformanceScreen), findsOneWidget);
+      expect(find.text('JOBS COMPLETED'), findsOneWidget);
     });
 
     testWidgets('tapping Wallet tab navigates to WalletScreen', (tester) async {
@@ -208,7 +264,9 @@ void main() {
       expect(find.byType(WalletScreen), findsNothing);
 
       // Tap Wallet destination
-      await tester.tap(find.text('Wallet'));
+      await tester.tap(
+        find.descendant(of: find.byType(NavigationBar), matching: find.text('Wallet')),
+      );
       await tester.pumpAndSettle();
 
       // Verify WalletScreen is displayed

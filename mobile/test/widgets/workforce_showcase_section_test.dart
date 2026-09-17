@@ -64,7 +64,7 @@ void main() {
       final image = tester.widget<Image>(find.byType(Image));
       final assetImage = image.image as AssetImage;
       expect(assetImage.assetName, equals(kDefaultServiceSpotlightImage));
-      expect(assetImage.assetName, equals('Technician Homepage.jpg'));
+      expect(assetImage.assetName, equals('Technician_banner.jpg'));
     });
 
     testWidgets('triggers onTap callback when card is tapped', (tester) async {
