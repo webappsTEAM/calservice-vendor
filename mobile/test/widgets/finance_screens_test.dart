@@ -190,7 +190,8 @@ void main() {
 
       await tester.pumpAndSettle();
 
-      // Screen title
+      // Screen titles & Headings
+      expect(find.text('My Wallet & Earnings'), findsOneWidget);
       expect(find.text('Technician Earnings & Wallet'), findsOneWidget);
 
       // Top Actions
@@ -226,7 +227,7 @@ void main() {
       // Bank Accounts preview
       expect(find.text('Bank Accounts'), findsOneWidget);
       expect(find.text('State Bank of India'), findsOneWidget);
-      expect(find.text('Preethi G • •••• 1234'), findsOneWidget);
+      expect(find.text('Preethi G • •••• •••• •••• 1234 • SBIN0001234'), findsOneWidget);
 
       // Commission & Payout Policy card
       expect(find.text('Commission & Payout Policy'), findsOneWidget);
@@ -256,7 +257,8 @@ void main() {
 
       await tester.pumpAndSettle();
 
-      expect(find.text('Financial Ledger & Transactions'), findsWidgets);
+      expect(find.text('Ledger & Transactions'), findsOneWidget);
+      expect(find.text('Financial Ledger & Transactions'), findsOneWidget);
       expect(find.text('Back to Wallet'), findsOneWidget);
       expect(find.text('Service Earning'), findsOneWidget);
       expect(find.text('Payout Withdrawal'), findsOneWidget);
@@ -327,12 +329,12 @@ void main() {
 
       await tester.pumpAndSettle();
 
-      expect(find.text('Payout Bank Accounts'), findsWidgets);
+      expect(find.text('Bank Accounts'), findsWidgets);
       expect(find.text('Back to Wallet'), findsOneWidget);
       expect(find.text('Secure Account Masking'), findsOneWidget);
       expect(find.text('Add Bank Account'), findsWidgets);
       expect(find.text('State Bank of India'), findsOneWidget);
-      expect(find.text('•••• 1234'), findsOneWidget);
+      expect(find.text('•••• •••• •••• 1234'), findsOneWidget);
       expect(find.text('SBIN0001234'), findsOneWidget);
       expect(find.text('Verified'), findsOneWidget);
       expect(find.text('PRIMARY'), findsOneWidget);
@@ -404,13 +406,10 @@ void main() {
       expect(find.text('Amount must be at least ₹5,000.00.'), findsOneWidget);
     });
 
-    testWidgets('Finance screens render without RenderFlex overflow on narrow 320px width', (
+    testWidgets('Finance screens render without RenderFlex overflow on 320px, 360px, 390px, and 412px widths', (
       WidgetTester tester,
     ) async {
-      tester.view.physicalSize = const Size(320 * 2, 640 * 2);
-      tester.view.devicePixelRatio = 2.0;
-      addTearDown(() => tester.view.resetPhysicalSize());
-
+      final widths = [320.0, 360.0, 390.0, 412.0];
       final commonOverrides = [
         authControllerProvider.overrideWith((ref) => _MockAuthController(sampleUser)),
         employeeWalletProvider.overrideWith((ref) => Future.value(sampleWallet)),
@@ -419,53 +418,56 @@ void main() {
         payoutAccountsProvider.overrideWith((ref) => Future.value(sampleAccounts)),
       ];
 
-      // 1. WalletScreen on 320px
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: commonOverrides,
-          child: const MaterialApp(
-            home: WalletScreen(),
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
+      for (final width in widths) {
+        tester.view.physicalSize = Size(width * 2, 800 * 2);
+        tester.view.devicePixelRatio = 2.0;
 
-      // 2. TransactionsScreen on 320px
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: commonOverrides,
-          child: const MaterialApp(
-            home: TransactionsScreen(),
+        // 1. WalletScreen
+        await tester.pumpWidget(
+          ProviderScope(
+            key: UniqueKey(),
+            overrides: commonOverrides,
+            child: const MaterialApp(home: WalletScreen()),
           ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull, reason: 'WalletScreen failed on $width px');
 
-      // 3. WithdrawalsScreen on 320px
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: commonOverrides,
-          child: const MaterialApp(
-            home: WithdrawalsScreen(),
+        // 2. TransactionsScreen
+        await tester.pumpWidget(
+          ProviderScope(
+            key: UniqueKey(),
+            overrides: commonOverrides,
+            child: const MaterialApp(home: TransactionsScreen()),
           ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull, reason: 'TransactionsScreen failed on $width px');
 
-      // 4. BankAccountsScreen on 320px
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: commonOverrides,
-          child: const MaterialApp(
-            home: BankAccountsScreen(),
+        // 3. WithdrawalsScreen
+        await tester.pumpWidget(
+          ProviderScope(
+            key: UniqueKey(),
+            overrides: commonOverrides,
+            child: const MaterialApp(home: WithdrawalsScreen()),
           ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull, reason: 'WithdrawalsScreen failed on $width px');
+
+        // 4. BankAccountsScreen
+        await tester.pumpWidget(
+          ProviderScope(
+            key: UniqueKey(),
+            overrides: commonOverrides,
+            child: const MaterialApp(home: BankAccountsScreen()),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull, reason: 'BankAccountsScreen failed on $width px');
+      }
+
+      tester.view.resetPhysicalSize();
     });
 
     testWidgets('Empty states display exact required titles and messages', (
@@ -516,7 +518,11 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(
-        find.text('No transactions recorded yet. Complete customer jobs to earn commission.'),
+        find.text('No transactions recorded yet'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Complete customer jobs to earn commission.'),
         findsOneWidget,
       );
       expect(find.text('No bank accounts linked'), findsOneWidget);
@@ -610,20 +616,20 @@ void main() {
 
       // Verify filter modal content
       expect(find.text('Filter Transactions'), findsOneWidget);
-      expect(find.text('All Transaction Types'), findsOneWidget);
-      expect(find.text('Service Earnings (60%)'), findsOneWidget);
-      expect(find.text('Settlement Release (T+7)'), findsOneWidget);
-      expect(find.text('Withdrawals'), findsOneWidget);
-      expect(find.text('Withdrawal Reversals'), findsOneWidget);
-      expect(find.text('Admin Credits'), findsOneWidget);
-      expect(find.text('Admin Debits'), findsOneWidget);
-      expect(find.text('All Statuses'), findsOneWidget);
-      expect(find.text('Completed'), findsOneWidget);
-      expect(find.text('Pending Settlement'), findsOneWidget);
-      expect(find.text('Reversed'), findsOneWidget);
+      expect(find.widgetWithText(ChoiceChip, 'All Transaction Types'), findsOneWidget);
+      expect(find.widgetWithText(ChoiceChip, 'Service Earnings (60%)'), findsOneWidget);
+      expect(find.widgetWithText(ChoiceChip, 'Settlement Release (T+7)'), findsOneWidget);
+      expect(find.widgetWithText(ChoiceChip, 'Withdrawals'), findsOneWidget);
+      expect(find.widgetWithText(ChoiceChip, 'Withdrawal Reversals'), findsOneWidget);
+      expect(find.widgetWithText(ChoiceChip, 'Admin Credits'), findsOneWidget);
+      expect(find.widgetWithText(ChoiceChip, 'Admin Debits'), findsOneWidget);
+      expect(find.widgetWithText(ChoiceChip, 'All Statuses'), findsOneWidget);
+      expect(find.widgetWithText(ChoiceChip, 'Completed'), findsOneWidget);
+      expect(find.widgetWithText(ChoiceChip, 'Pending Settlement'), findsOneWidget);
+      expect(find.widgetWithText(ChoiceChip, 'Reversed'), findsOneWidget);
 
       // Select 'Settlement Release (T+7)'
-      await tester.tap(find.text('Settlement Release (T+7)'));
+      await tester.tap(find.widgetWithText(ChoiceChip, 'Settlement Release (T+7)'));
       await tester.pumpAndSettle();
 
       // Tap Apply Filters
@@ -633,5 +639,55 @@ void main() {
       // Bottom sheet is closed
       expect(find.text('Filter Transactions'), findsNothing);
     });
+
+    testWidgets('RequestWithdrawalSheet displays confirmation dialog with amount and bank destination before submission', (
+      WidgetTester tester,
+    ) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            employeeWalletProvider.overrideWith((ref) => Future.value(sampleWallet)),
+            payoutAccountsProvider.overrideWith((ref) => Future.value(sampleAccounts)),
+          ],
+          child: const MaterialApp(
+            home: Scaffold(
+              body: RequestWithdrawalSheet(),
+            ),
+          ),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+
+      // Enter valid amount ₹6,000
+      final amountField = find.byType(TextFormField);
+      await tester.enterText(amountField, '6000');
+      await tester.pumpAndSettle();
+
+      // Tap Request Withdrawal button
+      await tester.tap(find.text('REQUEST WITHDRAWAL'));
+      await tester.pumpAndSettle();
+
+      // Verify confirmation dialog
+      expect(find.text('Confirm Payout Request'), findsOneWidget);
+      expect(find.text('₹6000.00'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.text('State Bank of India (•••• •••• •••• 1234)'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Funds will be transferred via NEFT/IMPS after approval.'), findsOneWidget);
+      expect(find.text('Confirm Payout'), findsOneWidget);
+      expect(find.text('Cancel'), findsOneWidget);
+
+      // Dismiss dialog
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Confirm Payout Request'), findsNothing);
+    });
   });
 }
+

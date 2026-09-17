@@ -94,6 +94,7 @@ class WalletTransaction {
       case 'SERVICE_EARNING':
         return 'Service Earning';
       case 'PLATFORM_DEDUCTION':
+      case 'PLATFORM_COMMISSION':
         return 'Platform Commission';
       case 'REFUND':
         return 'Customer Refund';
@@ -124,6 +125,7 @@ class WalletTransaction {
       case 'SERVICE_EARNING':
         return Icons.handyman_rounded;
       case 'PLATFORM_DEDUCTION':
+      case 'PLATFORM_COMMISSION':
         return Icons.pie_chart_outline_rounded;
       case 'REFUND':
         return Icons.replay_rounded;

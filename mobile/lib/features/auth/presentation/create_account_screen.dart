@@ -19,7 +19,9 @@ import 'auth_controller.dart';
 /// - Polished form fields with responsive keyboard handling and zero RenderFlex overflow
 /// - 100% preservation of all existing controllers, validation, and submission logic
 class CreateAccountScreen extends ConsumerStatefulWidget {
-  const CreateAccountScreen({super.key});
+  const CreateAccountScreen({super.key, this.companyId});
+
+  final int? companyId;
 
   @override
   ConsumerState<CreateAccountScreen> createState() => _CreateAccountScreenState();
@@ -78,6 +80,7 @@ class _CreateAccountScreenState extends ConsumerState<CreateAccountScreen> {
             mobileNumber: mobileNumber,
             email: email,
             password: password,
+            companyId: widget.companyId,
           );
       // Upon successful signup, GoRouter redirect automatically checks
       // user.registrationStatus ('not_started') and routes to RegistrationIncompleteScreen.
@@ -388,7 +391,7 @@ class _CreateAccountScreenState extends ConsumerState<CreateAccountScreen> {
 
                         // ── Page Title & Context (Crisp High-Contrast White) ─
                         const Text(
-                          'Create Technician',
+                          'Join the Workforce Platform',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             fontSize: 23,
@@ -399,7 +402,7 @@ class _CreateAccountScreenState extends ConsumerState<CreateAccountScreen> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          'Create your account and start your workforce journey.',
+                          'Create your technician account to start onboarding',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             fontSize: 13,
@@ -788,7 +791,7 @@ class _CreateAccountScreenState extends ConsumerState<CreateAccountScreen> {
                                           ),
                                         )
                                       : const Text(
-                                          'Create Account & Continue',
+                                          'Create Account & Start Onboarding',
                                           style: TextStyle(
                                             fontSize: 15,
                                             fontWeight: FontWeight.w700,
@@ -800,9 +803,46 @@ class _CreateAccountScreenState extends ConsumerState<CreateAccountScreen> {
                             ],
                           ),
                         ),
-                        const SizedBox(height: 20),
+                        const SizedBox(height: 18),
 
-                        // ── 6. Sign In Navigation Link (Sitting on Peacock BG)
+                        // ── 6. Provider Business Switch Link ────────────────
+                        Center(
+                          child: Wrap(
+                            alignment: WrapAlignment.center,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              Text(
+                                'Registering a service provider business instead? ',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: Colors.white.withValues(alpha: 0.85),
+                                ),
+                              ),
+                              GestureDetector(
+                                onTap: () {
+                                  context.push(AppRoutes.providerRegister);
+                                },
+                                child: const Padding(
+                                  padding: EdgeInsets.symmetric(
+                                    horizontal: 4,
+                                    vertical: 4,
+                                  ),
+                                  child: Text(
+                                    'Sign up here',
+                                    style: TextStyle(
+                                      fontSize: 13.5,
+                                      fontWeight: FontWeight.w800,
+                                      color: Color(0xFF6EE7B7), // Mint/Emerald glow
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+
+                        // ── 7. Sign In Navigation Link ──────────────────────
                         Center(
                           child: Wrap(
                             alignment: WrapAlignment.center,
@@ -911,21 +951,23 @@ class _CreateAccountScreenState extends ConsumerState<CreateAccountScreen> {
     required Color color,
     required Color bgColor,
   }) {
-    return Row(
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            color: bgColor,
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 14, color: color),
-              const SizedBox(width: 6),
-              Text(
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: bgColor,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: color),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
                 label,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w800,
@@ -933,10 +975,10 @@ class _CreateAccountScreenState extends ConsumerState<CreateAccountScreen> {
                   color: color,
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
-      ],
+      ),
     );
   }
 

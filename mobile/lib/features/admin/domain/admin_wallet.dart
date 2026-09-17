@@ -1,3 +1,4 @@
+import 'package:mobile/core/config/app_config.dart';
 import 'package:mobile/core/utils/json_parsing.dart';
 import 'package:mobile/features/finance/domain/wallet_withdrawal.dart';
 
@@ -7,6 +8,7 @@ class AdminWallet {
     required this.id,
     required this.employeeId,
     required this.employeeName,
+    this.employeeAvatar,
     required this.currency,
     required this.status,
     required this.availableBalance,
@@ -27,6 +29,11 @@ class AdminWallet {
       employeeName: parseString(json['employee_name']) ??
           parseString(json['employee_display']) ??
           'Technician #$empId',
+      employeeAvatar: AppConfig.resolveMediaUrl(
+        parseString(json['employee_avatar']) ??
+            parseString(json['avatar']) ??
+            parseString(json['avatar_url']),
+      ),
       currency: parseString(json['currency']) ?? 'INR',
       status: (parseString(json['status']) ?? 'ACTIVE').toUpperCase(),
       availableBalance: parseDouble(json['available_balance']) ?? 0.0,
@@ -43,6 +50,7 @@ class AdminWallet {
   final int id;
   final int employeeId;
   final String employeeName;
+  final String? employeeAvatar;
   final String currency;
   final String status;
   final double availableBalance;

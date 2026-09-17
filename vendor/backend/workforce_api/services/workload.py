@@ -199,6 +199,14 @@ def supersede_other_offers_for_employee(employee, accepted_job, reason: str = "E
 
         user_obj = getattr(employee, "user", None)
         if user_obj:
+            from workforce_api.models import WorkforceNotification
+            WorkforceNotification.objects.filter(
+                recipient=user_obj,
+                notification_type="JOB_OFFER",
+                related_object_id=str(offer.job_id),
+                is_read=False,
+            ).update(is_read=True)
+
             WorkforceEventLog.objects.create(
                 user=user_obj,
                 event_type="JOB_OFFER_CLOSED",

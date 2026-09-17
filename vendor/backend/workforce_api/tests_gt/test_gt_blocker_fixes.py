@@ -268,3 +268,112 @@ class ScheduledDispatchSafetyGateTests(SimpleTestCase):
         self.assertEqual(ad.parse_preferred_slot_time("02:30 PM - 04:30 PM"), datetime.time(14, 30))
         self.assertIsNone(ad.parse_preferred_slot_time("ASAP"))
         self.assertIsNone(ad.parse_preferred_slot_time(""))
+
+
+# ─── 4. Date-Based Dispatch Safety Tests ─────────────────────────────────────
+
+class DateBasedDispatchSafetyTests(SimpleTestCase):
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.now = timezone.now()
+
+    @patch("django.db.transaction.atomic")
+    @patch("service_requests.models.ServiceRequest.objects.select_for_update")
+    def test_past_preferred_date_refused_with_schedule_date_expired(self, mock_sfu, mock_atomic):
+        past_job = SimpleNamespace(
+            id=1001,
+            preferred_date=self.today - datetime.timedelta(days=1),
+            created_at=self.now - datetime.timedelta(days=2),
+            status="unassigned",
+            assigned_employee=None,
+        )
+        mock_sfu.return_value.filter.return_value.first.return_value = past_job
+
+        ok, reason = ad._dispatch_job_locked(1001, max_gps_age_seconds=120, exclude_employee_ids=set())
+        self.assertFalse(ok)
+        self.assertEqual(reason, "SCHEDULE_DATE_EXPIRED")
+
+    @patch("django.db.transaction.atomic")
+    @patch("service_requests.models.ServiceRequest.objects.select_for_update")
+    def test_stale_immediate_booking_refused_with_schedule_date_expired(self, mock_sfu, mock_atomic):
+        stale_immediate_job = SimpleNamespace(
+            id=1002,
+            preferred_date=None,
+            created_at=self.now - datetime.timedelta(days=2),
+            status="unassigned",
+            assigned_employee=None,
+        )
+        mock_sfu.return_value.filter.return_value.first.return_value = stale_immediate_job
+
+        ok, reason = ad._dispatch_job_locked(1002, max_gps_age_seconds=120, exclude_employee_ids=set())
+        self.assertFalse(ok)
+        self.assertEqual(reason, "SCHEDULE_DATE_EXPIRED")
+
+    @patch("django.db.transaction.atomic")
+    @patch("workforce_api.services.automatic_dispatch.get_user_model")
+    @patch("workforce_api.models.WorkforceJobOffer.objects.select_for_update")
+    @patch("workforce_api.services.automatic_dispatch.describe_unassigned_reason", return_value=("NO_TECH", "No tech nearby"))
+    @patch("workforce_api.services.automatic_dispatch._count_failed_offer_cycles", return_value=0)
+    @patch("workforce_api.models.WorkforceEventLog.objects.create")
+    @patch("workforce_api.services.automatic_dispatch.get_eligible_candidates", return_value=[])
+    @patch("service_requests.models.ServiceRequest.objects.select_for_update")
+    def test_today_immediate_booking_passes_date_gate(self, mock_sfu, mock_cands, mock_event, mock_cycles, mock_desc, mock_offer_sfu, mock_user_model, mock_atomic):
+        mock_user_model.return_value.objects.filter.return_value.first.return_value = None
+        mock_offer_sfu.return_value.filter.return_value.first.return_value = None
+        today_immediate_job = SimpleNamespace(
+            id=1003,
+            preferred_date=None,
+            created_at=self.now,
+            status="unassigned",
+            assigned_employee=None,
+            service_category="electrical",
+            latitude=12.97,
+            longitude=77.59,
+            company=None,
+            company_id=1,
+            issue_title=None,
+            save=MagicMock(),
+        )
+        mock_sfu.return_value.filter.return_value.first.return_value = today_immediate_job
+
+        ok, reason = ad._dispatch_job_locked(1003, max_gps_age_seconds=120, exclude_employee_ids=set())
+        self.assertNotEqual(reason, "SCHEDULE_DATE_EXPIRED")
+
+    @patch("django.db.transaction.atomic")
+    @patch("workforce_api.services.automatic_dispatch.get_user_model")
+    @patch("workforce_api.models.WorkforceJobOffer.objects.select_for_update")
+    @patch("workforce_api.services.automatic_dispatch.describe_unassigned_reason", return_value=("NO_TECH", "No tech nearby"))
+    @patch("workforce_api.services.automatic_dispatch._count_failed_offer_cycles", return_value=0)
+    @patch("workforce_api.models.WorkforceEventLog.objects.create")
+    @patch("workforce_api.services.automatic_dispatch.get_eligible_candidates", return_value=[])
+    @patch("service_requests.models.ServiceRequest.objects.select_for_update")
+    def test_today_scheduled_booking_passes_date_gate(self, mock_sfu, mock_cands, mock_event, mock_cycles, mock_desc, mock_offer_sfu, mock_user_model, mock_atomic):
+        mock_user_model.return_value.objects.filter.return_value.first.return_value = None
+        mock_offer_sfu.return_value.filter.return_value.first.return_value = None
+        today_scheduled_job = SimpleNamespace(
+            id=1004,
+            preferred_date=self.today,
+            preferred_time="ASAP",
+            created_at=self.now,
+            status="unassigned",
+            assigned_employee=None,
+            service_category="electrical",
+            latitude=12.97,
+            longitude=77.59,
+            company=None,
+            company_id=1,
+            issue_title=None,
+            save=MagicMock(),
+        )
+        mock_sfu.return_value.filter.return_value.first.return_value = today_scheduled_job
+
+        ok, reason = ad._dispatch_job_locked(1004, max_gps_age_seconds=120, exclude_employee_ids=set())
+        self.assertNotEqual(reason, "SCHEDULE_DATE_EXPIRED")
+
+
+
+
+
+
+
+

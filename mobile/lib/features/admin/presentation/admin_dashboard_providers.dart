@@ -12,7 +12,10 @@ import '../domain/admin_service_request_item.dart';
 import '../domain/eligible_technician.dart';
 import '../domain/fleet_member.dart';
 import '../domain/job_timeline_data.dart';
+import '../domain/provider_profile.dart';
 import '../domain/skill.dart';
+import '../domain/tied_technician.dart';
+import '../domain/vendor_invitation.dart';
 import '../domain/work_location.dart';
 
 /// Provider for aggregated admin dashboard data.
@@ -147,4 +150,50 @@ final adminReportProvider = FutureProvider.autoDispose
   );
   return AdminReportData.fromJson(raw);
 });
+
+/// Params for querying tied technician network.
+class VendorNetworkParams {
+  const VendorNetworkParams({this.status, this.search});
+  final String? status;
+  final String? search;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is VendorNetworkParams &&
+          runtimeType == other.runtimeType &&
+          status == other.status &&
+          search == other.search;
+
+  @override
+  int get hashCode => Object.hash(status, search);
+}
+
+/// Provider for vendor technician network roster.
+final adminVendorNetworkProvider = FutureProvider.autoDispose
+    .family<VendorNetworkResponse, VendorNetworkParams>((ref, params) async {
+  final api = ref.watch(adminDashboardApiProvider);
+  final raw = await api.fetchVendorNetwork(
+    status: params.status,
+    search: params.search,
+  );
+  return VendorNetworkResponse.fromJson(raw);
+});
+
+/// Provider for vendor sent invitations.
+final adminVendorInvitationsProvider = FutureProvider.autoDispose
+    .family<VendorInvitationsResponse, String?>((ref, status) async {
+  final api = ref.watch(adminDashboardApiProvider);
+  final raw = await api.fetchVendorInvitations(status: status);
+  return VendorInvitationsResponse.fromJson(raw);
+});
+
+/// Provider for vendor/service provider organization profile.
+final adminProviderProfileProvider =
+    FutureProvider.autoDispose<ProviderProfile>((ref) async {
+  final api = ref.watch(adminDashboardApiProvider);
+  final raw = await api.fetchProviderProfile();
+  return ProviderProfile.fromJson(raw);
+});
+
 

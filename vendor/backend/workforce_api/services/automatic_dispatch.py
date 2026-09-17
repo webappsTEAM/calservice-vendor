@@ -11,7 +11,7 @@ from datetime import timedelta
 from decimal import Decimal
 from typing import List, Dict, Any, Tuple, Optional
 
-from django.db import IntegrityError, transaction
+from django.db import transaction
 from django.db.models import Count, Exists, OuterRef, Prefetch, Q
 from django.utils import timezone
 from django.conf import settings
@@ -33,8 +33,8 @@ from workforce_api.services.workload import get_employee_active_job, ACTIVE_WORK
 
 logger = logging.getLogger("workforce.dispatch")
 
-# GPS telemetry freshness requirement (configurable, default 1 hour / 3600 seconds for active shifts)
-MAX_GPS_AGE_SECONDS = int(getattr(settings, "DISPATCH_MAX_GPS_AGE_SECONDS", 3600))
+# Strict GPS telemetry freshness requirement (5 minutes maximum age for live dispatch, matching UI / spec)
+MAX_GPS_AGE_SECONDS = 300
 
 # Maximum geographic dispatch radius (50 km) before any widening kicks in.
 MAX_DISPATCH_RADIUS_KM = 50.0
@@ -68,24 +68,14 @@ DEEP_POOL_CANDIDATE_THRESHOLD = 8   # this many or more counts as "deep"
 THIN_POOL_WINDOW_BONUS_MINUTES = 3
 DEEP_POOL_WINDOW_PENALTY_MINUTES = 2
 SPARSE_SERVICE_CATEGORY_WINDOW_BONUS_MINUTES = 3
+MIN_OFFER_WINDOW_MINUTES = 2
+MAX_OFFER_WINDOW_MINUTES = 15
+
 # GT-C-02: maximum unsettled cash a technician may hold before they stop
 # being offered further CASH-collecting work (Gate 10). Rupees. Set to 0 or
 # None to disable the ceiling entirely. Override per deployment with
 # settings.DISPATCH_CASH_FLOAT_CEILING.
 CASH_FLOAT_CEILING = Decimal("10000.00")
-
-
-def get_booking_discovery_scope(company=None):
-    """
-    Backwards-compatible helper for company-scoped job discovery.
-    """
-    if not company:
-        return Q()
-    return Q(company=company)
-
-
-MIN_OFFER_WINDOW_MINUTES = 2
-MAX_OFFER_WINDOW_MINUTES = 15
 
 # ── X-11 / GT-B-02: rapid offer window for on-demand transport ────────────
 # The minute-scale window above is right for a scheduled home-services
@@ -191,18 +181,8 @@ EXPLICIT_SERVICE_ALIASES = {
     "full house cleaning": {"full house cleaning", "cleaning", "deep cleaning", "house cleaning"},
     "sofa cleaning": {"sofa cleaning", "cleaning", "couch cleaning"},
     "two wheeler": {"two wheeler", "bike", "scooter", "motorcycle", "bike repair", "two wheeler repair"},
-    "truck": {"truck", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation"},
-    "packer & mover": {"packer & mover", "packers & movers", "truck", "shifting", "relocation", "packers_movers"},
-    "packers & movers": {"packer & mover", "packers & movers", "truck", "shifting", "relocation", "packers_movers"},
-    "packers_movers": {"packer & mover", "packers & movers", "truck", "shifting", "relocation", "packers_movers"},
-    "shifting": {"packer & mover", "packers & movers", "truck", "shifting", "relocation", "packers_movers"},
-    "relocation": {"packer & mover", "packers & movers", "truck", "shifting", "relocation", "packers_movers"},
-    "goods transport": {"goods_transport", "goods & transport", "goods and transport", "goods transport", "truck", "two wheeler", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation", "goods_transport_truck", "goods_transport_two_wheeler"},
-    "goods & transport": {"goods_transport", "goods & transport", "goods and transport", "goods transport", "truck", "two wheeler", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation", "goods_transport_truck", "goods_transport_two_wheeler"},
-    "goods and transport": {"goods_transport", "goods & transport", "goods and transport", "goods transport", "truck", "two wheeler", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation", "goods_transport_truck", "goods_transport_two_wheeler"},
-    "goods_transport": {"goods_transport", "goods & transport", "goods and transport", "goods transport", "truck", "two wheeler", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation", "goods_transport_truck", "goods_transport_two_wheeler"},
-    "goods_transport_truck": {"goods_transport_truck", "truck", "mini truck", "goods & transport", "goods and transport", "goods transport", "logistics", "packer & mover", "packers & movers"},
-    "goods_transport_two_wheeler": {"goods_transport_two_wheeler", "two wheeler", "bike", "scooter", "goods & transport", "goods and transport", "goods transport", "logistics"},
+    "truck": {"truck", "packer & mover", "packers & movers", "logistics", "shifting"},
+    "packer & mover": {"packer & mover", "packers & movers", "truck", "shifting", "relocation"},
 }
 
 
@@ -291,6 +271,7 @@ def get_scheduled_dispatch_window(job_obj, now=None) -> Tuple[bool, Optional[dat
     return False, scheduled_dt, window_open
 
 
+
 def canonical_service_match(requested_service: str, approved_services: List[str], verified_skills: List[str]) -> Tuple[bool, str, str]:
     """
     Evaluates whether a requested service matches an employee's authorized services or verified skills.
@@ -299,56 +280,37 @@ def canonical_service_match(requested_service: str, approved_services: List[str]
     if not requested_service:
         return True, "EMPTY_SERVICE_BYPASS", ""
 
-    def normalize_term(t):
-        return (
-            str(t or "")
-            .lower()
-            .replace("—", " ")
-            .replace("-", " ")
-            .replace("_", " ")
-            .replace("&", "and")
-            .strip()
-        )
-
-    req_clean = normalize_term(requested_service)
+    req_clean = requested_service.lower().replace("—", " ").replace("-", " ").strip()
     req_words = set(w for w in req_clean.split() if len(w) >= 2)
 
     # 1. Check exact or direct match against approved employee services
     for it in approved_services:
         if not it:
             continue
-        it_clean = normalize_term(it)
+        it_clean = it.lower().replace("—", " ").replace("-", " ").strip()
         if req_clean == it_clean or req_clean in it_clean or it_clean in req_clean:
             return True, "EXACT_OR_SUBSTRING_SERVICE", it
-        it_words = set(w for w in it_clean.split() if len(w) >= 2)
-        if ("goods" in req_words and "transport" in req_words) and ("goods" in it_words and "transport" in it_words):
-            return True, "GOODS_TRANSPORT_CATEGORY_MATCH", it
 
     # 2. Check verified skills
     for sk in verified_skills:
         if not sk:
             continue
-        sk_clean = normalize_term(sk)
+        sk_clean = sk.lower().replace("—", " ").replace("-", " ").strip()
         if req_clean == sk_clean or req_clean in sk_clean or sk_clean in req_clean:
             return True, "VERIFIED_SKILL_MATCH", sk
-        sk_words = set(w for w in sk_clean.split() if len(w) >= 2)
-        if ("goods" in req_words and "transport" in req_words) and ("goods" in sk_words and "transport" in sk_words):
-            return True, "GOODS_TRANSPORT_SKILL_MATCH", sk
 
     # 3. Check explicit canonical alias table
     for alias_key, alias_group in EXPLICIT_SERVICE_ALIASES.items():
-        alias_key_clean = normalize_term(alias_key)
-        alias_group_clean = {normalize_term(a) for a in alias_group}
         # If requested service matches this alias key/group
-        if req_clean == alias_key_clean or req_clean in alias_group_clean or any(req_word in alias_group_clean for req_word in req_words):
+        if req_clean == alias_key or req_clean in alias_group or any(req_word in alias_group for req_word in req_words):
             # Check if employee has any matching service in that alias group
             for it in approved_services:
-                it_clean = normalize_term(it)
-                if it_clean in alias_group_clean or any(w in alias_group_clean for w in it_clean.split() if len(w) >= 2):
+                it_clean = it.lower().replace("—", " ").replace("-", " ").strip()
+                if it_clean in alias_group or any(w in alias_group for w in it_clean.split() if len(w) >= 2):
                     return True, "EXPLICIT_ALIAS_SERVICE", it
             for sk in verified_skills:
-                sk_clean = normalize_term(sk)
-                if sk_clean in alias_group_clean or any(w in alias_group_clean for w in sk_clean.split() if len(w) >= 2):
+                sk_clean = sk.lower().replace("—", " ").replace("-", " ").strip()
+                if sk_clean in alias_group or any(w in alias_group for w in sk_clean.split() if len(w) >= 2):
                     return True, "EXPLICIT_ALIAS_SKILL", sk
 
     return False, "NO_MATCH", ""
@@ -369,22 +331,14 @@ class DispatchRaceLost(Exception):
     """
 
 
-def employees_with_live_offers(exclude_job=None):
+def employees_with_live_offers(exclude_job=None) -> set:
     """
     Ids of technicians who currently hold an OFFERED, unexpired job offer.
 
     Dispatch concurrency: two dispatch_job() runs for DIFFERENT jobs each
     lock only their own ServiceRequest row, so they do not exclude one
     another. Without this, both can rank the same idle technician first and
-    both try to offer them a job at the same moment. Until now the ONLY
-    thing preventing that was the unique_active_job_offer_per_employee
-    constraint in the database -- and hitting it raised IntegrityError out
-    of dispatch rather than gracefully moving to the next candidate.
-
-    This is the application-level half of that guard. The DB constraint
-    stays exactly where it is: this reduces collisions, the row lock in
-    dispatch_job() serialises the ones that remain, and the constraint is
-    the final backstop. Nothing here weakens the existing protection.
+    both try to offer them a job at the same moment.
     """
     qs = WorkforceJobOffer.objects.filter(
         status=WorkforceJobOffer.Status.OFFERED,
@@ -395,10 +349,10 @@ def employees_with_live_offers(exclude_job=None):
     return set(qs.values_list("employee_id", flat=True))
 
 
-def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = None, job: Optional[Any] = None) -> Tuple[bool, str, Dict[str, bool]]:
+def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = None, job=None, check_workload: bool = True) -> Tuple[bool, str, Dict[str, bool]]:
     """
-    10-Gate Employee Eligibility Engine:
-    Authoritative server-side evaluation of 10 mandatory operational gates.
+    9-Gate Employee Eligibility Engine:
+    Authoritative server-side evaluation of 9 mandatory operational gates.
     Every gate fails closed.
     Returns (is_eligible, reason_message, gate_results_dict).
     """
@@ -574,8 +528,6 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
                 approved_svcs.append(s["name"])
             if s.get("category"):
                 approved_svcs.append(s["category"])
-            if s.get("category_name"):
-                approved_svcs.append(s["category_name"])
 
     if hasattr(emp, "prefetched_verified_skills"):
         verified_skills = [es.skill.name for es in emp.prefetched_verified_skills]
@@ -611,38 +563,19 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
                 return False, f"Gate 8: Technician is on approved leave from {start_date} to {end_date}.", gate_results
 
     # ── Gate 9: Workload Concurrency (Single-Active-Job Isolation) ──────────────
-    from workforce_api.services.workload import get_employee_active_job
-    active_job = get_employee_active_job(emp)
-    if active_job:
-        gate_results["G9"] = False
-        logger.info(
-            f"[DISPATCH_REJECT] employee={emp.id} reason=EMPLOYEE_ALREADY_BUSY active_job={active_job.id}"
-        )
-        return False, f"Gate 9: Technician is busy on active Job #{active_job.id} ({active_job.request_id}).", gate_results
+    if check_workload and emp:
+        from workforce_api.services.workload import get_employee_active_job
+        active_job = get_employee_active_job(emp)
+        if active_job:
+            gate_results["G9"] = False
+            logger.info(
+                f"[DISPATCH_REJECT] employee={emp.id} reason=EMPLOYEE_ALREADY_BUSY active_job={active_job.id}"
+            )
+            req_id = getattr(active_job, "request_id", None) or getattr(active_job, "id", None)
+            return False, f"Gate 9: Technician is busy on active Job #{active_job.id} ({req_id}).", gate_results
 
     # ── Gate 10: Cash Float Ceiling (GT-C-02) ──────────────────────────────────
-    # A technician on cash-on-service jobs accumulates company money they
-    # have not yet handed in. The settlement half of GT-C-02 already
-    # existed (CashSettlement + compute_outstanding_cash), but nothing
-    # ever acted on the number: a technician could keep taking cash jobs
-    # while holding an unbounded and growing amount of the company's cash.
-    # This is the exposure limit -- above the ceiling they stop being
-    # offered new work until they settle up.
-    #
-    # Scoped to cash-collecting work only: a technician over the ceiling is
-    # still eligible for prepaid/online jobs, because those add no further
-    # cash exposure. Blocking them from all work would punish the company
-    # twice over.
-    #
-    # Fails OPEN, unlike every other gate here. A ceiling check is a
-    # financial-risk control, not a safety or compliance one, and if the
-    # payment tables are unreadable the right outcome is that customers
-    # still get drivers -- with the failure logged loudly -- rather than
-    # dispatch silently going dark platform-wide.
     cash_ceiling = getattr(settings, "DISPATCH_CASH_FLOAT_CEILING", CASH_FLOAT_CEILING)
-    # When we know the job, only apply the ceiling to cash-collecting work.
-    # With no job in hand (the standalone eligibility-check endpoints) the
-    # ceiling is applied -- the conservative reading of an unknown job.
     job_is_cash = True
     if job is not None:
         job_is_cash = str(getattr(job, "payment_method", "") or "").upper() in ("COD", "CASH", "CASH_ON_SERVICE")
@@ -654,7 +587,7 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
             if outstanding is not None and Decimal(outstanding) > Decimal(str(cash_ceiling)):
                 gate_results["G10"] = False
                 logger.info(
-                    f"[DISPATCH_REJECT] employee={emp.id} reason=CASH_FLOAT_CEILING_EXCEEDED "
+                    f"[DISPATCH_REJECT] employee={getattr(emp, 'id', None)} reason=CASH_FLOAT_CEILING_EXCEEDED "
                     f"outstanding={outstanding} ceiling={cash_ceiling}"
                 )
                 return (
@@ -666,7 +599,7 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
                     gate_results,
                 )
         except Exception as exc:
-            # See the fail-open note above.
+            # Fails OPEN for Gate 10
             logger.warning(
                 f"[DISPATCH_GATE10_UNAVAILABLE] employee={getattr(emp, 'id', None)} "
                 f"could not evaluate cash float ceiling, allowing: {exc}"
@@ -765,7 +698,7 @@ def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AG
     )
 
     if not job_obj.company_id or job_obj.company_id == 1:
-        candidates_qs = candidates_qs.filter(Q(company_id=1) | Q(company__isnull=True) | Q(company_id__gt=1))
+        candidates_qs = candidates_qs.filter(Q(company_id=1) | Q(company__isnull=True))
     else:
         candidates_qs = candidates_qs.filter(company_id=job_obj.company_id)
 
@@ -781,13 +714,15 @@ def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AG
 
     ranked_candidates = []
     now = timezone.now()
-    # Technicians already holding a live offer for some OTHER job -- see
-    # employees_with_live_offers() for why this matters.
     _employees_holding_offers = employees_with_live_offers(exclude_job=job_obj)
 
     for emp in candidates_qs:
         if emp.id in previous_offers:
             logger.debug(f"[DISPATCH_CANDIDATE_REJECTED] Employee #{emp.id} already has offer history for Job #{job_obj.id}.")
+            continue
+
+        if emp.id in _employees_holding_offers:
+            logger.info(f"[DISPATCH_REJECT] employee={emp.id} reason=ALREADY_HAS_LIVE_OFFER")
             continue
 
         # Extract live GPS from User.last_known_location
@@ -824,15 +759,6 @@ def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AG
             f"gps_age={f'{gps_age_s:.1f}s' if gps_age_s is not None else 'MISSING'} "
             f"distance_km={f'{dist_km:.2f}km' if dist_km is not None else 'UNKNOWN'}"
         )
-
-        # Dispatch concurrency: skip anyone already holding a live offer for
-        # a DIFFERENT job. Cheap, and it keeps two concurrent dispatchers
-        # from converging on the same technician in the first place.
-        if emp.id in _employees_holding_offers:
-            logger.info(
-                f"[DISPATCH_REJECT] employee={emp.id} reason=ALREADY_HAS_LIVE_OFFER"
-            )
-            continue
 
         # Check eligibility against service_category, then issue_title
         is_eligible, reason, gate_results = check_candidate_eligibility(emp, job_obj.service_category, job=job_obj)
@@ -1101,14 +1027,10 @@ def _maybe_signal_customer_delay(job_obj, failed_cycle_count: int) -> None:
         logger.info(f"Could not notify Customer app of dispatch delay for Job #{job_obj.id}: {webhook_err}")
 
 
-def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, exclude_employee_ids: Optional[List[int]] = None) -> Tuple[bool, str]:
+def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, exclude_employee_ids: Optional[Any] = None) -> Tuple[bool, str]:
     """
-    Executes automatic dispatch for a single ServiceRequest:
-    1. Locks ServiceRequest row with select_for_update inside transaction.atomic()
-    2. Validates dispatchable state and coordinates
-    3. Checks if an active exclusive offer already exists (idempotent guard)
-    4. Evaluates and ranks eligible candidates
-    5. Creates WorkforceJobOffer, sends JOB_OFFER notification, and logs audit events
+    Authoritative dispatch entry point. Evaluates geo-proximity, compliance,
+    and skills to offer the job to the single best available candidate.
     """
     job_id = job_id_or_obj.pk if hasattr(job_id_or_obj, "pk") else job_id_or_obj
     from workforce_api.models import WorkforceEventLog
@@ -1116,15 +1038,12 @@ def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, 
     try:
         return _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids)
     except DispatchRaceLost as race:
-        # Lost the offer race to a concurrent dispatcher. Not an error
-        # condition: the job simply stays dispatchable and the next sweep
-        # picks it up. Handled out here because the transaction inside is
-        # already rolled back by the time this arrives.
         return False, str(race)
 
 
-def _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids):
+def _dispatch_job_locked(job_id, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, exclude_employee_ids: Optional[Any] = None) -> Tuple[bool, str]:
     from workforce_api.models import WorkforceEventLog
+    from django.db import IntegrityError
 
     with transaction.atomic():
         job_obj = ServiceRequest.objects.select_for_update().filter(pk=job_id).first()
@@ -1141,15 +1060,33 @@ def _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids):
             return False, f"Job #{job_id} is already accepted and in progress with Employee #{job_obj.assigned_employee_id}."
 
         now = timezone.now()
+        today = timezone.localdate()
 
-        # Gate: Scheduled Job Hold (Safety Gate against premature dispatch)
+        # Date-based safety gate:
+        # 1. Past preferred_date cannot be dispatched
+        # 2. Past created_at (for immediate bookings where preferred_date is None) cannot be dispatched
+        pref_date = getattr(job_obj, "preferred_date", None)
+        if pref_date and pref_date < today:
+            logger.info(f"[DISPATCH_REJECT] job={job_obj.id} reason=SCHEDULE_DATE_EXPIRED (pref_date={pref_date} < today={today})")
+            return False, "SCHEDULE_DATE_EXPIRED"
+        if not pref_date:
+            created_dt = getattr(job_obj, "created_at", None)
+            if created_dt:
+                created_date = created_dt.date() if hasattr(created_dt, "date") else created_dt
+                if created_date < today:
+                    logger.info(f"[DISPATCH_REJECT] job={job_obj.id} reason=SCHEDULE_DATE_EXPIRED (created_at={created_date} < today={today})")
+                    return False, "SCHEDULE_DATE_EXPIRED"
+
+        # Booking Dispatch Framework section 2: Scheduled Bookings
         is_future, scheduled_dt, window_open = get_scheduled_dispatch_window(job_obj, now=now)
         if is_future:
+            scheduled_str = scheduled_dt.strftime("%Y-%m-%d %H:%M:%S") if scheduled_dt else "future"
+            window_str = window_open.strftime("%Y-%m-%d %H:%M:%S") if window_open else "lead-window"
             logger.info(
-                f"[DISPATCH_SCHEDULED_HOLD] Job #{job_id} is scheduled for {scheduled_dt.isoformat()}. "
-                f"Dispatch window opens at {window_open.isoformat()}. Holding job."
+                f"[DISPATCH_HOLD] job={job_obj.id} scheduled_start={scheduled_str} "
+                f"dispatch_window_opens={window_str} reason=FUTURE_SCHEDULED_OUTSIDE_WINDOW"
             )
-            return True, f"Scheduled job held: service is at {scheduled_dt.strftime('%Y-%m-%d %H:%M')}; dispatch window opens at {window_open.strftime('%H:%M')}."
+            return False, f"Job #{job_id} is scheduled for {scheduled_str}. Dispatch window opens at {window_str}."
 
         logger.info(
             f"[DISPATCH_EVALUATION] job_id={job_obj.id} "
@@ -1184,9 +1121,6 @@ def _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids):
         )
 
         # Progressive radius widening (Booking Dispatch Framework section 4):
-        # how many times has this job already failed a full offer cycle
-        # (decline/reject/expire)? Feeds both the search radius below and
-        # the customer delay signal further down.
         failed_cycle_count = _count_failed_offer_cycles(job_obj)
         effective_radius_km = get_effective_radius_km(failed_cycle_count)
 
@@ -1244,12 +1178,7 @@ def _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids):
             _maybe_signal_customer_delay(job_obj, failed_cycle_count)
             return False, f"No eligible technicians available for automatic dispatch. {reason_message}"
 
-        # Walk the ranked candidates rather than only ever trying the top
-        # one. Previously a single rejection at this final boundary failed
-        # the whole dispatch run, even with other eligible technicians
-        # standing right behind -- and the "rejection" is now much more
-        # likely, because a concurrent dispatcher may legitimately have
-        # taken the top candidate microseconds ago.
+        # Walk ranked candidates with row locking
         top_candidate = None
         top_emp = None
         top_dist_km = None
@@ -1269,20 +1198,6 @@ def _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids):
                 _skipped.append(f"#{_emp.id} busy")
                 continue
 
-            # Dispatch concurrency guard, the serialising half.
-            #
-            # Lock this technician's row before deciding to offer them the
-            # job. Two dispatch_job() runs for different jobs hold locks on
-            # different ServiceRequest rows, so they do not exclude each
-            # other -- but they DO both need this employee row, so whoever
-            # gets it first wins and the second blocks here until the first
-            # has committed its offer. The re-check below then sees that
-            # offer and moves on to its next candidate.
-            #
-            # This is deliberately IN ADDITION to the database's
-            # unique_active_job_offer_per_employee constraint, which is left
-            # in place untouched: application guard first, constraint as the
-            # backstop.
             _locked = Employee.objects.select_for_update().filter(pk=_emp.pk).first()
             if _locked is None:
                 _skipped.append(f"#{_emp.id} vanished")
@@ -1317,14 +1232,6 @@ def _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids):
         # Expire any previous offers for this job that might be dangling
         WorkforceJobOffer.objects.filter(job=job_obj, status=WorkforceJobOffer.Status.OFFERED).update(status=WorkforceJobOffer.Status.EXPIRED)
 
-        # Variable offer window (Booking Dispatch Framework section 4): the
-        # window flexes by booking priority, how deep the eligible pool
-        # actually is, and service-category sparsity, instead of a fixed
-        # five minutes for every job everywhere.
-        # X-11 / GT-B-02: seconds, not minutes. For on-demand transport
-        # categories this is a Porter-style ~20-30s ladder that widens as
-        # the job burns candidates; every other category gets exactly the
-        # previous minute-scale window, converted.
         offer_window_seconds = compute_offer_window_seconds(
             job_obj, len(candidates), failed_cycles=failed_cycle_count
         )
@@ -1339,13 +1246,6 @@ def _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids):
                 expires_at=expires_at,
             )
         except IntegrityError:
-            # The unique_active_job_offer_per_employee constraint fired --
-            # the database's backstop caught a race the guards above did not.
-            # Previously this propagated out of dispatch as an unhandled
-            # IntegrityError; now it fails this run cleanly so the job stays
-            # dispatchable and the next sweep can offer it to someone else.
-            # Re-raised inside the atomic block would poison the transaction,
-            # so nothing further is attempted here.
             logger.warning(
                 f"[DISPATCH_RACE_LOST] job={job_obj.id} employee={top_emp.id} "
                 f"lost the offer race to a concurrent dispatcher; will retry next sweep."
@@ -1359,9 +1259,6 @@ def _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids):
             apply_transition(job_obj, "unassigned")
 
         # Fixes X-01: let the customer know an offer went out to a technician
-        # (their app deliberately does NOT surface technician details yet at
-        # this stage -- see workforce_integration/views.py's
-        # "technician.assigned" handler -- this is just "someone was asked").
         try:
             from workforce_api.services.customer_webhook import notify_customer_app
             notify_customer_app(
@@ -1376,7 +1273,18 @@ def _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids):
         WorkforceEventLog.objects.create(
             user=top_emp.user,
             event_type="OFFER_CREATED",
-            payload={"job_id": job_obj.id, "offer_id": offer.id, "employee_id": top_emp.id, "distance_km": round(top_dist_km, 2)}
+            payload={
+                "id": job_obj.id,
+                "job_id": job_obj.id,
+                "request_id": job_obj.request_id or f"#{job_obj.id}",
+                "offer_id": offer.id,
+                "employee_id": top_emp.id,
+                "service_title": job_obj.issue_title or job_obj.service_category or "Service Request",
+                "service_category": job_obj.service_category or "",
+                "distance_km": round(top_dist_km, 2),
+                "address": job_obj.address or "",
+                "expires_at": expires_at.isoformat(),
+            }
         )
 
         loc_str = f" at {job_obj.address}" if job_obj.address else ""
@@ -1416,6 +1324,7 @@ def expire_and_reassign_offers() -> int:
     Returns the count of expired offers handled.
     """
     now = timezone.now()
+    today = timezone.localdate()
     expired_offers = list(
         WorkforceJobOffer.objects.filter(
             status=WorkforceJobOffer.Status.OFFERED,
@@ -1434,8 +1343,23 @@ def expire_and_reassign_offers() -> int:
             count += 1
             logger.info(f"[DISPATCH_OFFER_EXPIRED] Offer #{offer.id} for Job #{offer.job_id} expired. Triggering fallback dispatch.")
 
-        # Re-dispatch job outside the offer lock transaction
-        dispatch_next_candidate(offer.job_id)
+        # Check if the job itself is past-dated before re-dispatching
+        job_obj = getattr(offer, "job", None)
+        is_past_job = False
+        if job_obj:
+            pref_date = getattr(job_obj, "preferred_date", None)
+            if pref_date and pref_date < today:
+                is_past_job = True
+            elif not pref_date:
+                created_dt = getattr(job_obj, "created_at", None)
+                if created_dt:
+                    created_date = created_dt.date() if hasattr(created_dt, "date") else created_dt
+                    if created_date < today:
+                        is_past_job = True
+
+        if not is_past_job:
+            # Re-dispatch job outside the offer lock transaction
+            dispatch_next_candidate(offer.job_id)
 
     return count
 
@@ -1452,12 +1376,15 @@ def dispatch_pending_jobs(company_id=None, limit: int = 50) -> Dict[str, Any]:
     expired_count = expire_and_reassign_offers()
 
     now = timezone.now()
+    today = timezone.localdate()
+    date_q = Q(preferred_date=today) | (Q(preferred_date__isnull=True) & Q(created_at__date=today))
+
     qs = ServiceRequest.objects.filter(
         status__in=DISPATCHABLE_STATUSES,
         assigned_employee__isnull=True,
         latitude__isnull=False,
         longitude__isnull=False,
-    )
+    ).filter(date_q)
     if company_id:
         qs = qs.filter(company_id=company_id)
 
@@ -1479,10 +1406,6 @@ def dispatch_pending_jobs(company_id=None, limit: int = 50) -> Dict[str, Any]:
     }
 
     for job in pending_jobs:
-        is_future, _, _ = get_scheduled_dispatch_window(job, now=now)
-        if is_future:
-            logger.info(f"[DISPATCH_PENDING_SCHEDULED_HELD] Job #{job.id} held outside scheduled dispatch window.")
-            continue
         logger.info(f"[DISPATCH_JOB_FOUND] Reconciling pending Job #{job.id} ({job.request_id}, status={job.status}).")
         success, msg = dispatch_job(job)
         results["details"].append({"job_id": job.id, "success": success, "message": msg})
@@ -1506,6 +1429,9 @@ def reconsider_jobs_for_employee(employee_or_id) -> int:
         return 0
 
     now = timezone.now()
+    today = timezone.localdate()
+    date_q = Q(preferred_date=today) | (Q(preferred_date__isnull=True) & Q(created_at__date=today))
+
     if emp.company_id and emp.company_id > 1:
         company_filter = Q(company_id=emp.company_id)
     else:
@@ -1517,13 +1443,12 @@ def reconsider_jobs_for_employee(employee_or_id) -> int:
         assigned_employee__isnull=True,
         latitude__isnull=False,
         longitude__isnull=False,
-    ).exclude(
+    ).filter(date_q).exclude(
         job_offers__status=WorkforceJobOffer.Status.OFFERED,
         job_offers__expires_at__gt=now,
     ).exclude(
-        # Exclude jobs where this employee currently holds an active offer or explicitly declined
-        Q(job_offers__employee_id=emp.id, job_offers__status=WorkforceJobOffer.Status.OFFERED, job_offers__expires_at__gt=now) |
-        Q(job_offers__employee_id=emp.id, job_offers__status__in=[WorkforceJobOffer.Status.REJECTED, WorkforceJobOffer.Status.DECLINED])
+        # Don't reconsider jobs the employee already declined/received
+        job_offers__employee_id=emp.id,
     ).distinct()
 
     dispatched_count = 0

@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useMemo, useContext } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import React, { useEffect, useState, useMemo, useContext, useCallback, useRef } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../context/AuthProvider.jsx';
 import { EmployeeRuntimeContext } from '../../context/EmployeeRuntimeContext.jsx';
 import { getGPSPosition } from '../../hooks/useGPSPosition.js';
@@ -262,17 +262,40 @@ function getServiceCategoryMeta(categoryName = '', title = '') {
 }
 
 /**
+ * Authoritative Offer Status Helper
+ * Respects server-provided is_offer and offer_status.
+ * Technicians assigned or accepted to the job are never treated as offers.
+ */
+function isOfferJob(job) {
+  if (!job) return false;
+  if (job.is_assigned_to_current_employee || job.is_accepted_by_current_employee) {
+    return false;
+  }
+  if (job.is_offer === true) {
+    return true;
+  }
+  const offerSt = (job.offer_status || job.active_offer?.status || '').toUpperCase();
+  if (offerSt === 'OFFERED') {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Status Tag (Clear, high-visibility status pill)
  */
-function getStatusTag(status = '') {
-  const st = (status || '').toUpperCase();
-  if (['OFFERED', 'PENDING', 'UNASSIGNED', 'DISPATCHING', 'REDISPATCHING'].includes(st)) {
+function getStatusTag(job) {
+  if (!job) return { label: 'Scheduled', badgeClass: 'bg-slate-600 text-white font-bold' };
+
+  if (isOfferJob(job)) {
     return {
-      label: st === 'UNASSIGNED' ? 'Available' : 'New Offer',
+      label: 'New Offer',
       badgeClass: 'bg-amber-500 text-white font-bold',
       isOffer: true,
     };
   }
+
+  const st = ((typeof job === 'string' ? job : job.status) || '').toUpperCase();
   if (['ASSIGNED', 'ACCEPTED'].includes(st)) {
     return {
       label: 'Assigned',
@@ -310,7 +333,7 @@ function getStatusTag(status = '') {
     };
   }
   return {
-    label: status || 'Scheduled',
+    label: (typeof job === 'string' ? job : job.status) || 'Scheduled',
     badgeClass: 'bg-slate-600 text-white font-bold',
   };
 }
@@ -319,14 +342,33 @@ export function EmployeeJobsPage() {
   const { user } = useAuth();
   const employeeRuntime = useContext(EmployeeRuntimeContext);
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+
   const [jobs, setJobs] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const jobsRef = useRef([]);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [activeTab, setActiveTab] = useState('ALL'); // 'ALL' | 'OFFERS' | 'ACTIVE' | 'COMPLETED'
+
+  const initialTab = (searchParams.get('tab') || '').toUpperCase();
+  const [activeTab, setActiveTab] = useState(
+    ['OFFERS', 'ACTIVE', 'COMPLETED'].includes(initialTab) ? initialTab : 'ALL'
+  );
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [actionLoadingId, setActionLoadingId] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
+
+  const handleTabChange = (tabId) => {
+    setActiveTab(tabId);
+    const nextParams = new URLSearchParams(searchParams);
+    if (tabId === 'ALL') {
+      nextParams.delete('tab');
+    } else {
+      nextParams.set('tab', tabId.toLowerCase());
+    }
+    setSearchParams(nextParams, { replace: true });
+  };
 
   // Job Details Modal
   const [selectedJobForDetails, setSelectedJobForDetails] = useState(null);
@@ -344,24 +386,47 @@ export function EmployeeJobsPage() {
   const [otpError, setOtpError] = useState('');
   const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
 
-  const loadJobs = async () => {
+  // Stale-While-Revalidate: Initial load shows spinner, background refreshes preserve current data
+  const loadJobs = useCallback(async (options = {}) => {
+    const isBackground = options?.background === true;
     try {
-      setIsLoading(true);
+      if (!isBackground && jobsRef.current.length === 0) {
+        setInitialLoading(true);
+      } else {
+        setIsRefreshing(true);
+      }
       setError('');
       // Request all relevant workforce jobs for the authenticated user
       const data = await apiGetWorkforceJobs('all');
       const jobsList = Array.isArray(data) ? data : (data?.results || []);
       setJobs(jobsList);
+      jobsRef.current = jobsList;
     } catch (err) {
-      setError(cleanErrorMessage(err?.message || 'Failed to load your field jobs.'));
+      if (!isBackground || jobsRef.current.length === 0) {
+        setError(cleanErrorMessage(err?.message || 'Failed to load your field jobs.'));
+      }
     } finally {
-      setIsLoading(false);
+      setInitialLoading(false);
+      setIsRefreshing(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadJobs();
-  }, []);
+  }, [loadJobs]);
+
+  // Realtime SSE synchronization via jobsRevision signal
+  const jobsRevision = employeeRuntime?.jobsRevision || 0;
+  const prevRevisionRef = useRef(jobsRevision);
+  useEffect(() => {
+    if (jobsRevision > prevRevisionRef.current) {
+      prevRevisionRef.current = jobsRevision;
+      const timer = setTimeout(() => {
+        loadJobs({ background: true });
+      }, 200); // 200ms coalesce debounce for burst offer events
+      return () => clearTimeout(timer);
+    }
+  }, [jobsRevision, loadJobs]);
 
   const handleCopyId = (id, e) => {
     e?.stopPropagation?.();
@@ -402,7 +467,7 @@ export function EmployeeJobsPage() {
         [jobId]: { code, message: msg, isExpired, isAlreadyAccepted },
       }));
       // Refresh the list so the card reflects server reality (may disappear if reassigned)
-      loadJobs();
+      loadJobs({ background: true });
     } finally {
       setActionLoadingId(null);
     }
@@ -415,7 +480,8 @@ export function EmployeeJobsPage() {
     try {
       setActionLoadingId(jobId);
       await apiRejectJobOffer(jobId, 'Technician declined');
-      await loadJobs();
+      employeeRuntime?.refreshActiveJobs?.({ force: true });
+      await loadJobs({ background: true });
       if (selectedJobForDetails?.id === jobId) setSelectedJobForDetails(null);
     } catch (err) {
       const msg = cleanErrorMessage(err?.message || 'Could not decline job offer.');
@@ -517,20 +583,40 @@ export function EmployeeJobsPage() {
     }
   };
 
+  // Helper: Defensive UI check to ensure past-dated jobs never display as available / new offers
+  const isOfferJobPastDated = (job) => {
+    if (!isOfferJob(job)) return false;
+
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+    if (job?.preferred_date) {
+      return job.preferred_date < todayStr;
+    }
+    if (job?.created_at) {
+      const createdDateStr = String(job.created_at).slice(0, 10);
+      return createdDateStr < todayStr;
+    }
+    return false;
+  };
+
   // Tab counts
   const counts = useMemo(() => {
-    const offers = jobs.filter((j) =>
-      ['OFFERED', 'PENDING', 'UNASSIGNED', 'DISPATCHING', 'REDISPATCHING'].includes((j.status || '').toUpperCase())
-    ).length;
-    const active = jobs.filter((j) =>
-      ['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'PROOF_SUBMITTED'].includes((j.status || '').toUpperCase())
-    ).length;
-    const completed = jobs.filter((j) =>
-      ['COMPLETED', 'WORK_COMPLETED', 'WAITING_FOR_PAYMENT'].includes((j.status || '').toUpperCase())
-    ).length;
+    const validJobs = jobs.filter((j) => !isOfferJobPastDated(j));
+    const offers = validJobs.filter((j) => isOfferJob(j)).length;
+    const active = validJobs.filter((j) => {
+      if (isOfferJob(j)) return false;
+      const st = (j.status || '').toUpperCase();
+      return ['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'PROOF_SUBMITTED'].includes(st);
+    }).length;
+    const completed = validJobs.filter((j) => {
+      if (isOfferJob(j)) return false;
+      const st = (j.status || '').toUpperCase();
+      return ['COMPLETED', 'WORK_COMPLETED', 'WAITING_FOR_PAYMENT'].includes(st);
+    }).length;
 
     return {
-      ALL: jobs.length,
+      ALL: validJobs.length,
       OFFERS: offers,
       ACTIVE: active,
       COMPLETED: completed,
@@ -540,17 +626,21 @@ export function EmployeeJobsPage() {
   // Filtered jobs list
   const filteredJobs = useMemo(() => {
     return jobs.filter((job) => {
+      if (isOfferJobPastDated(job)) {
+        return false;
+      }
+      const isOffer = isOfferJob(job);
       const status = (job.status || '').toUpperCase();
       const term = searchTerm.toLowerCase().trim();
       const meta = getServiceCategoryMeta(job.service_category, job.service_title);
 
-      if (activeTab === 'OFFERS' && !['OFFERED', 'PENDING', 'UNASSIGNED', 'DISPATCHING', 'REDISPATCHING'].includes(status)) {
+      if (activeTab === 'OFFERS' && !isOffer) {
         return false;
       }
-      if (activeTab === 'ACTIVE' && !['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'PROOF_SUBMITTED'].includes(status)) {
+      if (activeTab === 'ACTIVE' && (isOffer || !['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'PROOF_SUBMITTED'].includes(status))) {
         return false;
       }
-      if (activeTab === 'COMPLETED' && !['COMPLETED', 'WORK_COMPLETED', 'WAITING_FOR_PAYMENT'].includes(status)) {
+      if (activeTab === 'COMPLETED' && (isOffer || !['COMPLETED', 'WORK_COMPLETED', 'WAITING_FOR_PAYMENT'].includes(status))) {
         return false;
       }
 
@@ -613,12 +703,12 @@ export function EmployeeJobsPage() {
             </div>
 
             <button
-              onClick={loadJobs}
-              disabled={isLoading}
+              onClick={() => loadJobs({ background: true })}
+              disabled={isRefreshing || initialLoading}
               className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl transition-all cursor-pointer shrink-0"
               title="Refresh"
             >
-              <RotateCcw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+              <RotateCcw className={`w-4 h-4 ${isRefreshing || initialLoading ? 'animate-spin' : ''}`} />
             </button>
           </div>
         </div>
@@ -638,7 +728,7 @@ export function EmployeeJobsPage() {
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => handleTabChange(tab.id)}
                 className={`px-4 py-2.5 rounded-xl font-bold text-xs whitespace-nowrap transition-all flex items-center gap-2 cursor-pointer ${
                   isActive
                     ? 'bg-slate-900 text-white shadow-sm'
@@ -695,7 +785,7 @@ export function EmployeeJobsPage() {
         </div>
 
         {/* ── CLEAN SWIGGY-STYLE JOB CARDS GRID ── */}
-        {isLoading ? (
+        {initialLoading ? (
           <div className="bg-white border border-slate-200/80 rounded-2xl p-16 text-center shadow-xs">
             <LoadingState message="Loading your orders..." />
           </div>
@@ -715,7 +805,7 @@ export function EmployeeJobsPage() {
                 onClick={() => {
                   setSearchTerm('');
                   setSelectedCategory('ALL');
-                  setActiveTab('ALL');
+                  handleTabChange('ALL');
                 }}
                 className="px-4 py-2 bg-slate-900 text-white text-xs font-bold rounded-xl shadow-xs cursor-pointer inline-flex items-center gap-1.5"
               >
@@ -727,16 +817,16 @@ export function EmployeeJobsPage() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {filteredJobs.map((job) => {
+              const isOffer = isOfferJob(job);
               const status = (job.status || '').toUpperCase();
-              const isOffer = status === 'OFFERED' || status === 'PENDING' || status === 'UNASSIGNED' || status === 'DISPATCHING' || status === 'REDISPATCHING';
-              const isAssigned = status === 'ASSIGNED' || status === 'ACCEPTED';
-              const isOnTheWay = status === 'ON_THE_WAY' || status === 'EN_ROUTE';
-              const isArrived = status === 'ARRIVED';
-              const isInProgress = status === 'IN_PROGRESS' || status === 'IN_SERVICE' || status === 'INSPECTION' || status === 'PROOF_SUBMITTED';
-              const isCompleted = status === 'COMPLETED' || status === 'WORK_COMPLETED' || status === 'WAITING_FOR_PAYMENT';
+              const isAssigned = !isOffer && (status === 'ASSIGNED' || status === 'ACCEPTED');
+              const isOnTheWay = !isOffer && (status === 'ON_THE_WAY' || status === 'EN_ROUTE');
+              const isArrived = !isOffer && status === 'ARRIVED';
+              const isInProgress = !isOffer && (status === 'IN_PROGRESS' || status === 'IN_SERVICE' || status === 'INSPECTION' || status === 'PROOF_SUBMITTED');
+              const isCompleted = !isOffer && (status === 'COMPLETED' || status === 'WORK_COMPLETED' || status === 'WAITING_FOR_PAYMENT');
 
               const catMeta = getServiceCategoryMeta(job.service_category, job.service_title);
-              const statusTag = getStatusTag(job.status);
+              const statusTag = getStatusTag(job);
               const CategoryIcon = catMeta.icon;
 
               const mapUrl = job.address
@@ -1158,7 +1248,7 @@ export function EmployeeJobsPage() {
                 >
                   Close
                 </button>
-                {(selectedJobForDetails.status === 'OFFERED' || selectedJobForDetails.status === 'PENDING' || selectedJobForDetails.status === 'UNASSIGNED') && (
+                {isOfferJob(selectedJobForDetails) && (
                   <button
                     type="button"
                     onClick={(e) => handleAcceptOffer(selectedJobForDetails.id, e)}

@@ -2091,13 +2091,6 @@ class WorkforcePresenceToggleView(APIView):
         reconcile_employee_availability(emp)
         emp.refresh_from_db(fields=["current_availability", "is_online"])
 
-        if emp.is_online and emp.current_availability == "available":
-            try:
-                import threading
-                from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
-                threading.Thread(target=reconsider_jobs_for_employee, args=(emp.id,), daemon=True).start()
-            except Exception as e:
-                logger.debug(f"[PRESENCE_TOGGLE_DISPATCH_ERR] {e}")
 
         try:
             PresenceLog.objects.create(
@@ -2182,6 +2175,7 @@ def is_employee_authorized_for_job(emp, job) -> bool:
     - Solo technician (emp.company_id is None) can handle platform jobs (job.company_id in (None, 1)).
     - Platform technician (emp.company_id == 1) can handle platform jobs (job.company_id in (None, 1)).
     - Vendor technician (emp.company_id > 1) can ONLY handle jobs belonging to their company (job.company_id == emp.company_id).
+
     """
     if not emp or not job:
         return False
@@ -2230,16 +2224,8 @@ class WorkforceJobListView(APIView):
             now = timezone.now()
             from workforce_api.models import WorkforceJobOffer, WorkforceJobLifecycleEvent, WorkforceWorkExtension, JobPayment
             from workforce_api.services.workload import ACTIVE_QUEUE_STATUSES, WORKLOAD_OCCUPIED_STATUSES
-            from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee, expire_and_reassign_offers
 
-            # 1. Sweep expired offers asynchronously so response returns instantly
-            try:
-                import threading
-                threading.Thread(target=expire_and_reassign_offers, daemon=True).start()
-            except Exception:
-                pass
-
-            # 2. Hard Single Active Job Invariant: Check if technician already has an active assignment
+            # 1. Hard Single Active Job Invariant: Check if technician already has an active assignment
             from workforce_api.services.workload import get_employee_active_job
             active_job = get_employee_active_job(emp.id)
             has_active_job = bool(active_job)
@@ -2254,19 +2240,14 @@ class WorkforceJobListView(APIView):
             if has_active_job:
                 offered_job_ids_qs = ServiceRequest.objects.none().values("id")
             else:
-                # Reconsider pending customer bookings in Supabase for this available technician
-                if emp.is_active and emp.is_online and emp.current_availability == "available":
-                    try:
-                        import threading
-                        from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
-                        threading.Thread(target=reconsider_jobs_for_employee, args=(emp.id,), daemon=True).start()
-                    except Exception as e:
-                        logger.debug(f"[DISPATCH_RECONSIDER_ERROR] {e}")
-
+                today = timezone.localdate()
                 offered_job_ids_qs = WorkforceJobOffer.objects.filter(
                     employee=emp,
                     status="OFFERED",
-                    expires_at__gt=now
+                    expires_at__gt=now,
+                ).filter(
+                    Q(job__preferred_date=today) |
+                    Q(job__preferred_date__isnull=True, job__created_at__date=today)
                 ).values("job_id")
 
             emp_job_sr_ids_qs = EmployeeJob.objects.filter(
@@ -2325,22 +2306,29 @@ class WorkforceJobListView(APIView):
 
             qs = qs.select_related("customer", "assigned_employee", "assigned_employee__user", "company")
             qs = qs.distinct().order_by("-updated_at", "-created_at")
-            job_list = list(qs[:100])
+            jobs = list(qs[:100])
+        else:
+            jobs = []
 
-            job_ids = [j.id for j in job_list]
-            emp_offers_map = {}
-            active_offers_map = {}
-            lifecycle_events_map = {}
-            extensions_map = {}
-            active_extensions_map = {}
-            payments_map = {}
-            quotes_map = {}
-            psvs_map = {}
-            trip_stops_map = {}
-            emp_jobs_map = {}
+        job_ids = [j.id for j in jobs]
+        emp_offers_map = {}
+        active_offers_map = {}
+        lifecycle_events_map = {}
+        extensions_map = {}
+        active_extensions_map = {}
+        payments_map = {}
+        quotes_map = {}
+        psvs_map = {}
+        trip_stops_map = {}
+        emp_jobs_map = {}
+        wallets_map = {}
 
-            if job_ids:
-                # 1. Bulk fetch employee job offers
+        if job_ids:
+            now = timezone.now()
+            from workforce_api.models import WorkforceJobOffer, WorkforceJobLifecycleEvent, WorkforceWorkExtension, JobPayment, WorkforceQuote, PreServiceVerification, WalletAccount, VendorTechnicianRelationship
+
+            # 1. Bulk fetch employee job offers (for employee)
+            if emp:
                 offers = list(WorkforceJobOffer.objects.filter(job_id__in=job_ids, employee=emp).order_by("offered_at"))
                 for o in offers:
                     emp_offers_map[o.job_id] = o
@@ -2356,49 +2344,7 @@ class WorkforceJobListView(APIView):
                 for ev in events:
                     lifecycle_events_map[ev.job_id] = ev
 
-                # 3. Bulk fetch work extensions
-                exts = list(WorkforceWorkExtension.objects.filter(job_id__in=job_ids).select_related("technician", "technician__user").order_by("-created_at"))
-                for ext in exts:
-                    extensions_map.setdefault(ext.job_id, []).append(ext)
-                    if ext.status in ["REQUESTED", "ADMIN_APPROVED", "CUSTOMER_ACCEPTED", "IN_PROGRESS"] and ext.job_id not in active_extensions_map:
-                        active_extensions_map[ext.job_id] = ext
-
-                # 4. Bulk fetch payments
-                payments = list(JobPayment.objects.filter(job_id__in=job_ids))
-                for p in payments:
-                    payments_map[p.job_id] = p
-
-                # 5. Bulk fetch active quotes for estimation jobs
-                from .models import WorkforceQuote, PreServiceVerification
-                quotes_map = {}
-                quotes = list(
-                    WorkforceQuote.objects.filter(job_id__in=job_ids)
-                    .exclude(status__in=[WorkforceQuote.Status.SUPERSEDED, WorkforceQuote.Status.CANCELLED])
-                    .order_by("job_id", "-quote_version")
-                )
-                for q in quotes:
-                    if q.job_id not in quotes_map:
-                        quotes_map[q.job_id] = q
-
-                # 6. Bulk fetch pre-service verifications
-                psvs_map = {}
-                psvs = list(PreServiceVerification.objects.filter(job_id__in=job_ids))
-                for psv in psvs:
-                    psvs_map[psv.job_id] = psv
-
-                # 7. Bulk fetch trip stop counts
-                trip_stops_map = {}
-                try:
-                    from service_requests.models import TripStop
-                    from django.db.models import Count
-                    ts_counts = TripStop.objects.filter(booking_id__in=job_ids).values("booking_id").annotate(cnt=Count("id"))
-                    for ts in ts_counts:
-                        trip_stops_map[ts["booking_id"]] = ts["cnt"]
-                except Exception:
-                    pass
-
-                # 8. Bulk fetch EmployeeJob records for cancellation deadline & status
-                emp_jobs_map = {}
+                # 3. Bulk fetch EmployeeJob records for cancellation deadline & status
                 try:
                     from service_requests.models import EmployeeJob
                     emp_jobs = list(EmployeeJob.objects.filter(service_request_id__in=job_ids, employee=emp))
@@ -2407,23 +2353,92 @@ class WorkforceJobListView(APIView):
                 except Exception:
                     pass
 
-            context = {
-                "request": request,
-                "emp_offers_map": emp_offers_map,
-                "active_offers_map": active_offers_map,
-                "lifecycle_events_map": lifecycle_events_map,
-                "extensions_map": extensions_map,
-                "active_extensions_map": active_extensions_map,
-                "payments_map": payments_map,
-                "quotes_map": quotes_map,
-                "psvs_map": psvs_map,
-                "trip_stops_map": trip_stops_map,
-                "emp_jobs_map": emp_jobs_map,
-            }
-            jobs = job_list
-        else:
-            jobs = []
-            context = {"request": request}
+            # 4. Bulk fetch work extensions (for both admin and technician)
+            exts = list(WorkforceWorkExtension.objects.filter(job_id__in=job_ids).select_related("technician", "technician__user").order_by("-created_at"))
+            for ext in exts:
+                extensions_map.setdefault(ext.job_id, []).append(ext)
+                if ext.status in ["REQUESTED", "ADMIN_APPROVED", "CUSTOMER_ACCEPTED", "IN_PROGRESS"] and ext.job_id not in active_extensions_map:
+                    active_extensions_map[ext.job_id] = ext
+
+            # 5. Bulk fetch payments (for both admin and technician)
+            payments = list(JobPayment.objects.filter(job_id__in=job_ids))
+            for p in payments:
+                payments_map[p.job_id] = p
+
+            # 6. Bulk fetch active quotes for estimation jobs
+            quotes = list(
+                WorkforceQuote.objects.filter(job_id__in=job_ids)
+                .exclude(status__in=[WorkforceQuote.Status.SUPERSEDED, WorkforceQuote.Status.CANCELLED])
+                .order_by("job_id", "-quote_version")
+            )
+            for q in quotes:
+                if q.job_id not in quotes_map:
+                    quotes_map[q.job_id] = q
+
+            # 7. Bulk fetch pre-service verifications
+            psvs = list(PreServiceVerification.objects.filter(job_id__in=job_ids))
+            for psv in psvs:
+                psvs_map[psv.job_id] = psv
+
+            # 8. Bulk fetch trip stop counts
+            try:
+                from service_requests.models import TripStop
+                from django.db.models import Count
+                ts_counts = TripStop.objects.filter(booking_id__in=job_ids).values("booking_id").annotate(cnt=Count("id"))
+                for ts in ts_counts:
+                    trip_stops_map[ts["booking_id"]] = ts["cnt"]
+            except Exception:
+                pass
+
+            # 9. Bulk resolve wallets for assigned employees to avoid per-row queries
+            emp_ids = {j.assigned_employee_id for j in jobs if j.assigned_employee_id}
+            if emp_ids:
+                rels = {r.technician_id: r for r in VendorTechnicianRelationship.objects.filter(
+                    technician_id__in=emp_ids, status=VendorTechnicianRelationship.Status.ACTIVE
+                ).select_related("vendor")}
+                emp_map = {j.assigned_employee.id: j.assigned_employee for j in jobs if j.assigned_employee}
+                comp_ids = set()
+                solo_emp_ids = set()
+                for eid in emp_ids:
+                    rel = rels.get(eid)
+                    e = emp_map.get(eid)
+                    if rel and rel.vendor_id:
+                        comp_ids.add(rel.vendor_id)
+                    elif e and e.company_id:
+                        comp_ids.add(e.company_id)
+                    else:
+                        solo_emp_ids.add(eid)
+
+                head_wallets = {w.company_id: w for w in WalletAccount.objects.filter(
+                    company_id__in=comp_ids, account_type=WalletAccount.AccountType.PROVIDER_HEAD
+                ).select_related("company")}
+                ind_wallets = {w.employee_id: w for w in WalletAccount.objects.filter(
+                    employee_id__in=solo_emp_ids, account_type=WalletAccount.AccountType.INDIVIDUAL_WORKER
+                ).select_related("employee", "employee__user")}
+
+                for eid in emp_ids:
+                    rel = rels.get(eid)
+                    e = emp_map.get(eid)
+                    cid = rel.vendor_id if (rel and rel.vendor_id) else (e.company_id if e else None)
+                    if cid and cid in head_wallets:
+                        wallets_map[eid] = (head_wallets[cid], "PROVIDER_HEAD")
+                    elif eid in ind_wallets:
+                        wallets_map[eid] = (ind_wallets[eid], "INDIVIDUAL_WORKER")
+
+        context = {
+            "request": request,
+            "emp_offers_map": emp_offers_map,
+            "active_offers_map": active_offers_map,
+            "lifecycle_events_map": lifecycle_events_map,
+            "extensions_map": extensions_map,
+            "active_extensions_map": active_extensions_map,
+            "payments_map": payments_map,
+            "quotes_map": quotes_map,
+            "psvs_map": psvs_map,
+            "trip_stops_map": trip_stops_map,
+            "emp_jobs_map": emp_jobs_map,
+            "wallets_map": wallets_map,
+        }
 
         serializer = WorkforceJobSerializer(jobs, many=True, context=context)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -3855,6 +3870,12 @@ class WorkforceJobAcceptOfferView(APIView):
                             "message": "Another professional accepted this request. Offer closed automatically."
                         }
                     )
+                    WorkforceNotification.objects.filter(
+                        recipient=c_off.employee.user,
+                        notification_type="JOB_OFFER",
+                        related_object_id=str(job_obj.id),
+                        is_read=False,
+                    ).update(is_read=True, read_at=now)
 
             # Supersede all other pending OFFERED jobs for this winning employee
             supersede_other_offers_for_employee(emp_obj, job_obj)
@@ -6520,13 +6541,6 @@ class WorkforceLocationUpdateView(APIView):
             except Exception as e:
                 logger.error(f"[LOCATION_UPDATE_ERROR] Error evaluating Job #{job.id}: {e}", exc_info=True)
 
-        # Reconsider pending dispatchable customer jobs upon fresh GPS update asynchronously
-        try:
-            import threading
-            from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
-            threading.Thread(target=reconsider_jobs_for_employee, args=(emp.id,), daemon=True).start()
-        except Exception:
-            pass
 
         return Response({
             "message": "Live GPS coordinates updated.",
@@ -7467,18 +7481,6 @@ class WorkforceRealtimeStreamView(APIView):
                         logger.debug("[Realtime SSE HEARTBEAT] Sending keepalive ping to user_id=%s.", user_id_val)
                         yield f": heartbeat\n\n"
 
-                    # Periodic Discovery / Reconciliation for connected technician (every 10s)
-                    if not is_admin and (loop_now - last_reconcile_time >= 10):
-                        last_reconcile_time = loop_now
-                        try:
-                            emp_obj = getattr(user, "employee_profile", None)
-                            if emp_obj and emp_obj.is_online and emp_obj.current_availability == "available":
-                                from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
-                                reconsider_jobs_for_employee(emp_obj)
-                        except Exception as rec_err:
-                            logger.debug(f"[Realtime SSE RECONCILE ERR] {rec_err}")
-                        finally:
-                            connection.close()
 
                     # Fetch newly emitted events using pure dictionary projection
                     try:

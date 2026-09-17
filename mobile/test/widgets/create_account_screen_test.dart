@@ -25,8 +25,8 @@ void main() {
       expect(find.text('WORKFORCE'), findsOneWidget);
 
       // 2. Page title & short context
-      expect(find.text('Create Technician'), findsOneWidget);
-      expect(find.text('Create your account and start your workforce journey.'), findsOneWidget);
+      expect(find.text('Join the Workforce Platform'), findsOneWidget);
+      expect(find.text('Create your technician account to start onboarding'), findsOneWidget);
 
       // 3. Section Badges inside Form Card
       expect(find.text('PERSONAL DETAILS'), findsOneWidget);
@@ -42,9 +42,16 @@ void main() {
       expect(find.textContaining('Confirm Password'), findsOneWidget);
 
       // 5. Primary Submit Button
-      expect(find.text('Create Account & Continue'), findsOneWidget);
+      expect(find.text('Create Account & Start Onboarding'), findsOneWidget);
 
-      // 6. Navigation Link & Legal
+      // 6. Provider Registration Switch Link
+      expect(
+        find.text('Registering a service provider business instead? '),
+        findsOneWidget,
+      );
+      expect(find.text('Sign up here'), findsOneWidget);
+
+      // 7. Navigation Link & Legal
       expect(find.text('Already have an account? '), findsOneWidget);
       expect(find.text('Sign In'), findsOneWidget);
       expect(find.text('Privacy Policy'), findsOneWidget);

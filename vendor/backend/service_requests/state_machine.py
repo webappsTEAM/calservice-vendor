@@ -172,6 +172,7 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
                 getattr(service_request, "id", None), leg_err,
             )
 
+
     # Sync EmployeeJob status and timestamps
     try:
         from service_requests.models import EmployeeJob

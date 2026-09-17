@@ -5,6 +5,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/theme/app_theme.dart';
 import '../../../../shared/widgets/status_chip.dart';
+import '../../../../shared/widgets/workforce_avatar.dart';
 import '../../data/admin_dashboard_api.dart';
 import '../../domain/admin_application.dart';
 import '../admin_dashboard_providers.dart';
@@ -813,17 +814,14 @@ class _AdminApplicationDetailScreenState
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              CircleAvatar(
+              WorkforceAvatar(
+                imageUrl: app.avatar,
+                name: app.name,
+                initial: app.initial,
                 radius: 24,
+                fontSize: 18,
                 backgroundColor: const Color(0xFF004E89).withValues(alpha: 0.1),
-                child: Text(
-                  app.initial,
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w900,
-                    color: Color(0xFF004E89),
-                  ),
-                ),
+                foregroundColor: const Color(0xFF004E89),
               ),
               const SizedBox(width: 12),
               Expanded(

@@ -18,7 +18,7 @@ import { loadMapsApi } from '../../../utils/loadGoogleMaps.js';
 export function TechnicianArrivalView({
   job,
   technicianLocation,
-  geofenceRadius = 10,
+  geofenceRadius = 250,
 }) {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
@@ -150,7 +150,7 @@ export function TechnicianArrivalView({
         geofenceCircleRef.current = new google.maps.Circle({
           map,
           center: custPos,
-          radius: Number(geofenceRadius) || 10,
+          radius: Number(geofenceRadius) || 250,
           strokeColor: '#059669',
           strokeOpacity: 0.85,
           strokeWeight: 2.5,
@@ -159,7 +159,7 @@ export function TechnicianArrivalView({
         });
       } else {
         geofenceCircleRef.current.setCenter(custPos);
-        geofenceCircleRef.current.setRadius(Number(geofenceRadius) || 10);
+        geofenceCircleRef.current.setRadius(Number(geofenceRadius) || 250);
       }
     }
 

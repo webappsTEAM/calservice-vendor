@@ -23,6 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import { TechnicianNavigationView } from '../navigation/TechnicianNavigationView.jsx';
+import { ACTIVE_QUEUE_STATUSES } from '../../../context/EmployeeRuntimeContext.jsx';
 
 /**
  * Real-time Countdown Badge for Offer Expiration & Cancellation Window
@@ -121,11 +122,58 @@ export function PortalCockpitLayout({
 
   // Authoritative Primary Active Job and Incoming Offer Resolution
   const offer = incomingOffers && incomingOffers.length > 0 ? incomingOffers[0] : null;
-  const activeJob = activeAssignedJob || (activeJobs && activeJobs.length > 0 ? activeJobs[0] : null);
-  const isOffer = Boolean(offer && !activeJob);
+
+  // Authoritative Assignment Predicate on activeAssignedJob
+  const isAssignedJob = Boolean(
+    activeAssignedJob &&
+    (
+      activeAssignedJob.is_assigned_to_current_employee === true ||
+      (employee?.id && (
+        activeAssignedJob.assigned_employee_id === employee.id ||
+        activeAssignedJob.assigned_employee?.id === employee.id ||
+        activeAssignedJob.assigned_employee === employee.id
+      ))
+    ) &&
+    !activeAssignedJob.is_offer &&
+    activeAssignedJob.active_offer?.status !== 'OFFERED' &&
+    ACTIVE_QUEUE_STATUSES.includes((activeAssignedJob.status || activeAssignedJob.job_status || '').toLowerCase())
+  );
+
+  const activeJob = isAssignedJob ? activeAssignedJob : null;
   const job = activeJob || offer || null;
 
-  const status = (activeJob?.status || activeJob?.job_status || (offer ? 'OFFERED' : 'STANDBY')).toUpperCase();
+  const isAssignedToMe = Boolean(
+    job &&
+    (
+      job.is_assigned_to_current_employee === true ||
+      (employee?.id && (
+        job.assigned_employee_id === employee.id ||
+        job.assigned_employee?.id === employee.id ||
+        job.assigned_employee === employee.id
+      ))
+    )
+  );
+
+  const hasActiveOffer = Boolean(
+    job &&
+    (
+      job.is_offer === true ||
+      job.active_offer?.status === 'OFFERED'
+    )
+  );
+
+  const rawStatus = (job?.status || job?.job_status || '').toLowerCase();
+  const isActiveAssignment = Boolean(
+    activeJob &&
+    isAssignedToMe &&
+    !hasActiveOffer &&
+    ACTIVE_QUEUE_STATUSES.includes(rawStatus)
+  );
+
+  const isOffer = Boolean(!isActiveAssignment && (hasActiveOffer || (offer && !activeJob)));
+
+  const status = (isActiveAssignment ? (activeJob?.status || activeJob?.job_status || '') : (isOffer ? 'OFFERED' : 'STANDBY')).toUpperCase();
+
 
   const isAssigned = status === 'ASSIGNED' || status === 'ACCEPTED';
   const isEnRoute = status === 'EN_ROUTE' || status === 'ON_THE_WAY';
@@ -472,7 +520,7 @@ export function PortalCockpitLayout({
                   )}
 
                   {/* Active Accepted Job: Cancellation Button (Available before Customer OTP) */}
-                  {!isOffer && job && !isOtpVerified && !isInProgress && !isProofSubmitted && !isCompleted && (
+                  {isActiveAssignment && job && (job.is_assigned_to_current_employee === true || job.is_accepted_by_current_employee === true || (employee?.id && job.assigned_employee_id === employee.id)) && !isOtpVerified && !isInProgress && !isProofSubmitted && !isCompleted && (
                     <div className="pt-2">
                       <button
                         type="button"
@@ -487,7 +535,7 @@ export function PortalCockpitLayout({
                 </div>
 
                 {/* ── HORIZONTAL STEPPER LINE (Accepted ── En Route ── Arrived) (For Active Assigned Job) ── */}
-                {!isOffer && (
+                {isActiveAssignment && (
                   <div className="pt-2 border-t border-slate-100">
                     <div className="flex items-center justify-between text-xs font-bold text-slate-600">
                       <div className="flex items-center gap-1.5">
@@ -578,7 +626,7 @@ export function PortalCockpitLayout({
                 )}
 
                 {/* ── PRE-SERVICE VERIFICATION SECTION (Only for Active Assigned Job prior to start) ── */}
-                {!isOffer && !isInProgress && !isProofSubmitted && !isCompleted && (
+                {isActiveAssignment && !isInProgress && !isProofSubmitted && !isCompleted && (
                   <div className="pt-2 space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
@@ -734,7 +782,7 @@ export function PortalCockpitLayout({
           </div>
 
           {/* ── BOTTOM ACTION BUTTON: Start Service Execution / Complete Service / Cash Confirmation ── */}
-          {activeJob && !isOffer && (
+          {isActiveAssignment && activeJob && (
             <div className="pt-2 border-t border-slate-100 space-y-1.5">
               {isCompleted ? (
                 <div className="w-full py-3.5 rounded-xl font-bold text-xs bg-emerald-50 text-emerald-800 border border-emerald-200 flex items-center justify-center gap-2">

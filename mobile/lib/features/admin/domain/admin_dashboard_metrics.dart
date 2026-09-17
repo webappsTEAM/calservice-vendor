@@ -51,6 +51,12 @@ class AdminDashboardData {
   int get approvedAndActiveCount =>
       applications.where((a) => a.isApproved).length;
 
+  /// Total fleet members currently online (database is_online presence).
+  int get onlineCount => fleet.where((f) => f.isOnline).length;
+
+  /// Total fleet members currently offline.
+  int get offlineCount => fleet.where((f) => !f.isOnline).length;
+
   /// Fleet members currently online and available for dispatch.
   int get onlineAndAvailableCount =>
       fleet.where((f) => f.isAvailable).length;

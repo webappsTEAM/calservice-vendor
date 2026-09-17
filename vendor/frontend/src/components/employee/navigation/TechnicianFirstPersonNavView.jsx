@@ -32,7 +32,7 @@ export function TechnicianFirstPersonNavView({
   job,
   technicianLocation: initialTechLocation,
   preServiceState = {},
-  geofenceRadius = 10,
+  geofenceRadius = 250,
   onLocationReport,
   onExitNavigation,
 }) {
@@ -191,7 +191,7 @@ export function TechnicianFirstPersonNavView({
         </button>
 
         {/* Primary Metrics Row */}
-        <div className="px-6 py-3 flex items-center justify-between gap-3">
+        <div className="px-6 py-3 flex items-center justify-between">
           {/* Left Action: Close / Exit Navigation Button */}
           <button
             type="button"
@@ -203,7 +203,7 @@ export function TechnicianFirstPersonNavView({
           </button>
 
           {/* Center Trip Metrics: Large Green ETA + Distance/Clock */}
-          <div className="flex flex-col items-center justify-center text-center min-w-0 flex-1">
+          <div className="flex flex-col items-center justify-center text-center">
             <div className="text-2xl sm:text-3xl font-black text-emerald-600 leading-none tracking-tight">
               {displayEtaText}
             </div>
@@ -216,29 +216,19 @@ export function TechnicianFirstPersonNavView({
             </div>
           </div>
 
-          {/* Right Action: Call Customer (always visible once accepted) */}
-          {customerPhone ? (
-            <a
-              href={`tel:${customerPhone}`}
-              title="Call Customer"
-              className="w-12 h-12 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center transition-transform hover:scale-105 active:scale-95 shadow-sm shrink-0"
-            >
-              <Phone className="w-5 h-5" />
-            </a>
-          ) : (
-            <button
-              type="button"
-              onClick={handleToggleRouteOverview}
-              title={cameraMode === 'driving' ? 'Show Route Overview' : 'Resume 3D Driving View'}
-              className={`w-12 h-12 rounded-full flex items-center justify-center transition-transform hover:scale-105 active:scale-95 cursor-pointer shadow-xs shrink-0 ${
-                cameraMode === 'overview'
-                  ? 'bg-zinc-900 text-white'
-                  : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-700'
-              }`}
-            >
-              <Shuffle className="w-5 h-5 stroke-[2.5]" />
-            </button>
-          )}
+          {/* Right Action: Route Overview Toggle Button */}
+          <button
+            type="button"
+            onClick={handleToggleRouteOverview}
+            title={cameraMode === 'driving' ? 'Show Route Overview' : 'Resume 3D Driving View'}
+            className={`w-12 h-12 rounded-full flex items-center justify-center transition-transform hover:scale-105 active:scale-95 cursor-pointer shadow-xs ${
+              cameraMode === 'overview'
+                ? 'bg-zinc-900 text-white shadow-xs'
+                : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-700'
+            }`}
+          >
+            <Shuffle className="w-5 h-5 stroke-[2.5]" />
+          </button>
         </div>
 
         {/* Expandable Customer Details Drawer */}

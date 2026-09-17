@@ -314,9 +314,9 @@ class ClockInView(APIView):
             except Exception:
                 pass
 
-        # 11. Customer Job Geofence (Haversine distance <= 10m)
+        # 11. Customer Job Geofence (Haversine distance <= 250m)
         dist_to_job = haversine_distance(lat_val, lon_val, float(active_job.latitude), float(active_job.longitude))
-        ARRIVAL_RADIUS_METERS = 10.0
+        ARRIVAL_RADIUS_METERS = 250.0
 
         if dist_to_job > ARRIVAL_RADIUS_METERS and not (verification and verification.geofence_passed):
             return Response({

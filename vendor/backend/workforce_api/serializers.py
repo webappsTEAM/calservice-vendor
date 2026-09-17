@@ -590,6 +590,11 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
         if not obj.assigned_employee_id:
             obj._cached_wallet_channel = (None, None)
             return None, None
+        wallets_map = self.context.get("wallets_map")
+        if wallets_map is not None:
+            res = wallets_map.get(obj.assigned_employee_id, (None, None))
+            obj._cached_wallet_channel = res
+            return res
         try:
             from workforce_api.services import resolve_payee_wallet
             wallet, channel = resolve_payee_wallet(obj)
@@ -736,12 +741,13 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
                 return full
             if getattr(cust, "name", None) and not str(cust.name).startswith("cust_"):
                 return cust.name
-            try:
-                addr = cust.saved_addresses.filter(receiver_name__isnull=False).exclude(receiver_name="").first()
-                if addr and addr.receiver_name:
-                    return addr.receiver_name
-            except Exception:
-                pass
+            if hasattr(cust, "saved_addresses"):
+                try:
+                    addr = cust.saved_addresses.filter(receiver_name__isnull=False).exclude(receiver_name="").first()
+                    if addr and addr.receiver_name:
+                        return addr.receiver_name
+                except Exception:
+                    pass
             if cust.phone:
                 return f"Customer ({str(cust.phone)[-4:]})"
             if cust.username and not str(cust.username).startswith("cust_"):
@@ -775,7 +781,7 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
     def get_address(self, obj):
         if obj.address:
             return obj.address
-        if obj.customer:
+        if obj.customer and hasattr(obj.customer, "saved_addresses"):
             try:
                 addr = obj.customer.saved_addresses.first()
                 if addr and getattr(addr, "address_line1", None):
