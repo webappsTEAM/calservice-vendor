@@ -164,7 +164,9 @@ export async function apiRequest(path, options = {}) {
 
   if (!response.ok) {
     let rawError =
+      (data && data.message && (data.error === 'ONBOARDING_VALIDATION_FAILED' || data.error === 'ONBOARDING_STEP_SKIPPED') ? data.message : null) ||
       (data && data.error) ||
+      (data && data.message) ||
       (data && data.detail) ||
       (data && typeof data === 'object' ? JSON.stringify(data) : 'Request failed');
 
@@ -191,6 +193,9 @@ export async function apiRequest(path, options = {}) {
     error.status = response.status;
     error.code = (data && data.code) || classifyApiError(response.status, data);
     error.data = data;
+    if (data && data.fields) {
+      error.fields = data.fields;
+    }
     throw error;
   }
 

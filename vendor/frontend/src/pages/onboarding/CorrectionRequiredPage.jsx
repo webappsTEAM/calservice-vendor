@@ -152,15 +152,24 @@ export function CorrectionRequiredPage() {
             <p className="text-[11px] text-zinc-500 leading-relaxed">
               Once replacements are uploaded, resubmit for Admin re-evaluation.
             </p>
-            <button
-              type="button"
-              onClick={handleResubmit}
-              disabled={isSubmitting}
-              className="px-4 py-2 min-h-[38px] rounded-lg bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-950 text-white text-xs font-bold shadow-xs inline-flex items-center justify-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
-            >
-              <span>{isSubmitting ? 'Resubmitting...' : 'Resubmit Application'}</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => navigate('/workforce/onboarding/wizard')}
+                className="px-3.5 py-2 min-h-[38px] rounded-lg bg-zinc-100 hover:bg-zinc-200 text-zinc-800 text-xs font-semibold shadow-xs inline-flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+              >
+                <span>Edit Form Details</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleResubmit}
+                disabled={isSubmitting}
+                className="px-4 py-2 min-h-[38px] rounded-lg bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-950 text-white text-xs font-bold shadow-xs inline-flex items-center justify-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
+              >
+                <span>{isSubmitting ? 'Resubmitting...' : 'Resubmit Application'}</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
         </div>
       </div>

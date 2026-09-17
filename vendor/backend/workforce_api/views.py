@@ -353,38 +353,44 @@ class WorkforceSignupView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        with transaction.atomic():
-            company_id = request.data.get("company_id")
-            company_slug = request.data.get("company_slug")
-            # Whether this signup explicitly asked to join a specific
-            # provider's team (vs. falling through to the shared default
-            # company below) -- decides which wallet channel this worker
-            # gets provisioned into. See SEVO business plan Section 2.
-            joining_provider_team = bool(company_id or company_slug)
-            company = None
-            if company_id:
+        account_type = str(data.get("account_type") or request.data.get("account_type") or "independent").strip().lower()
+        if account_type in ["service_provider", "organization"]:
+            return Response(
+                {"error": "To register as a Service Provider, please use the Service Provider registration endpoint.", "code": "USE_SERVICE_PROVIDER_SIGNUP"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        provider_id = data.get("provider_id") or data.get("company_id") or request.data.get("provider_id") or request.data.get("company_id")
+        provider_slug = data.get("provider_slug") or data.get("company_slug") or request.data.get("provider_slug") or request.data.get("company_slug")
+
+        is_provider_technician = account_type in ["provider_technician", "provider"]
+        target_provider = None
+
+        if is_provider_technician:
+            if not provider_id and not provider_slug:
+                return Response(
+                    {"error": "Provider selection is mandatory when joining a Service Provider.", "code": "PROVIDER_SELECTION_REQUIRED"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if provider_id:
                 try:
-                    company = Company.objects.filter(pk=int(company_id), is_active=True).first()
+                    target_provider = Company.objects.filter(pk=int(provider_id), is_active=True).first()
                 except (ValueError, TypeError):
                     pass
-            if not company and company_slug:
-                company = Company.objects.filter(slug=company_slug, is_active=True).first()
-            if not company:
-                company = Company.objects.filter(slug="calservices", is_active=True).first()
-            if not company:
-                region, _ = Region.objects.get_or_create(
-                    code="IN",
-                    defaults={"name": "India", "currency": "INR", "currency_symbol": "₹"},
-                )
-                company = Company.objects.create(
-                    company_name="CalServices Operations",
-                    display_id="CALS",
-                    slug="calservices",
-                    primary_country="IN",
-                    region=region,
-                    is_active=True,
-                )
+            if not target_provider and provider_slug:
+                target_provider = Company.objects.filter(slug=str(provider_slug).strip(), is_active=True).first()
 
+            if not target_provider:
+                return Response(
+                    {"error": "Please select a valid active Service Provider.", "code": "INVALID_SERVICE_PROVIDER"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            target_provider = None
+
+        from .models import WorkforceProviderJoinRequest
+
+        with transaction.atomic():
             username_candidate = data["email"].split("@")[0].lower()
             username = username_candidate
             counter = 1
@@ -392,6 +398,9 @@ class WorkforceSignupView(APIView):
                 username = f"{username_candidate}_{counter}"
                 counter += 1
 
+            # IMPORTANT ARCHITECTURAL RULE (Phase 2D):
+            # During signup, both independent technicians and technicians requesting to join a provider
+            # MUST be created with company=None! Membership is only granted upon provider approval.
             user = User.objects.create(
                 username=username,
                 email=data["email"],
@@ -400,7 +409,7 @@ class WorkforceSignupView(APIView):
                 first_name=data["first_name"],
                 last_name=data.get("last_name", ""),
                 role="employee",
-                company=company,
+                company=None,
                 is_active=True,
                 totp_secret="",
                 bio="",
@@ -408,10 +417,35 @@ class WorkforceSignupView(APIView):
             user.set_password(data["password"])
             user.save()
 
-            employee_id = generate_next_employee_id(company)
+            employee_id = generate_next_employee_id(None)
+            bank_details = {
+                "onboarding": {
+                    "status": "not_started",
+                    "step": 1,
+                    "account_type": "provider" if target_provider else "independent",
+                    "join_request": None,
+                    "completed_steps": [],
+                    "draft": {
+                        "personal": {
+                            "first_name": user.first_name,
+                            "last_name": user.last_name,
+                            "email": user.email,
+                            "mobile_number": user.mobile_number,
+                        }
+                    },
+                    "services": [],
+                    "documents": {},
+                    "correction_notes": "",
+                    "rejection_reason": "",
+                    "submitted_at": None,
+                    "approved_at": None,
+                    "channel": "provider_team" if target_provider else "individual",
+                }
+            }
+
             employee = Employee.objects.create(
                 user=user,
-                company=company,
+                company=None,
                 employee_id=employee_id,
                 title="Technician Candidate",
                 exempt_status="non_exempt",
@@ -419,30 +453,32 @@ class WorkforceSignupView(APIView):
                 is_online=False,
                 current_availability="offline",
                 is_active=True,
-                bank_details={
-                    "onboarding": {
-                        "status": "not_started",
-                        "step": 1,
-                        "draft": {
-                            "personal": {
-                                "first_name": user.first_name,
-                                "last_name": user.last_name,
-                                "email": user.email,
-                                "mobile_number": user.mobile_number,
-                            }
-                        },
-                        "services": [],
-                        "documents": {},
-                        "correction_notes": "",
-                        "rejection_reason": "",
-                        "submitted_at": None,
-                        "approved_at": None,
-                        "channel": "provider_team" if joining_provider_team else "individual",
-                    }
-                },
+                bank_details=bank_details,
             )
 
-            if not joining_provider_team:
+            if target_provider:
+                join_request_obj = WorkforceProviderJoinRequest.objects.create(
+                    technician=employee,
+                    provider=target_provider,
+                    status=WorkforceProviderJoinRequest.Status.PENDING,
+                )
+                now_iso = timezone.now().isoformat()
+                onboarding = bank_details["onboarding"]
+                onboarding["join_request"] = {
+                    "id": join_request_obj.id,
+                    "provider_id": target_provider.id,
+                    "provider_name": target_provider.company_name,
+                    "provider_display_id": target_provider.display_id,
+                    "provider_slug": target_provider.slug,
+                    "status": "PENDING",
+                    "requested_at": now_iso,
+                    "decided_at": None,
+                    "decided_by": None,
+                    "rejection_reason": "",
+                }
+                employee.bank_details = bank_details
+                employee.save(update_fields=["bank_details"])
+            else:
                 # SEVO Individual Worker Model: this technician has no
                 # provider umbrella, so their own personal wallet -- not
                 # the shared default company's head wallet -- is what
@@ -467,7 +503,7 @@ class WorkforceSignupView(APIView):
                 logger.exception("Failed to backfill vendor invitations for employee #%s", employee.id)
 
         refresh = RefreshToken.for_user(user)
-        refresh["company_id"] = company.id
+        refresh["company_id"] = None
         refresh["role"] = user.role
 
         response = Response(
@@ -483,6 +519,14 @@ class WorkforceSignupView(APIView):
                     "first_name": user.first_name,
                     "last_name": user.last_name,
                     "role": user.role,
+                    "company_id": None,
+                    "company_name": None,
+                    "provider_id": None,
+                    "provider_name": None,
+                    "is_independent": not bool(target_provider),
+                    "association_status": "PENDING" if target_provider else "INDEPENDENT",
+                    "requested_provider_id": target_provider.id if target_provider else None,
+                    "requested_provider_name": target_provider.company_name if target_provider else None,
                     "employee_id": employee.employee_id,
                     "registration_status": "not_started",
                 },
@@ -906,10 +950,7 @@ class WorkforceOnboardingMeView(APIView):
         if not emp:
             return Response({"error": "No employee profile found for user."}, status=status.HTTP_404_NOT_FOUND)
 
-        from workforce_api.services.workload import reconcile_employee_availability
-        reconcile_employee_availability(emp)
-        emp.refresh_from_db(fields=["current_availability", "is_online"])
-
+        # GET is strictly read-only: NO availability reconciliation side effects
         serializer = WorkforceEmployeeProfileSerializer(emp)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -919,62 +960,167 @@ class WorkforceOnboardingDraftView(APIView):
 
     def patch(self, request):
         from workforce_api.services.registration import get_or_create_employee_profile
-        user = request.user
-        emp = get_or_create_employee_profile(user)
-        if not emp:
-            return Response({"error": "Employee record not found."}, status=status.HTTP_404_NOT_FOUND)
+        from workforce_api.services.onboarding import (
+            CANDIDATE_EDITABLE_STATUSES,
+            OnboardingValidationError,
+            validate_personal_step,
+            validate_address_step,
+            validate_services_step,
+            validate_skills_step,
+            validate_bank_step,
+            validate_documents_step,
+            can_access_onboarding_step,
+        )
 
+        user = request.user
         serializer = WorkforceOnboardingDraftSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        step = serializer.validated_data.get("step")
+        target_step = serializer.validated_data.get("step")
         draft_data = serializer.validated_data.get("draft_data", {})
 
-        bank_details = emp.bank_details or {}
-        onboarding = bank_details.get("onboarding", {})
+        with transaction.atomic():
+            emp = Employee.objects.select_for_update().filter(user=user).first()
+            if not emp:
+                emp = get_or_create_employee_profile(user)
+            if not emp:
+                return Response({"error": "Employee record not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        current_status = onboarding.get("status", "not_started")
-        if current_status == "not_started":
-            onboarding["status"] = "in_progress"
+            bank_details = emp.bank_details or {}
+            onboarding = bank_details.get("onboarding", {})
 
-        if step:
-            onboarding["step"] = step
+            current_status = str(onboarding.get("status", "not_started")).strip().lower()
+            if current_status not in CANDIDATE_EDITABLE_STATUSES:
+                return Response({
+                    "error": "LIFECYCLE_CONFLICT",
+                    "message": f"Cannot edit onboarding draft while status is '{current_status}'.",
+                    "status": current_status,
+                }, status=status.HTTP_409_CONFLICT)
 
-        existing_draft = onboarding.get("draft", {})
-        existing_draft.update(draft_data)
-        onboarding["draft"] = existing_draft
+            completed_steps = list(onboarding.get("completed_steps", []))
+            is_locked = current_status in ("submitted", "under_review", "approved")
+            existing_draft = onboarding.get("draft", {})
+            errors = {}
 
-        # Sync core fields
-        if "personal" in draft_data:
-            p = draft_data["personal"]
-            if p.get("dob"):
-                emp.date_of_birth = p.get("dob")
-        if "services" in draft_data:
-            selected_services = draft_data["services"]
-            current_services = onboarding.get("services", [])
-            existing_statuses = {s.get("id"): s.get("status", "pending") for s in current_services}
+            # Validate the sections supplied in draft_data
+            if "personal" in draft_data:
+                try:
+                    clean_personal = validate_personal_step(draft_data["personal"])
+                    existing_draft["personal"] = clean_personal
+                    if clean_personal.get("dob"):
+                        emp.date_of_birth = clean_personal["dob"]
+                    if 1 not in completed_steps:
+                        completed_steps.append(1)
+                except OnboardingValidationError as e:
+                    errors.update(e.fields)
 
-            merged_services = []
-            for svc in selected_services:
-                s_id = svc.get("id")
-                merged_services.append({
-                    "id": s_id,
-                    "name": svc.get("name", ""),
-                    "category": svc.get("category", ""),
-                    "status": existing_statuses.get(s_id, "pending"),
-                    "rejection_reason": "",
-                })
-            onboarding["services"] = merged_services
-            emp.service_roles = [s["name"] for s in merged_services]
+            if "address" in draft_data:
+                try:
+                    clean_address = validate_address_step(draft_data["address"])
+                    existing_draft["address"] = clean_address
+                    if 1 in completed_steps and 2 not in completed_steps:
+                        completed_steps.append(2)
+                except OnboardingValidationError as e:
+                    errors.update(e.fields)
 
-        bank_details["onboarding"] = onboarding
-        emp.bank_details = bank_details
-        emp.save()
+            if "services" in draft_data:
+                try:
+                    clean_services = validate_services_step(
+                        draft_data["services"],
+                        existing_services=onboarding.get("services", [])
+                    )
+                    existing_draft["services"] = clean_services
+                    onboarding["services"] = clean_services
+                    emp.service_roles = [s["name"] for s in clean_services]
+                    if 2 in completed_steps and 3 not in completed_steps:
+                        completed_steps.append(3)
+                except OnboardingValidationError as e:
+                    errors.update(e.fields)
+
+            if "skills" in draft_data:
+                try:
+                    clean_skills = validate_skills_step(draft_data["skills"])
+                    existing_draft["skills"] = clean_skills
+                    if 3 in completed_steps and 4 not in completed_steps:
+                        completed_steps.append(4)
+                except OnboardingValidationError as e:
+                    errors.update(e.fields)
+
+            if "documents" in draft_data:
+                existing_docs = onboarding.get("documents", {})
+                try:
+                    validate_documents_step(existing_docs, employee_id=emp.id)
+                    if 4 in completed_steps and 5 not in completed_steps:
+                        completed_steps.append(5)
+                except OnboardingValidationError:
+                    pass
+
+            if "bank" in draft_data:
+                try:
+                    clean_bank = validate_bank_step(draft_data["bank"])
+                    # confirmAccountNumber is stripped by validate_bank_step
+                    existing_draft["bank"] = clean_bank
+                    if 5 in completed_steps and 6 not in completed_steps:
+                        completed_steps.append(6)
+
+                    # Non-fatal sync to individual wallet payout details
+                    try:
+                        from workforce_api.services.wallet_onboarding import resolve_wallet_for_user, set_payout_details
+                        wallet, _ = resolve_wallet_for_user(user)
+                        if wallet:
+                            set_payout_details(
+                                wallet,
+                                bank_account_name=clean_bank.get("accountHolder", ""),
+                                bank_account_number=clean_bank.get("accountNumber", ""),
+                                ifsc=clean_bank.get("ifsc", ""),
+                                upi_id=clean_bank.get("upiId", ""),
+                            )
+                    except Exception as wex:
+                        logger.warning("Non-fatal wallet payout details sync warning: %s", wex)
+                except OnboardingValidationError as e:
+                    errors.update(e.fields)
+
+            if errors:
+                flat_errors = []
+                for f_list in errors.values():
+                    if isinstance(f_list, list):
+                        flat_errors.extend([str(x) for x in f_list if x])
+                    elif isinstance(f_list, str) and f_list.strip():
+                        flat_errors.append(f_list.strip())
+                summary_msg = " • ".join(flat_errors) if flat_errors else "Please correct the highlighted fields."
+                return Response({
+                    "error": "ONBOARDING_VALIDATION_FAILED",
+                    "message": summary_msg,
+                    "fields": errors,
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Check step progression for target_step (prevent skipping uncompleted steps)
+            if target_step and not can_access_onboarding_step(target_step, completed_steps, is_locked):
+                return Response({
+                    "error": "ONBOARDING_STEP_SKIPPED",
+                    "message": f"Cannot advance to step {target_step} before completing earlier required steps.",
+                    "current_step": onboarding.get("step", 1),
+                    "completed_steps": completed_steps,
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Transition from not_started to in_progress on first successful draft save
+            if current_status == "not_started":
+                onboarding["status"] = "in_progress"
+
+            if target_step:
+                onboarding["step"] = target_step
+
+            onboarding["draft"] = existing_draft
+            onboarding["completed_steps"] = sorted(list(set(completed_steps)))
+            bank_details["onboarding"] = onboarding
+            emp.bank_details = bank_details
+            emp.save()
 
         return Response({
             "message": "Draft saved successfully.",
             "step": onboarding.get("step"),
             "status": onboarding.get("status"),
+            "completed_steps": onboarding.get("completed_steps", []),
         }, status=status.HTTP_200_OK)
 
 
@@ -985,45 +1131,127 @@ class WorkforceOnboardingDocumentUploadView(APIView):
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
+        from workforce_api.services.onboarding import (
+            CANONICAL_DOCUMENT_CATEGORIES,
+            REQUIRED_DOCUMENT_CATEGORIES,
+            ALLOWED_DOC_EXTENSIONS,
+            ALLOWED_DOC_MIMES,
+            MAX_DOC_FILE_SIZE_BYTES,
+            CANDIDATE_EDITABLE_STATUSES,
+        )
+
         user = request.user
         emp = getattr(user, "employee_profile", None)
         if not emp:
             return Response({"error": "Employee record not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        file_obj = request.FILES.get("file")
-        category = request.data.get("category", "identification")
-        title = request.data.get("title", category)
-        document_number = request.data.get("document_number", "")
-
-        if not file_obj:
-            return Response({"error": "No file uploaded."}, status=status.HTTP_400_BAD_REQUEST)
-
-        filename = f"workforce_docs/emp_{emp.id}_{category}_{uuid.uuid4().hex[:8]}_{file_obj.name}"
-        saved_path = default_storage.save(filename, file_obj)
-        file_url = default_storage.url(saved_path)
-
         bank_details = emp.bank_details or {}
         onboarding = bank_details.get("onboarding", {})
-        documents = onboarding.get("documents", {})
+        current_status = str(onboarding.get("status", "not_started")).strip().lower()
 
-        documents[category] = {
-            "category": category,
-            "title": title,
-            "document_number": document_number,
-            "file_url": file_url,
-            "status": "uploaded",
-            "uploaded_at": timezone.now().isoformat(),
-            "rejection_reason": "",
-        }
+        if current_status not in CANDIDATE_EDITABLE_STATUSES:
+            return Response({
+                "error": "LIFECYCLE_CONFLICT",
+                "message": f"Cannot upload documents while application is '{current_status}'.",
+            }, status=status.HTTP_403_FORBIDDEN)
 
-        onboarding["documents"] = documents
-        bank_details["onboarding"] = onboarding
-        emp.bank_details = bank_details
-        emp.save()
+        category = str(request.data.get("category", "") or "").strip().lower()
+        if category not in CANONICAL_DOCUMENT_CATEGORIES:
+            return Response({
+                "error": "INVALID_DOCUMENT_CATEGORY",
+                "message": f"Invalid document category '{category}'. Allowed categories: {', '.join(sorted(CANONICAL_DOCUMENT_CATEGORIES))}.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        file_obj = request.FILES.get("file")
+        if not file_obj or file_obj.size == 0:
+            return Response({"error": "No file uploaded or file is empty."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if file_obj.size > MAX_DOC_FILE_SIZE_BYTES:
+            return Response({
+                "error": "FILE_TOO_LARGE",
+                "message": f"File size ({file_obj.size / (1024 * 1024):.1f}MB) exceeds the 5MB limit.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        ext = os.path.splitext(file_obj.name)[1].lower()
+        if ext not in ALLOWED_DOC_EXTENSIONS:
+            return Response({
+                "error": "UNSUPPORTED_FILE_TYPE",
+                "message": f"File extension '{ext}' is not permitted. Allowed extensions: {', '.join(sorted(ALLOWED_DOC_EXTENSIONS))}.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        content_type = getattr(file_obj, "content_type", "")
+        if content_type and content_type.lower() not in ALLOWED_DOC_MIMES:
+            return Response({
+                "error": "UNSUPPORTED_MIME_TYPE",
+                "message": f"MIME type '{content_type}' is not supported.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        title = str(request.data.get("title", "") or "").strip() or category.replace("_", " ").title()
+        document_number = str(request.data.get("document_number", "") or "").strip()
+
+        # Generate safe server-side storage path
+        safe_filename = f"workforce_docs/emp_{emp.id}_{category}_{uuid.uuid4().hex[:12]}{ext}"
+        saved_path = default_storage.save(safe_filename, file_obj)
+        file_url = default_storage.url(saved_path)
+
+        with transaction.atomic():
+            emp.refresh_from_db(fields=["bank_details"])
+            bank_details = emp.bank_details or {}
+            onboarding = bank_details.get("onboarding", {})
+            documents = onboarding.get("documents", {})
+
+            # Preserve previous rejection history if replacing a rejected document
+            previous_doc = documents.get(category, {})
+            previous_rejections = previous_doc.get("previous_rejections", [])
+            if previous_doc.get("status") == "rejected":
+                previous_rejections.append({
+                    "reason": previous_doc.get("rejection_reason", ""),
+                    "rejection_reason": previous_doc.get("rejection_reason", ""),
+                    "verified_at": previous_doc.get("verified_at"),
+                    "verified_by": previous_doc.get("verified_by"),
+                    "replaced_at": timezone.now().isoformat(),
+                })
+
+            new_doc_entry = {
+                "category": category,
+                "title": title,
+                "document_number": document_number,
+                "file_url": file_url,
+                "storage_path": saved_path,
+                "file_name": os.path.basename(file_obj.name),
+                "file_size": file_obj.size,
+                "mime_type": content_type,
+                "status": "uploaded",
+                "uploaded_at": timezone.now().isoformat(),
+                "rejection_reason": "",
+                "previous_rejections": previous_rejections,
+                "verified_at": None,
+                "verified_by": None,
+            }
+
+            documents[category] = new_doc_entry
+            onboarding["documents"] = documents
+
+            # Check if all required documents are now present
+            has_all_required = all(
+                documents.get(rc, {}).get("status") in ("uploaded", "approved", "pending")
+                and documents.get(rc, {}).get("file_url")
+                for rc in REQUIRED_DOCUMENT_CATEGORIES
+            )
+            completed_steps = set(onboarding.get("completed_steps", []))
+            if has_all_required:
+                completed_steps.add(5)
+            else:
+                completed_steps.discard(5)
+            onboarding["completed_steps"] = sorted(list(completed_steps))
+
+            bank_details["onboarding"] = onboarding
+            emp.bank_details = bank_details
+            emp.save()
 
         return Response({
-            "message": f"Document {title} uploaded successfully.",
-            "document": documents[category],
+            "message": f"Document '{title}' uploaded successfully.",
+            "document": new_doc_entry,
         }, status=status.HTTP_201_CREATED)
 
 
@@ -1033,25 +1261,96 @@ class WorkforceOnboardingSubmitView(APIView):
     permission_classes = [IsWorkforceEmployee]
 
     def post(self, request):
+        from workforce_api.services.onboarding import (
+            validate_full_onboarding_submission,
+            OnboardingValidationError,
+            CANDIDATE_EDITABLE_STATUSES,
+        )
+
         user = request.user
         emp = getattr(user, "employee_profile", None)
         if not emp:
             return Response({"error": "Employee record not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        bank_details = emp.bank_details or {}
-        onboarding = bank_details.get("onboarding", {})
+        with transaction.atomic():
+            emp = Employee.objects.select_for_update().filter(id=emp.id).first()
+            bank_details = emp.bank_details or {}
+            onboarding = bank_details.get("onboarding", {})
+            current_status = str(onboarding.get("status", "not_started")).strip().lower()
 
-        onboarding["status"] = "submitted"
-        onboarding["submitted_at"] = timezone.now().isoformat()
-        bank_details["onboarding"] = onboarding
-        emp.bank_details = bank_details
-        emp.is_online = False
-        emp.current_availability = "offline"
-        emp.save()
+            # Idempotency / state check: if already submitted, return 409 conflict
+            if current_status in ("submitted", "under_review"):
+                return Response({
+                    "error": "ALREADY_SUBMITTED",
+                    "message": "Application has already been submitted and is pending verification.",
+                    "status": current_status,
+                    "submitted_at": onboarding.get("submitted_at"),
+                }, status=status.HTTP_409_CONFLICT)
+
+            if current_status == "approved":
+                return Response({
+                    "error": "ALREADY_APPROVED",
+                    "message": "Application has already been approved.",
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            if current_status == "rejected":
+                return Response({
+                    "error": "APPLICATION_REJECTED",
+                    "message": "Application was declined. Resubmission is not permitted.",
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            declaration_accepted = bool(request.data.get("declaration_accepted", False))
+            if not declaration_accepted:
+                return Response({
+                    "error": "DECLARATION_REQUIRED",
+                    "message": "Please accept the declaration to submit your application.",
+                    "fields": {"declaration": ["You must accept the declaration to submit your application."]},
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            try:
+                cleaned_payload = validate_full_onboarding_submission(emp, declaration_accepted=True)
+            except OnboardingValidationError as e:
+                return Response(e.to_dict(), status=status.HTTP_400_BAD_REQUEST)
+
+            now_iso = timezone.now().isoformat()
+            onboarding["status"] = "submitted"
+            onboarding["submitted_at"] = now_iso
+            onboarding["step"] = 7
+            onboarding["completed_steps"] = [1, 2, 3, 4, 5, 6, 7]
+            onboarding["declaration_accepted"] = True
+            onboarding["declaration_accepted_at"] = now_iso
+
+            # Update draft with validated representations
+            draft = onboarding.get("draft", {})
+            draft["personal"] = cleaned_payload["personal"]
+            draft["address"] = cleaned_payload["address"]
+            draft["skills"] = cleaned_payload["skills"]
+            draft["bank"] = cleaned_payload["bank"]
+            draft["services"] = cleaned_payload["services"]
+            draft["documents"] = cleaned_payload["documents"]
+            onboarding["draft"] = draft
+            onboarding["services"] = cleaned_payload["services"]
+            onboarding["documents"] = cleaned_payload["documents"]
+
+            if onboarding.get("correction_notes"):
+                if "correction_history" not in onboarding:
+                    onboarding["correction_history"] = []
+                onboarding["correction_history"].append({
+                    "notes": onboarding["correction_notes"],
+                    "resubmitted_at": now_iso,
+                })
+                onboarding["correction_notes"] = ""
+
+            bank_details["onboarding"] = onboarding
+            emp.bank_details = bank_details
+            emp.is_online = False
+            emp.current_availability = "offline"
+            emp.save()
 
         return Response({
             "message": "Application submitted successfully for Workforce Admin verification.",
             "status": "submitted",
+            "submitted_at": now_iso,
         }, status=status.HTTP_200_OK)
 
 
@@ -1215,10 +1514,14 @@ class WorkforceAdminDocumentVerifyView(APIView):
             if emp.company_id != user_company.id:
                 return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
-        action = request.data.get("action", "").lower()
-        reason = request.data.get("reason", "")
+        raw_action = str(request.data.get("action") or request.data.get("status") or "").lower().strip()
+        reason = str(request.data.get("reason") or request.data.get("rejection_reason") or "").strip()
 
-        if action not in ["approve", "reject"]:
+        if raw_action in ("approve", "approved"):
+            action = "approve"
+        elif raw_action in ("reject", "rejected"):
+            action = "reject"
+        else:
             return Response({"error": "Action must be 'approve' or 'reject'."}, status=status.HTTP_400_BAD_REQUEST)
 
         bank_details = emp.bank_details or {}
@@ -1232,6 +1535,11 @@ class WorkforceAdminDocumentVerifyView(APIView):
         documents[category]["rejection_reason"] = reason if action == "reject" else ""
         documents[category]["verified_at"] = timezone.now().isoformat()
         documents[category]["verified_by"] = request.user.username
+
+        if action == "reject" and onboarding.get("status") in ("submitted", "under_review"):
+            onboarding["status"] = "correction_required"
+            if reason:
+                onboarding["correction_notes"] = reason
 
         onboarding["documents"] = documents
         bank_details["onboarding"] = onboarding
@@ -1943,6 +2251,12 @@ class WorkforceAdminApproveApplicationView(APIView):
 
         bank_details = emp.bank_details or {}
         onboarding = bank_details.get("onboarding", {})
+        current_reg_status = str(onboarding.get("status", "not_started")).strip().lower()
+        if current_reg_status not in ["submitted", "under_review"]:
+            return Response({
+                "error": f"Cannot approve candidate: Application has not been submitted (current status: '{current_reg_status}')."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         documents = onboarding.get("documents", {})
         services = onboarding.get("services", [])
 

@@ -5,15 +5,20 @@ import { apiGetOnboardingProfile } from '../../api/workforceService.js';
 import { AppShell } from '../../components/common/AppShell.jsx';
 
 export function PendingReviewPage() {
-  const { refreshProfile } = useAuth();
-  const [profile, setProfile] = useState(null);
+  const { refreshProfile, employee, user } = useAuth();
+  const [profile, setProfile] = useState(employee || null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const fetchStatus = async () => {
     try {
       setIsRefreshing(true);
-      const updatedUser = await refreshProfile();
-      if (updatedUser) {
+      const [updatedUser, empData] = await Promise.all([
+        refreshProfile(true).catch(() => null),
+        apiGetOnboardingProfile().catch(() => null),
+      ]);
+      if (empData) {
+        setProfile(empData);
+      } else if (updatedUser?.onboarding_data) {
         setProfile(updatedUser);
       }
     } catch (_) {
@@ -26,9 +31,13 @@ export function PendingReviewPage() {
     fetchStatus();
   }, []);
 
-  const onboarding = profile?.onboarding_data || {};
-  const services = onboarding.services || [];
-  const docs = onboarding.documents || {};
+  const onboarding = profile?.onboarding_data || employee?.onboarding_data || user?.onboarding_data || {};
+  const services = (onboarding.services && Array.isArray(onboarding.services) && onboarding.services.length > 0)
+    ? onboarding.services
+    : (onboarding.draft?.services || profile?.all_requested_services || profile?.services || employee?.all_requested_services || []);
+  const docs = (onboarding.documents && typeof onboarding.documents === 'object' && Object.keys(onboarding.documents).length > 0)
+    ? onboarding.documents
+    : (onboarding.draft?.documents || profile?.documents_status || profile?.documents || employee?.documents_status || {});
 
   return (
     <AppShell breadcrumbs={[{ label: 'Application Status' }]}>

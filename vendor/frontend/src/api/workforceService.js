@@ -167,9 +167,10 @@ export async function apiUploadDocument(categoryOrFormData, file = null, title =
 
 export const apiUploadOnboardingDocument = apiUploadDocument;
 
-export async function apiSubmitOnboarding() {
+export async function apiSubmitOnboarding(payload = { declaration_accepted: true }) {
   return await apiRequest('/workforce/onboarding/submit/', {
     method: 'POST',
+    json: payload,
   });
 }
 

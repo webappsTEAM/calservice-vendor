@@ -21,22 +21,62 @@ class WorkforceSignupSerializer(serializers.Serializer):
     mobile_number = serializers.CharField(max_length=20)
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True, min_length=6)
+    account_type = serializers.CharField(required=False, default="independent")
+    provider_id = serializers.IntegerField(required=False, allow_null=True)
+    provider_slug = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    company_id = serializers.IntegerField(required=False, allow_null=True)
+    company_slug = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+
+    def validate_first_name(self, value):
+        cleaned = value.strip()
+        if not cleaned:
+            raise serializers.ValidationError("First name cannot be empty.")
+        return cleaned
+
+    def validate_last_name(self, value):
+        return (value or "").strip()
 
     def validate_email(self, value):
-        if User.objects.filter(email__iexact=value).exists():
+        cleaned = value.strip().lower()
+        if User.objects.filter(email__iexact=cleaned).exists():
             raise serializers.ValidationError("An account with this email already exists.")
-        return value.lower()
+        return cleaned
 
     def validate_mobile_number(self, value):
         cleaned = value.strip().replace(" ", "").replace("-", "")
+        if len(cleaned) < 10:
+            raise serializers.ValidationError("Please enter a valid mobile number with at least 10 digits.")
         if User.objects.filter(mobile_number=cleaned).exists():
             raise serializers.ValidationError("An account with this mobile number already exists.")
         return cleaned
 
 
+ALLOWED_DRAFT_SECTIONS = {"personal", "address", "services", "skills", "documents", "bank"}
+FORBIDDEN_DRAFT_KEYS = {
+    "status", "step", "completed_steps", "submitted_at", "approved_at",
+    "approved_by", "rejected_at", "rejected_by", "rejection_reason",
+    "verified_at", "verified_by", "verification_status", "correction_notes"
+}
+
+
 class WorkforceOnboardingDraftSerializer(serializers.Serializer):
     step = serializers.IntegerField(min_value=1, max_value=7, required=False)
     draft_data = serializers.DictField(required=True)
+
+    def validate_draft_data(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("draft_data must be a dictionary.")
+        for forbidden in FORBIDDEN_DRAFT_KEYS:
+            if forbidden in value:
+                raise serializers.ValidationError(
+                    f"Field '{forbidden}' is server-controlled and cannot be supplied in draft_data."
+                )
+        unknown = set(value.keys()) - ALLOWED_DRAFT_SECTIONS
+        if unknown:
+            raise serializers.ValidationError(
+                f"Unknown onboarding sections: {', '.join(sorted(unknown))}."
+            )
+        return value
 
 
 class WorkforceEmployeeProfileSerializer(serializers.ModelSerializer):
@@ -114,19 +154,12 @@ class WorkforceEmployeeProfileSerializer(serializers.ModelSerializer):
         return ""
 
     def get_onboarding_data(self, obj):
-        return (obj.bank_details or {}).get("onboarding", {
-            "status": "not_started",
-            "step": 1,
-            "draft": {},
-            "services": [],
-            "documents": {},
-            "correction_notes": "",
-            "rejection_reason": "",
-        })
+        from workforce_api.services.registration import get_employee_onboarding_dict
+        return get_employee_onboarding_dict(obj)
 
     def get_registration_status(self, obj):
-        ob = (obj.bank_details or {}).get("onboarding", {})
-        return ob.get("status", "not_started")
+        from workforce_api.services.registration import get_employee_registration_status
+        return get_employee_registration_status(obj)
 
     def get_approved_services(self, obj):
         ob = (obj.bank_details or {}).get("onboarding", {})
