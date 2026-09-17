@@ -1162,7 +1162,7 @@ class Package(models.Model):
     class Meta:
         managed = False
         db_table = "service_requests_package"
-        ordering = ["sort_order", "name"]
+        ordering = ["sort_order", "id"]
 
     def __str__(self):
         return f"{self.name} (₹{self.base_price or '—'})"

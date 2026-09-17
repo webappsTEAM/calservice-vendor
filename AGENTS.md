@@ -1154,3 +1154,19 @@ The system must remain:
 - Scalable
 
 Every future feature, correction, refactor, and optimization must follow these rules.
+
+---
+
+# 42. BACKUP & ZIP UPDATE RULE
+
+Whenever the user says "update zip", "make a zip", or "backup the project":
+1. **Target Archive**:
+   Always update ONLY the existing ZIP archive at:
+   `C:\Users\user\Desktop\sevo backup\calservices_latest.zip`
+2. **Never Create New/Duplicate Archives**:
+   - Do NOT create timestamped archives (e.g. `SEVO_backup_...zip`, `calservices_archive_...zip`).
+   - Do NOT create new zip files with different names.
+   - Always overwrite/update `calservices_latest.zip` directly.
+3. **Execution**:
+   Run:
+   `python zip_codebase.py --target both --include-env`

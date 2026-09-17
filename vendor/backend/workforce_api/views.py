@@ -20,10 +20,11 @@ from django.db.models import Q
 logger = logging.getLogger(__name__)
 
 
+from django.core.exceptions import PermissionDenied as DjangoPermissionDenied, ValidationError as DjangoValidationError
 from django.utils import timezone
 from django.utils.text import slugify
 from rest_framework import permissions, status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import ValidationError, PermissionDenied as RestPermissionDenied
 from rest_framework.throttling import ScopedRateThrottle  # EC-06
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.renderers import BaseRenderer, JSONRenderer
@@ -458,6 +459,17 @@ class WorkforceSignupView(APIView):
                         "-- will need manual wallet provisioning before this worker can be paid.",
                         employee.id,
                     )
+
+            # Provision internal EmployeeWallet for technician self-service wallet dashboard
+            try:
+                from vendor_wallet.models import EmployeeWallet
+                from vendor_wallet.constants import WALLET_ACTIVE
+                EmployeeWallet.objects.get_or_create(
+                    employee=employee,
+                    defaults={"company": company, "currency": "INR", "status": WALLET_ACTIVE},
+                )
+            except Exception:
+                logger.exception("Failed to provision EmployeeWallet for employee #%s at signup", employee.id)
 
             # Automatically backfill any pending vendor invitations sent to this email
             try:
@@ -1827,6 +1839,15 @@ class WorkforceAdminSocialSecurityListView(APIView):
             "-days_worked_current_fy"
         )
 
+        if not is_platform_superadmin(request.user):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response(
+                    {"error": "Tenant company context required.", "code": "TENANT_REQUIRED"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            qs = qs.filter(employee__company=user_company)
+
         status_filter = request.query_params.get("status")
         if status_filter:
             qs = qs.filter(status=status_filter)
@@ -1865,9 +1886,22 @@ class WorkforceAdminSocialSecurityMarkRegisteredView(APIView):
         if not registration_id:
             return Response({"error": "registration_id is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        registration = SocialSecurityRegistration.objects.filter(pk=registration_id).first()
+        registration = SocialSecurityRegistration.objects.select_related("employee").filter(pk=registration_id).first()
         if not registration:
             return Response({"error": "Registration record not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not is_platform_superadmin(request.user):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response(
+                    {"error": "Tenant company context required.", "code": "TENANT_REQUIRED"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if not registration.employee or registration.employee.company_id != user_company.id:
+                return Response(
+                    {"error": "Unauthorized cross-tenant access.", "code": "FORBIDDEN"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
         registered_by = request.user.get_full_name() or request.user.username
         try:
@@ -2147,8 +2181,7 @@ def is_employee_authorized_for_job(emp, job) -> bool:
     Validates tenant compatibility between an employee and a job:
     - Solo technician (emp.company_id is None) can handle platform jobs (job.company_id in (None, 1)).
     - Platform technician (emp.company_id == 1) can handle platform jobs (job.company_id in (None, 1)).
-    - Vendor technician (emp.company_id > 1) can handle jobs belonging to their company (job.company_id == emp.company_id)
-      as well as platform/marketplace jobs (job.company_id in (None, 1)).
+    - Vendor technician (emp.company_id > 1) can ONLY handle jobs belonging to their company (job.company_id == emp.company_id).
     """
     if not emp or not job:
         return False
@@ -2156,7 +2189,7 @@ def is_employee_authorized_for_job(emp, job) -> bool:
     emp_cid = getattr(emp, "company_id", None)
     if emp_cid is None or emp_cid == 1:
         return job_cid is None or job_cid == 1
-    return job_cid == emp_cid or job_cid is None or job_cid == 1
+    return job_cid == emp_cid
 
 
 class WorkforceJobListView(APIView):
@@ -2239,7 +2272,13 @@ class WorkforceJobListView(APIView):
             emp_job_sr_ids_qs = EmployeeJob.objects.filter(
                 employee=emp
             ).exclude(
-                status__in=["REJECTED", "CANCELLED"]
+                # BUG-A-01 FIX: EMPLOYEE_CANCELLED is the status the state machine
+                # assigns when a technician cancels an accepted assignment (via
+                # WorkforceEmployeeCancelAssignmentView → apply_transition("redispatching")).
+                # Without this exclusion the job kept appearing in the technician's
+                # job list after cancellation, even though they were no longer assigned.
+                # REJECTED/CANCELLED were already here; EMPLOYEE_CANCELLED was the gap.
+                status__in=["REJECTED", "CANCELLED", "EMPLOYEE_CANCELLED"]
             ).values("service_request_id")
 
             # Canonical query definitions using subqueries to avoid extra roundtrips
@@ -3686,6 +3725,29 @@ class WorkforceJobAcceptOfferView(APIView):
             if not emp_obj:
                 return Response({"error": "Employee profile not found.", "code": "PROFILE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
+            # Prevent acceptance on cancelled or terminal jobs
+            from workforce_api.models import WorkforceJobOffer
+            if job_obj.status == "cancelled":
+                WorkforceJobOffer.objects.filter(
+                    job=job_obj,
+                    status=WorkforceJobOffer.Status.OFFERED,
+                ).update(
+                    status=WorkforceJobOffer.Status.CANCELLED,
+                    rejection_reason="Customer cancelled booking before offer acceptance."
+                )
+                return Response({
+                    "error": "This booking was cancelled by the customer before acceptance.",
+                    "code": "JOB_ALREADY_CANCELLED",
+                    "message": "This booking was cancelled by the customer before acceptance."
+                }, status=status.HTTP_409_CONFLICT)
+
+            if job_obj.status in ("completed", "unable_to_complete"):
+                return Response({
+                    "error": f"Cannot accept job: Job is already {job_obj.status}.",
+                    "code": "JOB_ALREADY_TERMINAL",
+                    "message": f"Cannot accept job: Job is already {job_obj.status}."
+                }, status=status.HTTP_409_CONFLICT)
+
             # Prevent duplicate acceptance by the same employee on the same job (Idempotent success)
             if job_obj.assigned_employee == emp_obj and job_obj.status in ACTIVE_WORKLOAD_STATUSES:
                 return Response({
@@ -4593,6 +4655,42 @@ class WorkforceCustomerBookingQuoteView(APIView):
 
         if not job:
             return Response({"error": "Booking not found", "code": "BOOKING_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Object-level authorization: Token or Authenticated Customer/Staff Check
+        token = request.query_params.get("token") or request.headers.get("X-Tracking-Token")
+        user = getattr(request, "user", None)
+
+        is_authorized = False
+        if token:
+            expected_token = getattr(job, "tracking_token", None)
+            if expected_token and str(token).strip() == str(expected_token).strip():
+                is_authorized = True
+            else:
+                return Response({
+                    "error": "Invalid tracking token.",
+                    "code": "INVALID_TRACKING_TOKEN"
+                }, status=status.HTTP_403_FORBIDDEN)
+        elif user and user.is_authenticated:
+            if getattr(user, "is_staff", False) or getattr(user, "is_superuser", False) or is_admin_role(user):
+                is_authorized = True
+            elif getattr(job, "customer_id", None) == getattr(user, "id", None) or getattr(job, "customer", None) == user:
+                is_authorized = True
+            else:
+                return Response({
+                    "error": "You are not authorized to view this quotation.",
+                    "code": "NOT_AUTHORIZED"
+                }, status=status.HTTP_403_FORBIDDEN)
+        else:
+            return Response({
+                "error": "Authentication required to view quotation.",
+                "code": "AUTHENTICATION_REQUIRED"
+            }, status=status.HTTP_401_UNAUTHORIZED)
+
+        if not is_authorized:
+            return Response({
+                "error": "Not authorized to access this quotation.",
+                "code": "FORBIDDEN"
+            }, status=status.HTTP_403_FORBIDDEN)
 
         est = Estimation.objects.filter(service_request=job).first()
         if not est:
@@ -8815,9 +8913,24 @@ class AdminCashOutstandingView(APIView):
     def get(self, request, employee_id):
         from employees.models import Employee
         from workforce_api.services import compute_outstanding_cash
+
         emp = Employee.objects.filter(pk=employee_id).first()
         if not emp:
             return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not is_platform_superadmin(request.user):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response(
+                    {"error": "Tenant company context required.", "code": "TENANT_REQUIRED"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if emp.company_id != user_company.id:
+                return Response(
+                    {"error": "Unauthorized cross-tenant access.", "code": "FORBIDDEN"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
         expected_amount, outstanding_qs = compute_outstanding_cash(emp)
         return Response({
             "employee_id": emp.id,
@@ -8846,10 +8959,31 @@ class AdminCashSettlementView(APIView):
         from workforce_api.services import list_cash_settlements
         employee = None
         employee_id = request.query_params.get("employee_id")
-        if employee_id:
-            employee = Employee.objects.filter(pk=employee_id).first()
-        company = resolve_actor_company(request) if not getattr(request.user, "is_superuser", False) else None
-        settlements = list_cash_settlements(employee=employee, company=company)
+
+        if not is_platform_superadmin(request.user):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response(
+                    {"error": "Tenant company context required.", "code": "TENANT_REQUIRED"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if employee_id:
+                employee = Employee.objects.filter(pk=employee_id).first()
+                if not employee:
+                    return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
+                if employee.company_id != user_company.id:
+                    return Response(
+                        {"error": "Unauthorized cross-tenant access.", "code": "FORBIDDEN"},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+            settlements = list_cash_settlements(employee=employee, company=user_company)
+        else:
+            if employee_id:
+                employee = Employee.objects.filter(pk=employee_id).first()
+                if not employee:
+                    return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
+            settlements = list_cash_settlements(employee=employee, company=None)
+
         return Response([
             {
                 "id": s.id,
@@ -8876,9 +9010,25 @@ class AdminCashSettlementView(APIView):
         if not emp:
             return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        if not is_platform_superadmin(request.user):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response(
+                    {"error": "Tenant company context required.", "code": "TENANT_REQUIRED"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if emp.company_id != user_company.id:
+                return Response(
+                    {"error": "Unauthorized cross-tenant access.", "code": "FORBIDDEN"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            target_company = user_company
+        else:
+            target_company = emp.company
+
         try:
             settlement = record_cash_settlement(
-                employee=emp, company=emp.company, deposited_amount=deposited_amount,
+                employee=emp, company=target_company, deposited_amount=deposited_amount,
                 recorded_by=request.user, notes=notes,
             )
         except Exception as e:
@@ -11348,11 +11498,15 @@ class RelievingLegalSignoffView(APIView):
                 "worker_signoff_ack": req.worker_signoff_ack,
                 "vendor_signoff_ack": req.vendor_signoff_ack,
             }, status=status.HTTP_200_OK)
-        except ValidationError as e:
-            return Response({"error": str(e.message if hasattr(e, "message") else e)}, status=status.HTTP_400_BAD_REQUEST)
+        except (DjangoPermissionDenied, RestPermissionDenied) as e:
+            return Response({"error": str(e), "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        except (ValidationError, DjangoValidationError) as e:
+            err_msg = e.message if hasattr(e, "message") else (e.messages[0] if hasattr(e, "messages") and e.messages else str(e))
+            return Response({"error": str(err_msg)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             logger.exception("Error in legal signoff: %s", e)
             return Response({"error": "Failed to record legal signoff."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 
 # ── Inventory Management ──────────────────────────────────────────────────────
@@ -12527,28 +12681,41 @@ class VendorOrderAcceptView(APIView):
 
     def post(self, request, pk):
         from workforce_api.models import GroceryOrder, GroceryOrderStatusHistory
+        from django.db import transaction
         from django.utils import timezone
 
         emp = getattr(request.user, "employee_profile", None)
         company_id = emp.company_id if (emp and emp.company_id) else getattr(request.user, "company_id", None)
 
-        order = GroceryOrder.objects.filter(id=pk, vendor_store__company_id=company_id).first()
-        if not order:
-            return Response({"error": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
+        with transaction.atomic():
+            order = (
+                GroceryOrder.objects.select_for_update()
+                .filter(id=pk, vendor_store__company_id=company_id)
+                .first()
+            )
+            if not order:
+                return Response({"error": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        old_status = order.status
-        order.status = GroceryOrder.Status.ACCEPTED
-        order.accepted_at = timezone.now()
-        order.save(update_fields=["status", "accepted_at", "updated_at"])
+            if order.status in (GroceryOrder.Status.CANCELLED, GroceryOrder.Status.VENDOR_REJECTED, GroceryOrder.Status.REFUNDED):
+                return Response({"error": f"Cannot accept order in '{order.status}' status."}, status=status.HTTP_400_BAD_REQUEST)
+            if order.status == GroceryOrder.Status.ACCEPTED:
+                return Response({"success": True, "message": "Order already accepted."})
+            if order.status not in (GroceryOrder.Status.CONFIRMED, GroceryOrder.Status.VENDOR_PENDING, GroceryOrder.Status.PENDING_PAYMENT):
+                return Response({"error": f"Cannot accept order currently in '{order.status}' status."}, status=status.HTTP_400_BAD_REQUEST)
 
-        GroceryOrderStatusHistory.objects.create(
-            order=order,
-            from_status=old_status,
-            to_status=order.status,
-            actor=request.user.get_full_name() or "Vendor Admin",
-            notes="Order accepted by vendor store",
-        )
-        return Response({"success": True, "message": "Order accepted."})
+            old_status = order.status
+            order.status = GroceryOrder.Status.ACCEPTED
+            order.accepted_at = timezone.now()
+            order.save(update_fields=["status", "accepted_at", "updated_at"])
+
+            GroceryOrderStatusHistory.objects.create(
+                order=order,
+                from_status=old_status,
+                to_status=order.status,
+                actor=request.user.get_full_name() or "Vendor Admin",
+                notes="Order accepted by vendor store",
+            )
+            return Response({"success": True, "message": "Order accepted."})
 
 
 class VendorOrderRejectView(APIView):
@@ -12558,7 +12725,7 @@ class VendorOrderRejectView(APIView):
     permission_classes = [IsGrocerySupplier]
 
     def post(self, request, pk):
-        from workforce_api.models import GroceryOrder, GroceryOrderStatusHistory, InventoryTransaction
+        from workforce_api.models import GroceryOrder, GroceryOrderStatusHistory, InventoryItem, InventoryTransaction
         from django.db import transaction
         from django.utils import timezone
 
@@ -12567,9 +12734,20 @@ class VendorOrderRejectView(APIView):
         reason = request.data.get("reason", "Vendor unable to fulfill order.")
 
         with transaction.atomic():
-            order = GroceryOrder.objects.filter(id=pk, vendor_store__company_id=company_id).select_related("vendor_store").prefetch_related("items").first()
+            order = (
+                GroceryOrder.objects.select_for_update()
+                .filter(id=pk, vendor_store__company_id=company_id)
+                .select_related("vendor_store")
+                .prefetch_related("items__inventory_item")
+                .first()
+            )
             if not order:
                 return Response({"error": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            if order.status in (GroceryOrder.Status.DELIVERED, GroceryOrder.Status.OUT_FOR_DELIVERY):
+                return Response({"error": f"Cannot reject order in '{order.status}' status."}, status=status.HTTP_400_BAD_REQUEST)
+            if order.status in (GroceryOrder.Status.VENDOR_REJECTED, GroceryOrder.Status.CANCELLED):
+                return Response({"success": True, "message": f"Order is already {order.status}."})
 
             old_status = order.status
             order.status = GroceryOrder.Status.VENDOR_REJECTED
@@ -12581,6 +12759,7 @@ class VendorOrderRejectView(APIView):
             for item in order.items.all():
                 inv = item.inventory_item
                 if inv:
+                    inv = InventoryItem.objects.select_for_update().filter(id=inv.id).first()
                     inv.reserved_quantity = max(Decimal("0.000"), (inv.reserved_quantity or Decimal("0.000")) - item.quantity)
                     inv.save(update_fields=["reserved_quantity", "updated_at"])
 
@@ -12606,14 +12785,15 @@ class VendorOrderRejectView(APIView):
 
 class VendorOrderStatusUpdateView(APIView):
     """
-    Update order fulfillment status: PICKING, PACKED, READY_FOR_PICKUP, OUT_FOR_DELIVERY, DELIVERED.
-    When DELIVERED, commits stock deduction and creates Financial Ledger entry.
+    Update order fulfillment status with strict state progression:
+    ACCEPTED -> PICKING -> PACKED -> OUT_FOR_DELIVERY / READY_FOR_PICKUP -> DELIVERED.
+    When DELIVERED, commits stock deduction and creates Financial Ledger entry idempotently.
     """
     permission_classes = [IsGrocerySupplier]
 
     def post(self, request, pk):
         from workforce_api.models import (
-            GroceryOrder, GroceryOrderStatusHistory,
+            GroceryOrder, GroceryOrderStatusHistory, InventoryItem,
             InventoryTransaction, FinancialLedgerEntry, CommissionRule
         )
         from django.db import transaction
@@ -12634,25 +12814,72 @@ class VendorOrderStatusUpdateView(APIView):
             return Response({"error": f"Invalid status. Must be one of {valid_statuses}."}, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
-            order = GroceryOrder.objects.filter(id=pk, vendor_store__company_id=company_id).select_related("vendor_store__company", "delivery").prefetch_related("items").first()
+            order = (
+                GroceryOrder.objects.select_for_update(of=('self',))
+                .filter(id=pk, vendor_store__company_id=company_id)
+                .select_related("vendor_store__company")
+                .prefetch_related("items__inventory_item")
+                .first()
+            )
+
             if not order:
                 return Response({"error": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            # Terminal state checks
+            if order.status in (GroceryOrder.Status.CANCELLED, GroceryOrder.Status.VENDOR_REJECTED, GroceryOrder.Status.REFUNDED):
+                return Response({"error": f"Cannot update status of a {order.status} order."}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Idempotency check: if already in target status, return 200 OK immediately
+            if order.status == target_status:
+                return Response({
+                    "success": True,
+                    "message": f"Order #{order.order_number} is already in status {target_status}.",
+                    "order_number": order.order_number,
+                    "status": order.status,
+                }, status=status.HTTP_200_OK)
+
+            # Cannot transition backwards from DELIVERED
+            if order.status == GroceryOrder.Status.DELIVERED:
+                return Response({"error": "Cannot change status of an already delivered order."}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Strict linear state machine table
+            ALLOWED_TRANSITIONS = {
+                GroceryOrder.Status.ACCEPTED: [GroceryOrder.Status.PICKING],
+                GroceryOrder.Status.PICKING: [GroceryOrder.Status.PACKED],
+                GroceryOrder.Status.PACKED: [GroceryOrder.Status.OUT_FOR_DELIVERY, GroceryOrder.Status.READY_FOR_PICKUP],
+                GroceryOrder.Status.OUT_FOR_DELIVERY: [GroceryOrder.Status.DELIVERED],
+                GroceryOrder.Status.READY_FOR_PICKUP: [GroceryOrder.Status.DELIVERED],
+            }
+
+            allowed_targets = ALLOWED_TRANSITIONS.get(order.status, [])
+            if target_status not in allowed_targets:
+                if order.status in (GroceryOrder.Status.PENDING_PAYMENT, GroceryOrder.Status.CONFIRMED, GroceryOrder.Status.VENDOR_PENDING):
+                    return Response({
+                        "error": f"Order must be accepted by vendor before updating status. Current status: '{order.status}'."
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                return Response({
+                    "error": f"Illegal status transition from '{order.status}' to '{target_status}'. Allowed next statuses: {allowed_targets}."
+                }, status=status.HTTP_400_BAD_REQUEST)
 
             old_status = order.status
             order.status = target_status
             now = timezone.now()
 
-            if target_status == GroceryOrder.Status.PACKED:
+            if target_status == GroceryOrder.Status.PICKING:
+                pass
+            elif target_status == GroceryOrder.Status.PACKED:
                 order.packed_at = now
+            elif target_status == GroceryOrder.Status.READY_FOR_PICKUP:
+                pass
             elif target_status == GroceryOrder.Status.OUT_FOR_DELIVERY:
                 order.out_for_delivery_at = now
-                if hasattr(order, "delivery"):
+                if hasattr(order, "delivery") and order.delivery:
                     order.delivery.status = "OUT_FOR_DELIVERY"
                     order.delivery.save(update_fields=["status"])
             elif target_status == GroceryOrder.Status.DELIVERED:
                 # Security Check: Validate Delivery OTP
                 submitted_otp = str(request.data.get("delivery_otp", "")).strip()
-                if hasattr(order, "delivery") and order.delivery.delivery_otp:
+                if hasattr(order, "delivery") and order.delivery and order.delivery.delivery_otp:
                     expected_otp = str(order.delivery.delivery_otp).strip()
                     if not submitted_otp or submitted_otp != expected_otp:
                         return Response({
@@ -12664,43 +12891,56 @@ class VendorOrderStatusUpdateView(APIView):
 
                 order.delivered_at = now
                 order.payment_status = GroceryOrder.PaymentStatus.CAPTURED
-                if hasattr(order, "delivery"):
+                if hasattr(order, "delivery") and order.delivery:
                     order.delivery.status = "DELIVERED"
                     order.delivery.delivered_at = now
                     order.delivery.save(update_fields=["status", "delivered_at"])
 
-                # Permanently deduct inventory & write SALE ledger
-                for item in order.items.all():
-                    inv = item.inventory_item
-                    if inv:
-                        inv.quantity_in_stock = max(Decimal("0.000"), inv.quantity_in_stock - item.quantity)
-                        inv.reserved_quantity = max(Decimal("0.000"), (inv.reserved_quantity or Decimal("0.000")) - item.quantity)
-                        inv.save(update_fields=["quantity_in_stock", "reserved_quantity", "updated_at"])
+                # Permanently deduct inventory & write SALE ledger exactly once
+                already_sold = InventoryTransaction.objects.filter(
+                    reference_id=order.order_number,
+                    transaction_type=InventoryTransaction.TransactionType.SALE,
+                ).exists()
 
-                        InventoryTransaction.objects.create(
-                            inventory_item=inv,
-                            transaction_type=InventoryTransaction.TransactionType.SALE,
-                            quantity=item.quantity,
-                            balance_after=inv.available_quantity,
-                            reference_id=order.order_number,
-                            notes=f"Sold in completed Order #{order.order_number}",
-                        )
+                if not already_sold:
+                    for item in order.items.all():
+                        inv = item.inventory_item
+                        if inv:
+                            inv = InventoryItem.objects.select_for_update().filter(id=inv.id).first()
+                            inv.quantity_in_stock = inv.quantity_in_stock - item.quantity
+                            inv.reserved_quantity = max(Decimal("0.000"), (inv.reserved_quantity or Decimal("0.000")) - item.quantity)
+                            inv.save(update_fields=["quantity_in_stock", "reserved_quantity", "updated_at"])
 
-                # Commission calculation & immutable ledger credit
-                comm_rule = CommissionRule.objects.filter(company_id=company_id).first() or CommissionRule.objects.filter(company__isnull=True).first()
-                comm_percent = comm_rule.commission_percent if comm_rule else Decimal("5.00")
-                comm_amount = round((order.subtotal * comm_percent) / Decimal("100.00"), 2)
-                vendor_credit = order.subtotal - order.vendor_coupon_discount - comm_amount
+                            InventoryTransaction.objects.create(
+                                inventory_item=inv,
+                                transaction_type=InventoryTransaction.TransactionType.SALE,
+                                quantity=item.quantity,
+                                balance_after=inv.available_quantity,
+                                reference_id=order.order_number,
+                                notes=f"Sold in completed Order #{order.order_number}",
+                            )
 
-                FinancialLedgerEntry.objects.create(
-                    company=order.vendor_store.company,
-                    entry_type=FinancialLedgerEntry.EntryType.CREDIT,
-                    category=FinancialLedgerEntry.Category.SALE,
-                    amount=vendor_credit,
-                    balance_after=Decimal("0.00"),
+                # Commission calculation & immutable ledger credit exactly once
+                has_ledger = FinancialLedgerEntry.objects.filter(
                     order=order,
-                    description=f"Net earnings for Order #{order.order_number} (Gross ₹{order.subtotal} - Comm ₹{comm_amount} - Disc ₹{order.vendor_coupon_discount})",
-                )
+                    category=FinancialLedgerEntry.Category.SALE,
+                ).exists()
+
+                if not has_ledger:
+                    comm_rule = CommissionRule.objects.filter(company_id=company_id).first() or CommissionRule.objects.filter(company__isnull=True).first()
+                    comm_percent = comm_rule.commission_percent if comm_rule else Decimal("5.00")
+                    comm_amount = round((order.subtotal * comm_percent) / Decimal("100.00"), 2)
+                    vendor_credit = order.subtotal - order.vendor_coupon_discount - comm_amount
+
+                    FinancialLedgerEntry.objects.create(
+                        company=order.vendor_store.company,
+                        entry_type=FinancialLedgerEntry.EntryType.CREDIT,
+                        category=FinancialLedgerEntry.Category.SALE,
+                        amount=vendor_credit,
+                        balance_after=Decimal("0.00"),
+                        order=order,
+                        description=f"Net earnings for Order #{order.order_number} (Gross ₹{order.subtotal} - Comm ₹{comm_amount} - Disc ₹{order.vendor_coupon_discount})",
+                    )
 
             order.save()
             GroceryOrderStatusHistory.objects.create(

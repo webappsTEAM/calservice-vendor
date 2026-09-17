@@ -25,7 +25,7 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="InventoryTransaction",
             fields=[
-                ("id", models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
                 ("transaction_type", models.CharField(
                     choices=[
                         ("INITIAL_STOCK", "Initial Stock"),
@@ -60,7 +60,7 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="CouponRedemption",
             fields=[
-                ("id", models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
                 ("customer_id", models.CharField(db_index=True, max_length=100)),
                 ("order_id", models.CharField(blank=True, db_index=True, default="", max_length=100)),
                 ("discount_amount", models.DecimalField(decimal_places=2, max_digits=10)),
@@ -79,7 +79,7 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="GroceryCart",
             fields=[
-                ("id", models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
                 ("customer_id", models.CharField(db_index=True, max_length=100, unique=True)),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
                 ("updated_at", models.DateTimeField(auto_now=True)),
@@ -98,7 +98,7 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="GroceryCartItem",
             fields=[
-                ("id", models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
                 ("quantity", models.DecimalField(decimal_places=3, default=1.0, max_digits=12)),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
                 ("updated_at", models.DateTimeField(auto_now=True)),
@@ -121,7 +121,7 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="GroceryOrder",
             fields=[
-                ("id", models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
                 ("order_number", models.CharField(db_index=True, max_length=50, unique=True)),
                 ("customer_id", models.CharField(db_index=True, max_length=100)),
                 ("customer_name", models.CharField(blank=True, default="", max_length=200)),
@@ -191,7 +191,7 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="GroceryOrderItem",
             fields=[
-                ("id", models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
                 ("product_name_snapshot", models.CharField(max_length=200)),
                 ("sku_snapshot", models.CharField(blank=True, default="", max_length=100)),
                 ("unit_snapshot", models.CharField(default="kg", max_length=20)),
@@ -221,7 +221,7 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="GroceryOrderStatusHistory",
             fields=[
-                ("id", models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
                 ("from_status", models.CharField(max_length=30)),
                 ("to_status", models.CharField(max_length=30)),
                 ("actor", models.CharField(blank=True, default="", max_length=100)),
@@ -241,7 +241,7 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="GroceryDelivery",
             fields=[
-                ("id", models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
                 ("fulfillment_method", models.CharField(
                     choices=[
                         ("VENDOR_DELIVERY", "Vendor Self-Delivery"),
@@ -284,7 +284,7 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="CommissionRule",
             fields=[
-                ("id", models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
                 ("category_slug", models.CharField(default="vegetables", max_length=100)),
                 ("commission_percent", models.DecimalField(decimal_places=2, default=5.0, max_digits=5)),
                 ("fixed_fee", models.DecimalField(decimal_places=2, default=0.0, max_digits=10)),
@@ -306,7 +306,7 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="VendorSettlement",
             fields=[
-                ("id", models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
                 ("settlement_number", models.CharField(max_length=50, unique=True)),
                 ("period_start", models.DateField()),
                 ("period_end", models.DateField()),
@@ -335,7 +335,7 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="FinancialLedgerEntry",
             fields=[
-                ("id", models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
                 ("entry_type", models.CharField(choices=[("CREDIT", "Credit"), ("DEBIT", "Debit")], max_length=10)),
                 ("category", models.CharField(
                     choices=[
@@ -379,7 +379,7 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="VendorStoreReview",
             fields=[
-                ("id", models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
                 ("customer_id", models.CharField(db_index=True, max_length=100)),
                 ("customer_name", models.CharField(blank=True, default="Anonymous", max_length=200)),
                 ("rating", models.IntegerField(default=5)),

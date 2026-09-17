@@ -3085,7 +3085,7 @@ class InventoryItem(models.Model):
     # FK into the shared service_requests_service table (managed=False mirror)
     catalogue_service_id = models.IntegerField(
         db_index=True,
-        help_text="ID of the matching service_requests_service row (source of truth name/image).",
+        help_text="ID of the matching service_requests_service row.",
     )
     catalogue_category_id = models.IntegerField(
         db_index=True,
@@ -3137,8 +3137,13 @@ class InventoryItem(models.Model):
 
     class Meta:
         db_table = "workforce_inventory_item"
-        unique_together = ("company", "catalogue_service_id")
         ordering = ["category_name_snapshot", "name_snapshot"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "catalogue_service_id"],
+                name="unique_inventory_company_service",
+            )
+        ]
 
     # ------------------------------------------------------------------
     # Helpers

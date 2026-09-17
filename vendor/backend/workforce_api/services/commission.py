@@ -114,6 +114,97 @@ def commission_rate_for(wallet, channel: str) -> Decimal:
     return INDIVIDUAL_PROMO_RATE if promo else INDIVIDUAL_STANDARD_RATE
 
 
+def sync_employee_wallet_mirror(service_request):
+    """
+    Idempotent mirror synchronization: ensures that an authoritative Job Credit
+    in workforce_api.WalletLedgerEntry is reflected in vendor_wallet.EmployeeWallet
+    for the assigned technician. Safe to call repeatedly on retries or during audits.
+    """
+    worker_performed = service_request.assigned_employee
+    if not worker_performed:
+        return None
+
+    from workforce_api.models import WalletLedgerEntry, JobPayment
+    credit_entry = WalletLedgerEntry.objects.filter(
+        job=service_request, entry_type=WalletLedgerEntry.EntryType.JOB_CREDIT
+    ).first()
+    if not credit_entry:
+        return None
+
+    payment = JobPayment.objects.filter(job=service_request).first()
+    if not payment:
+        return None
+
+    try:
+        from vendor_wallet.models import EmployeeWallet, EmployeeWalletTransaction
+        from vendor_wallet.constants import (
+            WALLET_ACTIVE, TXN_SERVICE_EARNING, DIRECTION_CREDIT,
+            TXN_STATUS_PENDING_SETTLEMENT, BALANCE_PENDING, REF_JOB_PAYMENT
+        )
+        from companies.models import Company
+
+        with transaction.atomic():
+            emp_wallet, _ = EmployeeWallet.objects.get_or_create(
+                employee=worker_performed,
+                defaults={
+                    "company": worker_performed.company or Company.objects.filter(id=1).first(),
+                    "currency": "INR",
+                    "status": WALLET_ACTIVE,
+                },
+            )
+            # Row-lock wallet
+            emp_wallet = EmployeeWallet.objects.select_for_update().get(id=emp_wallet.id)
+
+            ref_id = str(payment.id)
+            existing_txn = EmployeeWalletTransaction.objects.filter(
+                wallet=emp_wallet, reference_type=REF_JOB_PAYMENT, reference_id=ref_id
+            ).first()
+
+            if not existing_txn:
+                net = credit_entry.signed_amount
+                gross = credit_entry.gross_job_amount or (payment.amount_due or payment.amount_paid or net)
+                rate = credit_entry.commission_rate_applied or Decimal("0.10")
+                commission = gross - net
+                hold_release_at = credit_entry.hold_release_at or (timezone.now() + timezone.timedelta(hours=DISPUTE_HOLD_HOURS))
+
+                balance_before = emp_wallet.pending_balance
+                emp_wallet.pending_balance = emp_wallet.pending_balance + net
+                emp_wallet.lifetime_earnings = emp_wallet.lifetime_earnings + net
+                emp_wallet.save(update_fields=["pending_balance", "lifetime_earnings", "updated_at"])
+
+                txn = EmployeeWalletTransaction.objects.create(
+                    wallet=emp_wallet,
+                    reference_type=REF_JOB_PAYMENT,
+                    reference_id=ref_id,
+                    transaction_type=TXN_SERVICE_EARNING,
+                    direction=DIRECTION_CREDIT,
+                    status=TXN_STATUS_PENDING_SETTLEMENT,
+                    amount=net,
+                    gross_amount=gross,
+                    earn_rate_snapshot=Decimal("1.0") - rate,
+                    platform_deduction_amount=commission,
+                    balance_before=balance_before,
+                    balance_after=emp_wallet.pending_balance,
+                    balance_type=BALANCE_PENDING,
+                    settlement_release_at=hold_release_at,
+                    description=f"Service earning for Job #{service_request.id} ({service_request.issue_title or service_request.request_id})",
+                    service_request_id=service_request.id,
+                    job_payment_id=payment.id,
+                    metadata={
+                        "job_id": service_request.id,
+                        "request_id": service_request.request_id,
+                        "gross": str(gross),
+                        "net": str(net),
+                        "commission": str(commission),
+                    },
+                )
+                return txn
+            return existing_txn
+    except Exception as ew_err:
+        logger.warning("Could not mirror earning into EmployeeWallet for Job #%s: %s", service_request.id, ew_err)
+        return None
+
+
 @transaction.atomic
 def settle_completed_job(service_request):
     """
@@ -143,6 +234,8 @@ def settle_completed_job(service_request):
         job=service_request, entry_type=WalletLedgerEntry.EntryType.JOB_CREDIT
     ).first()
     if existing:
+        # Self-healing retry: ensure mirror transaction exists in EmployeeWallet
+        sync_employee_wallet_mirror(service_request)
         return existing
 
     wallet, channel = resolve_payee_wallet(service_request)
@@ -216,59 +309,7 @@ def settle_completed_job(service_request):
     )
     # Mirror earning into vendor_wallet.EmployeeWallet so the technician wallet dashboard reflects earnings
     if worker_performed is not None:
-        try:
-            from vendor_wallet.models import EmployeeWallet, EmployeeWalletTransaction
-            from vendor_wallet.constants import (
-                WALLET_ACTIVE, TXN_SERVICE_EARNING, DIRECTION_CREDIT,
-                TXN_STATUS_PENDING_SETTLEMENT, BALANCE_PENDING, REF_JOB_PAYMENT
-            )
-            from companies.models import Company
-
-            emp_wallet, _ = EmployeeWallet.objects.get_or_create(
-                employee=worker_performed,
-                defaults={
-                    "company": worker_performed.company or Company.objects.filter(id=1).first(),
-                    "currency": "INR",
-                    "status": WALLET_ACTIVE,
-                },
-            )
-
-            ref_id = str(payment.id)
-            if not EmployeeWalletTransaction.objects.filter(
-                wallet=emp_wallet, reference_type=REF_JOB_PAYMENT, reference_id=ref_id
-            ).exists():
-                emp_wallet.pending_balance = emp_wallet.pending_balance + net
-                emp_wallet.lifetime_earnings = emp_wallet.lifetime_earnings + net
-                emp_wallet.save(update_fields=["pending_balance", "lifetime_earnings", "updated_at"])
-
-                EmployeeWalletTransaction.objects.create(
-                    wallet=emp_wallet,
-                    reference_type=REF_JOB_PAYMENT,
-                    reference_id=ref_id,
-                    transaction_type=TXN_SERVICE_EARNING,
-                    direction=DIRECTION_CREDIT,
-                    status=TXN_STATUS_PENDING_SETTLEMENT,
-                    amount=net,
-                    gross_amount=gross,
-                    earn_rate_snapshot=Decimal("1.0") - rate,
-                    platform_deduction_amount=commission,
-                    balance_before=emp_wallet.pending_balance - net,
-                    balance_after=emp_wallet.pending_balance,
-                    balance_type=BALANCE_PENDING,
-                    settlement_release_at=hold_release_at,
-                    description=f"Service earning for Job #{service_request.id} ({service_request.issue_title or service_request.request_id})",
-                    service_request_id=service_request.id,
-                    job_payment_id=payment.id,
-                    metadata={
-                        "job_id": service_request.id,
-                        "request_id": service_request.request_id,
-                        "gross": str(gross),
-                        "net": str(net),
-                        "commission": str(commission),
-                    },
-                )
-        except Exception as ew_err:
-            logger.warning("Could not mirror earning into EmployeeWallet for Job #%s: %s", service_request.id, ew_err)
+        sync_employee_wallet_mirror(service_request)
 
     if worker_performed is not None:
         try:

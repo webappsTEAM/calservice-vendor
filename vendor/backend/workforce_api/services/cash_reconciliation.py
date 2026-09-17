@@ -15,7 +15,7 @@ from django.utils import timezone
 from workforce_api.models import JobPayment, CashSettlement
 
 
-def compute_outstanding_cash(employee):
+def compute_outstanding_cash(employee, lock=False):
     """Sum of amount_received for every unreconciled, successfully collected
     cash payment for this employee. This is what the employee should
     currently be holding."""
@@ -25,6 +25,8 @@ def compute_outstanding_cash(employee):
         payment_status=JobPayment.PaymentStatus.PAID,
         reconciled=False,
     )
+    if lock:
+        qs = qs.select_for_update()
     total = Decimal("0.00")
     for p in qs:
         total += (p.amount_received if p.amount_received is not None else p.amount_paid) or Decimal("0.00")
@@ -44,7 +46,11 @@ def record_cash_settlement(employee, company, deposited_amount, recorded_by, not
         raise ValueError("Deposited amount cannot be negative.")
 
     with transaction.atomic():
-        expected_amount, outstanding_qs = compute_outstanding_cash(employee)
+        from employees.models import Employee
+        # Acquire row lock on employee to prevent concurrent duplicate settlement
+        Employee.objects.select_for_update().filter(pk=employee.id).first()
+
+        expected_amount, outstanding_qs = compute_outstanding_cash(employee, lock=True)
         outstanding_ids = list(outstanding_qs.values_list("id", flat=True))
         discrepancy = deposited_amount - expected_amount
 

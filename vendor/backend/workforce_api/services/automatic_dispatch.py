@@ -249,7 +249,7 @@ def get_scheduled_dispatch_window(job_obj, now=None) -> Tuple[bool, Optional[dat
         (is_future_scheduled: bool, scheduled_start_dt: Optional[datetime], dispatch_window_open_dt: Optional[datetime])
     """
     pref_date = getattr(job_obj, "preferred_date", None)
-    if not pref_date:
+    if not pref_date or not isinstance(pref_date, datetime.date):
         return False, None, None
 
     now = now or timezone.localtime()
@@ -421,15 +421,11 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
         return False, "Gate 2: Technician registration onboarding is not approved.", gate_results
 
     # ── Gate 3: Required Documents Approved ───────────────────────────────────
+    service_name_clean = (service_name or "").strip().lower()
+
     if emp and getattr(emp, "company_id", None):
         from workforce_api.models import WorkforceRequiredDocument, WorkforceEmployeeDocument
         mandatory_doc_reqs = WorkforceRequiredDocument.objects.filter(company_id=emp.company_id, is_mandatory=True)
-        # GT-A-02: a requirement with a non-empty applies_to_categories only
-        # gates jobs in one of those categories (e.g. Driving Licence should
-        # not block a technician from taking an AC-repair job). A requirement
-        # with an empty list (the default, and every pre-existing row) keeps
-        # applying to every job, exactly as before this field existed.
-        service_name_clean = (service_name or "").strip().lower()
         mandatory_doc_reqs = [
             rd for rd in mandatory_doc_reqs
             if not rd.applies_to_categories
@@ -456,24 +452,6 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
                     gate_results["G3"] = False
                     logger.debug(f"[9GATE_REJECT_GATE3_DOCUMENTS_EXPIRED] Employee #{emp.id} mandatory document '{req_doc.title}' expired on {emp_doc.expiry_date}.")
                     return False, f"Gate 3: Technician mandatory document '{req_doc.title}' expired on {emp_doc.expiry_date}.", gate_results
-
-        # GT-A-01/GT-A-02: for logistics jobs specifically, also require at
-        # least one active Vehicle on file whose insurance/permit/PUC are all
-        # current. This is opt-in in effect: an employee with zero Vehicle
-        # rows is only blocked for jobs in LOGISTICS_SERVICE_CATEGORIES, and
-        # only once dispatch actually routes a logistics job their way --
-        # non-logistics dispatch is entirely unaffected.
-        if service_name_clean in LOGISTICS_SERVICE_CATEGORIES:
-            from workforce_api.models import Vehicle
-            vehicles = list(Vehicle.objects.filter(employee=emp, is_active=True))
-            if not vehicles:
-                gate_results["G3"] = False
-                logger.debug(f"[9GATE_REJECT_GATE3_NO_VEHICLE] Employee #{emp.id} has no active vehicle on file for logistics job '{service_name}'.")
-                return False, "Gate 3: No active vehicle on file for this logistics job.", gate_results
-            if not any(v.is_document_current() for v in vehicles):
-                gate_results["G3"] = False
-                logger.debug(f"[9GATE_REJECT_GATE3_VEHICLE_DOCS_EXPIRED] Employee #{emp.id} has no vehicle with current insurance/permit/PUC.")
-                return False, "Gate 3: Vehicle insurance, permit or PUC has expired.", gate_results
         else:
             documents = onboarding.get("documents", {})
             if any(doc.get("status") in ["rejected", "pending_review", "missing"] for doc in documents.values()):
@@ -485,6 +463,41 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
         if any(doc.get("status") in ["rejected", "pending_review", "missing"] for doc in documents.values()):
             gate_results["G3"] = False
             return False, "Gate 3: Technician has unapproved dossier documents.", gate_results
+
+    # GT-A-01/GT-A-02: for logistics jobs specifically, require at
+    # least one active Vehicle on file whose insurance/permit/PUC are all
+    # current and whose vehicle_type is compatible with the requested category.
+    if service_name_clean in LOGISTICS_SERVICE_CATEGORIES:
+        from workforce_api.models import Vehicle
+        vehicles = list(Vehicle.objects.filter(employee=emp, is_active=True))
+        if not vehicles:
+            gate_results["G3"] = False
+            logger.debug(f"[9GATE_REJECT_GATE3_NO_VEHICLE] Employee #{emp.id} has no active vehicle on file for logistics job '{service_name}'.")
+            return False, "Gate 3: No active vehicle on file for this logistics job.", gate_results
+
+        current_vehicles = [v for v in vehicles if v.is_document_current()]
+        if not current_vehicles:
+            gate_results["G3"] = False
+            logger.debug(f"[9GATE_REJECT_GATE3_VEHICLE_DOCS_EXPIRED] Employee #{emp.id} has no vehicle with current insurance/permit/PUC.")
+            return False, "Gate 3: Vehicle insurance, permit or PUC has expired.", gate_results
+
+        # Category-specific vehicle compatibility check
+        if service_name_clean == "goods_transport_two_wheeler":
+            allowed_types = {"two_wheeler", "bike", "scooter", "motorcycle"}
+            if not any(str(getattr(v, "vehicle_type", "")).strip().lower() in allowed_types for v in current_vehicles):
+                gate_results["G3"] = False
+                return False, "Gate 3: Two-wheeler vehicle required for two-wheeler logistics.", gate_results
+        elif service_name_clean == "goods_transport_truck":
+            allowed_types = {"truck", "mini_truck", "three_wheeler", "tempo", "commercial", "pickup", "canter"}
+            if not any(str(getattr(v, "vehicle_type", "")).strip().lower() in allowed_types for v in current_vehicles):
+                gate_results["G3"] = False
+                return False, "Gate 3: Truck or commercial vehicle required for truck logistics.", gate_results
+        elif service_name_clean == "packers_movers":
+            allowed_types = {"truck", "mini_truck", "canter", "tempo", "commercial", "relocation_truck"}
+            if not any(str(getattr(v, "vehicle_type", "")).strip().lower() in allowed_types for v in current_vehicles):
+                gate_results["G3"] = False
+                return False, "Gate 3: Commercial relocation vehicle required for Packers & Movers.", gate_results
+
 
     # ── Gate 4: Mandatory Compliance Valid ────────────────────────────────────
     if emp and getattr(emp, "company_id", None):
@@ -1118,8 +1131,11 @@ def _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids):
         if not job_obj:
             return False, "Job not found."
 
-        if job_obj.status in ["completed", "cancelled"]:
+        if job_obj.status in ["completed", "cancelled", "rejected"]:
             return False, f"Job #{job_id} is {job_obj.status} and cannot be dispatched."
+
+        if getattr(job_obj, "cargo_safety_status", None) == "rejected":
+            return False, f"Job #{job_id} contains prohibited cargo and cannot be dispatched."
 
         if job_obj.status in ["accepted", "on_the_way", "arrived", "in_progress"] and job_obj.assigned_employee:
             return False, f"Job #{job_id} is already accepted and in progress with Employee #{job_obj.assigned_employee_id}."

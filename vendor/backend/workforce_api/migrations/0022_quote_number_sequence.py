@@ -43,7 +43,6 @@ def drop_sequence(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('workforce_api', '0021_merge_20260902_1216'),
         ('workforce_api', '0021_merge_20260902_1700'),
     ]
 

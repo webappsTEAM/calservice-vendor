@@ -11,7 +11,7 @@ import logging
 import secrets
 from datetime import timedelta
 from django.conf import settings
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ValidationError, PermissionDenied
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -684,6 +684,7 @@ class VendorRelationshipService:
             return active_rels
 
 
+
 class VendorRelievingService:
     """
     Formal Multi-Party Resignation & Relieving Lifecycle Service:
@@ -864,8 +865,23 @@ class VendorRelievingService:
                 req.worker_signoff_ack = True
                 req.worker_signed_at = now
             elif persona == "vendor":
+                is_platform_admin = getattr(actor, "is_superuser", False) or getattr(actor, "role", "") == "superadmin"
+                actor_company = getattr(actor, "company", None)
+                if not actor_company and hasattr(actor, "employee_profile"):
+                    actor_company = getattr(actor.employee_profile, "company", None)
+
+                actor_role = str(getattr(actor, "role", "")).lower()
+                is_vendor_admin = (
+                    actor_company is not None and
+                    actor_company.id == req.vendor_id and
+                    (actor_role in ["admin", "manager"] or getattr(actor, "is_staff", False))
+                )
+                if not (is_platform_admin or is_vendor_admin):
+                    raise PermissionDenied("Only authorized vendor managers/admins of the sponsoring vendor can execute vendor legal signoff.")
                 req.vendor_signoff_ack = True
                 req.vendor_signed_at = now
+            else:
+                raise ValidationError(f"Invalid persona '{persona}'. Must be 'technician' or 'vendor'.")
 
             req.save()
 
@@ -881,7 +897,7 @@ class VendorRelievingService:
         - Relationship status becomes RESIGNED (NOT Terminated)
         - Ended timestamp recorded
         - Worker is unlinked from vendor (company = None) -> becomes SOLO WORKER
-        - Automatically provisions worker's INDIVIDUAL_WORKER wallet
+        - Automatically provisions worker's INDIVIDUAL_WORKER wallet & EmployeeWallet
         """
         now = timezone.now()
         req.status = VendorRelievingRequest.Status.COMPLETED
@@ -898,7 +914,7 @@ class VendorRelievingService:
             emp.company = None
             emp.save(update_fields=["company", "updated_at"])
 
-        # Automatically provision Solo Worker Wallet
+        # Automatically provision Solo Worker Wallet in workforce_api
         WalletAccount.objects.get_or_create(
             employee=emp,
             account_type=WalletAccount.AccountType.INDIVIDUAL_WORKER,

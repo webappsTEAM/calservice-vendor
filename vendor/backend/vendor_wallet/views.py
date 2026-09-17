@@ -80,8 +80,14 @@ def _get_employee(request):
         return None
 
 
+def _get_wallet(employee):
+    """Retrieve the wallet for this employee without side effects. Returns None if unprovisioned."""
+    from vendor_wallet.models import EmployeeWallet
+    return EmployeeWallet.objects.filter(employee=employee).first()
+
+
 def _get_or_init_wallet(employee):
-    """Get or lazily create the wallet for this employee."""
+    """Explicit lifecycle provisioning helper: get or lazily create the wallet for this employee during mutations."""
     from vendor_wallet.models import EmployeeWallet
     from vendor_wallet.constants import WALLET_ACTIVE
     wallet, _ = EmployeeWallet.objects.get_or_create(
@@ -103,7 +109,9 @@ class WalletSummaryView(APIView):
         employee = _get_employee(request)
         if not employee:
             return Response({"error": "Employee profile not found."}, status=status.HTTP_404_NOT_FOUND)
-        wallet = _get_or_init_wallet(employee)
+        wallet = _get_wallet(employee)
+        if not wallet:
+            return Response({"error": "Wallet has not been provisioned for this employee."}, status=status.HTTP_404_NOT_FOUND)
         serializer = EmployeeWalletSummarySerializer(wallet)
         return Response(serializer.data)
 
@@ -116,7 +124,9 @@ class WalletTransactionListView(APIView):
         employee = _get_employee(request)
         if not employee:
             return Response({"error": "Employee profile not found."}, status=status.HTTP_404_NOT_FOUND)
-        wallet = _get_or_init_wallet(employee)
+        wallet = _get_wallet(employee)
+        if not wallet:
+            return Response({"error": "Wallet has not been provisioned for this employee."}, status=status.HTTP_404_NOT_FOUND)
 
         qs = wallet.transactions.all()
 
@@ -153,7 +163,9 @@ class WalletTransactionDetailView(APIView):
         employee = _get_employee(request)
         if not employee:
             return Response({"error": "Employee profile not found."}, status=status.HTTP_404_NOT_FOUND)
-        wallet = _get_or_init_wallet(employee)
+        wallet = _get_wallet(employee)
+        if not wallet:
+            return Response({"error": "Wallet has not been provisioned for this employee."}, status=status.HTTP_404_NOT_FOUND)
         txn = get_object_or_404(EmployeeWalletTransaction, pk=pk, wallet=wallet)
         return Response(EmployeeWalletTransactionSerializer(txn).data)
 
@@ -169,7 +181,9 @@ class WalletWithdrawalListCreateView(APIView):
         employee = _get_employee(request)
         if not employee:
             return Response({"error": "Employee profile not found."}, status=status.HTTP_404_NOT_FOUND)
-        wallet = _get_or_init_wallet(employee)
+        wallet = _get_wallet(employee)
+        if not wallet:
+            return Response({"error": "Wallet has not been provisioned for this employee."}, status=status.HTTP_404_NOT_FOUND)
         withdrawals = wallet.withdrawals.all().order_by("-created_at")
         return Response(EmployeeWalletWithdrawalSerializer(withdrawals, many=True).data)
 
@@ -316,7 +330,9 @@ class AdminWalletSummaryView(APIView):
         employee, err = _get_employee_for_admin(request, employee_id)
         if err:
             return err
-        wallet = _get_or_init_wallet(employee)
+        wallet = _get_wallet(employee)
+        if not wallet:
+            return Response({"error": "Wallet not found for this employee."}, status=status.HTTP_404_NOT_FOUND)
         return Response(EmployeeWalletSummarySerializer(wallet).data)
 
 
@@ -328,7 +344,9 @@ class AdminWalletTransactionListView(APIView):
         employee, err = _get_employee_for_admin(request, employee_id)
         if err:
             return err
-        wallet = _get_or_init_wallet(employee)
+        wallet = _get_wallet(employee)
+        if not wallet:
+            return Response({"error": "Wallet not found for this employee."}, status=status.HTTP_404_NOT_FOUND)
         qs = wallet.transactions.all()
         try:
             page = max(1, int(request.query_params.get("page", 1)))
@@ -431,24 +449,29 @@ class AdminWithdrawalProcessView(APIView):
         except Exception:
             return Response({"error": "Admin company not found."}, status=status.HTTP_403_FORBIDDEN)
 
-        withdrawal = get_object_or_404(
-            EmployeeWalletWithdrawal,
-            pk=pk,
-            employee__company=admin_company,
-        )
         from vendor_wallet.constants import WITHDRAWAL_REQUESTED, WITHDRAWAL_PROCESSING
         from django.utils import timezone
+        from django.db import transaction
 
-        if withdrawal.status != WITHDRAWAL_REQUESTED:
-            return Response(
-                {"error": f"Cannot process withdrawal in {withdrawal.status} status."},
-                status=status.HTTP_409_CONFLICT,
+        with transaction.atomic():
+            withdrawal = (
+                EmployeeWalletWithdrawal.objects.select_for_update()
+                .filter(pk=pk, employee__company=admin_company)
+                .first()
             )
-        withdrawal.status = WITHDRAWAL_PROCESSING
-        withdrawal.processing_started_at = timezone.now()
-        withdrawal.processed_by = request.user
-        withdrawal.save(update_fields=["status", "processing_started_at", "processed_by", "updated_at"])
-        return Response(EmployeeWalletWithdrawalSerializer(withdrawal).data)
+            if not withdrawal:
+                return Response({"error": "Withdrawal not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            if withdrawal.status != WITHDRAWAL_REQUESTED:
+                return Response(
+                    {"error": f"Cannot process withdrawal in {withdrawal.status} status."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            withdrawal.status = WITHDRAWAL_PROCESSING
+            withdrawal.processing_started_at = timezone.now()
+            withdrawal.processed_by = request.user
+            withdrawal.save(update_fields=["status", "processing_started_at", "processed_by", "updated_at"])
+            return Response(EmployeeWalletWithdrawalSerializer(withdrawal).data)
 
 
 class AdminWithdrawalCompleteView(APIView):
@@ -461,30 +484,35 @@ class AdminWithdrawalCompleteView(APIView):
         except Exception:
             return Response({"error": "Admin company not found."}, status=status.HTTP_403_FORBIDDEN)
 
-        withdrawal = get_object_or_404(
-            EmployeeWalletWithdrawal,
-            pk=pk,
-            employee__company=admin_company,
-        )
         from vendor_wallet.constants import WITHDRAWAL_PROCESSING, WITHDRAWAL_COMPLETED
         from django.utils import timezone
+        from django.db import transaction
 
-        if withdrawal.status != WITHDRAWAL_PROCESSING:
-            return Response(
-                {"error": f"Cannot complete withdrawal in {withdrawal.status} status."},
-                status=status.HTTP_409_CONFLICT,
+        with transaction.atomic():
+            withdrawal = (
+                EmployeeWalletWithdrawal.objects.select_for_update()
+                .filter(pk=pk, employee__company=admin_company)
+                .first()
             )
-        bank_txn_id = request.data.get("bank_transaction_id", "")
-        withdrawal.status = WITHDRAWAL_COMPLETED
-        withdrawal.completed_at = timezone.now()
-        withdrawal.bank_transaction_id = bank_txn_id
-        withdrawal.processed_by = request.user
-        withdrawal.save(update_fields=["status", "completed_at", "bank_transaction_id", "processed_by", "updated_at"])
-        logger.info(
-            "[WITHDRAWAL_COMPLETED] withdrawal_id=%s employee_id=%s bank_txn=%s",
-            withdrawal.id, withdrawal.employee_id, bank_txn_id,
-        )
-        return Response(EmployeeWalletWithdrawalSerializer(withdrawal).data)
+            if not withdrawal:
+                return Response({"error": "Withdrawal not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            if withdrawal.status != WITHDRAWAL_PROCESSING:
+                return Response(
+                    {"error": f"Cannot complete withdrawal in {withdrawal.status} status."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            bank_txn_id = request.data.get("bank_transaction_id", "")
+            withdrawal.status = WITHDRAWAL_COMPLETED
+            withdrawal.completed_at = timezone.now()
+            withdrawal.bank_transaction_id = bank_txn_id
+            withdrawal.processed_by = request.user
+            withdrawal.save(update_fields=["status", "completed_at", "bank_transaction_id", "processed_by", "updated_at"])
+            logger.info(
+                "[WITHDRAWAL_COMPLETED] withdrawal_id=%s employee_id=%s bank_txn=%s",
+                withdrawal.id, withdrawal.employee_id, bank_txn_id,
+            )
+            return Response(EmployeeWalletWithdrawalSerializer(withdrawal).data)
 
 
 class AdminWithdrawalFailView(APIView):
@@ -497,29 +525,35 @@ class AdminWithdrawalFailView(APIView):
         except Exception:
             return Response({"error": "Admin company not found."}, status=status.HTTP_403_FORBIDDEN)
 
-        withdrawal = get_object_or_404(
-            EmployeeWalletWithdrawal,
-            pk=pk,
-            employee__company=admin_company,
+        from vendor_wallet.constants import (
+            WITHDRAWAL_FAILED, TXN_WITHDRAWAL_REVERSAL, REF_WITHDRAWAL,
+            DIRECTION_CREDIT, TXN_STATUS_COMPLETED, BALANCE_AVAILABLE
         )
-        from vendor_wallet.constants import WITHDRAWAL_FAILED
         from django.utils import timezone
-        from django.db import transaction as db_transaction
+        from django.db import transaction
+        from decimal import Decimal, ROUND_HALF_UP
 
         allowed_from = {"REQUESTED", "PROCESSING"}
-        if withdrawal.status not in allowed_from:
-            return Response(
-                {"error": f"Cannot fail withdrawal in {withdrawal.status} status."},
-                status=status.HTTP_409_CONFLICT,
+
+        with transaction.atomic():
+            withdrawal = (
+                EmployeeWalletWithdrawal.objects.select_for_update()
+                .filter(pk=pk, employee__company=admin_company)
+                .first()
             )
+            if not withdrawal:
+                return Response({"error": "Withdrawal not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        failure_reason = request.data.get("failure_reason", "")
-        amount = withdrawal.amount
+            if withdrawal.status not in allowed_from:
+                return Response(
+                    {"error": f"Cannot fail withdrawal in {withdrawal.status} status."},
+                    status=status.HTTP_409_CONFLICT,
+                )
 
-        with db_transaction.atomic():
+            failure_reason = request.data.get("failure_reason", "")
+            amount = withdrawal.amount
+
             wallet = EmployeeWallet.objects.select_for_update().get(pk=withdrawal.wallet_id)
-            from vendor_wallet.constants import TXN_WITHDRAWAL_REVERSAL, REF_WITHDRAWAL, DIRECTION_CREDIT, TXN_STATUS_COMPLETED, BALANCE_AVAILABLE
-            from decimal import Decimal, ROUND_HALF_UP
             balance_before = wallet.available_balance
             wallet.available_balance = (wallet.available_balance + amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             wallet.total_withdrawn = max(Decimal("0.00"), wallet.total_withdrawn - amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -547,7 +581,7 @@ class AdminWithdrawalFailView(APIView):
             withdrawal.save(update_fields=["status", "failed_at", "failure_reason", "processed_by", "updated_at"])
             wallet.save(update_fields=["available_balance", "total_withdrawn", "updated_at"])
 
-        return Response(EmployeeWalletWithdrawalSerializer(withdrawal).data)
+            return Response(EmployeeWalletWithdrawalSerializer(withdrawal).data)
 
 
 # ── Commission Config ─────────────────────────────────────────────────────────

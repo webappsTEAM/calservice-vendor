@@ -172,18 +172,26 @@ else:
         }
     }
 
-_cache_backend = "django.core.cache.backends.locmem.LocMemCache"
-try:
-    import redis  # noqa: F401
+_cache_url = os.getenv("CACHE_URL", "")
+if _cache_url.startswith(("redis://", "rediss://", "unix://")):
     _cache_backend = "django.core.cache.backends.redis.RedisCache"
-except ImportError:
-    pass
+    _cache_loc = _cache_url
+elif _cache_url.startswith("locmem://"):
+    _cache_backend = "django.core.cache.backends.locmem.LocMemCache"
+    _cache_loc = "workforce-local-cache"
+else:
+    redis_env = os.getenv("REDIS_URL")
+    if redis_env and redis_env.startswith(("redis://", "rediss://", "unix://")):
+        _cache_backend = "django.core.cache.backends.redis.RedisCache"
+        _cache_loc = redis_env
+    else:
+        _cache_backend = "django.core.cache.backends.locmem.LocMemCache"
+        _cache_loc = "workforce-local-cache"
 
-_cache_url = os.getenv("CACHE_URL", "redis://127.0.0.1:6379/1")
 CACHES = {
     "default": {
         "BACKEND": _cache_backend,
-        "LOCATION": _cache_url if "redis" in _cache_backend else "workforce-local-cache",
+        "LOCATION": _cache_loc,
         "TIMEOUT": 300,
         "KEY_PREFIX": "workforce",
     }
