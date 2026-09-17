@@ -29,7 +29,7 @@ import { useLocationTracker, getGPSPosition } from '../hooks/useGPSPosition.js';
 import { useRealtimeStream } from '../hooks/useRealtimeStream.js';
 
 export function EmployeeRuntimeProvider({ children }) {
-  const { user, isEmployee, registrationStatus, togglePresence: authTogglePresence, logout, isAuthenticated, refreshProfile } = useAuth();
+  const { user, employee, isEmployee, registrationStatus, togglePresence: authTogglePresence, logout, isAuthenticated, refreshProfile } = useAuth();
 
   const isApprovedEmployee = Boolean(user && isEmployee && registrationStatus === 'approved');
   const isOnlineAuth = Boolean(user?.isOnline);
@@ -106,37 +106,47 @@ const CACHED_COMPLETED_JOBS_KEY = 'calservice_workforce_cached_completed_jobs';
     selectedJobRef.current = selectedJob;
   }, [selectedJob]);
 
-  // Derived active workload state
+  // Derived active workload state (Strict: ONLY jobs genuinely assigned to this employee and in an active queue status)
   const activeAssignedJob = useMemo(() => {
     return (
       activeJobs.find((j) => {
         const st = (j.status || j.job_status || '').toLowerCase();
+        if (j.is_offer || st === 'unassigned') return false;
         const isAssigned = Boolean(
-          j.is_assigned_to_current_employee ||
-          j.assigned_employee === user?.id ||
-          j.assigned_employee?.id === user?.id ||
-          j.assigned_employee_id === user?.id ||
-          !j.is_offer
+          j.is_assigned_to_current_employee === true ||
+          j.is_accepted_by_current_employee === true ||
+          (employee?.id && (
+            j.assigned_employee === employee.id ||
+            j.assigned_employee?.id === employee.id ||
+            j.assigned_employee_id === employee.id
+          )) ||
+          (user?.id && (
+            j.assigned_employee === user.id ||
+            j.assigned_employee?.id === user.id ||
+            j.assigned_employee_id === user.id
+          ))
         );
         return isAssigned && ACTIVE_QUEUE_STATUSES.includes(st);
       }) || null
     );
-  }, [activeJobs, user?.id]);
+  }, [activeJobs, user?.id, employee?.id]);
 
   const hasActiveJob = useMemo(() => {
     return Boolean(activeAssignedJob);
   }, [activeAssignedJob]);
 
-  const incomingOffer = useMemo(() => {
-    return (
-      activeJobs.find(
-        (j) =>
-          (j.is_offer === true || j.active_offer?.status === 'OFFERED') &&
-          !j.active_offer?.is_expired &&
-          !j.is_assigned_to_current_employee
-      ) || null
+  const incomingOffers = useMemo(() => {
+    return activeJobs.filter(
+      (j) =>
+        (j.is_offer === true || j.active_offer?.status === 'OFFERED') &&
+        !j.active_offer?.is_expired &&
+        !j.is_assigned_to_current_employee
     );
   }, [activeJobs]);
+
+  const incomingOffer = useMemo(() => {
+    return incomingOffers[0] || null;
+  }, [incomingOffers]);
 
   // ── 3. Notification Deduplication ──────────────────────────────────────────
   const knownOfferIdsRef = useRef(new Set());
@@ -236,15 +246,31 @@ const CACHED_COMPLETED_JOBS_KEY = 'calservice_workforce_cached_completed_jobs';
 
             // Smart reconciliation of selectedJob without resetting selection
             setSelectedJob((prev) => {
-              if (!prev) {
-                if (currentOffer) return currentOffer;
-                const active = jobsData.find((j) =>
-                  ACTIVE_QUEUE_STATUSES.includes((j.status || j.job_status || '').toLowerCase())
-                );
-                return active || jobsData[0] || null;
+              if (prev) {
+                const updated = jobsData.find((j) => j.id === prev.id);
+                if (updated) return updated;
               }
-              const updated = jobsData.find((j) => j.id === prev.id);
-              return updated || prev;
+              if (currentOffer) return currentOffer;
+              const active = jobsData.find((j) => {
+                const st = (j.status || j.job_status || '').toLowerCase();
+                if (j.is_offer || st === 'unassigned') return false;
+                const isAssigned = Boolean(
+                  j.is_assigned_to_current_employee === true ||
+                  j.is_accepted_by_current_employee === true ||
+                  (employee?.id && (
+                    j.assigned_employee === employee.id ||
+                    j.assigned_employee?.id === employee.id ||
+                    j.assigned_employee_id === employee.id
+                  )) ||
+                  (user?.id && (
+                    j.assigned_employee === user.id ||
+                    j.assigned_employee?.id === user.id ||
+                    j.assigned_employee_id === user.id
+                  ))
+                );
+                return isAssigned && ACTIVE_QUEUE_STATUSES.includes(st);
+              });
+              return active || null;
             });
             return jobsData;
           }
@@ -351,6 +377,20 @@ const CACHED_COMPLETED_JOBS_KEY = 'calservice_workforce_cached_completed_jobs';
       syncNotifications();
     }
   }, [isAuthenticated, isApprovedEmployee, refreshActiveJobs, syncNotifications]);
+
+  // ── SSE Fallback: 30-second background safety-net polling ─────────────────
+  // Guarantees job offers appear within ≤30s even when SSE is disconnected
+  // (mobile network drops, reconnecting). Silent refresh = no loading spinner.
+  // Only active when the employee is online and approved.
+  useEffect(() => {
+    if (!isAuthenticated || !isApprovedEmployee || !isOnline) return;
+    const POLL_INTERVAL_MS = 30_000;
+    const id = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      refreshActiveJobs({ silent: true });
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [isAuthenticated, isApprovedEmployee, isOnline, refreshActiveJobs]);
 
   // ── 7. Single Authoritative Live GPS Watcher (Correction 1 & 3) ────────────
   const [liveLocation, setLiveLocation] = useState(() => {
@@ -596,6 +636,7 @@ const CACHED_COMPLETED_JOBS_KEY = 'calservice_workforce_cached_completed_jobs';
       selectedJob,
       setSelectedJob,
       incomingOffer,
+      incomingOffers,
       activeAssignedJob,
       hasActiveJob,
       isJobsLoading,
@@ -603,6 +644,28 @@ const CACHED_COMPLETED_JOBS_KEY = 'calservice_workforce_cached_completed_jobs';
       jobsError,
       refreshActiveJobs,
       refreshCompletedJobs,
+      reconcileJobAccepted: (jobId, updatedJob) => {
+        setActiveJobs((prev) =>
+          prev.map((j) =>
+            j.id === jobId
+              ? { ...j, ...(updatedJob || {}), status: 'accepted', is_offer: false, is_assigned_to_current_employee: true }
+              : j
+          )
+        );
+        setSelectedJob((prev) =>
+          prev?.id === jobId
+            ? { ...prev, ...(updatedJob || {}), status: 'accepted', is_offer: false, is_assigned_to_current_employee: true }
+            : prev
+        );
+      },
+      reconcileJobCompleted: (jobId) => {
+        setActiveJobs((prev) => prev.filter((j) => j.id !== jobId));
+        setSelectedJob((prev) => (prev?.id === jobId ? null : prev));
+      },
+      reconcileOfferRemoved: (jobId) => {
+        setActiveJobs((prev) => prev.filter((j) => j.id !== jobId));
+        setSelectedJob((prev) => (prev?.id === jobId ? null : prev));
+      },
 
       // Location & Presence State Machine
       presenceState,
@@ -634,6 +697,7 @@ const CACHED_COMPLETED_JOBS_KEY = 'calservice_workforce_cached_completed_jobs';
       completedJobs,
       selectedJob,
       incomingOffer,
+      incomingOffers,
       activeAssignedJob,
       hasActiveJob,
       isJobsLoading,

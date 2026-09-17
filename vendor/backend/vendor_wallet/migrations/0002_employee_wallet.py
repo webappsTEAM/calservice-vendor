@@ -16,54 +16,23 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RemoveField(
-            model_name='vendorpayoutaccount',
-            name='company',
-        ),
-        migrations.RemoveField(
-            model_name='vendorpayoutaccount',
-            name='created_by',
-        ),
-        migrations.RemoveField(
-            model_name='vendorwalletwithdrawal',
-            name='payout_account',
-        ),
-        migrations.RemoveField(
-            model_name='vendorwallet',
-            name='company',
-        ),
-        migrations.RemoveField(
-            model_name='vendorwalletwithdrawal',
-            name='wallet',
-        ),
-        migrations.RemoveField(
-            model_name='vendorwallettransaction',
-            name='wallet',
-        ),
-        migrations.RemoveField(
-            model_name='vendorwallettransaction',
-            name='created_by',
-        ),
-        migrations.RemoveField(
-            model_name='vendorwallettransaction',
-            name='withdrawal',
-        ),
-        migrations.RemoveField(
-            model_name='vendorwalletwithdrawal',
-            name='approved_by',
-        ),
-        migrations.RemoveField(
-            model_name='vendorwalletwithdrawal',
-            name='company',
-        ),
-        migrations.RemoveField(
-            model_name='vendorwalletwithdrawal',
-            name='processed_by',
-        ),
-        migrations.RemoveField(
-            model_name='vendorwalletwithdrawal',
-            name='requested_by',
-        ),
+        # NOTE: the RemoveField operations that used to precede the
+        # CreateModel block below were removed (2026-09-16) -- every one of
+        # them stripped a field off VendorPayoutAccount / VendorWallet /
+        # VendorWalletTransaction / VendorWalletWithdrawal, and every one of
+        # those models is fully replaced by DeleteModel further down this
+        # same migration, making the RemoveField calls redundant. Worse,
+        # they actively broke `manage.py test` (SQLite): SQLite can't drop a
+        # column in place, so each RemoveField forces Django to "remake" the
+        # table, and doing that for vendorwallettransaction.wallet tried to
+        # rebuild the vwt_wallet_created_idx index from 0001_initial (never
+        # explicitly removed) against a field that step had just removed --
+        # "NewVendorWalletTransaction has no field named 'wallet'". Postgres
+        # never hit this because dropping a column there auto-drops
+        # dependent indexes, which is why this was invisible in production.
+        # DeleteModel already drops the whole table, so no RemoveField is
+        # needed for a model being deleted in the same migration; removing
+        # them is a state-only cleanup, not a schema change on either DB.
         migrations.CreateModel(
             name='EmployeeCommissionConfig',
             fields=[

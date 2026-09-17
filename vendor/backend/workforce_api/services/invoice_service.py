@@ -172,6 +172,127 @@ def generate_invoice_for_quote(quote, work_job=None, actor=None, due_days=7):
     return invoice
 
 
+@transaction.atomic
+def generate_invoice_for_job(service_request, actor=None, due_days=7):
+    """
+    Issue an official WorkforceInvoice for a completed ServiceRequest (direct booking or standard job).
+    Idempotent: If a non-cancelled invoice already exists for this job, returns it unchanged.
+    """
+    if isinstance(service_request, int):
+        from service_requests.models import ServiceRequest
+        service_request = ServiceRequest.objects.get(id=service_request)
+
+    existing = (
+        WorkforceInvoice.objects.filter(job=service_request)
+        .exclude(status=WorkforceInvoice.Status.CANCELLED)
+        .first()
+    )
+    if existing:
+        return existing
+
+    now = timezone.now()
+    total = _money(service_request.total_amount)
+
+    if total > 0:
+        subtotal = (total / Decimal("1.18")).quantize(CENT)
+        tax = total - subtotal
+    else:
+        subtotal = ZERO
+        tax = ZERO
+
+    payment = JobPayment.objects.filter(job=service_request).first()
+    is_paid = (
+        (payment and payment.payment_status in (JobPayment.PaymentStatus.PAID, "PAID", "paid"))
+        or str(getattr(service_request, "payment_status", "")).lower() in ("paid", "collected")
+        or total == ZERO
+    )
+
+    inv_status = WorkforceInvoice.Status.PAID if is_paid else WorkforceInvoice.Status.ISSUED
+    paid_amt = total if is_paid else ZERO
+    bal_due = ZERO if is_paid else total
+
+    service_name = service_request.issue_title or service_request.service_category or "Service"
+
+    invoice = WorkforceInvoice(
+        quote=None,
+        job=service_request,
+        customer=service_request.customer,
+        company=service_request.company,
+        technician=service_request.assigned_employee,
+        bill_to_name=service_request.customer_name or (service_request.customer.get_full_name() if service_request.customer else "") or "",
+        bill_to_phone=service_request.phone or "",
+        bill_to_email=service_request.email or (service_request.customer.email if service_request.customer else "") or "",
+        bill_to_address=service_request.address or "",
+        service_category=service_request.service_category or "",
+        service_name=service_name,
+        subtotal_amount=subtotal,
+        discount_amount=ZERO,
+        tax_amount=tax,
+        inspection_fee_adjusted=ZERO,
+        total_amount=total,
+        amount_paid=paid_amt,
+        balance_due=bal_due,
+        advance_percent=Decimal("100.00") if is_paid else ZERO,
+        advance_amount=total if is_paid else ZERO,
+        balance_amount=ZERO,
+        status=inv_status,
+        issued_at=now,
+        due_at=now + timezone.timedelta(days=due_days),
+        notes=f"Issued for Job {service_request.request_id or f'SR-{service_request.id}'}.",
+        metadata={
+            "job_request_id": service_request.request_id or f"SR-{service_request.id}",
+            "job_type": service_request.job_type,
+            "issued_by": getattr(actor, "id", None),
+        },
+    )
+    invoice.save()
+
+    cart_items = getattr(service_request, "cart_data", None) or []
+    if isinstance(cart_items, list) and len(cart_items) > 0:
+        for idx, item in enumerate(cart_items):
+            if isinstance(item, dict):
+                item_name = item.get("name") or item.get("title") or item.get("service_name") or service_name
+                item_price = _money(item.get("price") or item.get("amount") or item.get("unit_price") or total)
+                item_qty = Decimal(str(item.get("quantity") or item.get("qty") or 1))
+                WorkforceInvoiceItem.objects.create(
+                    invoice=invoice,
+                    section=item.get("category") or "Service",
+                    name=item_name,
+                    description=item.get("description", ""),
+                    item_type="SERVICE",
+                    quantity=item_qty,
+                    unit="unit",
+                    unit_price=item_price,
+                    tax_rate=Decimal("18.00"),
+                    discount_amount=ZERO,
+                    line_total=item_price * item_qty,
+                    sort_order=idx,
+                )
+    else:
+        WorkforceInvoiceItem.objects.create(
+            invoice=invoice,
+            section="Service",
+            name=service_name,
+            description=service_request.description or "",
+            item_type="SERVICE",
+            quantity=Decimal("1.00"),
+            unit="unit",
+            unit_price=total,
+            tax_rate=Decimal("18.00"),
+            discount_amount=ZERO,
+            line_total=total,
+            sort_order=0,
+        )
+
+    _ensure_job_payment(invoice)
+
+    logger.info(
+        "[INVOICE_ISSUED] %s for Job #%s (%s) amount=%s status=%s",
+        invoice.invoice_number, service_request.id, service_request.request_id, invoice.total_amount, invoice.status
+    )
+    return invoice
+
+
 def _ensure_job_payment(invoice):
     job = invoice.job
     payment, created = JobPayment.objects.get_or_create(

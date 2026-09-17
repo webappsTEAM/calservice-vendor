@@ -110,7 +110,7 @@ export function CustomerTrackingPage() {
     // Initial fetch
     fetchTracking(true);
 
-    // Polling interval (5s)
+    // Polling interval (2s) — reduced from 5s for near-instant status sync
     pollTimerRef.current = setInterval(() => {
       if (!isMounted) return;
       // Stop polling if completed or cancelled
@@ -126,7 +126,7 @@ export function CustomerTrackingPage() {
         }
         return currentData;
       });
-    }, 5000);
+    }, 2000);
 
     return () => {
       isMounted = false;

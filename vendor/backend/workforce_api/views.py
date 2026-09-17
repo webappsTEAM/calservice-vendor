@@ -6176,7 +6176,7 @@ class WorkforceLocationUpdateView(APIView):
         from django.db.models import Q
         import secrets
 
-        ARRIVAL_RADIUS_METERS = 250.0
+        ARRIVAL_RADIUS_METERS = 10.0
         ARRIVAL_MAX_ACCURACY_METERS = 200.0
         ARRIVAL_MAX_GPS_AGE_SECONDS = 30.0
         ARRIVAL_REQUIRED_FIXES = 2
@@ -7925,7 +7925,7 @@ class WorkforceJobArriveView(APIView):
 
         # Real GPS Arrival Geofencing: Compare Employee GPS against Customer Job Location
         from time_tracking.geo import haversine_distance, evaluate
-        ARRIVAL_RADIUS_METERS = 250.0
+        ARRIVAL_RADIUS_METERS = 10.0
 
         if job.latitude is not None and job.longitude is not None:
             distance_m = haversine_distance(lat_val, lon_val, float(job.latitude), float(job.longitude))
@@ -7937,7 +7937,7 @@ class WorkforceJobArriveView(APIView):
             )
             if distance_m > ARRIVAL_RADIUS_METERS and not is_override:
                 return Response({
-                    "error": f"Arrival failed: You are {int(distance_m)}m away from the customer address. You must be within 250m to confirm arrival.",
+                    "error": f"Arrival failed: You are {int(distance_m)}m away from the customer address. You must be within 10m to confirm arrival.",
                     "geofence_passed": False,
                     "code": "OUTSIDE_GEOFENCE",
                     "details": {

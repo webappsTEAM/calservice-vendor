@@ -121,11 +121,34 @@ export function PortalCockpitLayout({
 
   // Authoritative Primary Active Job and Incoming Offer Resolution
   const offer = incomingOffers && incomingOffers.length > 0 ? incomingOffers[0] : null;
-  const activeJob = activeAssignedJob || null;
-  const isOffer = Boolean(offer && !activeJob);
-  const job = activeJob || offer || null;
 
-  const status = (activeJob?.status || activeJob?.job_status || (offer ? 'OFFERED' : 'STANDBY')).toUpperCase();
+  // Strict active assignment guard: an active job MUST NOT be an unaccepted offer, expired offer, or unassigned request
+  const isValidActiveAssignment = Boolean(
+    activeAssignedJob &&
+    !activeAssignedJob.is_offer &&
+    (activeAssignedJob.status || '').toLowerCase() !== 'unassigned' &&
+    (
+      activeAssignedJob.is_assigned_to_current_employee === true ||
+      activeAssignedJob.is_accepted_by_current_employee === true ||
+      (employee?.id && (
+        activeAssignedJob.assigned_employee === employee.id ||
+        activeAssignedJob.assigned_employee?.id === employee.id ||
+        activeAssignedJob.assigned_employee_id === employee.id
+      )) ||
+      (user?.id && (
+        activeAssignedJob.assigned_employee === user.id ||
+        activeAssignedJob.assigned_employee?.id === user.id ||
+        activeAssignedJob.assigned_employee_id === user.id
+      ))
+    )
+  );
+
+  const activeJob = isValidActiveAssignment ? activeAssignedJob : null;
+  const resolvedOffer = offer || (activeAssignedJob?.is_offer ? activeAssignedJob : null);
+  const isOffer = Boolean(resolvedOffer && !activeJob);
+  const job = activeJob || resolvedOffer || null;
+
+  const status = (activeJob?.status || activeJob?.job_status || (resolvedOffer ? 'OFFERED' : 'STANDBY')).toUpperCase();
 
   const isAssigned = status === 'ASSIGNED' || status === 'ACCEPTED';
   const isEnRoute = status === 'EN_ROUTE' || status === 'ON_THE_WAY';

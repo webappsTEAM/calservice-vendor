@@ -1,1 +1,0 @@
-"""Workforce Core Django Package."""

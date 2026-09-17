@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     "workforce_api",
     "time_tracking",
     "vendor_wallet",
+    "inventory",
 ]
 
 MIDDLEWARE = [
@@ -102,11 +103,30 @@ WSGI_APPLICATION = "workforce_core.wsgi.application"
 ASGI_APPLICATION = "workforce_core.asgi.application"
 
 # ─── Database Configuration (Shared Supabase PostgreSQL) ──────────────────────
+#
+# `manage.py test` used to force SQLite unconditionally. That's wrong for
+# this project specifically: several tables this backend queries in tests
+# (accounts_user, companies_company, employees_employee, and everything
+# service_requests mirrors) are `managed=False` -- owned and migrated by
+# Customer/backend against the one shared Postgres database, never created
+# by this project's own `migrate`. On SQLite those tables simply never
+# exist, so any test touching them (which is most of them -- they all
+# create a User/Company first) fails with "no such table", independent of
+# whatever the test is actually trying to verify.
+#
+# Postgres is now the default test backend too, using the exact same
+# connection this process already has configured (DB_HOST/DB_NAME/etc) --
+# `manage.py test` wraps it in a throwaway `test_<DB_NAME>` database it
+# creates and tears down itself, same as Django does for any Postgres
+# project. Set DJANGO_TEST_SQLITE=1 to force the old SQLite-only behavior
+# back (e.g. for a quick syntax/logic check of code that never touches a
+# managed=False table) -- but that's the exception now, not the default.
 
 IS_TESTING = "test" in sys.argv or os.getenv("DJANGO_TEST_SQLITE") == "1"
 USE_POSTGRES = bool(os.getenv("DB_NAME") or os.getenv("DB_HOST"))
+FORCE_SQLITE_TESTS = os.getenv("DJANGO_TEST_SQLITE") == "1"
 
-if IS_TESTING:
+if IS_TESTING and (FORCE_SQLITE_TESTS or not USE_POSTGRES):
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
