@@ -413,14 +413,33 @@ def employees_with_live_offers(exclude_job=None):
     return set(qs.values_list("employee_id", flat=True))
 
 
-def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = None, job: Optional[Any] = None) -> Tuple[bool, str, Dict[str, bool]]:
+def check_candidate_eligibility(
+    emp: Employee,
+    service_name: Optional[str] = None,
+    job: Optional[Any] = None,
+    purpose: str = "offer_reception",
+    **kwargs,
+) -> Tuple[bool, str, Dict[str, bool]]:
     """
     10-Gate Employee Eligibility Engine:
     Authoritative server-side evaluation of 10 mandatory operational gates.
+    Supports two purposes:
+      - purpose="offer_reception": technician must be online; busy technicians
+        can receive and view incoming offers (Gate 9 passes).
+      - purpose="acceptance": technician must be online/available and have NO
+        conflicting active workload (Gate 9 fails if busy).
     Every gate fails closed.
     Returns (is_eligible, reason_message, gate_results_dict).
     """
+    check_workload = kwargs.get("check_workload", None)
+    is_for_acceptance = (purpose == "acceptance") or (check_workload is True)
     gate_results = {f"G{i}": True for i in range(1, 11)}
+
+    from service_requests.models import ServiceRequest
+    if isinstance(service_name, ServiceRequest) or (service_name is not None and hasattr(service_name, "service_category")):
+        if job is None:
+            job = service_name
+        service_name = getattr(service_name, "service_category", "") or getattr(service_name, "issue_title", "")
 
     # ── Gate 1: Account Active ────────────────────────────────────────────────
     if not emp or not emp.is_active or not getattr(emp.user, "is_active", True):
@@ -598,10 +617,17 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
             return False, f"Gate 6: Technician is not authorized or verified for requested service '{service_name}'.", gate_results
 
     # ── Gate 7: Live Presence (Online & Available) ────────────────────────────
-    if not emp.is_online or emp.current_availability != "available":
-        gate_results["G7"] = False
-        logger.debug(f"[9GATE_REJECT_GATE7_PRESENCE_OFFLINE] Employee #{emp.id} presence is is_online={emp.is_online}, avail={emp.current_availability}.")
-        return False, "Gate 7: Technician is currently OFFLINE or unavailable.", gate_results
+    if is_for_acceptance:
+        if not emp.is_online or emp.current_availability != "available":
+            gate_results["G7"] = False
+            logger.debug(f"[9GATE_REJECT_GATE7_PRESENCE_OFFLINE] Employee #{emp.id} presence is is_online={emp.is_online}, avail={emp.current_availability}.")
+            return False, "Gate 7: Technician is currently OFFLINE or unavailable.", gate_results
+    else:
+        # For offer reception: technician must be online; busy technicians are allowed to receive offers
+        if not emp.is_online:
+            gate_results["G7"] = False
+            logger.debug(f"[9GATE_REJECT_GATE7_PRESENCE_OFFLINE] Employee #{emp.id} presence is is_online={emp.is_online}.")
+            return False, "Gate 7: Technician is currently OFFLINE.", gate_results
 
     # ── Gate 8: Leave Check ───────────────────────────────────────────────────
     today_str = timezone.now().date().isoformat()
@@ -616,14 +642,18 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
                 return False, f"Gate 8: Technician is on approved leave from {start_date} to {end_date}.", gate_results
 
     # ── Gate 9: Workload Concurrency (Single-Active-Job Isolation) ──────────────
-    from workforce_api.services.workload import get_employee_active_job
-    active_job = get_employee_active_job(emp)
-    if active_job:
-        gate_results["G9"] = False
-        logger.info(
-            f"[DISPATCH_REJECT] employee={emp.id} reason=EMPLOYEE_ALREADY_BUSY active_job={active_job.id}"
-        )
-        return False, f"Gate 9: Technician is busy on active Job #{active_job.id} ({active_job.request_id}).", gate_results
+    if is_for_acceptance:
+        from workforce_api.services.workload import get_employee_active_job
+        active_job = get_employee_active_job(emp)
+        if active_job:
+            gate_results["G9"] = False
+            logger.info(
+                f"[DISPATCH_REJECT] employee={emp.id} reason=EMPLOYEE_ALREADY_BUSY active_job={active_job.id}"
+            )
+            return False, f"Gate 9: Technician is busy on active Job #{active_job.id} ({active_job.request_id}).", gate_results
+    else:
+        # For offer reception: a technician can receive and view incoming offers while executing another job
+        gate_results["G9"] = True
 
     # ── Gate 10: Cash Float Ceiling (GT-C-02) ──────────────────────────────────
     # A technician on cash-on-service jobs accumulates company money they
@@ -680,6 +710,71 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
     return True, "All 10 Eligibility Gates Passed", gate_results
 
 
+def can_receive_offer(emp: Employee, job_obj: Any) -> Tuple[bool, str]:
+    """
+    Authoritative check: can technician RECEIVE and VIEW an incoming offer for job_obj?
+    Preserves all qualification, tenant, GPS, compliance, schedule, leave, and cash gates.
+    Allows busy technicians who are online to receive offers.
+    """
+    if not emp:
+        return False, "Employee not found."
+    job_id = getattr(job_obj, "id", None) or getattr(job_obj, "pk", None)
+    if job_id:
+        try:
+            has_same_job_offer = WorkforceJobOffer.objects.filter(
+                job_id=job_id,
+                employee=emp,
+                status__in=["OFFERED", "REJECTED", "DECLINED", "ACCEPTED"]
+            ).exists()
+            if has_same_job_offer:
+                return False, f"Employee #{getattr(emp, 'id', None)} already has offer history for Job #{job_id}."
+        except Exception:
+            pass
+
+    is_eligible, reason, _ = check_candidate_eligibility(
+        emp,
+        service_name=getattr(job_obj, "service_category", None),
+        job=job_obj,
+        purpose="offer_reception",
+    )
+    if not is_eligible and getattr(job_obj, "issue_title", None):
+        is_eligible, reason, _ = check_candidate_eligibility(
+            emp,
+            service_name=job_obj.issue_title,
+            job=job_obj,
+            purpose="offer_reception",
+        )
+    return is_eligible, reason
+
+
+def can_accept_offer(emp: Employee, job_obj: Any) -> Tuple[bool, str]:
+    """
+    Authoritative check: can technician ACCEPT an offer for job_obj?
+    Enforces workload concurrency: technician cannot accept while having an active conflicting job.
+    """
+    if not emp:
+        return False, "Employee not found."
+    from workforce_api.services.workload import get_employee_active_job
+    active_job = get_employee_active_job(emp)
+    if active_job and active_job.id != getattr(job_obj, "id", None):
+        return False, f"Technician already has an active assigned Job #{active_job.id}."
+
+    is_eligible, reason, _ = check_candidate_eligibility(
+        emp,
+        service_name=getattr(job_obj, "service_category", None),
+        job=job_obj,
+        purpose="acceptance",
+    )
+    if not is_eligible and getattr(job_obj, "issue_title", None):
+        is_eligible, reason, _ = check_candidate_eligibility(
+            emp,
+            service_name=job_obj.issue_title,
+            job=job_obj,
+            purpose="acceptance",
+        )
+    return is_eligible, reason
+
+
 def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, exclude_employee_ids: Optional[List[int]] = None, radius_km: float = MAX_DISPATCH_RADIUS_KM) -> List[Dict[str, Any]]:
     """
     Finds and ranks all eligible candidate employees for a given ServiceRequest.
@@ -715,7 +810,6 @@ def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AG
         Employee.objects.filter(
             is_active=True,
             is_online=True,
-            current_availability="available",
         )
         .select_related("user", "company", "scorecard")
         .annotate(is_busy_job=Exists(busy_subquery))
@@ -830,19 +924,14 @@ def get_eligible_candidates(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AG
             f"distance_km={f'{dist_km:.2f}km' if dist_km is not None else 'UNKNOWN'}"
         )
 
-        # Dispatch concurrency: skip anyone already holding a live offer for
-        # a DIFFERENT job. Cheap, and it keeps two concurrent dispatchers
-        # from converging on the same technician in the first place.
-        if emp.id in _employees_holding_offers:
-            logger.info(
-                f"[DISPATCH_REJECT] employee={emp.id} reason=ALREADY_HAS_LIVE_OFFER"
-            )
-            continue
-
-        # Check eligibility against service_category, then issue_title
-        is_eligible, reason, gate_results = check_candidate_eligibility(emp, job_obj.service_category, job=job_obj)
+        # Check eligibility against service_category, then issue_title for offer reception
+        is_eligible, reason, gate_results = check_candidate_eligibility(
+            emp, job_obj.service_category, job=job_obj, purpose="offer_reception"
+        )
         if not is_eligible and job_obj.issue_title:
-            is_eligible, reason, gate_results = check_candidate_eligibility(emp, job_obj.issue_title, job=job_obj)
+            is_eligible, reason, gate_results = check_candidate_eligibility(
+                emp, job_obj.issue_title, job=job_obj, purpose="offer_reception"
+            )
 
         g_str = " ".join(f"{k}={'PASS' if v else 'FAIL'}" for k, v in gate_results.items())
         logger.info(f"[9GATE_RESULT] employee={emp.id} {g_str}")
@@ -1160,15 +1249,16 @@ def dispatch_job(
     3. Performs candidate evaluation outside database transaction to avoid long locks.
     4. Completes state transition atomically (schedules backoff if no candidates; creates offer if candidate found).
     """
-    job_id = job_id_or_obj.pk if hasattr(job_id_or_obj, "pk") else job_id_or_obj
+    job_id = getattr(job_id_or_obj, "id", None) or getattr(job_id_or_obj, "pk", None) or job_id_or_obj
 
     try:
-        return _dispatch_job_two_phase(job_id, max_gps_age_seconds, exclude_employee_ids, force=force)
+        return _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids, force=force)
     except DispatchRaceLost as race:
         return False, str(race)
 
 
 def _dispatch_job_two_phase(job_id, max_gps_age_seconds, exclude_employee_ids, force: bool = False):
+    job_id = getattr(job_id, "id", None) or getattr(job_id, "pk", None) or job_id
     now = timezone.now()
     today = timezone.localdate()
 
@@ -1257,16 +1347,16 @@ def _dispatch_job_two_phase(job_id, max_gps_age_seconds, exclude_employee_ids, f
             job_obj.save(update_fields=["company_id"])
 
         # Race-safe lock or create WorkforceDispatchState
-        state = WorkforceDispatchState.objects.select_for_update().filter(job=job_obj).first()
+        state = WorkforceDispatchState.objects.select_for_update().filter(job_id=job_id).first()
         if not state:
             try:
                 with transaction.atomic():
                     state = WorkforceDispatchState.objects.create(
-                        job=job_obj,
+                        job_id=job_id,
                         dispatch_status=WorkforceDispatchState.DispatchStatus.NEVER_ATTEMPTED,
                     )
             except IntegrityError:
-                state = WorkforceDispatchState.objects.select_for_update().get(job=job_obj)
+                state = WorkforceDispatchState.objects.select_for_update().get(job_id=job_id)
 
         # Concurrency check: another worker actively dispatching this job
         if state.dispatch_status == WorkforceDispatchState.DispatchStatus.DISPATCHING:
@@ -1334,20 +1424,6 @@ def _dispatch_job_two_phase(job_id, max_gps_age_seconds, exclude_employee_ids, f
 
         for _candidate in candidates:
             _emp = _candidate["employee"]
-            busy_check = get_employee_active_job(_emp)
-            if busy_check:
-                _skipped.append(f"#{_emp.id} busy")
-                continue
-
-            has_live_offer = WorkforceJobOffer.objects.filter(
-                employee=_emp,
-                status=WorkforceJobOffer.Status.OFFERED,
-                expires_at__gt=timezone.now(),
-            ).exclude(job=job_obj).exists()
-            if has_live_offer:
-                _skipped.append(f"#{_emp.id} already offered other job")
-                continue
-
             top_candidate = _candidate
             top_emp = _emp
             top_dist_km = _candidate["distance_km"]
@@ -1447,21 +1523,19 @@ def _dispatch_job_two_phase(job_id, max_gps_age_seconds, exclude_employee_ids, f
             state.dispatch_status = WorkforceDispatchState.DispatchStatus.RETRY_SCHEDULED
             state.retry_at = timezone.now() + timedelta(seconds=delay_seconds)
             state.locked_at = None
-            state.save(update_fields=["dispatch_status", "retry_at", "locked_at", "updated_at"])
-            return False, f"Candidate Employee #{top_emp.pk} is no longer available."
-
-        existing_offer = WorkforceJobOffer.objects.filter(
+        # Ensure candidate does not already have an active offer for THIS same job
+        existing_offer_this_job = WorkforceJobOffer.objects.filter(
             employee=locked_emp,
+            job=locked_job,
             status=WorkforceJobOffer.Status.OFFERED,
             expires_at__gt=timezone.now(),
-        ).exclude(job=locked_job).first()
-        if existing_offer:
-            delay_seconds = compute_dispatch_retry_delay(state.attempt_count)
-            state.dispatch_status = WorkforceDispatchState.DispatchStatus.RETRY_SCHEDULED
-            state.retry_at = timezone.now() + timedelta(seconds=delay_seconds)
+        ).first()
+        if existing_offer_this_job:
+            state.dispatch_status = WorkforceDispatchState.DispatchStatus.OFFER_ACTIVE
+            state.retry_at = None
             state.locked_at = None
             state.save(update_fields=["dispatch_status", "retry_at", "locked_at", "updated_at"])
-            return False, f"Technician #{locked_emp.id} was offered another job concurrently; scheduled retry in {delay_seconds}s."
+            return True, f"Active offer already pending for Job #{job_id} on Employee #{locked_emp.id}."
 
         WorkforceJobOffer.objects.filter(job=locked_job, status=WorkforceJobOffer.Status.OFFERED).update(status=WorkforceJobOffer.Status.EXPIRED)
 
@@ -1543,6 +1617,9 @@ def _dispatch_job_two_phase(job_id, max_gps_age_seconds, exclude_employee_ids, f
         f"distance_km={top_dist_km:.2f} score={top_score:.1f} status=OFFER_CREATED"
     )
     return True, f"Job #{locked_job.id} offered to {locked_emp.user.get_full_name() or locked_emp.user.username} ({top_dist_km:.1f}km away, Score: {top_score:.1f})."
+
+
+_dispatch_job_locked = _dispatch_job_two_phase
 
 
 def dispatch_next_candidate(job_id_or_obj) -> Tuple[bool, str]:
@@ -1687,7 +1764,7 @@ def reconsider_jobs_for_employee(employee_or_id) -> int:
     """
     emp_id = employee_or_id.pk if hasattr(employee_or_id, "pk") else employee_or_id
     emp = Employee.objects.filter(pk=emp_id).first()
-    if not emp or not emp.is_active or not emp.is_online or emp.current_availability != "available" or get_employee_active_job(emp):
+    if not emp or not emp.is_active or not emp.is_online:
         return 0
 
     now = timezone.now()

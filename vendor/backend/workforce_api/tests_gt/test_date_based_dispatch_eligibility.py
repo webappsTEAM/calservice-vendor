@@ -53,6 +53,18 @@ class DateBasedDispatchEligibilityTests(SimpleTestCase):
         self.today = timezone.localdate()
         self.now = timezone.now()
 
+        self.patch_dispatch_state = patch("workforce_api.models.WorkforceDispatchState.objects")
+        self.mock_dispatch_state = self.patch_dispatch_state.start()
+        mock_state = SimpleNamespace(
+            dispatch_status="NEVER_ATTEMPTED",
+            attempt_count=0,
+            locked_at=None,
+            retry_at=None,
+            save=MagicMock(),
+        )
+        self.mock_dispatch_state.select_for_update.return_value.filter.return_value.first.return_value = mock_state
+        self.addCleanup(self.patch_dispatch_state.stop)
+
     # 1. Past preferred_date cannot be dispatched
     @patch("django.db.transaction.atomic")
     @patch("service_requests.models.ServiceRequest.objects.select_for_update")

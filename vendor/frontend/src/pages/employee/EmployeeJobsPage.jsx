@@ -344,9 +344,19 @@ export function EmployeeJobsPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const [jobs, setJobs] = useState([]);
-  const jobsRef = useRef([]);
-  const [initialLoading, setInitialLoading] = useState(true);
+  const {
+    activeJobs = [],
+    completedJobs = [],
+    isJobsLoading = false,
+    refreshActiveJobs,
+    refreshCompletedJobs,
+    activeAssignedJob,
+    hasActiveJob = false,
+    incomingOffers = [],
+    declineOfferOptimistic,
+    jobsRevision = 0,
+  } = employeeRuntime || {};
+
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
@@ -359,6 +369,8 @@ export function EmployeeJobsPage() {
   const [actionLoadingId, setActionLoadingId] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
 
+  const initialLoading = isJobsLoading && activeJobs.length === 0;
+
   const handleTabChange = (tabId) => {
     setActiveTab(tabId);
     const nextParams = new URLSearchParams(searchParams);
@@ -368,13 +380,16 @@ export function EmployeeJobsPage() {
       nextParams.set('tab', tabId.toLowerCase());
     }
     setSearchParams(nextParams, { replace: true });
+    if (tabId === 'COMPLETED' || tabId === 'ALL') {
+      refreshCompletedJobs?.();
+    }
   };
 
   // Job Details Modal
   const [selectedJobForDetails, setSelectedJobForDetails] = useState(null);
 
   // Per-job inline action errors — replaces alert() entirely.
-  // Maps jobId → { code, message, isExpired, isAlreadyAccepted }
+  // Maps jobId → { code, message, isExpired, isAlreadyAccepted, isBusy }
   const [actionErrors, setActionErrors] = useState({});
 
   const clearJobError = (jobId) =>
@@ -386,47 +401,46 @@ export function EmployeeJobsPage() {
   const [otpError, setOtpError] = useState('');
   const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
 
-  // Stale-While-Revalidate: Initial load shows spinner, background refreshes preserve current data
+  // Fetch completed jobs if tab is COMPLETED or ALL
+  useEffect(() => {
+    if (activeTab === 'COMPLETED' || activeTab === 'ALL') {
+      refreshCompletedJobs?.();
+    }
+  }, [activeTab, refreshCompletedJobs]);
+
   const loadJobs = useCallback(async (options = {}) => {
     const isBackground = options?.background === true;
     try {
-      if (!isBackground && jobsRef.current.length === 0) {
-        setInitialLoading(true);
-      } else {
-        setIsRefreshing(true);
-      }
+      setIsRefreshing(true);
       setError('');
-      // Request all relevant workforce jobs for the authenticated user
-      const data = await apiGetWorkforceJobs('all');
-      const jobsList = Array.isArray(data) ? data : (data?.results || []);
-      setJobs(jobsList);
-      jobsRef.current = jobsList;
+      await refreshActiveJobs?.({ force: true, silent: isBackground });
+      if (activeTab === 'COMPLETED' || activeTab === 'ALL') {
+        await refreshCompletedJobs?.();
+      }
     } catch (err) {
-      if (!isBackground || jobsRef.current.length === 0) {
+      if (!isBackground) {
         setError(cleanErrorMessage(err?.message || 'Failed to load your field jobs.'));
       }
     } finally {
-      setInitialLoading(false);
       setIsRefreshing(false);
     }
-  }, []);
+  }, [refreshActiveJobs, refreshCompletedJobs, activeTab]);
 
-  useEffect(() => {
-    loadJobs();
-  }, [loadJobs]);
-
-  // Realtime SSE synchronization via jobsRevision signal
-  const jobsRevision = employeeRuntime?.jobsRevision || 0;
-  const prevRevisionRef = useRef(jobsRevision);
-  useEffect(() => {
-    if (jobsRevision > prevRevisionRef.current) {
-      prevRevisionRef.current = jobsRevision;
-      const timer = setTimeout(() => {
-        loadJobs({ background: true });
-      }, 200); // 200ms coalesce debounce for burst offer events
-      return () => clearTimeout(timer);
+  // Combined jobs according to active tab
+  const jobs = useMemo(() => {
+    if (activeTab === 'COMPLETED') return completedJobs;
+    if (activeTab === 'OFFERS') return incomingOffers;
+    if (activeTab === 'ACTIVE') {
+      return activeJobs.filter((j) => !isOfferJob(j));
     }
-  }, [jobsRevision, loadJobs]);
+    // 'ALL' tab: combines activeJobs and completedJobs
+    const map = new Map();
+    activeJobs.forEach(j => map.set(j.id, j));
+    completedJobs.forEach(j => {
+      if (!map.has(j.id)) map.set(j.id, j);
+    });
+    return Array.from(map.values());
+  }, [activeTab, activeJobs, completedJobs, incomingOffers]);
 
   const handleCopyId = (id, e) => {
     e?.stopPropagation?.();
@@ -453,7 +467,7 @@ export function EmployeeJobsPage() {
     } catch (err) {
       const msg = cleanErrorMessage(err?.message || 'Could not accept job offer.');
       const code = err?.code || '';
-      // Classify the error so the card can show the right inline state
+      const isBusy = code === 'EMPLOYEE_ALREADY_BUSY' || msg.includes('already has an active assigned');
       const isExpired =
         code === 'OFFER_EXPIRED' ||
         code === 'NO_ACTIVE_OFFER' ||
@@ -464,10 +478,12 @@ export function EmployeeJobsPage() {
         msg.toLowerCase().includes('already been accepted');
       setActionErrors(prev => ({
         ...prev,
-        [jobId]: { code, message: msg, isExpired, isAlreadyAccepted },
+        [jobId]: { code, message: msg, isExpired, isAlreadyAccepted, isBusy },
       }));
-      // Refresh the list so the card reflects server reality (may disappear if reassigned)
-      loadJobs({ background: true });
+      // Only refresh if expired or already taken, keeping offer visible when busy
+      if (isExpired || isAlreadyAccepted) {
+        refreshActiveJobs?.({ force: true });
+      }
     } finally {
       setActionLoadingId(null);
     }
@@ -479,9 +495,10 @@ export function EmployeeJobsPage() {
     clearJobError(jobId);
     try {
       setActionLoadingId(jobId);
+      // Optimistically remove from runtime state instantly without waiting
+      declineOfferOptimistic?.(jobId);
       await apiRejectJobOffer(jobId, 'Technician declined');
-      employeeRuntime?.refreshActiveJobs?.({ force: true });
-      await loadJobs({ background: true });
+      refreshActiveJobs?.({ force: true, silent: true });
       if (selectedJobForDetails?.id === jobId) setSelectedJobForDetails(null);
     } catch (err) {
       const msg = cleanErrorMessage(err?.message || 'Could not decline job offer.');
@@ -490,6 +507,8 @@ export function EmployeeJobsPage() {
         ...prev,
         [jobId]: { code, message: msg, isExpired: false, isAlreadyAccepted: false },
       }));
+      // Rollback optimistic removal
+      refreshActiveJobs?.({ force: true });
     } finally {
       setActionLoadingId(null);
     }
@@ -602,26 +621,23 @@ export function EmployeeJobsPage() {
 
   // Tab counts
   const counts = useMemo(() => {
-    const validJobs = jobs.filter((j) => !isOfferJobPastDated(j));
-    const offers = validJobs.filter((j) => isOfferJob(j)).length;
-    const active = validJobs.filter((j) => {
+    const validActive = activeJobs.filter((j) => !isOfferJobPastDated(j));
+    const validCompleted = completedJobs.filter((j) => !isOfferJobPastDated(j));
+    const offers = incomingOffers.filter((j) => !isOfferJobPastDated(j)).length;
+    const active = validActive.filter((j) => {
       if (isOfferJob(j)) return false;
       const st = (j.status || '').toUpperCase();
       return ['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'PROOF_SUBMITTED'].includes(st);
     }).length;
-    const completed = validJobs.filter((j) => {
-      if (isOfferJob(j)) return false;
-      const st = (j.status || '').toUpperCase();
-      return ['COMPLETED', 'WORK_COMPLETED', 'WAITING_FOR_PAYMENT'].includes(st);
-    }).length;
+    const completed = validCompleted.length;
 
     return {
-      ALL: validJobs.length,
+      ALL: validActive.length + completed,
       OFFERS: offers,
       ACTIVE: active,
       COMPLETED: completed,
     };
-  }, [jobs]);
+  }, [activeJobs, completedJobs, incomingOffers]);
 
   // Filtered jobs list
   const filteredJobs = useMemo(() => {
@@ -714,6 +730,35 @@ export function EmployeeJobsPage() {
         </div>
 
         {error && <ErrorState message={error} onDismiss={() => setError('')} />}
+
+        {/* ── BUSY TECHNICIAN OFFERS BANNER ── */}
+        {hasActiveJob && incomingOffers.length > 0 && (
+          <div className="bg-amber-500/10 border border-amber-300/80 rounded-2xl p-4 flex items-start justify-between gap-3 text-amber-950 shadow-xs">
+            <div className="flex items-start gap-3 min-w-0">
+              <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-xs sm:text-sm font-black text-amber-950">
+                  You're currently on Job #{activeAssignedJob?.request_id || activeAssignedJob?.id}.
+                </p>
+                <p className="text-xs text-amber-800 mt-0.5 font-medium">
+                  {incomingOffers.length} new service offer{incomingOffers.length > 1 ? 's are' : ' is'} available. You can accept one after completing your current job.
+                </p>
+              </div>
+            </div>
+            {activeTab !== 'OFFERS' && (
+              <button
+                type="button"
+                onClick={() => handleTabChange('OFFERS')}
+                className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-white font-black text-xs rounded-xl shrink-0 transition-colors shadow-2xs cursor-pointer inline-flex items-center gap-1.5"
+              >
+                <span>View Offers</span>
+                <span className="bg-amber-700/60 px-1.5 py-0.5 rounded-md text-[10px] font-mono">
+                  {incomingOffers.length}
+                </span>
+              </button>
+            )}
+          </div>
+        )}
 
         {/* ── SEGMENTED TAB SELECTOR (Swiggy Partner Style) ── */}
         <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
@@ -980,6 +1025,25 @@ export function EmployeeJobsPage() {
                       {isOffer && (() => {
                         const jobErr = actionErrors[job.id];
                         if (jobErr) {
+                          // Busy error: technician already has an active job
+                          if (jobErr.isBusy) {
+                            return (
+                              <>
+                                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 text-amber-800 border border-amber-200 text-xs font-semibold rounded-xl max-w-[280px]">
+                                  <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                                  <span className="truncate">{jobErr.message}</span>
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleRejectOffer(job.id, e)}
+                                  disabled={actionLoadingId === job.id}
+                                  className="px-3.5 py-2 bg-white hover:bg-rose-50 text-slate-700 hover:text-rose-700 border border-slate-200 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                                >
+                                  Decline
+                                </button>
+                              </>
+                            );
+                          }
                           // Offer expired / no longer active → subdued pill + refresh
                           if (jobErr.isExpired || jobErr.isAlreadyAccepted) {
                             return (
@@ -1022,6 +1086,7 @@ export function EmployeeJobsPage() {
                           );
                         }
                         // Normal offer state — Decline + Accept buttons
+                        const isBusyWithActiveJob = Boolean(hasActiveJob);
                         return (
                           <>
                             <button
@@ -1035,11 +1100,16 @@ export function EmployeeJobsPage() {
                             <button
                               type="button"
                               onClick={(e) => handleAcceptOffer(job.id, e)}
-                              disabled={actionLoadingId === job.id}
-                              className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-black rounded-xl shadow-sm transition-all cursor-pointer flex items-center gap-1.5"
+                              disabled={actionLoadingId === job.id || isBusyWithActiveJob}
+                              title={isBusyWithActiveJob ? "Finish current job to accept" : "Accept job offer"}
+                              className={`px-5 py-2 text-xs font-black rounded-xl shadow-sm transition-all flex items-center gap-1.5 ${
+                                isBusyWithActiveJob
+                                  ? 'bg-slate-200 text-slate-500 cursor-not-allowed border border-slate-300'
+                                  : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white cursor-pointer'
+                              }`}
                             >
                               <Zap className="w-4 h-4 fill-current" />
-                              <span>Accept • ₹{payoutAmount}</span>
+                              <span>{isBusyWithActiveJob ? 'Finish current job to accept' : `Accept • ₹${payoutAmount}`}</span>
                             </button>
                           </>
                         );

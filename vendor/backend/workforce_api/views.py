@@ -2516,18 +2516,15 @@ class WorkforceJobListView(APIView):
 
             from service_requests.models import EmployeeJob
 
-            if has_active_job:
-                offered_job_ids_qs = ServiceRequest.objects.none().values("id")
-            else:
-                today = timezone.localdate()
-                offered_job_ids_qs = WorkforceJobOffer.objects.filter(
-                    employee=emp,
-                    status="OFFERED",
-                    expires_at__gt=now,
-                ).filter(
-                    Q(job__preferred_date=today) |
-                    Q(job__preferred_date__isnull=True, job__created_at__date=today)
-                ).values("job_id")
+            today = timezone.localdate()
+            offered_job_ids_qs = WorkforceJobOffer.objects.filter(
+                employee=emp,
+                status="OFFERED",
+                expires_at__gt=now,
+            ).filter(
+                Q(job__preferred_date=today) |
+                Q(job__preferred_date__isnull=True, job__created_at__date=today)
+            ).values("job_id")
 
             emp_job_sr_ids_qs = EmployeeJob.objects.filter(
                 employee=emp
@@ -4055,6 +4052,27 @@ class WorkforceJobAcceptOfferView(APIView):
             now = timezone.now()
             cancellation_deadline = now + timedelta(minutes=5)
 
+            # Hard Single Active Job Rule: Check if employee has a conflicting active job BEFORE mutating offer
+            from workforce_api.services.workload import get_employee_active_job
+            conflicting = ServiceRequest.objects.filter(
+                assigned_employee=emp_obj,
+                status__in=[
+                    "accepted", "on_the_way", "en_route", "arrived",
+                    "service_started", "in_progress", "proof_submitted",
+                    "service_completed", "payment_pending", "cash_pending"
+                ]
+            ).exclude(pk=job_obj.pk).first()
+            if not conflicting:
+                act = get_employee_active_job(emp_obj.id, for_update=True)
+                if act and act.pk != job_obj.pk:
+                    conflicting = act
+
+            if conflicting:
+                return Response({
+                    "error": f"Cannot accept job: Technician already has an active assigned Job #{conflicting.id}.",
+                    "code": "EMPLOYEE_ALREADY_BUSY"
+                }, status=status.HTTP_409_CONFLICT)
+
             if offer and offer.status == WorkforceJobOffer.Status.OFFERED:
                 if offer.expires_at < now:
                     offer.status = WorkforceJobOffer.Status.EXPIRED
@@ -4066,21 +4084,6 @@ class WorkforceJobAcceptOfferView(APIView):
                     }, status=status.HTTP_409_CONFLICT)
                 offer.status = "ACCEPTED"
                 offer.save()
-
-            # Hard Single Active Job Rule: Check if employee has a conflicting active job
-            conflicting = ServiceRequest.objects.filter(
-                assigned_employee=emp,
-                status__in=[
-                    "accepted", "on_the_way", "en_route", "arrived",
-                    "service_started", "in_progress", "proof_submitted",
-                    "service_completed", "payment_pending", "cash_pending"
-                ]
-            ).exclude(pk=job_obj.pk).first()
-            if conflicting:
-                return Response({
-                    "error": f"Cannot accept job: Technician already has an active assigned Job #{conflicting.id}.",
-                    "code": "EMPLOYEE_ALREADY_BUSY"
-                }, status=status.HTTP_409_CONFLICT)
 
             # Verify technician eligibility if accepting without an existing vetted offer
             if not offer:

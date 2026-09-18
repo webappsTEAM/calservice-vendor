@@ -229,25 +229,23 @@ const CACHED_COMPLETED_JOBS_KEY = 'calservice_workforce_cached_completed_jobs';
             } catch (_) {}
 
             // Seed initial offer IDs so historical offers do not trigger browser alerts
-            const currentOffer = jobsData.find(
+            const currentOffers = jobsData.filter(
               (j) =>
                 (j.is_offer === true || j.active_offer?.status === 'OFFERED') &&
                 !j.active_offer?.is_expired &&
                 !j.is_assigned_to_current_employee
             );
 
-            if (currentOffer) {
-              const offerId = currentOffer.active_offer?.id || currentOffer.offer_id || `job_${currentOffer.id}`;
-              if (!isInitialOffersLoadedRef.current) {
-                // Initial load -> mark as known without alerting
+            if (!isInitialOffersLoadedRef.current) {
+              currentOffers.forEach((off) => {
+                const offerId = off.active_offer?.id || off.offer_id || `job_${off.id}`;
                 knownOfferIdsRef.current.add(offerId);
-                isInitialOffersLoadedRef.current = true;
-              } else {
-                // Subsequent load -> trigger deduplicated notification
-                triggerOfferBrowserNotification(currentOffer);
-              }
-            } else {
+              });
               isInitialOffersLoadedRef.current = true;
+            } else {
+              currentOffers.forEach((off) => {
+                triggerOfferBrowserNotification(off);
+              });
             }
 
             // Smart reconciliation of selectedJob without resetting selection
@@ -269,7 +267,7 @@ const CACHED_COMPLETED_JOBS_KEY = 'calservice_workforce_cached_completed_jobs';
                 });
                 if (active) return active;
                 // If there is an active incoming offer, select that
-                if (currentOffer) return currentOffer;
+                if (currentOffers && currentOffers.length > 0) return currentOffers[0];
                 // Otherwise null — never arbitrarily select unassigned jobs as active
                 return null;
               }
@@ -341,6 +339,18 @@ const CACHED_COMPLETED_JOBS_KEY = 'calservice_workforce_cached_completed_jobs';
     },
     [refreshActiveJobs]
   );
+
+  // Optimistic decline handler: instantly removes offer from state without waiting for network
+  const declineOfferOptimistic = useCallback((jobId) => {
+    setActiveJobs((prev) => {
+      const updated = prev.filter((j) => (j.id !== jobId && j.job_id !== jobId));
+      try {
+        localStorage.setItem(CACHED_ACTIVE_JOBS_KEY, JSON.stringify(updated));
+      } catch (_) {}
+      return updated;
+    });
+    setJobsRevision((prev) => prev + 1);
+  }, []);
 
   // ── 6. Centralized Notification Synchronization ────────────────────────────
   const syncNotifications = useCallback(async () => {
@@ -501,6 +511,9 @@ const CACHED_COMPLETED_JOBS_KEY = 'calservice_workforce_cached_completed_jobs';
       } else if (
         [
           'JOB_ASSIGNED',
+          'EMPLOYEE_JOB_ACCEPTED',
+          'EMPLOYEE_JOB_CANCELLED',
+          'OFFER_REJECTED',
           'ARRIVAL_DETECTED',
           'JOB_COMPLETED',
           'JOB_LOCATION_UPDATE',
@@ -511,12 +524,9 @@ const CACHED_COMPLETED_JOBS_KEY = 'calservice_workforce_cached_completed_jobs';
         ].includes(type)
       ) {
         setJobsRevision((prev) => prev + 1);
-        scheduleCoalescedRefresh(300);
-        // A job ending flips the technician's availability back to available
-        // server-side, but that flag lives on the auth profile, which a jobs
-        // refresh never touches -- so the header stayed locked on
-        // "ON JOB (BUSY)" until the user did a full page reload.
-        if (['JOB_COMPLETED', 'STATUS_CHANGE', 'JOB_ASSIGNED'].includes(type) && typeof refreshProfile === 'function') {
+        scheduleCoalescedRefresh(type === 'OFFER_REJECTED' ? 100 : 300);
+        // A job ending or status change flips technician availability server-side
+        if (['JOB_COMPLETED', 'STATUS_CHANGE', 'JOB_ASSIGNED', 'EMPLOYEE_JOB_CANCELLED', 'OFFER_REJECTED'].includes(type) && typeof refreshProfile === 'function') {
           refreshProfile().catch(() => {});
         }
       } else if (type === 'NOTIFICATION_CREATED') {
@@ -664,6 +674,9 @@ const CACHED_COMPLETED_JOBS_KEY = 'calservice_workforce_cached_completed_jobs';
       // Realtime State
       realtimeConnectionState,
       jobsRevision,
+
+      // Offer helpers
+      declineOfferOptimistic,
     }),
     [
       activeJobs,
@@ -695,6 +708,7 @@ const CACHED_COMPLETED_JOBS_KEY = 'calservice_workforce_cached_completed_jobs';
       clearAllNotifications,
       realtimeConnectionState,
       jobsRevision,
+      declineOfferOptimistic,
     ]
   );
 
