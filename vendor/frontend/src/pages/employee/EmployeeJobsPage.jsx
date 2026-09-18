@@ -45,6 +45,7 @@ import {
   Eye,
   Check,
   Copy,
+  Lock,
 } from 'lucide-react';
 
 /**
@@ -287,6 +288,14 @@ function isOfferJob(job) {
 function getStatusTag(job) {
   if (!job) return { label: 'Scheduled', badgeClass: 'bg-slate-600 text-white font-bold' };
 
+  if (job?.is_scheduled_future) {
+    return {
+      label: 'Scheduled',
+      badgeClass: 'bg-purple-600 text-white font-bold',
+      isScheduled: true,
+    };
+  }
+
   if (isOfferJob(job)) {
     return {
       label: 'New Offer',
@@ -363,7 +372,7 @@ export function EmployeeJobsPage() {
 
   const initialTab = (searchParams.get('tab') || '').toUpperCase();
   const [activeTab, setActiveTab] = useState(
-    ['OFFERS', 'ACTIVE', 'COMPLETED'].includes(initialTab) ? initialTab : 'ALL'
+    ['OFFERS', 'ACTIVE', 'SCHEDULED', 'COMPLETED'].includes(initialTab) ? initialTab : 'ALL'
   );
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [actionLoadingId, setActionLoadingId] = useState(null);
@@ -430,8 +439,9 @@ export function EmployeeJobsPage() {
   const jobs = useMemo(() => {
     if (activeTab === 'COMPLETED') return completedJobs;
     if (activeTab === 'OFFERS') return incomingOffers;
+    if (activeTab === 'SCHEDULED') return activeJobs.filter((j) => j.is_scheduled_future);
     if (activeTab === 'ACTIVE') {
-      return activeJobs.filter((j) => !isOfferJob(j));
+      return activeJobs.filter((j) => !isOfferJob(j) && !j.is_scheduled_future);
     }
     // 'ALL' tab: combines activeJobs and completedJobs
     const map = new Map();
@@ -624,8 +634,9 @@ export function EmployeeJobsPage() {
     const validActive = activeJobs.filter((j) => !isOfferJobPastDated(j));
     const validCompleted = completedJobs.filter((j) => !isOfferJobPastDated(j));
     const offers = incomingOffers.filter((j) => !isOfferJobPastDated(j)).length;
+    const scheduled = validActive.filter((j) => j.is_scheduled_future).length;
     const active = validActive.filter((j) => {
-      if (isOfferJob(j)) return false;
+      if (isOfferJob(j) || j.is_scheduled_future) return false;
       const st = (j.status || '').toUpperCase();
       return ['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'PROOF_SUBMITTED'].includes(st);
     }).length;
@@ -635,6 +646,7 @@ export function EmployeeJobsPage() {
       ALL: validActive.length + completed,
       OFFERS: offers,
       ACTIVE: active,
+      SCHEDULED: scheduled,
       COMPLETED: completed,
     };
   }, [activeJobs, completedJobs, incomingOffers]);
@@ -653,7 +665,10 @@ export function EmployeeJobsPage() {
       if (activeTab === 'OFFERS' && !isOffer) {
         return false;
       }
-      if (activeTab === 'ACTIVE' && (isOffer || !['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'PROOF_SUBMITTED'].includes(status))) {
+      if (activeTab === 'SCHEDULED' && !job.is_scheduled_future) {
+        return false;
+      }
+      if (activeTab === 'ACTIVE' && (job.is_scheduled_future || isOffer || !['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'PROOF_SUBMITTED'].includes(status))) {
         return false;
       }
       if (activeTab === 'COMPLETED' && (isOffer || !['COMPLETED', 'WORK_COMPLETED', 'WAITING_FOR_PAYMENT'].includes(status))) {
@@ -766,6 +781,7 @@ export function EmployeeJobsPage() {
             { id: 'ALL', label: 'All Jobs', count: counts.ALL },
             { id: 'OFFERS', label: '⚡ New Offers', count: counts.OFFERS, isOffer: true },
             { id: 'ACTIVE', label: '▶️ In Progress', count: counts.ACTIVE },
+            { id: 'SCHEDULED', label: '📅 Scheduled', count: counts.SCHEDULED },
             { id: 'COMPLETED', label: '✅ Completed', count: counts.COMPLETED },
           ].map((tab) => {
             const isActive = activeTab === tab.id;
@@ -891,7 +907,9 @@ export function EmployeeJobsPage() {
                 <div
                   key={job.id}
                   className={`bg-white rounded-2xl border transition-all flex flex-col justify-between overflow-hidden shadow-2xs hover:shadow-md ${
-                    isOffer
+                    job.is_scheduled_future
+                      ? 'border-purple-300 ring-2 ring-purple-400/20'
+                      : isOffer
                       ? 'border-amber-300 ring-2 ring-amber-400/20'
                       : isInProgress
                       ? 'border-emerald-300 ring-2 ring-emerald-400/20'
@@ -1021,8 +1039,16 @@ export function EmployeeJobsPage() {
                     </button>
 
                     <div className="flex items-center gap-2">
+                      {/* SCHEDULED FUTURE BOOKINGS (Locked until date) */}
+                      {job.is_scheduled_future && (
+                        <div className="flex items-center gap-1.5 px-3 py-2 bg-purple-50 text-purple-900 border border-purple-200 rounded-xl text-xs font-semibold max-w-[280px]">
+                          <Lock className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                          <span className="truncate">{job.scheduled_hold_reason || `Locked until ${job.preferred_date}`}</span>
+                        </div>
+                      )}
+
                       {/* OFFER ACTIONS — or inline error state when accept/decline fails */}
-                      {isOffer && (() => {
+                      {!job.is_scheduled_future && isOffer && (() => {
                         const jobErr = actionErrors[job.id];
                         if (jobErr) {
                           // Busy error: technician already has an active job
@@ -1318,7 +1344,12 @@ export function EmployeeJobsPage() {
                 >
                   Close
                 </button>
-                {isOfferJob(selectedJobForDetails) && (
+                {selectedJobForDetails.is_scheduled_future ? (
+                  <div className="flex items-center gap-1.5 px-4 py-2 bg-purple-50 text-purple-900 border border-purple-200 rounded-xl text-xs font-semibold">
+                    <Lock className="w-4 h-4 text-purple-700 shrink-0" />
+                    <span>{selectedJobForDetails.scheduled_hold_reason || 'Scheduled for future date — acceptance locked.'}</span>
+                  </div>
+                ) : isOfferJob(selectedJobForDetails) && (
                   <button
                     type="button"
                     onClick={(e) => handleAcceptOffer(selectedJobForDetails.id, e)}

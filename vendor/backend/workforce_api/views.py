@@ -2550,6 +2550,31 @@ class WorkforceJobListView(APIView):
                 id__in=emp_job_sr_ids_qs
             )
 
+            # 5. Future scheduled bookings: upcoming unassigned bookings matching employee's company and capabilities
+            future_jobs_filter = Q(
+                status__in=["confirmed", "unassigned", "new_request", "draft"],
+                assigned_employee__isnull=True,
+                preferred_date__gt=today,
+            )
+            if emp.company_id and emp.company_id > 1 and getattr(emp.company, "slug", "") not in ("calservices", "caldim-engineering-pvt-ltd", "caldim-platform", "caldim-services"):
+                future_jobs_filter &= Q(company_id=emp.company_id)
+            else:
+                future_jobs_filter &= (Q(company_id=1) | Q(company__isnull=True))
+
+            from workforce_api.services.automatic_dispatch import check_candidate_eligibility
+            future_candidates = list(
+                ServiceRequest.objects.filter(future_jobs_filter)
+                .select_related("company", "customer")
+                .order_by("preferred_date", "preferred_time", "-created_at")[:25]
+            )
+            future_job_ids = []
+            for fj in future_candidates:
+                eligible, _, _ = check_candidate_eligibility(emp, fj.service_category or fj.issue_title, fj, purpose="offer_reception")
+                if eligible:
+                    future_job_ids.append(fj.id)
+
+            future_scheduled_qs = Q(id__in=future_job_ids)
+
             params = getattr(request, "query_params", request.GET)
             status_filter = str(params.get("status", "active")).lower().strip()
 
@@ -2560,11 +2585,11 @@ class WorkforceJobListView(APIView):
                 )
             elif status_filter == "all":
                 qs = ServiceRequest.objects.filter(
-                    assigned_active_qs | completed_qs | offered_qs | employee_job_qs
+                    assigned_active_qs | completed_qs | offered_qs | employee_job_qs | future_scheduled_qs
                 )
             else: # "active" default
                 qs = ServiceRequest.objects.filter(
-                    assigned_active_qs | offered_qs | (employee_job_qs & Q(status__in=ACTIVE_QUEUE_STATUSES))
+                    assigned_active_qs | offered_qs | (employee_job_qs & Q(status__in=ACTIVE_QUEUE_STATUSES)) | future_scheduled_qs
                 ).exclude(status__in=["completed", "cancelled"])
 
             if emp.company:
@@ -2572,7 +2597,7 @@ class WorkforceJobListView(APIView):
                     # Platform technicians can service jobs from any partner company
                     pass
                 else:
-                    qs = qs.filter(Q(company=emp.company) | Q(assigned_employee=emp) | Q(id__in=offered_job_ids_qs) | Q(company__isnull=True))
+                    qs = qs.filter(Q(company=emp.company) | Q(assigned_employee=emp) | Q(id__in=offered_job_ids_qs) | Q(id__in=future_job_ids) | Q(company__isnull=True))
 
             qs = qs.select_related("customer", "assigned_employee", "assigned_employee__user", "company")
             qs = qs.distinct().order_by("-updated_at", "-created_at")
@@ -4024,6 +4049,23 @@ class WorkforceJobAcceptOfferView(APIView):
                     "error": "Cannot accept job: Job has already been assigned and accepted by another technician.",
                     "code": "JOB_ALREADY_ACCEPTED"
                 }, status=status.HTTP_409_CONFLICT)
+
+            # Authoritative Safety Gate: Future-scheduled bookings cannot be accepted before their lead window opens
+            from workforce_api.services.automatic_dispatch import get_scheduled_dispatch_window
+            is_future, scheduled_dt, window_open = get_scheduled_dispatch_window(job_obj)
+            if is_future:
+                msg = "This job is scheduled for a future date and cannot be accepted yet."
+                if scheduled_dt and window_open:
+                    msg = (
+                        f"Cannot accept job: Service is scheduled for {scheduled_dt.strftime('%d %b %Y at %I:%M %p')}. "
+                        f"Acceptance opens at {window_open.strftime('%I:%M %p')}."
+                    )
+                return Response({
+                    "error": msg,
+                    "code": "SCHEDULED_JOB_NOT_YET_ACCEPTABLE",
+                    "scheduled_start": scheduled_dt.isoformat() if scheduled_dt else None,
+                    "window_open": window_open.isoformat() if window_open else None,
+                }, status=status.HTTP_400_BAD_REQUEST)
 
             from service_requests.models import EmployeeJob
             from workforce_api.models import WorkforceJobOffer, WorkforceJobLifecycleEvent, JobTrackingSession, WorkforceEventLog

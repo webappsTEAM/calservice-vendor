@@ -95,6 +95,7 @@ import {
   Calculator,
   Power,
   Loader2,
+  Lock,
 } from 'lucide-react';
 import QuotationBuilderModal from '../../components/estimates/QuotationBuilderModal.jsx';
 
@@ -2870,8 +2871,18 @@ export function EmployeeDashboardPage() {
                           )}
                         </div>
 
-                        {/* Offer Action Buttons OR Live Tracking CTA */}
-                        {isOffer ? (
+                        {/* Offer Action Buttons OR Scheduled Future Lock OR Live Tracking CTA */}
+                        {job.is_scheduled_future ? (
+                          <div className="mt-2.5 p-2.5 rounded-lg bg-purple-50 border border-purple-200 text-purple-950 space-y-1">
+                            <div className="flex items-center gap-1.5 text-purple-800 font-bold text-[10px] uppercase tracking-wider">
+                              <Lock className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                              <span>SCHEDULED BOOKING • LOCKED</span>
+                            </div>
+                            <p className="text-[11px] text-purple-900 leading-tight">
+                              {job.scheduled_hold_reason || `Service scheduled for ${job.preferred_date}. Acceptance opens before service.`}
+                            </p>
+                          </div>
+                        ) : isOffer ? (
                           <div className="mt-2.5 p-2.5 rounded-lg bg-amber-50 border border-amber-300 text-amber-950 space-y-2">
                             <div className="flex items-center justify-between">
                               <span className="font-bold text-[10px] text-amber-800 uppercase tracking-wider flex items-center gap-1">
@@ -3081,6 +3092,25 @@ export function EmployeeDashboardPage() {
                       Action Steps
                     </h3>
                     <div className="flex flex-col gap-2.5">
+                      {/* 0. STATE: SCHEDULED FUTURE (Acceptance locked until window opens) */}
+                      {selectedJob.is_scheduled_future && (
+                        <div className="w-full p-3 bg-purple-50 border border-purple-200 rounded-lg space-y-2">
+                          <div className="flex items-center gap-1.5 text-purple-900 font-bold text-xs uppercase tracking-wider">
+                            <Lock className="w-4 h-4 text-purple-600 shrink-0" />
+                            <span>Scheduled Booking • Acceptance Locked</span>
+                          </div>
+                          <p className="text-xs text-purple-950 leading-relaxed">
+                            {selectedJob.scheduled_hold_reason || `Service scheduled for ${selectedJob.preferred_date}. Acceptance opens before the appointment.`}
+                          </p>
+                          <div className="pt-0.5">
+                            <span className="text-[11px] font-semibold text-purple-700 bg-purple-100/80 px-2.5 py-1 rounded-md border border-purple-200 inline-flex items-center gap-1">
+                              <Lock className="w-3 h-3 text-purple-600" />
+                              Acceptance unlocks 45 mins before scheduled service
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
                       {/* 1. STATE: OFFERED (Technician hasn't accepted yet) */}
                       {(selectedJob.active_offer?.status === 'OFFERED' && !selectedJob.active_offer?.is_expired) && (
                         <div className="w-full p-3 bg-amber-50 border border-amber-300 rounded-lg space-y-2.5">

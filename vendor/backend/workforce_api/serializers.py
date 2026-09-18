@@ -518,6 +518,10 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
     # nothing in the job payload told the app they applied.
     is_logistics = serializers.SerializerMethodField()
     trip_stop_count = serializers.SerializerMethodField()
+    is_scheduled_future = serializers.SerializerMethodField()
+    can_accept = serializers.SerializerMethodField()
+    scheduled_window_open = serializers.SerializerMethodField()
+    scheduled_hold_reason = serializers.SerializerMethodField()
 
     class Meta:
         model = ServiceRequest
@@ -583,11 +587,47 @@ class WorkforceJobSerializer(serializers.ModelSerializer):
             "logistics_leg",
             "logistics_leg_updated_at",
             "trip_stop_count",
+            "is_scheduled_future",
+            "can_accept",
+            "scheduled_window_open",
+            "scheduled_hold_reason",
         ]
 
     def get_is_logistics(self, obj):
         from workforce_api.services.automatic_dispatch import LOGISTICS_SERVICE_CATEGORIES
         return (obj.service_category or "").strip().lower() in LOGISTICS_SERVICE_CATEGORIES
+
+    def _get_scheduled_window(self, obj):
+        if hasattr(obj, "_cached_scheduled_window"):
+            return obj._cached_scheduled_window
+        from workforce_api.services.automatic_dispatch import get_scheduled_dispatch_window
+        from django.utils import timezone
+        res = get_scheduled_dispatch_window(obj, now=timezone.now())
+        obj._cached_scheduled_window = res
+        return res
+
+    def get_is_scheduled_future(self, obj):
+        is_future, _, _ = self._get_scheduled_window(obj)
+        return bool(is_future)
+
+    def get_can_accept(self, obj):
+        is_future, _, _ = self._get_scheduled_window(obj)
+        if is_future:
+            return False
+        return True
+
+    def get_scheduled_window_open(self, obj):
+        is_future, _, window_open = self._get_scheduled_window(obj)
+        if is_future and window_open:
+            return window_open.isoformat()
+        return None
+
+    def get_scheduled_hold_reason(self, obj):
+        is_future, scheduled_dt, window_open = self._get_scheduled_window(obj)
+        if is_future and scheduled_dt and window_open:
+            lead_mins = int(round((scheduled_dt - window_open).total_seconds() / 60))
+            return f"Service scheduled for {scheduled_dt.strftime('%d %b %Y at %I:%M %p')}. Acceptance opens at {window_open.strftime('%I:%M %p')} ({lead_mins} mins prior)."
+        return None
 
     def get_trip_stop_count(self, obj):
         trip_stops_map = self.context.get("trip_stops_map")
