@@ -466,6 +466,52 @@ class WorkforceJobOffer(models.Model):
         return f"Offer Job #{self.job_id} to {self.employee} ({self.status})"
 
 
+class WorkforceDispatchState(models.Model):
+    """
+    Dedicated dispatch-control state for ServiceRequest.
+    Controls retry scheduling, backoff, and dispatch claim locking.
+    ServiceRequest remains the authoritative booking/job record.
+    """
+    class DispatchStatus(models.TextChoices):
+        NEVER_ATTEMPTED = "NEVER_ATTEMPTED", "Never Attempted"
+        DISPATCHING = "DISPATCHING", "Dispatching"
+        RETRY_SCHEDULED = "RETRY_SCHEDULED", "Retry Scheduled"
+        OFFER_ACTIVE = "OFFER_ACTIVE", "Offer Active"
+        ASSIGNED = "ASSIGNED", "Assigned"
+        CANCELLED = "CANCELLED", "Cancelled"
+        COMPLETED = "COMPLETED", "Completed"
+        EXPIRED = "EXPIRED", "Expired"
+
+    job = models.OneToOneField(
+        "service_requests.ServiceRequest",
+        on_delete=models.CASCADE,
+        related_name="dispatch_state",
+    )
+    dispatch_status = models.CharField(
+        max_length=32,
+        choices=DispatchStatus.choices,
+        default=DispatchStatus.NEVER_ATTEMPTED,
+        db_index=True,
+    )
+    attempt_count = models.PositiveIntegerField(default=0)
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    retry_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    locked_at = models.DateTimeField(null=True, blank=True)
+    unassigned_reason_code = models.CharField(max_length=64, blank=True, default="")
+    unassigned_reason_message = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_dispatch_state"
+        indexes = [
+            models.Index(fields=["dispatch_status", "retry_at"], name="wf_disp_st_retry_idx"),
+        ]
+
+    def __str__(self):
+        return f"DispatchState Job #{self.job_id} [{self.dispatch_status}] (Attempt {self.attempt_count}, retry_at: {self.retry_at})"
+
+
 class WorkforceJobLifecycleEvent(models.Model):
     """
     Immutable audit event for workforce job state transitions.

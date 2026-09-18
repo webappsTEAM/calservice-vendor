@@ -27,6 +27,8 @@ from workforce_api.models import (
     WorkforceEmployeeSkill,
     WorkforceEmployeeCompliance,
     WorkforceEmployeeSchedule,
+    WorkforceDispatchState,
+    WorkforceEventLog,
 )
 from time_tracking.geo import haversine_distance
 from workforce_api.services.workload import get_employee_active_job, ACTIVE_WORKLOAD_STATUSES
@@ -252,8 +254,24 @@ def get_scheduled_dispatch_window(job_obj, now=None) -> Tuple[bool, Optional[dat
     if not pref_date:
         return False, None, None
 
-    now = now or timezone.localtime()
-    current_tz = timezone.get_current_timezone()
+    company = getattr(job_obj, "company", None)
+    co_tz_str = getattr(company, "timezone", None) if company else None
+    operational_tz = None
+    if co_tz_str and co_tz_str.upper() != "UTC":
+        try:
+            import zoneinfo
+            operational_tz = zoneinfo.ZoneInfo(co_tz_str)
+        except Exception:
+            pass
+
+    if operational_tz is None:
+        try:
+            import zoneinfo
+            operational_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+        except Exception:
+            operational_tz = timezone.get_current_timezone()
+
+    now = now or timezone.now().astimezone(operational_tz)
     today = now.date()
 
     if pref_date < today:
@@ -273,7 +291,7 @@ def get_scheduled_dispatch_window(job_obj, now=None) -> Tuple[bool, Optional[dat
             # Same day without a specific future time slot -> immediate booking
             return False, None, None
         naive_dt = datetime.datetime.combine(today, slot_time)
-        scheduled_dt = timezone.make_aware(naive_dt, current_tz) if timezone.is_naive(naive_dt) else naive_dt
+        scheduled_dt = naive_dt.replace(tzinfo=operational_tz)
         window_open = scheduled_dt - timedelta(minutes=lead_minutes)
         if now < window_open:
             return True, scheduled_dt, window_open
@@ -284,7 +302,7 @@ def get_scheduled_dispatch_window(job_obj, now=None) -> Tuple[bool, Optional[dat
         # Default to 09:00 AM local time on future date
         slot_time = datetime.time(9, 0)
     naive_dt = datetime.datetime.combine(pref_date, slot_time)
-    scheduled_dt = timezone.make_aware(naive_dt, current_tz) if timezone.is_naive(naive_dt) else naive_dt
+    scheduled_dt = naive_dt.replace(tzinfo=operational_tz)
     window_open = scheduled_dt - timedelta(minutes=lead_minutes)
     if now < window_open:
         return True, scheduled_dt, window_open
@@ -1088,50 +1106,104 @@ def _maybe_signal_customer_delay(job_obj, failed_cycle_count: int) -> None:
         logger.info(f"Could not notify Customer app of dispatch delay for Job #{job_obj.id}: {webhook_err}")
 
 
-def dispatch_job(job_id_or_obj, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS, exclude_employee_ids: Optional[List[int]] = None) -> Tuple[bool, str]:
+def compute_dispatch_retry_delay(attempt_count: int) -> int:
     """
-    Executes automatic dispatch for a single ServiceRequest:
-    1. Locks ServiceRequest row with select_for_update inside transaction.atomic()
-    2. Validates dispatchable state and coordinates
-    3. Checks if an active exclusive offer already exists (idempotent guard)
-    4. Evaluates and ranks eligible candidates
-    5. Creates WorkforceJobOffer, sends JOB_OFFER notification, and logs audit events
+    Authoritative canonical dispatch retry backoff policy:
+    Attempt 1  -> 10 seconds
+    Attempt 2  -> 20 seconds
+    Attempt 3  -> 30 seconds
+    Attempt 4+ -> 60 seconds maximum
     """
-    job_id = job_id_or_obj.pk if hasattr(job_id_or_obj, "pk") else job_id_or_obj
-    from workforce_api.models import WorkforceEventLog
+    if attempt_count <= 1:
+        return 10
+    elif attempt_count == 2:
+        return 20
+    elif attempt_count == 3:
+        return 30
+    else:
+        return 60
+
+
+def get_or_create_dispatch_state(job_id: int) -> WorkforceDispatchState:
+    """
+    Race-safe retrieval or initialization of WorkforceDispatchState for a job.
+    Uses database-level unique constraint to handle concurrent worker creations safely:
+    1. Try to find existing record.
+    2. If missing, attempt create within an atomic savepoint block.
+    3. If IntegrityError (concurrent creator beat us), retrieve the now-existing record.
+    """
+    state = WorkforceDispatchState.objects.filter(job_id=job_id).first()
+    if state:
+        return state
 
     try:
-        return _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids)
+        with transaction.atomic():
+            state = WorkforceDispatchState.objects.create(
+                job_id=job_id,
+                dispatch_status=WorkforceDispatchState.DispatchStatus.NEVER_ATTEMPTED,
+            )
+            return state
+    except IntegrityError:
+        return WorkforceDispatchState.objects.get(job_id=job_id)
+
+
+def dispatch_job(
+    job_id_or_obj,
+    max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS,
+    exclude_employee_ids: Optional[List[int]] = None,
+    force: bool = False,
+) -> Tuple[bool, str]:
+    """
+    Executes automatic dispatch for a single ServiceRequest using 2-phase claim architecture:
+    1. Atomically claims dispatch attempt under a short database transaction.
+    2. Checks tenant, job state, date safety, active offers, and backoff retry_at (bypassed if force=True).
+    3. Performs candidate evaluation outside database transaction to avoid long locks.
+    4. Completes state transition atomically (schedules backoff if no candidates; creates offer if candidate found).
+    """
+    job_id = job_id_or_obj.pk if hasattr(job_id_or_obj, "pk") else job_id_or_obj
+
+    try:
+        return _dispatch_job_two_phase(job_id, max_gps_age_seconds, exclude_employee_ids, force=force)
     except DispatchRaceLost as race:
-        # Lost the offer race to a concurrent dispatcher. Not an error
-        # condition: the job simply stays dispatchable and the next sweep
-        # picks it up. Handled out here because the transaction inside is
-        # already rolled back by the time this arrives.
         return False, str(race)
 
 
-def _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids):
-    from workforce_api.models import WorkforceEventLog
+def _dispatch_job_two_phase(job_id, max_gps_age_seconds, exclude_employee_ids, force: bool = False):
+    now = timezone.now()
+    today = timezone.localdate()
 
+    # ── Phase 1: Short Atomic Claim ──
     with transaction.atomic():
         job_obj = ServiceRequest.objects.select_for_update().filter(pk=job_id).first()
         if not job_obj:
             return False, "Job not found."
 
         if job_obj.status in ["completed", "cancelled"]:
+            WorkforceDispatchState.objects.filter(job_id=job_id).update(
+                dispatch_status=WorkforceDispatchState.DispatchStatus.CANCELLED if job_obj.status == "cancelled" else WorkforceDispatchState.DispatchStatus.COMPLETED,
+                retry_at=None,
+                locked_at=None,
+            )
             return False, f"Job #{job_id} is {job_obj.status} and cannot be dispatched."
 
         if job_obj.status in ["accepted", "on_the_way", "arrived", "in_progress"] and job_obj.assigned_employee:
+            WorkforceDispatchState.objects.filter(job_id=job_id).update(
+                dispatch_status=WorkforceDispatchState.DispatchStatus.ASSIGNED,
+                retry_at=None,
+                locked_at=None,
+            )
             return False, f"Job #{job_id} is already accepted and in progress with Employee #{job_obj.assigned_employee_id}."
-
-        now = timezone.now()
-        today = timezone.localdate()
 
         # Hard Safety Gate: Refuse past-dated bookings
         if job_obj.preferred_date and job_obj.preferred_date < today:
             logger.warning(
                 f"[DISPATCH_SCHEDULE_EXPIRED] Job #{job_id} scheduled date {job_obj.preferred_date} is in the past. "
                 f"Today is {today}. Refusing dispatch."
+            )
+            WorkforceDispatchState.objects.filter(job_id=job_id).update(
+                dispatch_status=WorkforceDispatchState.DispatchStatus.EXPIRED,
+                retry_at=None,
+                locked_at=None,
             )
             return False, "SCHEDULE_DATE_EXPIRED"
 
@@ -1144,9 +1216,14 @@ def _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids):
                         f"[DISPATCH_SCHEDULE_EXPIRED] Immediate Job #{job_id} created on {created_date} is stale. "
                         f"Today is {today}. Refusing dispatch."
                     )
+                    WorkforceDispatchState.objects.filter(job_id=job_id).update(
+                        dispatch_status=WorkforceDispatchState.DispatchStatus.EXPIRED,
+                        retry_at=None,
+                        locked_at=None,
+                    )
                     return False, "SCHEDULE_DATE_EXPIRED"
 
-        # Gate: Scheduled Job Hold (Safety Gate against premature dispatch)
+        # Gate: Scheduled Job Hold
         is_future, scheduled_dt, window_open = get_scheduled_dispatch_window(job_obj, now=now)
         if is_future:
             logger.info(
@@ -1155,46 +1232,88 @@ def _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids):
             )
             return True, f"Scheduled job held: service is at {scheduled_dt.strftime('%Y-%m-%d %H:%M')}; dispatch window opens at {window_open.strftime('%H:%M')}."
 
-        logger.info(
-            f"[DISPATCH_EVALUATION] job_id={job_obj.id} "
-            f"service=\"{job_obj.service_category or job_obj.issue_title}\" "
-            f"customer_lat={job_obj.latitude} customer_lng={job_obj.longitude}"
-        )
-
-        # Idempotency: Check if an active, non-expired offer already exists
+        # Active unexpired offer check
         active_offer = WorkforceJobOffer.objects.select_for_update().filter(
             job=job_obj,
             status=WorkforceJobOffer.Status.OFFERED,
             expires_at__gt=now,
         ).first()
-
         if active_offer:
             logger.info(f"[DISPATCH_OFFER_EXISTS] Job #{job_id} already has active offer #{active_offer.id} for Employee #{active_offer.employee_id}.")
+            WorkforceDispatchState.objects.filter(job_id=job_id).update(
+                dispatch_status=WorkforceDispatchState.DispatchStatus.OFFER_ACTIVE,
+                retry_at=None,
+                locked_at=None,
+            )
             return True, f"Active offer already pending for Employee #{active_offer.employee_id}."
 
-        # Validate customer booking coordinates
         if job_obj.latitude is None or job_obj.longitude is None:
             if job_obj.status != "unassigned":
                 apply_transition(job_obj, "unassigned")
             logger.warning(f"[DISPATCH_GPS_MISSING] Job #{job_id} is missing coordinates.")
-        # Ensure default platform company context if unassigned
+
         if not job_obj.company_id:
             job_obj.company_id = 1
             job_obj.save(update_fields=["company_id"])
 
+        # Race-safe lock or create WorkforceDispatchState
+        state = WorkforceDispatchState.objects.select_for_update().filter(job=job_obj).first()
+        if not state:
+            try:
+                with transaction.atomic():
+                    state = WorkforceDispatchState.objects.create(
+                        job=job_obj,
+                        dispatch_status=WorkforceDispatchState.DispatchStatus.NEVER_ATTEMPTED,
+                    )
+            except IntegrityError:
+                state = WorkforceDispatchState.objects.select_for_update().get(job=job_obj)
+
+        # Concurrency check: another worker actively dispatching this job
+        if state.dispatch_status == WorkforceDispatchState.DispatchStatus.DISPATCHING:
+            if state.locked_at and (now - state.locked_at).total_seconds() < 120.0:
+                logger.info(f"[DISPATCH_ALREADY_CLAIMED] Job #{job_id} is actively being dispatched by another worker.")
+                return False, f"Job #{job_id} is currently being dispatched by another worker."
+            logger.warning(f"[DISPATCH_CLAIM_RECOVERED] Recovered stale claim for Job #{job_id} (locked at {state.locked_at}).")
+
+        if state.dispatch_status == WorkforceDispatchState.DispatchStatus.OFFER_ACTIVE:
+            if active_offer:
+                return True, f"Active offer already pending for Job #{job_id}."
+
+        if state.dispatch_status in [
+            WorkforceDispatchState.DispatchStatus.ASSIGNED,
+            WorkforceDispatchState.DispatchStatus.COMPLETED,
+            WorkforceDispatchState.DispatchStatus.CANCELLED,
+            WorkforceDispatchState.DispatchStatus.EXPIRED,
+        ]:
+            return False, f"Job #{job_id} dispatch state is {state.dispatch_status}; skipping dispatch."
+
+        # Backoff check: if retry_at > now and not force, abort
+        if not force and state.dispatch_status == WorkforceDispatchState.DispatchStatus.RETRY_SCHEDULED:
+            if state.retry_at and state.retry_at > now:
+                remaining_s = round((state.retry_at - now).total_seconds(), 1)
+                logger.debug(f"[DISPATCH_RETRY_NOT_DUE] Job #{job_id} retry due in {remaining_s}s. Skipping.")
+                return False, f"Dispatch retry not due yet ({remaining_s}s remaining)."
+
+        # Claim the attempt atomically
+        state.dispatch_status = WorkforceDispatchState.DispatchStatus.DISPATCHING
+        state.attempt_count += 1
+        state.last_attempt_at = now
+        state.locked_at = now
+        if force:
+            state.retry_at = None
+        state.save(update_fields=["dispatch_status", "attempt_count", "last_attempt_at", "locked_at", "retry_at", "updated_at"])
+        attempt_num = state.attempt_count
+
+    # ── Phase 2: Candidate Evaluation (Outside Database Transaction) ──
+    try:
         WorkforceEventLog.objects.create(
             event_type="DISPATCH_STARTED",
-            payload={"job_id": job_obj.id, "service": job_obj.service_category}
+            payload={"job_id": job_obj.id, "service": job_obj.service_category, "attempt": attempt_num}
         )
 
-        # Progressive radius widening (Booking Dispatch Framework section 4):
-        # how many times has this job already failed a full offer cycle
-        # (decline/reject/expire)? Feeds both the search radius below and
-        # the customer delay signal further down.
         failed_cycle_count = _count_failed_offer_cycles(job_obj)
         effective_radius_km = get_effective_radius_km(failed_cycle_count)
 
-        # Find eligible candidate technicians
         candidates = get_eligible_candidates(
             job_obj,
             max_gps_age_seconds=max_gps_age_seconds,
@@ -1204,56 +1323,9 @@ def _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids):
 
         WorkforceEventLog.objects.create(
             event_type="CANDIDATES_EVALUATED",
-            payload={"job_id": job_obj.id, "eligible_count": len(candidates)}
+            payload={"job_id": job_obj.id, "eligible_count": len(candidates), "attempt": attempt_num}
         )
 
-        if not candidates:
-            if job_obj.status != "unassigned" or job_obj.assigned_employee is not None:
-                job_obj.status = "unassigned"
-                job_obj.assigned_employee = None
-                job_obj.save(update_fields=["status", "assigned_employee"])
-
-            admin_user = None
-            if job_obj.company:
-                admin_user = get_user_model().objects.filter(
-                    Q(role__in=["admin", "manager"]) | Q(is_staff=True),
-                    company=job_obj.company
-                ).first()
-            if not admin_user:
-                admin_user = get_user_model().objects.filter(is_superuser=True).first()
-
-            reason_code, reason_message = describe_unassigned_reason(failed_cycle_count, effective_radius_km)
-
-            if admin_user:
-                service_name = job_obj.issue_title or job_obj.service_category or "Service"
-                WorkforceNotification.objects.create(
-                    recipient=admin_user,
-                    title="Automatic Dispatch: Awaiting Technician",
-                    message=f"Job #{job_obj.id} ({service_name}) remains unassigned. {reason_message}",
-                    notification_type="DISPATCH_UNASSIGNED",
-                    company=job_obj.company,
-                    related_object_id=str(job_obj.id),
-                )
-
-            WorkforceEventLog.objects.create(
-                event_type="DISPATCH_UNASSIGNED_REASON",
-                payload={
-                    "job_id": job_obj.id,
-                    "reason_code": reason_code,
-                    "reason_message": reason_message,
-                    "failed_cycle_count": failed_cycle_count,
-                    "effective_radius_km": effective_radius_km,
-                },
-            )
-            _maybe_signal_customer_delay(job_obj, failed_cycle_count)
-            return False, f"No eligible technicians available for automatic dispatch. {reason_message}"
-
-        # Walk the ranked candidates rather than only ever trying the top
-        # one. Previously a single rejection at this final boundary failed
-        # the whole dispatch run, even with other eligible technicians
-        # standing right behind -- and the "rejection" is now much more
-        # likely, because a concurrent dispatcher may legitimately have
-        # taken the top candidate microseconds ago.
         top_candidate = None
         top_emp = None
         top_dist_km = None
@@ -1262,157 +1334,215 @@ def _dispatch_job_locked(job_id, max_gps_age_seconds, exclude_employee_ids):
 
         for _candidate in candidates:
             _emp = _candidate["employee"]
-
-            # Final workload concurrency verification boundary
             busy_check = get_employee_active_job(_emp)
             if busy_check:
-                logger.warning(
-                    f"[DISPATCH_REJECT] employee={_emp.id} job={job_obj.id} "
-                    f"reason=EMPLOYEE_ALREADY_BUSY active_job={busy_check.id}"
-                )
                 _skipped.append(f"#{_emp.id} busy")
                 continue
 
-            # Dispatch concurrency guard, the serialising half.
-            #
-            # Lock this technician's row before deciding to offer them the
-            # job. Two dispatch_job() runs for different jobs hold locks on
-            # different ServiceRequest rows, so they do not exclude each
-            # other -- but they DO both need this employee row, so whoever
-            # gets it first wins and the second blocks here until the first
-            # has committed its offer. The re-check below then sees that
-            # offer and moves on to its next candidate.
-            #
-            # This is deliberately IN ADDITION to the database's
-            # unique_active_job_offer_per_employee constraint, which is left
-            # in place untouched: application guard first, constraint as the
-            # backstop.
-            _locked = Employee.objects.select_for_update().filter(pk=_emp.pk).first()
-            if _locked is None:
-                _skipped.append(f"#{_emp.id} vanished")
-                continue
-
-            _live_offer = WorkforceJobOffer.objects.filter(
-                employee=_locked,
+            has_live_offer = WorkforceJobOffer.objects.filter(
+                employee=_emp,
                 status=WorkforceJobOffer.Status.OFFERED,
                 expires_at__gt=timezone.now(),
-            ).exclude(job=job_obj).first()
-            if _live_offer:
-                logger.info(
-                    f"[DISPATCH_REJECT] employee={_emp.id} job={job_obj.id} "
-                    f"reason=ALREADY_HAS_LIVE_OFFER offer={_live_offer.id} "
-                    f"other_job={_live_offer.job_id}"
-                )
-                _skipped.append(f"#{_emp.id} already offered job #{_live_offer.job_id}")
+            ).exclude(job=job_obj).exists()
+            if has_live_offer:
+                _skipped.append(f"#{_emp.id} already offered other job")
                 continue
 
             top_candidate = _candidate
-            top_emp = _locked
+            top_emp = _emp
             top_dist_km = _candidate["distance_km"]
             top_score = _candidate["score"]
             break
 
-        if top_emp is None:
-            reason = "; ".join(_skipped) or "no candidate passed the final concurrency check"
-            logger.info(f"[DISPATCH_NO_CANDIDATE] job={job_obj.id} {reason}")
-            _maybe_signal_customer_delay(job_obj, failed_cycle_count)
-            return False, f"No technician could be offered Job #{job_obj.id} right now ({reason})."
+    except Exception as eval_err:
+        logger.exception(f"[DISPATCH_EVAL_ERROR] Error evaluating candidates for Job #{job_id}: {eval_err}")
+        with transaction.atomic():
+            s = WorkforceDispatchState.objects.select_for_update().filter(job_id=job_id).first()
+            if s and s.dispatch_status == WorkforceDispatchState.DispatchStatus.DISPATCHING:
+                delay = compute_dispatch_retry_delay(s.attempt_count)
+                s.dispatch_status = WorkforceDispatchState.DispatchStatus.RETRY_SCHEDULED
+                s.retry_at = timezone.now() + timedelta(seconds=delay)
+                s.locked_at = None
+                s.unassigned_reason_code = "DISPATCH_EVALUATION_ERROR"
+                s.unassigned_reason_message = str(eval_err)[:255]
+                s.save(update_fields=["dispatch_status", "retry_at", "locked_at", "unassigned_reason_code", "unassigned_reason_message", "updated_at"])
+        raise
 
-        # Expire any previous offers for this job that might be dangling
-        WorkforceJobOffer.objects.filter(job=job_obj, status=WorkforceJobOffer.Status.OFFERED).update(status=WorkforceJobOffer.Status.EXPIRED)
+    # ── Phase 3: Short Atomic State Finalization ──
+    with transaction.atomic():
+        state = WorkforceDispatchState.objects.select_for_update().get(job_id=job_id)
+        locked_job = ServiceRequest.objects.select_for_update().get(id=job_id)
 
-        # Variable offer window (Booking Dispatch Framework section 4): the
-        # window flexes by booking priority, how deep the eligible pool
-        # actually is, and service-category sparsity, instead of a fixed
-        # five minutes for every job everywhere.
-        # X-11 / GT-B-02: seconds, not minutes. For on-demand transport
-        # categories this is a Porter-style ~20-30s ladder that widens as
-        # the job burns candidates; every other category gets exactly the
-        # previous minute-scale window, converted.
+        if locked_job.status in ["completed", "cancelled"]:
+            state.dispatch_status = WorkforceDispatchState.DispatchStatus.CANCELLED if locked_job.status == "cancelled" else WorkforceDispatchState.DispatchStatus.COMPLETED
+            state.retry_at = None
+            state.locked_at = None
+            state.save(update_fields=["dispatch_status", "retry_at", "locked_at", "updated_at"])
+            return False, f"Job #{job_id} was {locked_job.status} during evaluation."
+
+        if locked_job.assigned_employee:
+            state.dispatch_status = WorkforceDispatchState.DispatchStatus.ASSIGNED
+            state.retry_at = None
+            state.locked_at = None
+            state.save(update_fields=["dispatch_status", "retry_at", "locked_at", "updated_at"])
+            return False, f"Job #{job_id} was assigned during evaluation."
+
+        if not candidates or top_emp is None:
+            if locked_job.status != "unassigned" or locked_job.assigned_employee is not None:
+                locked_job.status = "unassigned"
+                locked_job.assigned_employee = None
+                locked_job.save(update_fields=["status", "assigned_employee"])
+
+            delay_seconds = compute_dispatch_retry_delay(state.attempt_count)
+            now_dt = timezone.now()
+            retry_at = now_dt + timedelta(seconds=delay_seconds)
+            reason_code, reason_message = describe_unassigned_reason(failed_cycle_count, effective_radius_km)
+
+            state.dispatch_status = WorkforceDispatchState.DispatchStatus.RETRY_SCHEDULED
+            state.retry_at = retry_at
+            state.locked_at = None
+            state.unassigned_reason_code = reason_code
+            state.unassigned_reason_message = reason_message
+            state.save(update_fields=["dispatch_status", "retry_at", "locked_at", "unassigned_reason_code", "unassigned_reason_message", "updated_at"])
+
+            if state.attempt_count == 1:
+                admin_user = None
+                if locked_job.company:
+                    admin_user = get_user_model().objects.filter(
+                        Q(role__in=["admin", "manager"]) | Q(is_staff=True),
+                        company=locked_job.company
+                    ).first()
+                if not admin_user:
+                    admin_user = get_user_model().objects.filter(is_superuser=True).first()
+                if admin_user:
+                    service_name = locked_job.issue_title or locked_job.service_category or "Service"
+                    WorkforceNotification.objects.create(
+                        recipient=admin_user,
+                        title="Automatic Dispatch: Awaiting Technician",
+                        message=f"Job #{locked_job.id} ({service_name}) remains unassigned. {reason_message}",
+                        notification_type="DISPATCH_UNASSIGNED",
+                        company=locked_job.company,
+                        related_object_id=str(locked_job.id),
+                    )
+
+            WorkforceEventLog.objects.create(
+                event_type="DISPATCH_UNASSIGNED_REASON",
+                payload={
+                    "job_id": locked_job.id,
+                    "reason_code": reason_code,
+                    "reason_message": reason_message,
+                    "failed_cycle_count": failed_cycle_count,
+                    "effective_radius_km": effective_radius_km,
+                    "attempt_count": state.attempt_count,
+                    "retry_at": retry_at.isoformat(),
+                },
+            )
+            _maybe_signal_customer_delay(locked_job, failed_cycle_count)
+            return False, f"No eligible technicians available for automatic dispatch. Scheduled retry in {delay_seconds}s (attempt {state.attempt_count}). {reason_message}"
+
+        # Candidate employee row lock
+        locked_emp = Employee.objects.select_for_update().filter(pk=top_emp.pk).first()
+        if not locked_emp:
+            delay_seconds = compute_dispatch_retry_delay(state.attempt_count)
+            state.dispatch_status = WorkforceDispatchState.DispatchStatus.RETRY_SCHEDULED
+            state.retry_at = timezone.now() + timedelta(seconds=delay_seconds)
+            state.locked_at = None
+            state.save(update_fields=["dispatch_status", "retry_at", "locked_at", "updated_at"])
+            return False, f"Candidate Employee #{top_emp.pk} is no longer available."
+
+        existing_offer = WorkforceJobOffer.objects.filter(
+            employee=locked_emp,
+            status=WorkforceJobOffer.Status.OFFERED,
+            expires_at__gt=timezone.now(),
+        ).exclude(job=locked_job).first()
+        if existing_offer:
+            delay_seconds = compute_dispatch_retry_delay(state.attempt_count)
+            state.dispatch_status = WorkforceDispatchState.DispatchStatus.RETRY_SCHEDULED
+            state.retry_at = timezone.now() + timedelta(seconds=delay_seconds)
+            state.locked_at = None
+            state.save(update_fields=["dispatch_status", "retry_at", "locked_at", "updated_at"])
+            return False, f"Technician #{locked_emp.id} was offered another job concurrently; scheduled retry in {delay_seconds}s."
+
+        WorkforceJobOffer.objects.filter(job=locked_job, status=WorkforceJobOffer.Status.OFFERED).update(status=WorkforceJobOffer.Status.EXPIRED)
+
         offer_window_seconds = compute_offer_window_seconds(
-            job_obj, len(candidates), failed_cycles=failed_cycle_count
+            locked_job, len(candidates), failed_cycles=failed_cycle_count
         )
-        expires_at = now + timedelta(seconds=offer_window_seconds)
-        _maybe_signal_customer_delay(job_obj, failed_cycle_count)
+        expires_at = timezone.now() + timedelta(seconds=offer_window_seconds)
+
         try:
             offer = WorkforceJobOffer.objects.create(
-                job=job_obj,
-                employee=top_emp,
+                job=locked_job,
+                employee=locked_emp,
                 status=WorkforceJobOffer.Status.OFFERED,
                 rank_score=top_score,
                 expires_at=expires_at,
             )
         except IntegrityError:
-            # The unique_active_job_offer_per_employee constraint fired --
-            # the database's backstop caught a race the guards above did not.
-            # Previously this propagated out of dispatch as an unhandled
-            # IntegrityError; now it fails this run cleanly so the job stays
-            # dispatchable and the next sweep can offer it to someone else.
-            # Re-raised inside the atomic block would poison the transaction,
-            # so nothing further is attempted here.
-            logger.warning(
-                f"[DISPATCH_RACE_LOST] job={job_obj.id} employee={top_emp.id} "
-                f"lost the offer race to a concurrent dispatcher; will retry next sweep."
-            )
+            state.dispatch_status = WorkforceDispatchState.DispatchStatus.RETRY_SCHEDULED
+            state.retry_at = timezone.now() + timedelta(seconds=5)
+            state.locked_at = None
+            state.save(update_fields=["dispatch_status", "retry_at", "locked_at", "updated_at"])
             raise DispatchRaceLost(
-                f"Technician #{top_emp.id} was offered another job concurrently."
+                f"Technician #{locked_emp.id} was offered another job concurrently."
             )
 
-        # Keep ServiceRequest unassigned until candidate accepts via backend atomic transaction
-        if job_obj.status in ["draft", "new_request", "confirmed"]:
-            apply_transition(job_obj, "unassigned")
+        state.dispatch_status = WorkforceDispatchState.DispatchStatus.OFFER_ACTIVE
+        state.retry_at = None
+        state.locked_at = None
+        state.save(update_fields=["dispatch_status", "retry_at", "locked_at", "updated_at"])
 
-        # Fixes X-01: let the customer know an offer went out to a technician
-        # (their app deliberately does NOT surface technician details yet at
-        # this stage -- see workforce_integration/views.py's
-        # "technician.assigned" handler -- this is just "someone was asked").
-        try:
-            from workforce_api.services.customer_webhook import notify_customer_app
-            notify_customer_app(
-                "technician.assigned",
-                job_obj,
-                technician_id=str(top_emp.id),
-                vendor_name=getattr(job_obj.company, "company_name", "") if getattr(job_obj, "company", None) else "",
-            )
-        except Exception as webhook_err:
-            logger.info(f"Could not notify Customer app of offer for Job #{job_obj.id}: {webhook_err}")
+        if locked_job.status in ["draft", "new_request", "confirmed"]:
+            apply_transition(locked_job, "unassigned")
 
-        WorkforceEventLog.objects.create(
-            user=top_emp.user,
-            event_type="OFFER_CREATED",
-            payload={
-                "id": job_obj.id,
-                "job_id": job_obj.id,
-                "request_id": job_obj.request_id or f"#{job_obj.id}",
-                "offer_id": offer.id,
-                "employee_id": top_emp.id,
-                "service_title": job_obj.issue_title or job_obj.service_category or "Service Request",
-                "service_category": job_obj.service_category or "",
-                "distance_km": round(top_dist_km, 2),
-                "address": job_obj.address or "",
-                "expires_at": expires_at.isoformat(),
-            }
+    # Outside transaction: webhooks and notifications
+    try:
+        from workforce_api.services.customer_webhook import notify_customer_app
+        notify_customer_app(
+            "technician.assigned",
+            locked_job,
+            technician_id=str(locked_emp.id),
+            vendor_name=getattr(locked_job.company, "company_name", "") if getattr(locked_job, "company", None) else "",
         )
+    except Exception as webhook_err:
+        logger.info(f"Could not notify Customer app of offer for Job #{locked_job.id}: {webhook_err}")
 
-        loc_str = f" at {job_obj.address}" if job_obj.address else ""
-        req_id_str = f" ({job_obj.request_id})" if job_obj.request_id else f" #{job_obj.id}"
-        service_label = job_obj.issue_title or job_obj.service_category or "Service Request"
-        expiry_str = expires_at.strftime("%H:%M:%S UTC")
+    WorkforceEventLog.objects.create(
+        user=locked_emp.user,
+        event_type="OFFER_CREATED",
+        payload={
+            "id": locked_job.id,
+            "job_id": locked_job.id,
+            "request_id": locked_job.request_id or f"#{locked_job.id}",
+            "offer_id": offer.id,
+            "employee_id": locked_emp.id,
+            "service_title": locked_job.issue_title or locked_job.service_category or "Service Request",
+            "service_category": locked_job.service_category or "",
+            "distance_km": round(top_dist_km, 2),
+            "address": locked_job.address or "",
+            "expires_at": expires_at.isoformat(),
+        }
+    )
 
-        WorkforceNotification.objects.create(
-            recipient=top_emp.user,
-            title="New Job Offer Available!",
-            message=f"You have a new exclusive job offer for '{service_label}'{req_id_str}{loc_str} ({top_dist_km:.1f} km away). Expiry: {expiry_str}. Open your dashboard to Accept or Decline.",
-            notification_type="JOB_OFFER",
-            company=job_obj.company,
-            related_object_id=str(job_obj.id),
-        )
+    loc_str = f" at {locked_job.address}" if locked_job.address else ""
+    req_id_str = f" ({locked_job.request_id})" if locked_job.request_id else f" #{locked_job.id}"
+    service_label = locked_job.issue_title or locked_job.service_category or "Service Request"
+    expiry_str = expires_at.strftime("%H:%M:%S UTC")
 
-        logger.info(
-            f"[DISPATCH_DECISION] job={job_obj.id} employee={top_emp.id} "
-            f"distance_km={top_dist_km:.2f} score={top_score:.1f} status=OFFER_CREATED"
-        )
-        return True, f"Job #{job_obj.id} offered to {top_emp.user.get_full_name() or top_emp.user.username} ({top_dist_km:.1f}km away, Score: {top_score:.1f})."
+    WorkforceNotification.objects.create(
+        recipient=locked_emp.user,
+        title="New Job Offer Available!",
+        message=f"You have a new exclusive job offer for '{service_label}'{req_id_str}{loc_str} ({top_dist_km:.1f} km away). Expiry: {expiry_str}. Open your dashboard to Accept or Decline.",
+        notification_type="JOB_OFFER",
+        company=locked_job.company,
+        related_object_id=str(locked_job.id),
+    )
+
+    logger.info(
+        f"[DISPATCH_DECISION] job={locked_job.id} employee={locked_emp.id} "
+        f"distance_km={top_dist_km:.2f} score={top_score:.1f} status=OFFER_CREATED"
+    )
+    return True, f"Job #{locked_job.id} offered to {locked_emp.user.get_full_name() or locked_emp.user.username} ({top_dist_km:.1f}km away, Score: {top_score:.1f})."
 
 
 def dispatch_next_candidate(job_id_or_obj) -> Tuple[bool, str]:
@@ -1498,6 +1628,24 @@ def dispatch_pending_jobs(company_id=None, limit: int = 50) -> Dict[str, Any]:
     if company_id:
         qs = qs.filter(company_id=company_id)
 
+    crashed_cutoff = now - timedelta(seconds=120)
+
+    # Exclude jobs that are not dispatchable NOW based on WorkforceDispatchState
+    qs = qs.exclude(
+        # Future retries:
+        Q(dispatch_state__retry_at__gt=now) |
+        # Active dispatch claim by a living worker:
+        Q(dispatch_state__dispatch_status=WorkforceDispatchState.DispatchStatus.DISPATCHING, dispatch_state__locked_at__gt=crashed_cutoff) |
+        # Inactive or completed/assigned/active-offer states:
+        Q(dispatch_state__dispatch_status__in=[
+            WorkforceDispatchState.DispatchStatus.OFFER_ACTIVE,
+            WorkforceDispatchState.DispatchStatus.ASSIGNED,
+            WorkforceDispatchState.DispatchStatus.CANCELLED,
+            WorkforceDispatchState.DispatchStatus.COMPLETED,
+            WorkforceDispatchState.DispatchStatus.EXPIRED,
+        ])
+    )
+
     # Find all jobs in dispatchable states
     pending_jobs = list(
         qs.exclude(
@@ -1533,9 +1681,9 @@ def dispatch_pending_jobs(company_id=None, limit: int = 50) -> Dict[str, Any]:
 
 def reconsider_jobs_for_employee(employee_or_id) -> int:
     """
-    Triggered when an employee transmits fresh GPS coordinates:
+    Triggered when an employee becomes available/eligible:
     Finds pending unassigned/dispatchable jobs within the employee's company
-    and evaluates dispatch immediately.
+    and evaluates dispatch immediately. Respects retry_at and active state.
     """
     emp_id = employee_or_id.pk if hasattr(employee_or_id, "pk") else employee_or_id
     emp = Employee.objects.filter(pk=emp_id).first()
@@ -1544,6 +1692,8 @@ def reconsider_jobs_for_employee(employee_or_id) -> int:
 
     now = timezone.now()
     today = timezone.localdate()
+    crashed_cutoff = now - timedelta(seconds=120)
+
     if emp.company_id and emp.company_id > 1:
         company_filter = Q(company_id=emp.company_id)
     else:
@@ -1565,11 +1715,21 @@ def reconsider_jobs_for_employee(employee_or_id) -> int:
         # Exclude jobs where this employee currently holds an active offer or explicitly declined
         Q(job_offers__employee_id=emp.id, job_offers__status=WorkforceJobOffer.Status.OFFERED, job_offers__expires_at__gt=now) |
         Q(job_offers__employee_id=emp.id, job_offers__status__in=[WorkforceJobOffer.Status.REJECTED, WorkforceJobOffer.Status.DECLINED])
+    ).exclude(
+        Q(dispatch_state__retry_at__gt=now) |
+        Q(dispatch_state__dispatch_status=WorkforceDispatchState.DispatchStatus.DISPATCHING, dispatch_state__locked_at__gt=crashed_cutoff) |
+        Q(dispatch_state__dispatch_status__in=[
+            WorkforceDispatchState.DispatchStatus.OFFER_ACTIVE,
+            WorkforceDispatchState.DispatchStatus.ASSIGNED,
+            WorkforceDispatchState.DispatchStatus.CANCELLED,
+            WorkforceDispatchState.DispatchStatus.COMPLETED,
+            WorkforceDispatchState.DispatchStatus.EXPIRED,
+        ])
     ).distinct()
 
     dispatched_count = 0
     for job in pending_jobs:
-        logger.info(f"[DISPATCH_GPS_TRIGGER] Fresh GPS for Employee #{emp.id} triggered evaluation for Job #{job.id}.")
+        logger.info(f"[DISPATCH_RECONSIDER_TRIGGER] Evaluating Job #{job.id} for Employee #{emp.id}.")
         success, msg = dispatch_job(job)
         if success:
             dispatched_count += 1

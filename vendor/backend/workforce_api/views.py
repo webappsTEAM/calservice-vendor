@@ -3976,13 +3976,13 @@ class WorkforceDispatchAssignView(APIView):
 
 # ─── Automatic Dispatch Engine ────────────────────────────────────────────────
 
-def run_automatic_dispatch(job, excluded_employee_ids=None):
+def run_automatic_dispatch(job, excluded_employee_ids=None, force=False):
     """
     Delegates to authoritative automatic dispatch service:
     workforce_api.services.automatic_dispatch.dispatch_job
     """
     from workforce_api.services.automatic_dispatch import dispatch_job
-    return dispatch_job(job, exclude_employee_ids=excluded_employee_ids)
+    return dispatch_job(job, exclude_employee_ids=excluded_employee_ids, force=force)
 
 
 from workforce_api.services.workload import ACTIVE_WORKLOAD_STATUSES, supersede_other_offers_for_employee
@@ -4093,6 +4093,14 @@ class WorkforceJobAcceptOfferView(APIView):
             job_obj.assigned_employee = emp_obj
             job_obj.save(update_fields=["assigned_employee"])
             apply_transition(job_obj, "accepted", actor=request.user)
+
+            # Synchronize WorkforceDispatchState to ASSIGNED
+            from workforce_api.models import WorkforceDispatchState
+            WorkforceDispatchState.objects.filter(job=job_obj).update(
+                dispatch_status=WorkforceDispatchState.DispatchStatus.ASSIGNED,
+                retry_at=None,
+                locked_at=None,
+            )
 
             # Atomically mark employee availability as BUSY
             emp_obj.current_availability = "busy"
@@ -4871,7 +4879,10 @@ class WorkforceAutoDispatchTriggerView(APIView):
         if not _is_admin_authorized_for_company(request, job.company):
             return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
-        success, msg = run_automatic_dispatch(job)
+        force = True
+        if hasattr(request, "data") and isinstance(request.data, dict) and "force" in request.data:
+            force = bool(request.data.get("force"))
+        success, msg = run_automatic_dispatch(job, force=force)
         return Response({"message": msg, "success": success, "status": job.status}, status=status.HTTP_200_OK)
 
 

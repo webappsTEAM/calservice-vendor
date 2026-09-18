@@ -448,6 +448,18 @@ class ServiceRequest(models.Model):
                 if self.assigned_employee:
                     from workforce_api.services.workload import reconcile_employee_availability
                     reconcile_employee_availability(self.assigned_employee)
+
+                from workforce_api.models import WorkforceDispatchState
+                target_state = (
+                    WorkforceDispatchState.DispatchStatus.COMPLETED
+                    if self.status == "completed"
+                    else WorkforceDispatchState.DispatchStatus.CANCELLED
+                )
+                WorkforceDispatchState.objects.filter(job=self).update(
+                    dispatch_status=target_state,
+                    retry_at=None,
+                    locked_at=None,
+                )
             except Exception as e:
                 import logging
                 logging.getLogger("workforce.cancel").warning(
