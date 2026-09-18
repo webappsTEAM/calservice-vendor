@@ -245,10 +245,16 @@ export function ProviderSignupPage() {
             </button>
           </form>
 
-          <p className="text-[11px] text-center text-slate-500">
-            Signing up as an individual technician instead?{' '}
-            <Link to="/workforce/signup" className="text-blue-600 font-semibold">Sign up here</Link>
-          </p>
+          <div className="text-[11px] text-center text-slate-500 space-y-1">
+            <p>
+              Already registered?{' '}
+              <Link to="/workforce/login" className="text-blue-600 font-semibold">Sign in here</Link>
+            </p>
+            <p>
+              Signing up as a technician or grocery seller instead?{' '}
+              <Link to="/workforce/create-account" className="text-blue-600 font-semibold">Choose account type</Link>
+            </p>
+          </div>
         </div>
       </div>
     </div>

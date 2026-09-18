@@ -40,7 +40,15 @@ export function LoginPage() {
         throw new Error('Authentication failed. Please check credentials.');
       }
 
-      if (user.isAdmin) {
+      const isSeller = Boolean(
+        user.isSeller ||
+        (user.businessType === 'grocery_supplier' && !user.isPlatformAdmin) ||
+        user.role === 'seller'
+      );
+
+      if (isSeller) {
+        navigate('/workforce/seller/dashboard');
+      } else if (user.isAdmin) {
         navigate('/workforce/admin');
       } else {
         const regStatus = user.registrationStatus || 'not_started';
@@ -258,9 +266,9 @@ export function LoginPage() {
           {/* Footer Registration Link */}
           <div className="pt-4 border-t border-slate-100 text-center">
             <p className="text-xs text-slate-500">
-              New technician?{' '}
+              New to SEVO?{' '}
               <Link
-                to="/workforce/signup"
+                to="/workforce/create-account"
                 className="text-blue-600 font-semibold hover:text-blue-700 hover:underline"
               >
                 Create Account

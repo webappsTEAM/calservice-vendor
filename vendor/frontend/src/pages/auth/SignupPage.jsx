@@ -255,9 +255,9 @@ export function SignupPage() {
             </p>
             {!inviteCompanyId && (
               <p className="text-xs text-slate-500">
-                Registering a service provider business instead?{' '}
-                <Link to="/workforce/provider-signup" className="text-blue-600 font-semibold hover:underline">
-                  Sign up here
+                Registering a business or grocery store?{' '}
+                <Link to="/workforce/create-account" className="text-blue-600 font-semibold hover:underline">
+                  Choose account type
                 </Link>
               </p>
             )}

@@ -23,6 +23,14 @@ export async function apiProviderSignup(payload) {
   });
 }
 
+// Sevo Seller Hub: grocery store / supermarket seller registration
+export async function apiGrocerySellerSignup(payload) {
+  return await apiRequest('/workforce/seller/signup/', {
+    method: 'POST',
+    json: payload,
+  });
+}
+
 export async function apiGetMyWallet() {
   return await apiRequest('/workforce/wallet/me/');
 }
@@ -534,6 +542,63 @@ export async function apiApproveApplication(applicationId) {
 
 export async function apiRejectApplication(applicationId, reason = '') {
   return await apiRequest(`/workforce/admin/applications/${applicationId}/reject/`, {
+    method: 'POST',
+    json: { reason },
+  });
+}
+
+// ── Admin Grocery Seller Applications & Review Queue ─────────────────────────
+
+export async function apiGetAdminSellerApplications(statusFilter = '') {
+  const query = statusFilter ? `?status=${encodeURIComponent(statusFilter)}` : '';
+  return await apiRequest(`/workforce/admin/seller-applications/${query}`);
+}
+
+export async function apiGetAdminSellerApplicationDetail(storeId) {
+  return await apiRequest(`/workforce/admin/seller-applications/${storeId}/`);
+}
+
+export async function apiVerifySellerDocument(storeId, docCategory, action, reason = '') {
+  return await apiRequest(`/workforce/admin/seller-applications/${storeId}/document/${docCategory}/verify/`, {
+    method: 'POST',
+    json: { action, reason },
+  });
+}
+
+export async function apiBulkVerifySellerDocuments(storeId, categories, action, reason = '', allPending = false) {
+  return await apiRequest(`/workforce/admin/seller-applications/${storeId}/documents/bulk-verify/`, {
+    method: 'POST',
+    json: {
+      categories,
+      action,
+      reason,
+      all_pending: allPending,
+    },
+  });
+}
+
+export async function apiDecideSellerCategory(storeId, categoryId, action, reason = '') {
+  return await apiRequest(`/workforce/admin/seller-applications/${storeId}/category/${categoryId}/decide/`, {
+    method: 'POST',
+    json: { action, reason },
+  });
+}
+
+export async function apiRequestSellerCorrection(storeId, notes) {
+  return await apiRequest(`/workforce/admin/seller-applications/${storeId}/request-correction/`, {
+    method: 'POST',
+    json: { notes },
+  });
+}
+
+export async function apiApproveSellerApplication(storeId) {
+  return await apiRequest(`/workforce/admin/seller-applications/${storeId}/approve/`, {
+    method: 'POST',
+  });
+}
+
+export async function apiRejectSellerApplication(storeId, reason = '') {
+  return await apiRequest(`/workforce/admin/seller-applications/${storeId}/reject/`, {
     method: 'POST',
     json: { reason },
   });
@@ -1512,6 +1577,82 @@ export async function apiSubmitPublicOrderReview(orderNumber, payload) {
   });
 }
 
+// ── Seller Hub (Categories & Coupons Management) ──────────────────────────
+
+export async function apiGetSellerHubCategories(params = {}) {
+  const query = new URLSearchParams();
+  if (params.search) query.append('search', params.search);
+  if (params.is_active !== undefined && params.is_active !== '') query.append('is_active', params.is_active);
+  if (params.ordering) query.append('ordering', params.ordering);
+  if (params.parent_id !== undefined && params.parent_id !== '') query.append('parent_id', params.parent_id);
+  if (params.root !== undefined) query.append('root', params.root);
+  if (params.tree !== undefined) query.append('tree', params.tree);
+  const qStr = query.toString();
+  return await apiRequest(`/workforce/seller-hub/categories/${qStr ? `?${qStr}` : ''}`);
+}
+
+export async function apiGetSellerHubCategoryTree(activeOnly = false) {
+  return await apiRequest(`/workforce/seller-hub/categories/tree/${activeOnly ? '?active_only=true' : ''}`);
+}
+
+export async function apiGetSellerHubCategoryDetail(id) {
+  return await apiRequest(`/workforce/seller-hub/categories/${id}/`);
+}
+
+export async function apiCreateSellerHubCategory(data) {
+  return await apiRequest('/workforce/seller-hub/categories/', {
+    method: 'POST',
+    json: data,
+  });
+}
+
+export async function apiUpdateSellerHubCategory(id, data) {
+  return await apiRequest(`/workforce/seller-hub/categories/${id}/`, {
+    method: 'PATCH',
+    json: data,
+  });
+}
+
+export async function apiDeleteSellerHubCategory(id) {
+  return await apiRequest(`/workforce/seller-hub/categories/${id}/`, {
+    method: 'DELETE',
+  });
+}
+
+export async function apiGetSellerHubActiveCategories(tree = false) {
+  return await apiRequest(`/workforce/seller-hub/categories/active/${tree ? '?tree=true' : ''}`);
+}
+
+export async function apiGetSellerHubCoupons(params = {}) {
+  const query = new URLSearchParams();
+  if (params.search) query.append('search', params.search);
+  if (params.status) query.append('status', params.status);
+  if (params.discount_type) query.append('discount_type', params.discount_type);
+  if (params.company_id) query.append('company_id', params.company_id);
+  const qStr = query.toString();
+  return await apiRequest(`/workforce/seller-hub/coupons/${qStr ? `?${qStr}` : ''}`);
+}
+
+export async function apiCreateSellerHubCoupon(data) {
+  return await apiRequest('/workforce/seller-hub/coupons/', {
+    method: 'POST',
+    json: data,
+  });
+}
+
+export async function apiUpdateSellerHubCoupon(id, data) {
+  return await apiRequest(`/workforce/seller-hub/coupons/${id}/`, {
+    method: 'PATCH',
+    json: data,
+  });
+}
+
+export async function apiDeleteSellerHubCoupon(id) {
+  return await apiRequest(`/workforce/seller-hub/coupons/${id}/`, {
+    method: 'DELETE',
+  });
+}
+
 // Named object export for convenient namespace usage
 export const workforceService = {
   getGroceryOrders: apiGetGroceryOrders,
@@ -1528,5 +1669,14 @@ export const workforceService = {
   submitPublicOrderReview: apiSubmitPublicOrderReview,
   getPublicStores: apiGetPublicStores,
   getPublicStoreDetail: apiGetPublicStoreDetail,
+  getSellerHubCategories: apiGetSellerHubCategories,
+  createSellerHubCategory: apiCreateSellerHubCategory,
+  updateSellerHubCategory: apiUpdateSellerHubCategory,
+  deleteSellerHubCategory: apiDeleteSellerHubCategory,
+  getSellerHubActiveCategories: apiGetSellerHubActiveCategories,
+  getSellerHubCoupons: apiGetSellerHubCoupons,
+  createSellerHubCoupon: apiCreateSellerHubCoupon,
+  updateSellerHubCoupon: apiUpdateSellerHubCoupon,
+  deleteSellerHubCoupon: apiDeleteSellerHubCoupon,
 };
 

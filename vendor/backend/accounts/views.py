@@ -262,8 +262,23 @@ class LoginView(APIView):
                 else ("vendor_admin" if is_vendor_admin else "technician")
             )
 
+            company_obj = (emp.company if (emp and emp.company) else (user.company if getattr(user, "company", None) else None))
+            if not company_obj and company_id:
+                from companies.models import Company
+                company_obj = Company.objects.filter(id=company_id).first()
+
+            btype = getattr(company_obj, "business_type", "") if company_obj else ""
+            is_grocery_supplier = bool(
+                company_obj and (
+                    btype in ("grocery_supplier", "hybrid")
+                    or any(m in (getattr(company_obj, "selected_modules", []) or []) for m in ("grocery_supplier", "grocery_inventory", "groceries"))
+                    or any(k in (getattr(company_obj, "industry", "") or "").lower() for k in ("grocery", "vegetable", "produce", "farm", "supermarket"))
+                )
+            )
+            is_seller = bool(is_grocery_supplier and not is_platform_admin)
+
             from workforce_api.services.registration import get_employee_registration_status
-            reg_status = get_employee_registration_status(user)
+            reg_status = get_employee_registration_status(emp or user)
 
             response = Response({
                 "message": "Login successful.",
@@ -279,6 +294,9 @@ class LoginView(APIView):
                     "role": user_role,
                     "company": company_id,
                     "company_name": company_name,
+                    "business_type": btype,
+                    "is_grocery_supplier": is_grocery_supplier,
+                    "is_seller": is_seller,
                     "is_superuser": getattr(user, "is_superuser", False),
                     "is_platform_admin": is_platform_admin,
                     "is_vendor_admin": is_vendor_admin,
@@ -482,12 +500,26 @@ class MeView(APIView):
                 except Exception as _w_err:
                     logger.warning("Could not ensure individual wallet: %s", str(_w_err))
 
+            company_obj = (emp.company if (emp and emp.company) else (user.company if getattr(user, "company", None) else None))
+            if not company_obj and company_id:
+                from companies.models import Company
+                company_obj = Company.objects.filter(id=company_id).first()
+
+            btype = getattr(company_obj, "business_type", "") if company_obj else ""
+            is_grocery_supplier = bool(
+                company_obj and (
+                    btype in ("grocery_supplier", "hybrid")
+                    or any(m in (getattr(company_obj, "selected_modules", []) or []) for m in ("grocery_supplier", "grocery_inventory", "groceries"))
+                    or any(k in (getattr(company_obj, "industry", "") or "").lower() for k in ("grocery", "vegetable", "produce", "farm", "supermarket"))
+                )
+            )
+            is_seller = bool(is_grocery_supplier and not is_platform_admin)
+
             user_type = (
                 "platform_admin"
                 if is_platform_admin
                 else ("vendor_admin" if is_vendor_admin else "technician")
             )
-
             from workforce_api.services.registration import get_employee_registration_status
             reg_status = get_employee_registration_status(emp or user)
 
@@ -500,6 +532,9 @@ class MeView(APIView):
                 "role": user_role,
                 "company": company_id,
                 "company_name": company_name,
+                "business_type": btype,
+                "is_grocery_supplier": is_grocery_supplier,
+                "is_seller": is_seller,
                 "is_superuser": getattr(user, "is_superuser", False),
                 "is_platform_admin": is_platform_admin,
                 "is_vendor_admin": is_vendor_admin,

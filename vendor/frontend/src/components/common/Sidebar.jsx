@@ -40,6 +40,10 @@ import {
   ShoppingBag,
   DollarSign,
   Carrot,
+  Layers,
+  RotateCcw,
+  ShieldAlert,
+  UploadCloud,
 } from 'lucide-react';
 
 export function Sidebar({ onCloseMobile = () => {} }) {
@@ -48,6 +52,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
     isAdmin,
     isPlatformAdmin,
     isVendorAdmin,
+    isSeller,
     isEmployee,
     isTiedWorker,
     isSoloWorker,
@@ -56,8 +61,15 @@ export function Sidebar({ onCloseMobile = () => {} }) {
   const { accent } = useTheme();
   const location = useLocation();
 
+  const isDedicatedSeller = Boolean(
+    isSeller ||
+    (user?.businessType === 'grocery_supplier' && !isPlatformAdmin) ||
+    (user?.role === 'seller')
+  );
+
   const isGrocerySupplier =
     isPlatformAdmin ||
+    isDedicatedSeller ||
     user?.company?.business_type === 'grocery_supplier' ||
     user?.company?.business_type === 'hybrid' ||
     user?.business_type === 'grocery_supplier' ||
@@ -69,6 +81,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
   // Collapsible sections state
   const [collapsed, setCollapsed] = useState({
     governance: false,
+    sellerHub: false,
     workforce: false,
     operations: false,
     finance: false,
@@ -130,7 +143,46 @@ export function Sidebar({ onCloseMobile = () => {} }) {
     );
   };
 
-  // ─── 1. SEVO Platform Superadmin Sidebar ─────────────────────────────────────
+  // ─── 1. Dedicated SEVO Seller Hub Sidebar (Grocery / Retail Sellers) ─────────
+  if (isDedicatedSeller) {
+    return (
+      <aside className="w-60 bg-white border-r border-slate-200/90 h-full flex flex-col justify-between overflow-y-auto text-xs select-none shadow-xs">
+        <div className="p-3.5 space-y-4">
+          {/* Seller Header */}
+          <div className="p-3 rounded-lg border border-emerald-200/80 bg-emerald-50/60 text-emerald-950 flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+              <Store className="w-4 h-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <span className="font-bold text-[12px] block leading-tight truncate">
+                {user?.companyName || 'SEVO Seller'}
+              </span>
+              <span className="text-[10px] text-emerald-700 font-medium">Seller Hub Portal</span>
+            </div>
+          </div>
+
+          {/* 8 Seller Hub Navigation Modules */}
+          <div className="space-y-0.5">
+            {renderNavLink('/workforce/seller/dashboard', Home, 'Home', null, true)}
+            {renderNavLink('/workforce/seller-hub/orders', ShoppingBag, 'Orders')}
+            {renderNavLink('/workforce/seller-hub/returns', RotateCcw, 'Returns')}
+            {renderNavLink('/workforce/seller-hub/claims', ShieldAlert, 'Claims')}
+            {renderNavLink('/workforce/seller-hub/inventory', Package, 'Inventory')}
+            {renderNavLink('/workforce/seller-hub/catalog-uploads', UploadCloud, 'Catalog Uploads')}
+            {renderNavLink('/workforce/admin/seller-hub/categories', Layers, 'Categories')}
+            {renderNavLink('/workforce/admin/seller-hub/coupons', Tag, 'Coupons')}
+          </div>
+        </div>
+
+        {/* Footer Settings */}
+        <div className="p-3 border-t border-slate-100">
+          {renderNavLink('/workforce/admin/settings', Settings, 'Store Settings')}
+        </div>
+      </aside>
+    );
+  }
+
+  // ─── 2. SEVO Platform Superadmin Sidebar ─────────────────────────────────────
   if (isPlatformAdmin) {
     return (
       <aside className="w-60 bg-white border-r border-slate-200/90 h-full flex flex-col justify-between overflow-y-auto text-xs select-none shadow-xs">
@@ -169,13 +221,42 @@ export function Sidebar({ onCloseMobile = () => {} }) {
               <div className="space-y-0.5">
                 {renderNavLink('/workforce/platform/vendors', Building2, 'Vendor Directory')}
                 {renderNavLink('/workforce/platform/workforce', Users, 'Workforce Roster')}
-                {renderNavLink('/workforce/admin/applications', ClipboardList, 'Applications Approval')}
+                {renderNavLink('/workforce/admin/applications', ClipboardList, 'Technician Applications')}
+                {renderNavLink('/workforce/admin/seller-applications', Store, 'Seller Applications')}
                 {renderNavLink('/workforce/admin/service-providers', Building2, 'Service Providers')}
               </div>
             )}
           </div>
 
-          {/* Group 2: OPERATIONS & DISPATCH */}
+          {/* Group 2: SELLER HUB (Parent Module) */}
+          <div className="space-y-1">
+            <button
+              type="button"
+              onClick={() => toggleSection('sellerHub')}
+              className="w-full flex items-center justify-between px-2.5 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-widest hover:text-slate-700 transition-colors"
+            >
+              <span>Seller Hub</span>
+              {collapsed.sellerHub ? (
+                <ChevronRight className="w-3 h-3 text-slate-400" />
+              ) : (
+                <ChevronDown className="w-3 h-3 text-slate-400" />
+              )}
+            </button>
+            {!collapsed.sellerHub && (
+              <div className="space-y-0.5">
+                {renderNavLink('/workforce/seller/dashboard', Home, 'Home')}
+                {renderNavLink('/workforce/seller-hub/orders', ShoppingBag, 'Orders')}
+                {renderNavLink('/workforce/seller-hub/returns', RotateCcw, 'Returns')}
+                {renderNavLink('/workforce/seller-hub/claims', ShieldAlert, 'Claims')}
+                {renderNavLink('/workforce/seller-hub/inventory', Package, 'Inventory')}
+                {renderNavLink('/workforce/seller-hub/catalog-uploads', UploadCloud, 'Catalog Uploads')}
+                {renderNavLink('/workforce/admin/seller-hub/categories', Layers, 'Categories')}
+                {renderNavLink('/workforce/admin/seller-hub/coupons', Tag, 'Coupons')}
+              </div>
+            )}
+          </div>
+
+          {/* Group 3: OPERATIONS & DISPATCH */}
           <div className="space-y-1">
             <button
               type="button"
@@ -205,7 +286,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
             )}
           </div>
 
-          {/* Group 3: FINANCE & TREASURY */}
+          {/* Group 4: FINANCE & TREASURY */}
           <div className="space-y-1">
             <button
               type="button"
@@ -229,7 +310,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
             )}
           </div>
 
-          {/* Group 4: MONITORING & REPORTS */}
+          {/* Group 5: MONITORING & REPORTS */}
           <div className="space-y-1">
             <button
               type="button"
@@ -260,7 +341,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
     );
   }
 
-  // ─── 2. Vendor Workspace Sidebar (Service Provider Business) ─────────────────
+  // ─── 3. Vendor Workspace Sidebar (Service Provider Business) ─────────────────
   if (isAdmin || isVendorAdmin) {
     return (
       <aside className="w-60 bg-white border-r border-slate-200/90 h-full flex flex-col justify-between overflow-y-auto text-xs select-none shadow-xs">
@@ -283,6 +364,34 @@ export function Sidebar({ onCloseMobile = () => {} }) {
             {renderNavLink('/workforce/admin', Home, 'Company Home', null, true)}
           </div>
 
+          {/* Parent Module: SELLER HUB */}
+          <div className="space-y-1">
+            <button
+              type="button"
+              onClick={() => toggleSection('sellerHub')}
+              className="w-full flex items-center justify-between px-2.5 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-widest hover:text-slate-700 transition-colors"
+            >
+              <span>Seller Hub</span>
+              {collapsed.sellerHub ? (
+                <ChevronRight className="w-3 h-3 text-slate-400" />
+              ) : (
+                <ChevronDown className="w-3 h-3 text-slate-400" />
+              )}
+            </button>
+            {!collapsed.sellerHub && (
+              <div className="space-y-0.5">
+                {renderNavLink('/workforce/seller/dashboard', Home, 'Home')}
+                {renderNavLink('/workforce/seller-hub/orders', ShoppingBag, 'Orders')}
+                {renderNavLink('/workforce/seller-hub/returns', RotateCcw, 'Returns')}
+                {renderNavLink('/workforce/seller-hub/claims', ShieldAlert, 'Claims')}
+                {renderNavLink('/workforce/seller-hub/inventory', Package, 'Inventory')}
+                {renderNavLink('/workforce/seller-hub/catalog-uploads', UploadCloud, 'Catalog Uploads')}
+                {renderNavLink('/workforce/admin/seller-hub/categories', Layers, 'Categories')}
+                {renderNavLink('/workforce/admin/seller-hub/coupons', Tag, 'Coupons')}
+              </div>
+            )}
+          </div>
+
           {/* Group 1: MY WORKFORCE */}
           <div className="space-y-1">
             <button
@@ -302,7 +411,8 @@ export function Sidebar({ onCloseMobile = () => {} }) {
                 {renderNavLink('/workforce/admin/technician-network', Users, 'Tied Technicians')}
                 {renderNavLink('/workforce/admin/vendor-invitations', Mail, 'Send Invitations')}
                 {renderNavLink('/workforce/admin/employees', UserCheck, 'Employee Roster')}
-                {renderNavLink('/workforce/admin/applications', ClipboardList, 'Applications')}
+                {renderNavLink('/workforce/admin/applications', ClipboardList, 'Technician Applications')}
+                {renderNavLink('/workforce/admin/seller-applications', Store, 'Seller Applications')}
               </div>
             )}
           </div>
@@ -330,7 +440,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
                     {renderNavLink('/workforce/admin/grocery-orders', ShoppingBag, 'Store Orders')}
                     {renderNavLink('/workforce/admin/inventory', Package, 'Stock Inventory')}
                     {renderNavLink('/workforce/admin/store-profile', Store, 'Seller Store')}
-                    {renderNavLink('/workforce/admin/promotions', Tag, 'Deals & Coupons')}
+                    {renderNavLink('/workforce/admin/promotions', Tag, 'Deals & Promotions')}
                     {renderNavLink('/workforce/admin/grocery-settlements', DollarSign, 'Settlement Ledger')}
                   </>
                 )}
@@ -394,7 +504,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
     );
   }
 
-  // ─── 3. Onboarding Employee Sidebar ──────────────────────────────────────────
+  // ─── 4. Onboarding Employee Sidebar ──────────────────────────────────────────
   const isApproved = registrationStatus === 'approved';
 
   if (!isApproved) {
@@ -450,7 +560,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
     );
   }
 
-  // ─── 4. Approved Technician Sidebar (Exact Gokul UI Design) ──────────────────
+  // ─── 5. Approved Technician Sidebar ─────────────────────────────────────────
   return (
     <aside className="w-60 bg-white border-r border-slate-200/90 h-full flex flex-col justify-between overflow-y-auto text-xs select-none shadow-xs">
       <div className="p-3.5 space-y-4">

@@ -3,11 +3,13 @@ import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom
 import { AuthProvider, useAuth } from './context/AuthProvider.jsx';
 import { ThemeProvider } from './context/ThemeContext.jsx';
 import { EmployeeRuntimeProvider } from './context/EmployeeRuntimeProvider.jsx';
-import { AdminRoute, EmployeeRoute, PlatformAdminRoute, AuthenticatedRoute } from './components/common/ProtectedRoute.jsx';
+import { AdminRoute, EmployeeRoute, PlatformAdminRoute, AuthenticatedRoute, SellerHubRoute } from './components/common/ProtectedRoute.jsx';
 
 import { LoginPage } from './pages/auth/LoginPage.jsx';
 import { SignupPage } from './pages/auth/SignupPage.jsx';
 import { ProviderSignupPage } from './pages/auth/ProviderSignupPage.jsx';
+import { AccountTypePage } from './pages/auth/AccountTypePage.jsx';
+import { SellerSignupPage } from './pages/auth/SellerSignupPage.jsx';
 
 import { TermsAndConditionsPage } from './pages/public/TermsAndConditionsPage.jsx';
 import { PrivacyPolicyPage } from './pages/public/PrivacyPolicyPage.jsx';
@@ -37,6 +39,8 @@ import { TechnicianInvitationsPage } from './pages/employee/TechnicianInvitation
 import { AdminDashboardPage } from './pages/admin/AdminDashboardPage.jsx';
 import { AdminApplicationsPage } from './pages/admin/AdminApplicationsPage.jsx';
 import { AdminApplicationDetailPage } from './pages/admin/AdminApplicationDetailPage.jsx';
+import { AdminSellerApplicationsPage } from './pages/admin/AdminSellerApplicationsPage.jsx';
+import { AdminSellerApplicationDetailPage } from './pages/admin/AdminSellerApplicationDetailPage.jsx';
 import { AdminEmployeesPage } from './pages/admin/AdminEmployeesPage.jsx';
 import { AdminJobsPage } from './pages/admin/AdminJobsPage.jsx';
 import { AdminOperationsPage } from './pages/admin/AdminOperationsPage.jsx';
@@ -71,6 +75,14 @@ import AdminStoreProfilePage from './pages/admin/AdminStoreProfilePage.jsx';
 import AdminPromotionsPage from './pages/admin/AdminPromotionsPage.jsx';
 import AdminGroceryOrdersPage from './pages/admin/AdminGroceryOrdersPage.jsx';
 import AdminGrocerySettlementsPage from './pages/admin/AdminGrocerySettlementsPage.jsx';
+import { AdminSellerCategoriesPage } from './pages/admin/AdminSellerCategoriesPage.jsx';
+import { AdminSellerCouponsPage } from './pages/admin/AdminSellerCouponsPage.jsx';
+import { SellerDashboardPage } from './pages/seller/SellerDashboardPage.jsx';
+import { SellerOrdersPage } from './pages/seller/SellerOrdersPage.jsx';
+import { SellerReturnsPage } from './pages/seller/SellerReturnsPage.jsx';
+import { SellerClaimsPage } from './pages/seller/SellerClaimsPage.jsx';
+import { SellerInventoryPage } from './pages/seller/SellerInventoryPage.jsx';
+import { SellerCatalogUploadsPage } from './pages/seller/SellerCatalogUploadsPage.jsx';
 
 
 function EmployeeWorkspaceLayout() {
@@ -84,7 +96,7 @@ function EmployeeWorkspaceLayout() {
 }
 
 function RootRedirect() {
-  const { isReady, isAuthenticated, isAdmin, registrationStatus } = useAuth();
+  const { isReady, isAuthenticated, isAdmin, isSeller, isPlatformAdmin, user, registrationStatus } = useAuth();
 
   if (!isReady) {
     return (
@@ -97,6 +109,16 @@ function RootRedirect() {
     );
   }
   if (!isAuthenticated) return <Navigate to="/workforce/login" replace />;
+
+  const isDedicatedSeller = Boolean(
+    isSeller ||
+    (user?.businessType === 'grocery_supplier' && !isPlatformAdmin) ||
+    user?.role === 'seller'
+  );
+
+  if (isDedicatedSeller) {
+    return <Navigate to="/workforce/seller/dashboard" replace />;
+  }
 
   if (isAdmin) {
     return <Navigate to="/workforce/admin" replace />;
@@ -127,14 +149,20 @@ export function App() {
             {/* Direct Role Route Aliases */}
             <Route path="/admin" element={<Navigate to="/workforce/admin" replace />} />
             <Route path="/admin/*" element={<Navigate to="/workforce/admin" replace />} />
+            <Route path="/seller" element={<Navigate to="/workforce/seller/dashboard" replace />} />
+            <Route path="/seller/*" element={<Navigate to="/workforce/seller/dashboard" replace />} />
             <Route path="/vendor/estimations" element={<Navigate to="/workforce/admin/estimations" replace />} />
             <Route path="/employee" element={<Navigate to="/workforce/employee/dashboard" replace />} />
             <Route path="/employee/*" element={<Navigate to="/workforce/employee/dashboard" replace />} />
 
           {/* Public Auth */}
           <Route path="/workforce/login" element={<LoginPage />} />
+          <Route path="/workforce/seller/login" element={<LoginPage />} />
+          <Route path="/workforce/seller-hub/login" element={<LoginPage />} />
+          <Route path="/workforce/create-account" element={<AccountTypePage />} />
           <Route path="/workforce/signup" element={<SignupPage />} />
           <Route path="/workforce/provider-signup" element={<ProviderSignupPage />} />
+          <Route path="/workforce/seller-signup" element={<SellerSignupPage />} />
 
             {/* Public Legal, Compliance & Support Hub */}
             <Route path="/terms" element={<TermsAndConditionsPage />} />
@@ -225,6 +253,22 @@ export function App() {
                 <SuperadminRoute>
                   <AdminServiceProvidersPage />
                 </SuperadminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/seller-applications"
+              element={
+                <AdminRoute>
+                  <AdminSellerApplicationsPage />
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/workforce/admin/seller-applications/:id"
+              element={
+                <AdminRoute>
+                  <AdminSellerApplicationDetailPage />
+                </AdminRoute>
               }
             />
             <Route
@@ -551,6 +595,179 @@ export function App() {
               </AdminRoute>
             }
           />
+          {/* Seller Hub Dedicated Routes (Phase 1 Foundation - 8 Modules) */}
+          {/* 1. Home */}
+          <Route
+            path="/workforce/seller/dashboard"
+            element={
+              <SellerHubRoute>
+                <SellerDashboardPage />
+              </SellerHubRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/seller-hub"
+            element={
+              <SellerHubRoute>
+                <SellerDashboardPage />
+              </SellerHubRoute>
+            }
+          />
+          <Route
+            path="/workforce/seller-hub"
+            element={<Navigate to="/workforce/seller/dashboard" replace />}
+          />
+          <Route
+            path="/workforce/seller-hub/home"
+            element={<Navigate to="/workforce/seller/dashboard" replace />}
+          />
+
+          {/* 2. Orders */}
+          <Route
+            path="/workforce/seller-hub/orders"
+            element={
+              <SellerHubRoute>
+                <SellerOrdersPage />
+              </SellerHubRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/seller-hub/orders"
+            element={
+              <SellerHubRoute>
+                <SellerOrdersPage />
+              </SellerHubRoute>
+            }
+          />
+          <Route
+            path="/workforce/seller/orders"
+            element={<Navigate to="/workforce/seller-hub/orders" replace />}
+          />
+
+          {/* 3. Returns */}
+          <Route
+            path="/workforce/seller-hub/returns"
+            element={
+              <SellerHubRoute>
+                <SellerReturnsPage />
+              </SellerHubRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/seller-hub/returns"
+            element={
+              <SellerHubRoute>
+                <SellerReturnsPage />
+              </SellerHubRoute>
+            }
+          />
+          <Route
+            path="/workforce/seller/returns"
+            element={<Navigate to="/workforce/seller-hub/returns" replace />}
+          />
+
+          {/* 4. Claims */}
+          <Route
+            path="/workforce/seller-hub/claims"
+            element={
+              <SellerHubRoute>
+                <SellerClaimsPage />
+              </SellerHubRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/seller-hub/claims"
+            element={
+              <SellerHubRoute>
+                <SellerClaimsPage />
+              </SellerHubRoute>
+            }
+          />
+          <Route
+            path="/workforce/seller/claims"
+            element={<Navigate to="/workforce/seller-hub/claims" replace />}
+          />
+
+          {/* 5. Inventory */}
+          <Route
+            path="/workforce/seller-hub/inventory"
+            element={
+              <SellerHubRoute>
+                <SellerInventoryPage />
+              </SellerHubRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/seller-hub/inventory"
+            element={
+              <SellerHubRoute>
+                <SellerInventoryPage />
+              </SellerHubRoute>
+            }
+          />
+          <Route
+            path="/workforce/seller/inventory"
+            element={<Navigate to="/workforce/seller-hub/inventory" replace />}
+          />
+
+          {/* 6. Catalog Uploads */}
+          <Route
+            path="/workforce/seller-hub/catalog-uploads"
+            element={
+              <SellerHubRoute>
+                <SellerCatalogUploadsPage />
+              </SellerHubRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/seller-hub/catalog-uploads"
+            element={
+              <SellerHubRoute>
+                <SellerCatalogUploadsPage />
+              </SellerHubRoute>
+            }
+          />
+          <Route
+            path="/workforce/seller/catalog-uploads"
+            element={<Navigate to="/workforce/seller-hub/catalog-uploads" replace />}
+          />
+
+          {/* 7. Categories */}
+          <Route
+            path="/workforce/admin/seller-hub/categories"
+            element={
+              <SellerHubRoute>
+                <AdminSellerCategoriesPage />
+              </SellerHubRoute>
+            }
+          />
+          <Route
+            path="/workforce/seller/categories"
+            element={<Navigate to="/workforce/admin/seller-hub/categories" replace />}
+          />
+          <Route
+            path="/workforce/seller-hub/categories"
+            element={<Navigate to="/workforce/admin/seller-hub/categories" replace />}
+          />
+
+          {/* 8. Coupons */}
+          <Route
+            path="/workforce/admin/seller-hub/coupons"
+            element={
+              <SellerHubRoute>
+                <AdminSellerCouponsPage />
+              </SellerHubRoute>
+            }
+          />
+          <Route
+            path="/workforce/seller/coupons"
+            element={<Navigate to="/workforce/admin/seller-hub/coupons" replace />}
+          />
+          <Route
+            path="/workforce/seller-hub/coupons"
+            element={<Navigate to="/workforce/admin/seller-hub/coupons" replace />}
+          />
+
           <Route
             path="/workforce/admin/grocery-orders"
             element={

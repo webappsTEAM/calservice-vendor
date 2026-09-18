@@ -9,6 +9,7 @@ from .views import (
     WorkforceDispatchHealthView,
     WorkforceSignupView,
     ProviderSignupView,
+    GrocerySellerSignupView,
     WalletMeView,
     WalletPayoutDetailsView,
     WalletWithdrawView,
@@ -27,6 +28,14 @@ from .views import (
     WorkforceAdminBulkDocumentVerifyView,
     WorkforceAdminServiceDecideView,
     WorkforceAdminBulkServiceDecideView,
+    WorkforceAdminSellerApplicationsListView,
+    WorkforceAdminSellerApplicationDetailView,
+    WorkforceAdminSellerDocumentVerifyView,
+    WorkforceAdminSellerBulkDocumentVerifyView,
+    WorkforceAdminSellerCategoryDecideView,
+    WorkforceAdminSellerRequestCorrectionView,
+    WorkforceAdminSellerApproveApplicationView,
+    WorkforceAdminSellerRejectApplicationView,
     WorkforceEmployeeServiceRequestView,
     WorkforceEmployeeServiceRemoveView,
     WorkforceAdminPendingServicesListView,
@@ -187,6 +196,34 @@ from .views import (
     PublicGroceryOrderTrackingView,
     PublicGroceryOrderReviewView,
 )
+from workforce_api.views_seller_hub import (
+    AdminCatalogCategoryListView,
+    AdminCatalogCategoryDetailView,
+    AdminCatalogCategoryActiveListView,
+    AdminCatalogCategoryTreeView,
+    AdminSellerCouponListView,
+    AdminSellerCouponDetailView,
+    SellerProductListView,
+    SellerProductDetailView,
+    SellerProductSubmitView,
+    SellerProductReviewDecisionView,
+    SellerProductTemplateDownloadView,
+    SellerProductBulkUploadView,
+    SellerProductBatchListView,
+    SellerProductImageUploadView,
+    SellerHubMetricsView,
+    SellerInventoryListView,
+    SellerInventoryDetailView,
+    SellerInventoryInitializeView,
+    SellerInventoryAdjustView,
+    SellerInventoryMovementListView,
+    SellerInventoryBatchListView,
+    SellerOrderListView,
+    SellerOrderDetailView,
+    SellerOrderStatusTransitionView,
+    SellerOrderItemPickView,
+    SellerOrderPackingSlipView,
+)
 
 
 
@@ -194,6 +231,7 @@ urlpatterns = [
     # Technician Auth & Onboarding Lifecycle (Phases 4–8)
     path("signup/", WorkforceSignupView.as_view(), name="workforce-signup"),
     path("provider/signup/", ProviderSignupView.as_view(), name="provider-signup"),
+    path("seller/signup/", GrocerySellerSignupView.as_view(), name="workforce-seller-signup"),
     path("wallet/me/", WalletMeView.as_view(), name="wallet-me"),
     path("wallet/payout-details/", WalletPayoutDetailsView.as_view(), name="wallet-payout-details"),
     path("wallet/withdraw/", WalletWithdrawView.as_view(), name="wallet-withdraw"),
@@ -228,6 +266,16 @@ urlpatterns = [
     path("admin/social-security/mark-registered/", WorkforceAdminSocialSecurityMarkRegisteredView.as_view(), name="workforce-admin-social-security-mark-registered"),
     path("admin/applications/<int:pk>/approve/", WorkforceAdminApproveApplicationView.as_view(), name="workforce-admin-approve"),
     path("admin/applications/<int:pk>/reject/", WorkforceAdminRejectApplicationView.as_view(), name="workforce-admin-reject"),
+
+    # Grocery Seller Admin Operations & Review Queue
+    path("admin/seller-applications/", WorkforceAdminSellerApplicationsListView.as_view(), name="workforce-admin-seller-applications"),
+    path("admin/seller-applications/<int:pk>/", WorkforceAdminSellerApplicationDetailView.as_view(), name="workforce-admin-seller-application-detail"),
+    path("admin/seller-applications/<int:pk>/document/<str:category>/verify/", WorkforceAdminSellerDocumentVerifyView.as_view(), name="workforce-admin-seller-doc-verify"),
+    path("admin/seller-applications/<int:pk>/documents/bulk-verify/", WorkforceAdminSellerBulkDocumentVerifyView.as_view(), name="workforce-admin-seller-docs-bulk-verify"),
+    path("admin/seller-applications/<int:pk>/category/<str:category_id>/decide/", WorkforceAdminSellerCategoryDecideView.as_view(), name="workforce-admin-seller-category-decide"),
+    path("admin/seller-applications/<int:pk>/request-correction/", WorkforceAdminSellerRequestCorrectionView.as_view(), name="workforce-admin-seller-request-correction"),
+    path("admin/seller-applications/<int:pk>/approve/", WorkforceAdminSellerApproveApplicationView.as_view(), name="workforce-admin-seller-approve"),
+    path("admin/seller-applications/<int:pk>/reject/", WorkforceAdminSellerRejectApplicationView.as_view(), name="workforce-admin-seller-reject"),
 
     # Technician Live Presence & Availability (Phase 13)
     path("presence/toggle-online/", WorkforcePresenceToggleView.as_view(), name="workforce-presence-toggle"),
@@ -506,6 +554,40 @@ urlpatterns = [
     path("orders/grocery/<int:pk>/status/", VendorOrderStatusUpdateView.as_view(), name="workforce-grocery-order-status"),
     path("settlements/", VendorSettlementListView.as_view(), name="workforce-settlements"),
     path("inventory/ledger/", VendorInventoryLedgerView.as_view(), name="workforce-inventory-ledger"),
+
+    # ── Seller Hub (Categories, Coupons & Product Catalog) ───────────────────
+    path("seller-hub/categories/", AdminCatalogCategoryListView.as_view(), name="seller-hub-categories"),
+    path("seller-hub/categories/tree/", AdminCatalogCategoryTreeView.as_view(), name="seller-hub-categories-tree"),
+    path("seller-hub/categories/active/", AdminCatalogCategoryActiveListView.as_view(), name="seller-hub-categories-active"),
+    path("seller-hub/categories/<int:pk>/", AdminCatalogCategoryDetailView.as_view(), name="seller-hub-category-detail"),
+    path("seller-hub/coupons/", AdminSellerCouponListView.as_view(), name="seller-hub-coupons"),
+    path("seller-hub/coupons/<int:pk>/", AdminSellerCouponDetailView.as_view(), name="seller-hub-coupon-detail"),
+
+    # Phase 2: Seller Product Catalog & Uploads
+    path("seller-hub/products/", SellerProductListView.as_view(), name="seller-hub-products-list"),
+    path("seller-hub/products/template/", SellerProductTemplateDownloadView.as_view(), name="seller-hub-products-template"),
+    path("seller-hub/products/bulk-upload/", SellerProductBulkUploadView.as_view(), name="seller-hub-products-bulk-upload"),
+    path("seller-hub/products/batches/", SellerProductBatchListView.as_view(), name="seller-hub-products-batches"),
+    path("seller-hub/products/upload-image/", SellerProductImageUploadView.as_view(), name="seller-hub-products-upload-image"),
+    path("seller-hub/products/<int:pk>/", SellerProductDetailView.as_view(), name="seller-hub-products-detail"),
+    path("seller-hub/products/<int:pk>/submit/", SellerProductSubmitView.as_view(), name="seller-hub-products-submit"),
+    path("seller-hub/products/<int:pk>/review/", SellerProductReviewDecisionView.as_view(), name="seller-hub-products-review"),
+    path("seller-hub/metrics/", SellerHubMetricsView.as_view(), name="seller-hub-metrics"),
+
+    # Phase 3: Seller Hub Inventory Management
+    path("seller-hub/inventory/", SellerInventoryListView.as_view(), name="seller-hub-inventory-list"),
+    path("seller-hub/inventory/initialize/", SellerInventoryInitializeView.as_view(), name="seller-hub-inventory-initialize"),
+    path("seller-hub/inventory/<int:pk>/", SellerInventoryDetailView.as_view(), name="seller-hub-inventory-detail"),
+    path("seller-hub/inventory/<int:pk>/adjust/", SellerInventoryAdjustView.as_view(), name="seller-hub-inventory-adjust"),
+    path("seller-hub/inventory/<int:pk>/movements/", SellerInventoryMovementListView.as_view(), name="seller-hub-inventory-movements"),
+    path("seller-hub/inventory/<int:pk>/batches/", SellerInventoryBatchListView.as_view(), name="seller-hub-inventory-batches"),
+
+    # Phase 4: Seller Hub Orders & Fulfilment
+    path("seller-hub/orders/", SellerOrderListView.as_view(), name="seller-hub-orders-list"),
+    path("seller-hub/orders/<int:pk>/", SellerOrderDetailView.as_view(), name="seller-hub-orders-detail"),
+    path("seller-hub/orders/<int:pk>/transition/", SellerOrderStatusTransitionView.as_view(), name="seller-hub-orders-transition"),
+    path("seller-hub/orders/<int:pk>/item-pick/", SellerOrderItemPickView.as_view(), name="seller-hub-orders-item-pick"),
+    path("seller-hub/orders/<int:pk>/packing-slip/", SellerOrderPackingSlipView.as_view(), name="seller-hub-orders-packing-slip"),
 
     # ── Public Customer Marketplace Cart, Checkout & Order Tracking ────────────
     path("public/cart/", PublicGroceryCartView.as_view(), name="workforce-public-cart"),

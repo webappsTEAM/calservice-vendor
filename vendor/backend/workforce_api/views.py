@@ -51,6 +51,8 @@ from .permissions import IsWorkforceAdmin, IsWorkforceEmployee, IsApprovedTechni
 from .serializers import (
     WorkforceSignupSerializer,
     ProviderSignupSerializer,
+    GrocerySellerSignupSerializer,
+    GrocerySellerApplicationDetailSerializer,
     WalletAccountSerializer,
     WalletPayoutDetailsSerializer,
     WalletWithdrawSerializer,
@@ -529,6 +531,9 @@ class ProviderSignupView(APIView):
                 counter += 1
 
             b_type = data.get("business_type", "service_provider")
+            is_grocery = b_type in ("grocery_supplier", "hybrid")
+
+            # Grocery suppliers must not activate instantly; they require admin review.
             company = Company.objects.create(
                 company_name=data["business_name"],
                 slug=slug,
@@ -537,16 +542,38 @@ class ProviderSignupView(APIView):
                 region=region,
                 default_state="Tamil Nadu",
                 address=data.get("address", ""),
-                is_active=True,
+                is_active=not is_grocery,
             )
 
-            if b_type in ("grocery_supplier", "hybrid"):
+            if is_grocery:
                 from workforce_api.models import VendorStore
                 VendorStore.objects.create(
                     company=company,
                     store_name=data["business_name"],
                     store_slug=slug,
                     store_address=data.get("address", ""),
+                    is_accepting_orders=False,
+                    onboarding={
+                        "status": "submitted",
+                        "step": 1,
+                        "draft": {
+                            "business_name": data["business_name"],
+                            "store_name": data["business_name"],
+                            "contact_first_name": data["contact_first_name"],
+                            "contact_last_name": data.get("contact_last_name", ""),
+                            "mobile_number": data["mobile_number"],
+                            "email": data["email"],
+                            "address": data.get("address", ""),
+                            "city": data.get("city", "Hosur"),
+                        },
+                        "categories": [],
+                        "documents": {},
+                        "correction_notes": "",
+                        "rejection_reason": "",
+                        "submitted_at": timezone.now().isoformat(),
+                        "approved_at": None,
+                        "approved_by": None,
+                    },
                 )
 
             username_candidate = data["email"].split("@")[0].lower()
@@ -565,22 +592,46 @@ class ProviderSignupView(APIView):
                 last_name=data.get("contact_last_name", ""),
                 role="manager",
                 company=company,
-                is_active=True,
+                is_active=not is_grocery,
                 totp_secret="",
                 bio="",
             )
             user.set_password(data["password"])
             user.save()
 
-            try:
-                from workforce_api.services import provision_provider_wallet
-                provision_provider_wallet(company)
-            except Exception:
-                logger.exception(
-                    "Failed to provision head wallet for new provider company #%s at signup "
-                    "-- will need manual wallet provisioning before this provider's team can be paid.",
-                    company.id,
-                )
+            if not is_grocery:
+                try:
+                    from workforce_api.services import provision_provider_wallet
+                    provision_provider_wallet(company)
+                except Exception:
+                    logger.exception(
+                        "Failed to provision head wallet for new provider company #%s at signup "
+                        "-- will need manual wallet provisioning before this provider's team can be paid.",
+                        company.id,
+                    )
+
+        if is_grocery:
+            return Response(
+                {
+                    "message": "Grocery supplier application submitted successfully and awaits admin review.",
+                    "status": "submitted",
+                    "company": {
+                        "id": company.id,
+                        "slug": company.slug,
+                        "company_name": company.company_name,
+                    },
+                    "user": {
+                        "id": user.id,
+                        "username": user.username,
+                        "email": user.email,
+                        "first_name": user.first_name,
+                        "last_name": user.last_name,
+                        "role": user.role,
+                    },
+                    "is_pending_review": True,
+                },
+                status=status.HTTP_201_CREATED,
+            )
 
         refresh = RefreshToken.for_user(user)
         refresh["company_id"] = company.id
@@ -610,6 +661,162 @@ class ProviderSignupView(APIView):
         )
         set_auth_cookies(response, str(refresh.access_token), str(refresh))
         return response
+
+
+class GrocerySellerSignupView(APIView):
+    """
+    Dedicated Sevo Seller Hub registration endpoint for grocery stores / supermarkets.
+    Creates an inactive Company, inactive User, and inactive VendorStore with structured onboarding state.
+    Requires admin review & approval before operational activation (no immediate token issuance).
+    """
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "workforce_signup"
+
+    def post(self, request):
+        serializer = GrocerySellerSignupSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        with transaction.atomic():
+            region, _ = Region.objects.get_or_create(
+                code="IN",
+                defaults={"name": "India", "currency": "INR", "currency_symbol": "₹"},
+            )
+
+            store_name_candidate = (data.get("store_name") or data["business_name"]).strip()
+            base_slug = slugify(store_name_candidate)[:60] or "seller"
+            slug = base_slug
+            counter = 1
+            while Company.objects.filter(slug=slug).exists():
+                slug = f"{base_slug}-{counter}"
+                counter += 1
+
+            company = Company.objects.create(
+                company_name=data["business_name"].strip(),
+                slug=slug,
+                business_type="grocery_supplier",
+                primary_country="IN",
+                region=region,
+                default_state="Tamil Nadu",
+                address=data.get("address", "").strip(),
+                is_active=False,
+            )
+
+            username_candidate = data["email"].split("@")[0].lower()
+            username = username_candidate
+            counter = 1
+            while User.objects.filter(username=username).exists():
+                username = f"{username_candidate}_{counter}"
+                counter += 1
+
+            user = User.objects.create(
+                username=username,
+                email=data["email"].lower(),
+                mobile_number=data["mobile_number"],
+                phone=data["mobile_number"],
+                first_name=data["contact_first_name"].strip(),
+                last_name=data.get("contact_last_name", "").strip(),
+                role="manager",
+                company=company,
+                is_active=False,
+                totp_secret="",
+                bio="",
+            )
+            user.set_password(data["password"])
+            user.save()
+
+            # Format requested categories with pending status
+            raw_categories = data.get("categories", [])
+            categories_list = []
+            for cat in raw_categories:
+                if isinstance(cat, dict):
+                    cat_id = cat.get("id") or slugify(cat.get("name", "category"))
+                    cat_name = cat.get("name") or str(cat_id)
+                else:
+                    cat_name = str(cat).strip()
+                    cat_id = slugify(cat_name) or "category"
+                if cat_name:
+                    categories_list.append({
+                        "id": cat_id,
+                        "name": cat_name,
+                        "status": "pending",
+                        "rejection_reason": "",
+                    })
+
+            # Format uploaded / linked documents
+            raw_docs = data.get("documents", {})
+            documents_dict = {}
+            now_iso = timezone.now().isoformat()
+            if isinstance(raw_docs, dict):
+                for key, doc_item in raw_docs.items():
+                    if isinstance(doc_item, dict):
+                        doc_url = doc_item.get("file_url") or doc_item.get("url") or ""
+                        doc_title = doc_item.get("title") or key.replace("_", " ").title()
+                        doc_num = doc_item.get("document_number") or ""
+                        if doc_url or doc_num:
+                            documents_dict[key] = {
+                                "category": key,
+                                "title": doc_title,
+                                "document_number": doc_num,
+                                "file_url": doc_url,
+                                "status": "uploaded",
+                                "uploaded_at": now_iso,
+                                "rejection_reason": "",
+                            }
+
+            from workforce_api.models import VendorStore
+            store = VendorStore.objects.create(
+                company=company,
+                store_name=store_name_candidate,
+                store_slug=slug,
+                fssai_license_number=data.get("fssai_license_number", "").strip(),
+                gst_number=data.get("gst_number", "").strip(),
+                store_address=data.get("address", "").strip(),
+                is_accepting_orders=False,
+                onboarding={
+                    "status": "submitted",
+                    "step": 1,
+                    "draft": {
+                        "business_name": data["business_name"].strip(),
+                        "store_name": store_name_candidate,
+                        "contact_first_name": data["contact_first_name"].strip(),
+                        "contact_last_name": data.get("contact_last_name", "").strip(),
+                        "email": data["email"].lower(),
+                        "mobile_number": data["mobile_number"],
+                        "address": data.get("address", "").strip(),
+                        "city": data.get("city", "Hosur").strip(),
+                        "fssai_license_number": data.get("fssai_license_number", "").strip(),
+                        "gst_number": data.get("gst_number", "").strip(),
+                    },
+                    "categories": categories_list,
+                    "documents": documents_dict,
+                    "correction_notes": "",
+                    "rejection_reason": "",
+                    "submitted_at": now_iso,
+                    "approved_at": None,
+                    "approved_by": None,
+                },
+            )
+
+        return Response(
+            {
+                "message": "Sevo Seller Hub application submitted successfully! Your application is now in the verification pipeline.",
+                "status": "submitted",
+                "application_id": store.id,
+                "store_name": store.store_name,
+                "company_name": company.company_name,
+                "submitted_at": now_iso,
+                "user": {
+                    "id": user.id,
+                    "username": user.username,
+                    "email": user.email,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
+                },
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 # ─── 1c. Wallet Self-Service (payout details, own wallet status) ─────────────
@@ -2015,6 +2222,357 @@ class WorkforceAdminRejectApplicationView(APIView):
 
         return Response({
             "message": "Candidate application rejected.",
+            "status": "rejected",
+            "reason": reason,
+        }, status=status.HTTP_200_OK)
+
+
+# ─── 6b. Admin Grocery Seller Applications & Review Queue ─────────────────────
+
+class WorkforceAdminSellerApplicationsListView(APIView):
+    permission_classes = [IsWorkforceAdmin]
+
+    def get(self, request):
+        from workforce_api.models import VendorStore
+        company = resolve_actor_company(request)
+        if is_platform_superadmin(request.user):
+            stores = VendorStore.objects.select_related("company").order_by("-id")
+        elif company:
+            stores = VendorStore.objects.filter(company=company).select_related("company").order_by("-id")
+        else:
+            return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+
+        status_filter = request.query_params.get("status", "").strip().lower()
+
+        results = []
+        for store in stores:
+            data = GrocerySellerApplicationDetailSerializer(store).data
+            reg_status = (data.get("registration_status") or "not_started").lower()
+            if status_filter:
+                if status_filter == "pending" and reg_status in ["submitted", "under_review"]:
+                    results.append(data)
+                elif reg_status == status_filter:
+                    results.append(data)
+            else:
+                results.append(data)
+
+        return Response(results, status=status.HTTP_200_OK)
+
+
+class WorkforceAdminSellerApplicationDetailView(APIView):
+    permission_classes = [IsWorkforceAdmin]
+
+    def get(self, request, pk):
+        from workforce_api.models import VendorStore
+        store = VendorStore.objects.filter(pk=pk).select_related("company").first()
+        if not store:
+            return Response({"error": "Seller application dossier not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not is_platform_superadmin(request.user):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+            if store.company_id != user_company.id:
+                return Response({"error": "Unauthorized cross-company access.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = GrocerySellerApplicationDetailSerializer(store)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class WorkforceAdminSellerDocumentVerifyView(APIView):
+    permission_classes = [IsWorkforceAdmin]
+
+    def post(self, request, pk, category):
+        from workforce_api.models import VendorStore
+        store = VendorStore.objects.filter(pk=pk).first()
+        if not store:
+            return Response({"error": "Seller application dossier not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not is_platform_superadmin(request.user):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+            if store.company_id != user_company.id:
+                return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
+        action = request.data.get("action", "").lower()
+        reason = request.data.get("reason", "")
+
+        if action not in ["approve", "reject"]:
+            return Response({"error": "Action must be 'approve' or 'reject'."}, status=status.HTTP_400_BAD_REQUEST)
+
+        onboarding = store.onboarding or {}
+        documents = onboarding.get("documents", {})
+
+        if category not in documents:
+            return Response({"error": f"Document '{category}' not found in seller dossier."}, status=status.HTTP_404_NOT_FOUND)
+
+        documents[category]["status"] = "approved" if action == "approve" else "rejected"
+        documents[category]["rejection_reason"] = reason if action == "reject" else ""
+        documents[category]["verified_at"] = timezone.now().isoformat()
+        documents[category]["verified_by"] = request.user.username
+
+        onboarding["documents"] = documents
+        store.onboarding = onboarding
+        store.save()
+
+        return Response({
+            "message": f"Document '{category}' marked as {action}d.",
+            "document": documents[category],
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceAdminSellerBulkDocumentVerifyView(APIView):
+    permission_classes = [IsWorkforceAdmin]
+
+    def post(self, request, pk):
+        from workforce_api.models import VendorStore
+        store = VendorStore.objects.filter(pk=pk).first()
+        if not store:
+            return Response({"error": "Seller application dossier not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not is_platform_superadmin(request.user):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+            if store.company_id != user_company.id:
+                return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
+        action = request.data.get("action", "").lower()
+        reason = request.data.get("reason", "")
+        categories = request.data.get("categories")
+        all_pending = request.data.get("all_pending", False)
+
+        if action not in ["approve", "reject"]:
+            return Response({"error": "Action must be 'approve' or 'reject'."}, status=status.HTTP_400_BAD_REQUEST)
+
+        onboarding = store.onboarding or {}
+        documents = onboarding.get("documents", {})
+
+        if not documents:
+            return Response({
+                "message": "No documents found in seller dossier.",
+                "updated_count": 0,
+                "documents": {},
+            }, status=status.HTTP_200_OK)
+
+        if categories:
+            cat_set = set(categories)
+            target_keys = [k for k in documents.keys() if k in cat_set]
+        elif all_pending:
+            target_keys = [k for k, doc in documents.items() if doc.get("status") not in ["approved", "rejected"]]
+        else:
+            target_keys = list(documents.keys())
+
+        if not target_keys:
+            return Response({
+                "message": "All uploaded documents are already decided.",
+                "updated_count": 0,
+                "documents": documents,
+            }, status=status.HTTP_200_OK)
+
+        now_iso = timezone.now().isoformat()
+        current_username = request.user.username
+        updated_count = 0
+
+        for key in target_keys:
+            doc = documents.get(key)
+            if not doc:
+                continue
+            doc["status"] = "approved" if action == "approve" else "rejected"
+            doc["rejection_reason"] = reason if action == "reject" else ""
+            doc["verified_at"] = now_iso
+            doc["verified_by"] = current_username
+            updated_count += 1
+
+        onboarding["documents"] = documents
+        store.onboarding = onboarding
+        store.save()
+
+        return Response({
+            "message": f"Successfully {action}d {updated_count} document(s).",
+            "updated_count": updated_count,
+            "documents": documents,
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceAdminSellerCategoryDecideView(APIView):
+    permission_classes = [IsWorkforceAdmin]
+
+    def post(self, request, pk, category_id):
+        from workforce_api.models import VendorStore
+        store = VendorStore.objects.filter(pk=pk).first()
+        if not store:
+            return Response({"error": "Seller application dossier not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not is_platform_superadmin(request.user):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+            if store.company_id != user_company.id:
+                return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
+        action = request.data.get("action", "").lower()
+        reason = request.data.get("reason", "").strip()
+
+        if action not in ["approve", "reject"]:
+            return Response({"error": "Action must be 'approve' or 'reject'."}, status=status.HTTP_400_BAD_REQUEST)
+
+        onboarding = store.onboarding or {}
+        categories = onboarding.get("categories", [])
+
+        target_cat = next((c for c in categories if str(c.get("id")) == str(category_id) or str(c.get("name")) == str(category_id)), None)
+        if not target_cat:
+            return Response({"error": f"Category '{category_id}' not found on seller application."}, status=status.HTTP_404_NOT_FOUND)
+
+        target_cat["status"] = "approved" if action == "approve" else "rejected"
+        target_cat["rejection_reason"] = reason if action == "reject" else ""
+        target_cat["decided_at"] = timezone.now().isoformat()
+        target_cat["decided_by"] = request.user.username
+
+        onboarding["categories"] = categories
+        store.onboarding = onboarding
+        store.save()
+
+        return Response({
+            "message": f"Category '{target_cat.get('name')}' marked as {action}d.",
+            "category": target_cat,
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceAdminSellerRequestCorrectionView(APIView):
+    permission_classes = [IsWorkforceAdmin]
+
+    def post(self, request, pk):
+        from workforce_api.models import VendorStore
+        store = VendorStore.objects.filter(pk=pk).first()
+        if not store:
+            return Response({"error": "Seller application dossier not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not is_platform_superadmin(request.user):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+            if store.company_id != user_company.id:
+                return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
+        notes = request.data.get("notes", "").strip()
+        if not notes:
+            return Response({"error": "Correction notes are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        onboarding = store.onboarding or {}
+        onboarding["status"] = "correction_required"
+        onboarding["correction_notes"] = notes
+        store.onboarding = onboarding
+        store.save()
+
+        return Response({
+            "message": "Correction request sent to grocery seller.",
+            "status": "correction_required",
+            "notes": notes,
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceAdminSellerApproveApplicationView(APIView):
+    permission_classes = [IsWorkforceAdmin]
+
+    def post(self, request, pk):
+        from workforce_api.models import VendorStore
+        store = VendorStore.objects.filter(pk=pk).select_related("company").first()
+        if not store:
+            return Response({"error": "Seller application dossier not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not is_platform_superadmin(request.user):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+            if store.company_id != user_company.id:
+                return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
+        onboarding = store.onboarding or {}
+        documents = onboarding.get("documents", {})
+        categories = onboarding.get("categories", [])
+
+        # Validate that ALL uploaded documents are approved
+        unapproved_docs = [
+            cat for cat, doc in documents.items()
+            if doc.get("status") != "approved"
+        ]
+        if unapproved_docs:
+            return Response({
+                "error": f"Cannot approve seller: The following documents are not approved: {', '.join(unapproved_docs)}. All uploaded documents must be reviewed and APPROVED."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Validate that at least ONE category is approved (if categories were requested)
+        if categories:
+            approved_cats = [c for c in categories if c.get("status") == "approved"]
+            if not approved_cats:
+                return Response({
+                    "error": "Cannot approve seller: At least ONE requested product category must be marked as APPROVED."
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            onboarding["status"] = "approved"
+            onboarding["approved_at"] = timezone.now().isoformat()
+            onboarding["approved_by"] = request.user.username
+
+            store.onboarding = onboarding
+            store.is_accepting_orders = True
+            store.save()
+
+            company = store.company
+            company.is_active = True
+            company.save()
+
+            # Activate manager users for this store company
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
+            User.objects.filter(company=company).update(is_active=True)
+
+            # Provision head wallet for this store if not yet present
+            try:
+                from workforce_api.services import provision_provider_wallet
+                provision_provider_wallet(company)
+            except Exception:
+                logger.exception("Wallet provisioning warning for approved store company #%s", company.id)
+
+        return Response({
+            "message": f"Seller '{store.store_name}' approved successfully! Account and store are now ACTIVE.",
+            "status": "approved",
+            "is_active": True,
+            "is_accepting_orders": True,
+        }, status=status.HTTP_200_OK)
+
+
+class WorkforceAdminSellerRejectApplicationView(APIView):
+    permission_classes = [IsWorkforceAdmin]
+
+    def post(self, request, pk):
+        from workforce_api.models import VendorStore
+        store = VendorStore.objects.filter(pk=pk).select_related("company").first()
+        if not store:
+            return Response({"error": "Seller application dossier not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not is_platform_superadmin(request.user):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+            if store.company_id != user_company.id:
+                return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
+        reason = request.data.get("reason", "Business qualifications or regulatory documents did not meet verification criteria.")
+
+        onboarding = store.onboarding or {}
+        onboarding["status"] = "rejected"
+        onboarding["rejection_reason"] = reason
+        onboarding["rejected_at"] = timezone.now().isoformat()
+
+        store.onboarding = onboarding
+        store.is_accepting_orders = False
+        store.save()
+
+        return Response({
+            "message": f"Seller '{store.store_name}' application rejected.",
             "status": "rejected",
             "reason": reason,
         }, status=status.HTTP_200_OK)
@@ -12751,6 +13309,38 @@ class VendorInventoryLedgerView(APIView):
 
         txs = InventoryTransaction.objects.filter(inventory_item__company_id=company_id).select_related("inventory_item").order_by("-created_at")[:100]
         return Response(InventoryTransactionSerializer(txs, many=True).data)
+
+
+# ── Seller Hub Views Exporters ────────────────────────────────────────────────
+from .views_seller_hub import (
+    AdminSellerHubCategoryListView as AdminCatalogCategoryListView,
+    AdminSellerHubCategoryDetailView as AdminCatalogCategoryDetailView,
+    AdminCatalogCategoryTreeView,
+    AdminCatalogCategoryActiveListView,
+    AdminSellerCouponListView,
+    AdminSellerCouponDetailView,
+    SellerProductListView,
+    SellerProductDetailView,
+    SellerProductSubmitView,
+    SellerProductReviewDecisionView,
+    SellerProductTemplateDownloadView,
+    SellerProductBulkUploadView,
+    SellerProductBatchListView,
+    SellerProductImageUploadView,
+    SellerHubMetricsView,
+    SellerInventoryListView,
+    SellerInventoryDetailView,
+    SellerInventoryInitializeView,
+    SellerInventoryAdjustView,
+    SellerInventoryMovementListView,
+    SellerInventoryBatchListView,
+    SellerOrderListView,
+    SellerOrderDetailView,
+    SellerOrderStatusTransitionView,
+    SellerOrderItemPickView,
+    SellerOrderPackingSlipView,
+)
+
 
 
 

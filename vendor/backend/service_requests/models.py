@@ -85,6 +85,14 @@ def is_quotation_service(service_id=None, slug=None, name=None, category=None):
 
 class CatalogCategory(models.Model):
 
+    parent = models.ForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="children",
+        db_column="parent_id"
+    )
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=200, unique=True)
     description = models.TextField(blank=True, default="")

@@ -3,7 +3,7 @@ import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthProvider.jsx';
 
 export function EmployeeRoute({ children }) {
-  const { isReady, isAuthenticated, isAdmin, registrationStatus } = useAuth();
+  const { isReady, isAuthenticated, isAdmin, isSeller, isPlatformAdmin, registrationStatus } = useAuth();
   const location = useLocation();
 
   if (!isReady) {
@@ -19,6 +19,10 @@ export function EmployeeRoute({ children }) {
 
   if (!isAuthenticated) {
     return <Navigate to="/workforce/login" state={{ from: location }} replace />;
+  }
+
+  if (isSeller && !isPlatformAdmin) {
+    return <Navigate to="/workforce/seller/dashboard" replace />;
   }
 
   if (isAdmin) {
