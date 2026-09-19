@@ -97,6 +97,18 @@ export default function QuotationBuilderModal({
     job?.issue_title?.toLowerCase().includes('brick') ||
     job?.issue_title?.toLowerCase().includes('plaster');
 
+  const isLocked = [
+    'CUSTOMER_ACCEPTED',
+    'SENT_TO_CUSTOMER',
+    'PENDING_ADMIN_APPROVAL',
+    'ADMIN_APPROVED',
+    'CONVERTED',
+    'CONVERSION_PENDING',
+    'SUPERSEDED',
+    'CANCELLED',
+    'EXPIRED',
+  ].includes((quoteStatus || '').toUpperCase());
+
   // Load existing quote or initialize from job
   useEffect(() => {
     if (!isOpen) return;
@@ -614,6 +626,20 @@ export default function QuotationBuilderModal({
           </div>
         )}
 
+        {isLocked && (
+          <div className="mx-6 mt-4 p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 flex items-center justify-between gap-3 text-xs text-amber-900 dark:text-amber-200 font-medium">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>
+                <strong>Quotation is Locked ({quoteStatus.replace(/_/g, ' ')}):</strong>{' '}
+                {quoteStatus === 'CUSTOMER_ACCEPTED'
+                  ? 'This quotation has been accepted by the customer. The agreed scope and pricing are permanently locked and cannot be edited.'
+                  : 'This quotation has been submitted/finalized. The scope and line items are read-only.'}
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Body Content */}
         <div className="p-6 overflow-y-auto flex-1 space-y-6">
           {loading ? (
@@ -625,7 +651,7 @@ export default function QuotationBuilderModal({
             <>
               {/* STEP 1: Inspection Form */}
               {step === 1 && (
-                <div className="space-y-4">
+                <fieldset disabled={isLocked} className="space-y-4">
                   {isPainting ? (
                     <PaintingInspectionForm data={inspectionData} onChange={setInspectionData} />
                   ) : isMason ? (
@@ -640,7 +666,7 @@ export default function QuotationBuilderModal({
                           type="text"
                           value={title}
                           onChange={(e) => setTitle(e.target.value)}
-                          className="w-full text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2.5"
+                          className="w-full text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2.5 disabled:bg-gray-100 dark:disabled:bg-gray-900 disabled:text-gray-500"
                         />
                       </div>
                       <div>
@@ -651,12 +677,12 @@ export default function QuotationBuilderModal({
                           rows={3}
                           value={description}
                           onChange={(e) => setDescription(e.target.value)}
-                          className="w-full text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2.5"
+                          className="w-full text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2.5 disabled:bg-gray-100 dark:disabled:bg-gray-900 disabled:text-gray-500"
                         />
                       </div>
                     </div>
                   )}
-                </div>
+                </fieldset>
               )}
 
               {/* STEP 2: Measurements */}
@@ -671,34 +697,38 @@ export default function QuotationBuilderModal({
                         Log wall, room, or structural dimensions measured with laser/measuring tape.
                       </p>
                     </div>
-                    <button
-                      onClick={handleAddMeasurement}
-                      className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800 hover:bg-blue-100"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      Add Measurement
-                    </button>
+                    {!isLocked && (
+                      <button
+                        onClick={handleAddMeasurement}
+                        className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800 hover:bg-blue-100"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        Add Measurement
+                      </button>
+                    )}
                   </div>
 
                   {measurements.length === 0 ? (
                     <div className="text-center py-10 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-xl">
                       <Ruler className="w-8 h-8 text-gray-400 mx-auto mb-2 opacity-60" />
                       <p className="text-xs text-gray-500 font-medium">No site measurements recorded yet.</p>
-                      <button
-                        onClick={handleAddMeasurement}
-                        className="mt-3 text-xs font-semibold text-blue-600 hover:underline"
-                      >
-                        + Add first room/wall measurement
-                      </button>
+                      {!isLocked && (
+                        <button
+                          onClick={handleAddMeasurement}
+                          className="mt-3 text-xs font-semibold text-blue-600 hover:underline"
+                        >
+                          + Add first room/wall measurement
+                        </button>
+                      )}
                     </div>
                   ) : (
-                    <div className="space-y-3">
+                    <fieldset disabled={isLocked} className="space-y-3">
                       {measurements.map((m, idx) => (
                         <div
                           key={idx}
                           className="p-3.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/40 grid grid-cols-1 sm:grid-cols-12 gap-3 items-center"
                         >
-                          <div className="sm:col-span-4">
+                          <div className={isLocked ? 'sm:col-span-5' : 'sm:col-span-4'}>
                             <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">
                               Area / Location
                             </label>
@@ -707,7 +737,7 @@ export default function QuotationBuilderModal({
                               value={m.name}
                               onChange={(e) => handleUpdateMeasurement(idx, 'name', e.target.value)}
                               placeholder="e.g. Master Bedroom Wall"
-                              className="w-full text-xs font-medium rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2 focus:ring-1 focus:ring-blue-500"
+                              className="w-full text-xs font-medium rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2 focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 dark:disabled:bg-gray-900 disabled:text-gray-500"
                             />
                           </div>
 
@@ -720,7 +750,7 @@ export default function QuotationBuilderModal({
                               step="0.1"
                               value={m.length || ''}
                               onChange={(e) => handleUpdateMeasurement(idx, 'length', e.target.value)}
-                              className="w-full text-xs rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2"
+                              className="w-full text-xs rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2 disabled:bg-gray-100 dark:disabled:bg-gray-900 disabled:text-gray-500"
                             />
                           </div>
 
@@ -733,7 +763,7 @@ export default function QuotationBuilderModal({
                               step="0.1"
                               value={m.height || ''}
                               onChange={(e) => handleUpdateMeasurement(idx, 'height', e.target.value)}
-                              className="w-full text-xs rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2"
+                              className="w-full text-xs rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2 disabled:bg-gray-100 dark:disabled:bg-gray-900 disabled:text-gray-500"
                             />
                           </div>
 
@@ -746,21 +776,23 @@ export default function QuotationBuilderModal({
                               step="0.1"
                               value={m.area || ''}
                               onChange={(e) => handleUpdateMeasurement(idx, 'area', parseFloat(e.target.value) || 0)}
-                              className="w-full text-xs font-bold rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2 text-blue-600 dark:text-blue-400"
+                              className="w-full text-xs font-bold rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2 text-blue-600 dark:text-blue-400 disabled:bg-gray-100 dark:disabled:bg-gray-900"
                             />
                           </div>
 
-                          <div className="sm:col-span-1 flex justify-end pt-4">
-                            <button
-                              onClick={() => handleRemoveMeasurement(idx)}
-                              className="p-1.5 text-gray-400 hover:text-red-600 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
+                          {!isLocked && (
+                            <div className="sm:col-span-1 flex justify-end pt-4">
+                              <button
+                                onClick={() => handleRemoveMeasurement(idx)}
+                                className="p-1.5 text-gray-400 hover:text-red-600 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          )}
                         </div>
                       ))}
-                    </div>
+                    </fieldset>
                   )}
                 </div>
               )}
@@ -768,39 +800,41 @@ export default function QuotationBuilderModal({
               {/* STEP 3: Line Items & Rate Cards */}
               {step === 3 && (
                 <div className="space-y-5">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-blue-50/50 dark:bg-blue-950/20 p-3.5 rounded-xl border border-blue-100 dark:border-blue-900/40">
-                    <div>
-                      <h4 className="text-xs font-bold text-blue-900 dark:text-blue-200">
-                        Add from Approved Rate Card Catalog
-                      </h4>
-                      <p className="text-[11px] text-blue-700 dark:text-blue-300">
-                        Select pre-approved standard rates for material, labour, and logistics.
-                      </p>
-                    </div>
+                  {!isLocked && (
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-blue-50/50 dark:bg-blue-950/20 p-3.5 rounded-xl border border-blue-100 dark:border-blue-900/40">
+                      <div>
+                        <h4 className="text-xs font-bold text-blue-900 dark:text-blue-200">
+                          Add from Approved Rate Card Catalog
+                        </h4>
+                        <p className="text-[11px] text-blue-700 dark:text-blue-300">
+                          Select pre-approved standard rates for material, labour, and logistics.
+                        </p>
+                      </div>
 
-                    <select
-                      onChange={(e) => {
-                        if (e.target.value) {
-                          handleSelectRateCardItem(e.target.value);
-                          e.target.value = '';
-                        }
-                      }}
-                      defaultValue=""
-                      className="text-xs rounded-lg border border-blue-300 dark:border-blue-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                    >
-                      <option value="" disabled>
-                        + Choose approved item...
-                      </option>
-                      {rateCards.map((rc) => (
-                        <option key={rc.id} value={rc.id}>
-                          [{rc.section}] {rc.item_name} — {describeRate(rc)}
+                      <select
+                        onChange={(e) => {
+                          if (e.target.value) {
+                            handleSelectRateCardItem(e.target.value);
+                            e.target.value = '';
+                          }
+                        }}
+                        defaultValue=""
+                        className="text-xs rounded-lg border border-blue-300 dark:border-blue-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                      >
+                        <option value="" disabled>
+                          + Choose approved item...
                         </option>
-                      ))}
-                    </select>
-                  </div>
+                        {rateCards.map((rc) => (
+                          <option key={rc.id} value={rc.id}>
+                            [{rc.section}] {rc.item_name} — {describeRate(rc)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
 
                   {/* Items List */}
-                  <div className="space-y-3">
+                  <fieldset disabled={isLocked} className="space-y-3">
                     {items.map((item, idx) => (
                       <div
                         key={item.id || idx}
@@ -814,7 +848,7 @@ export default function QuotationBuilderModal({
                             <select
                               value={item.section || 'MATERIAL'}
                               onChange={(e) => handleUpdateItem(idx, 'section', e.target.value)}
-                              className="w-full text-xs font-semibold rounded-lg border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 p-2"
+                              className="w-full text-xs font-semibold rounded-lg border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 p-2 disabled:bg-gray-100 dark:disabled:bg-gray-900 disabled:text-gray-500"
                             >
                               <option value="MATERIAL">Material</option>
                               <option value="LABOUR">Labour</option>
@@ -825,7 +859,7 @@ export default function QuotationBuilderModal({
                             </select>
                           </div>
 
-                          <div className="sm:col-span-5">
+                          <div className={isLocked ? 'sm:col-span-5' : 'sm:col-span-5'}>
                             <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">
                               Item Name / Scope
                             </label>
@@ -834,7 +868,7 @@ export default function QuotationBuilderModal({
                               value={item.name}
                               onChange={(e) => handleUpdateItem(idx, 'name', e.target.value)}
                               placeholder="e.g. Premium Acrylic Emulsion"
-                              className="w-full text-xs font-semibold rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2 focus:ring-1 focus:ring-blue-500"
+                              className="w-full text-xs font-semibold rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2 focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 dark:disabled:bg-gray-900 disabled:text-gray-500"
                             />
                           </div>
 
@@ -848,7 +882,7 @@ export default function QuotationBuilderModal({
                                 onChange={(e) =>
                                   handlePricedFieldChange(idx, 'pricing_tier', e.target.value)
                                 }
-                                className="w-full text-xs rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2"
+                                className="w-full text-xs rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2 disabled:bg-gray-100 dark:disabled:bg-gray-900 disabled:text-gray-500"
                               >
                                 <option value="">Choose…</option>
                                 {item.pricing_tiers.map((t) => (
@@ -869,7 +903,7 @@ export default function QuotationBuilderModal({
                               onChange={(e) =>
                                 handlePricedFieldChange(idx, 'quantity', parseFloat(e.target.value) || 0)
                               }
-                              className="w-full text-xs font-medium rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2"
+                              className="w-full text-xs font-medium rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2 disabled:bg-gray-100 dark:disabled:bg-gray-900 disabled:text-gray-500"
                             />
                           </div>
 
@@ -881,7 +915,7 @@ export default function QuotationBuilderModal({
                               type="text"
                               value={item.unit || 'sqft'}
                               onChange={(e) => handleUpdateItem(idx, 'unit', e.target.value)}
-                              className="w-full text-xs rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2"
+                              className="w-full text-xs rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2 disabled:bg-gray-100 dark:disabled:bg-gray-900 disabled:text-gray-500"
                             />
                           </div>
                         </div>
@@ -900,7 +934,7 @@ export default function QuotationBuilderModal({
                               type="number"
                               step="0.1"
                               value={item.unit_price || ''}
-                              disabled={Boolean(item.rate_card_id) && item.pricing_model !== 'QUOTE_ONLY'}
+                              disabled={isLocked || (Boolean(item.rate_card_id) && item.pricing_model !== 'QUOTE_ONLY')}
                               onChange={(e) =>
                                 handleUpdateItem(idx, 'unit_price', parseFloat(e.target.value) || 0)
                               }
@@ -919,7 +953,7 @@ export default function QuotationBuilderModal({
                               onChange={(e) =>
                                 handleUpdateItem(idx, 'discount_amount', parseFloat(e.target.value) || 0)
                               }
-                              className="w-full text-xs rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2"
+                              className="w-full text-xs rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2 disabled:bg-gray-100 dark:disabled:bg-gray-900 disabled:text-gray-500"
                             />
                           </div>
 
@@ -933,11 +967,11 @@ export default function QuotationBuilderModal({
                               onChange={(e) =>
                                 handleUpdateItem(idx, 'tax_rate', parseFloat(e.target.value) || 0)
                               }
-                              className="w-full text-xs rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2"
+                              className="w-full text-xs rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2 disabled:bg-gray-100 dark:disabled:bg-gray-900 disabled:text-gray-500"
                             />
                           </div>
 
-                          <div className="sm:col-span-2 text-right">
+                          <div className={isLocked ? 'sm:col-span-3 text-right' : 'sm:col-span-2 text-right'}>
                             <span className="block text-[10px] font-bold text-gray-400 uppercase mb-1">
                               Net Total
                             </span>
@@ -955,14 +989,16 @@ export default function QuotationBuilderModal({
                             </span>
                           </div>
 
-                          <div className="sm:col-span-1 flex justify-end">
-                            <button
-                              onClick={() => handleRemoveItem(idx)}
-                              className="p-1.5 text-gray-400 hover:text-red-600 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
+                          {!isLocked && (
+                            <div className="sm:col-span-1 flex justify-end">
+                              <button
+                                onClick={() => handleRemoveItem(idx)}
+                                className="p-1.5 text-gray-400 hover:text-red-600 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          )}
                         </div>
 
                         {/* What the rate card decided about this line, or why it
@@ -990,15 +1026,17 @@ export default function QuotationBuilderModal({
                         )}
                       </div>
                     ))}
-                  </div>
+                  </fieldset>
 
-                  <button
-                    onClick={() => handleAddItem('MATERIAL')}
-                    className="inline-flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    + Add Custom Line Item
-                  </button>
+                  {!isLocked && (
+                    <button
+                      onClick={() => handleAddItem('MATERIAL')}
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      + Add Custom Line Item
+                    </button>
+                  )}
                 </div>
               )}
 
@@ -1053,8 +1091,9 @@ export default function QuotationBuilderModal({
                         <input
                           type="number"
                           value={inspectionFeeAdjusted}
+                          disabled={isLocked}
                           onChange={(e) => setInspectionFeeAdjusted(parseFloat(e.target.value) || 0)}
-                          className="w-24 text-xs font-semibold rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-1.5 text-right"
+                          className="w-24 text-xs font-semibold rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-1.5 text-right disabled:bg-gray-100 dark:disabled:bg-gray-900 disabled:text-gray-500"
                         />
                       </div>
 
@@ -1117,14 +1156,16 @@ export default function QuotationBuilderModal({
           </div>
 
           <div className="flex items-center gap-3">
-            <button
-              onClick={handleSaveDraft}
-              disabled={saving || sending}
-              className="inline-flex items-center gap-1.5 text-xs font-semibold px-4 py-2 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 shadow-sm disabled:opacity-50"
-            >
-              <Save className="w-4 h-4 text-gray-500" />
-              {saving ? 'Saving...' : 'Save Draft'}
-            </button>
+            {!isLocked && (
+              <button
+                onClick={handleSaveDraft}
+                disabled={saving || sending}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold px-4 py-2 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 shadow-sm disabled:opacity-50"
+              >
+                <Save className="w-4 h-4 text-gray-500" />
+                {saving ? 'Saving...' : 'Save Draft'}
+              </button>
+            )}
 
             {step < 4 ? (
               <button
@@ -1133,6 +1174,13 @@ export default function QuotationBuilderModal({
               >
                 Next Step
                 <ChevronRight className="w-4 h-4" />
+              </button>
+            ) : isLocked ? (
+              <button
+                onClick={onClose}
+                className="inline-flex items-center gap-1.5 text-xs font-bold px-5 py-2 rounded-xl bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 hover:bg-gray-800 shadow-md shadow-gray-900/20"
+              >
+                Close
               </button>
             ) : (
               <button

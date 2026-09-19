@@ -21,6 +21,9 @@ Design notes:
   - `booking_id` is always the ServiceRequest.request_id (e.g. "HM0001"),
     not the numeric pk, since that is what the receiver looks up first.
 """
+import hashlib
+import hmac
+import json
 import logging
 import threading
 import time
@@ -43,13 +46,25 @@ def _post_webhook(event_type, booking_id, payload, sequence):
         "payload": {"booking_id": booking_id, **payload},
     }
     try:
+        raw_secret = getattr(settings, "WORKFORCE_WEBHOOK_SECRET", "") or ""
+        body_bytes = json.dumps(body, separators=(",", ":")).encode("utf-8")
+        
+        signature = ""
+        if raw_secret:
+            signature = hmac.new(raw_secret.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-Workforce-Webhook-Secret": raw_secret,
+        }
+        if signature:
+            headers["X-Workforce-Signature"] = signature
+            headers["X-Signature"] = signature
+
         response = requests.post(
             url,
-            json=body,
-            headers={
-                "Content-Type": "application/json",
-                "X-Workforce-Webhook-Secret": settings.WORKFORCE_WEBHOOK_SECRET,
-            },
+            data=body_bytes,
+            headers=headers,
             timeout=_WEBHOOK_TIMEOUT_SECONDS,
         )
         if response.status_code >= 400:

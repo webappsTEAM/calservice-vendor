@@ -21,6 +21,7 @@ import {
   Loader2,
   Send,
   Eye,
+  X,
 } from 'lucide-react';
 import { AppShell } from '../../../components/common/AppShell.jsx';
 import {

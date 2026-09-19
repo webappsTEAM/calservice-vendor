@@ -141,6 +141,11 @@ class WorkforceEmployeeProfileSerializer(serializers.ModelSerializer):
         ob = (obj.bank_details or {}).get("onboarding", {})
         docs_dict = dict(ob.get("documents", {}))
 
+        if hasattr(obj, "_cached_docs_dict"):
+            for cat, val in obj._cached_docs_dict.items():
+                docs_dict[cat] = val
+            return docs_dict
+
         # Include relational WorkforceEmployeeDocument models if present
         try:
             from workforce_api.models import WorkforceEmployeeDocument

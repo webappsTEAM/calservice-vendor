@@ -1157,11 +1157,40 @@ class WorkforceAdminApplicationsListView(APIView):
         status_filter = request.query_params.get("status", "").strip().lower()
         company = resolve_actor_company(request)
         if is_platform_superadmin(request.user):
-            employees = Employee.objects.select_related("user", "company").order_by("-id")
+            employees = list(Employee.objects.select_related("user", "company").order_by("-id"))
         elif company:
-            employees = Employee.objects.filter(company=company).select_related("user", "company").order_by("-id")
+            employees = list(Employee.objects.filter(company=company).select_related("user", "company").order_by("-id"))
         else:
             return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+
+        emp_ids = [e.id for e in employees]
+        if emp_ids:
+            from workforce_api.models import WorkforceEmployeeDocument, VendorTechnicianRelationship
+            docs = list(WorkforceEmployeeDocument.objects.filter(employee_id__in=emp_ids).select_related("requirement"))
+            docs_map = {}
+            for ed in docs:
+                cat = ed.requirement.category or ed.requirement.title.lower().replace(" ", "_")
+                docs_map.setdefault(ed.employee_id, {})[cat] = {
+                    "category": cat,
+                    "title": ed.requirement.title or cat.replace("_", " ").title(),
+                    "document_number": ed.document_number or "",
+                    "file_url": ed.file_url or "",
+                    "status": ed.status.lower() if ed.status else "approved",
+                    "issue_date": str(ed.issue_date) if ed.issue_date else None,
+                    "expiry_date": str(ed.expiry_date) if ed.expiry_date else None,
+                    "uploaded_at": ed.created_at.isoformat() if ed.created_at else None,
+                    "rejection_reason": ed.rejection_reason or "",
+                }
+
+            rels = list(VendorTechnicianRelationship.objects.filter(
+                technician_id__in=emp_ids,
+                status__in=[VendorTechnicianRelationship.Status.ACTIVE, VendorTechnicianRelationship.Status.RESIGNATION_REQUESTED]
+            ).select_related("vendor"))
+            rel_map = {r.technician_id: r for r in rels}
+
+            for emp in employees:
+                emp._cached_docs_dict = docs_map.get(emp.id, {})
+                emp._cached_active_vendor_rel = rel_map.get(emp.id, None)
 
         results = []
         for emp in employees:
@@ -2168,7 +2197,6 @@ class WorkforceJobListView(APIView):
         company = emp.company if emp else getattr(user, "company", None)
 
         if is_admin_role(user):
-            context = {"request": request}
             if user.is_superuser:
                 jobs_qs = ServiceRequest.objects.all()
             elif company:
@@ -2192,7 +2220,82 @@ class WorkforceJobListView(APIView):
             elif status_filter == "active":
                 jobs_qs = jobs_qs.exclude(status__in=["completed", "cancelled"])
 
-            jobs = list(jobs_qs.select_related("customer", "assigned_employee", "assigned_employee__user", "company").order_by("-created_at")[:100])
+            from django.db.models import Case, When, Value, IntegerField
+            priority_order = Case(
+                When(status="proof_submitted", then=Value(1)),
+                When(status__in=["in_progress", "arrived", "on_the_way", "accepted"], then=Value(2)),
+                When(status__in=["assigned", "offered", "confirmed", "unassigned", "pending", "requested", "searching", "redispatching"], then=Value(3)),
+                When(status="completed", then=Value(4)),
+                When(status="cancelled", then=Value(5)),
+                default=Value(6),
+                output_field=IntegerField(),
+            )
+
+            jobs = list(
+                jobs_qs.select_related("customer", "assigned_employee", "assigned_employee__user", "company")
+                .annotate(op_priority=priority_order)
+                .order_by("op_priority", "-updated_at", "-created_at")[:200]
+            )
+
+            job_ids = [j.id for j in jobs]
+            payments_map = {}
+            extensions_map = {}
+            active_extensions_map = {}
+            quotes_map = {}
+            psvs_map = {}
+            trip_stops_map = {}
+            active_offers_map = {}
+
+            if job_ids:
+                from workforce_api.models import WorkforceJobOffer, WorkforceWorkExtension, JobPayment, WorkforceQuote, PreServiceVerification
+                from service_requests.models import TripStop
+                from django.db.models import Count
+
+                payments = list(JobPayment.objects.filter(job_id__in=job_ids))
+                payments_map = {p.job_id: p for p in payments}
+
+                exts = list(WorkforceWorkExtension.objects.filter(job_id__in=job_ids).select_related("technician", "technician__user").order_by("-created_at"))
+                for ext in exts:
+                    extensions_map.setdefault(ext.job_id, []).append(ext)
+                    if ext.status in ["REQUESTED", "ADMIN_APPROVED", "CUSTOMER_ACCEPTED", "IN_PROGRESS"] and ext.job_id not in active_extensions_map:
+                        active_extensions_map[ext.job_id] = ext
+
+                quotes = list(
+                    WorkforceQuote.objects.filter(job_id__in=job_ids)
+                    .exclude(status__in=[WorkforceQuote.Status.SUPERSEDED, WorkforceQuote.Status.CANCELLED])
+                    .order_by("job_id", "-quote_version")
+                )
+                for q in quotes:
+                    if q.job_id not in quotes_map:
+                        quotes_map[q.job_id] = q
+
+                psvs = list(PreServiceVerification.objects.filter(job_id__in=job_ids))
+                psvs_map = {p.job_id: p for p in psvs}
+
+                try:
+                    ts_counts = TripStop.objects.filter(booking_id__in=job_ids).values("booking_id").annotate(cnt=Count("id"))
+                    trip_stops_map = {ts["booking_id"]: ts["cnt"] for ts in ts_counts}
+                except Exception:
+                    pass
+
+                offers = list(WorkforceJobOffer.objects.filter(job_id__in=job_ids, status="OFFERED").order_by("-offered_at"))
+                for o in offers:
+                    if o.job_id not in active_offers_map:
+                        active_offers_map[o.job_id] = o
+
+            context = {
+                "request": request,
+                "emp_offers_map": {},
+                "active_offers_map": active_offers_map,
+                "lifecycle_events_map": {},
+                "extensions_map": extensions_map,
+                "active_extensions_map": active_extensions_map,
+                "payments_map": payments_map,
+                "quotes_map": quotes_map,
+                "psvs_map": psvs_map,
+                "trip_stops_map": trip_stops_map,
+                "emp_jobs_map": {},
+            }
         elif emp:
             now = timezone.now()
             from workforce_api.models import WorkforceJobOffer, WorkforceJobLifecycleEvent, WorkforceWorkExtension, JobPayment
@@ -2754,6 +2857,62 @@ class WorkforceJobProofView(APIView):
     permission_classes = [IsApprovedTechnician]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
+    def get(self, request, pk):
+        job = ServiceRequest.objects.filter(pk=pk).first()
+        if not job:
+            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        emp = getattr(request.user, "employee_profile", None)
+        if not is_admin_role(request.user):
+            if not emp or job.assigned_employee != emp:
+                return Response({"error": "Unauthorized: You are not assigned to this job."}, status=status.HTTP_403_FORBIDDEN)
+            if not is_employee_authorized_for_job(emp, job):
+                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+        elif not getattr(request.user, "is_superuser", False):
+            user_company = resolve_actor_company(request)
+            if not user_company:
+                return Response({"error": "Tenant company context required.", "code": "TENANT_REQUIRED"}, status=status.HTTP_403_FORBIDDEN)
+            if not job.company_id or user_company.id != job.company_id:
+                return Response({"error": "Unauthorized: Job belongs to another vendor company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
+
+        proof = PostServiceProof.objects.filter(job=job).first()
+        pmt = JobPayment.objects.filter(job=job).first()
+
+        def _photo_url(field):
+            if not field:
+                return None
+            try:
+                return request.build_absolute_uri(field.url)
+            except Exception:
+                return str(field.url) if hasattr(field, "url") else None
+
+        svc_title = getattr(job, "issue_title", "") or getattr(job, "service_category", "") or "Service Order"
+        cust_name = getattr(job, "customer_name", "") or (getattr(job.customer, "name", "") if job.customer else "") or "Customer"
+
+        return Response({
+            "job_id": job.id,
+            "request_id": job.request_id,
+            "status": job.status,
+            "service_title": svc_title,
+            "customer_name": cust_name,
+            "address": job.address,
+            "assigned_employee": {
+                "id": job.assigned_employee.id,
+                "name": (job.assigned_employee.user.get_full_name() if job.assigned_employee.user else "") or str(job.assigned_employee),
+                "employee_id": getattr(job.assigned_employee, "employee_id", f"EMP-{job.assigned_employee.id}"),
+            } if job.assigned_employee else None,
+            "is_submitted": proof.is_submitted if proof else False,
+            "submitted_at": proof.submitted_at.isoformat() if (proof and proof.submitted_at) else None,
+            "completion_notes": proof.completion_notes if proof else "",
+            "after_presence_photo": _photo_url(proof.after_presence_photo) if proof else None,
+            "after_appliance_photo": _photo_url(proof.after_appliance_photo) if proof else None,
+            "after_work_area_photo": _photo_url(proof.after_work_area_photo) if proof else None,
+            "parts_used": proof.parts_used if proof else [],
+            "payment_status": pmt.payment_status if pmt else (job.payment_status or "PENDING").upper(),
+            "payment_method": pmt.payment_method if pmt else (job.payment_method or "COD").upper(),
+            "total_amount": float(job.total_amount or 0),
+        }, status=status.HTTP_200_OK)
+
     def post(self, request, pk):
         job = ServiceRequest.objects.filter(pk=pk).first()
         if not job:
@@ -2812,9 +2971,24 @@ class WorkforceJobProofView(APIView):
 
         # Step 2: Check payment state machine. If payment is already PAID (e.g. verified ONLINE), close the job.
         pmt = JobPayment.objects.filter(job=job).first()
-        is_paid = pmt and pmt.payment_status == JobPayment.PaymentStatus.PAID
+        is_online_paid = (str(job.payment_status).lower() == "paid") or (str(job.payment_method).upper() in ["ONLINE", "PREPAID"] and str(job.payment_status).lower() == "paid")
+        is_paid = (pmt and pmt.payment_status == JobPayment.PaymentStatus.PAID) or is_online_paid
         
         if is_paid:
+            if not pmt:
+                JobPayment.objects.create(
+                    job=job,
+                    company=job.company,
+                    total_amount=job.total_amount or 0,
+                    amount_paid=job.total_amount or 0,
+                    payment_status=JobPayment.PaymentStatus.PAID,
+                    payment_method=JobPayment.PaymentMethod.ONLINE if str(job.payment_method).upper() in ["ONLINE", "PREPAID"] else JobPayment.PaymentMethod.CASH,
+                )
+            elif pmt.payment_status != JobPayment.PaymentStatus.PAID and is_online_paid:
+                pmt.payment_status = JobPayment.PaymentStatus.PAID
+                pmt.amount_paid = job.total_amount or 0
+                pmt.save(update_fields=["payment_status", "amount_paid"])
+
             try:
                 apply_transition(job, "completed", actor=request.user)
                 msg = "After-service proof submitted and payment verified! Job is COMPLETED."
@@ -2827,7 +3001,7 @@ class WorkforceJobProofView(APIView):
             "message": msg,
             "job_id": job.id,
             "status": job.status,
-            "payment_status": pmt.payment_status if pmt else "PENDING",
+            "payment_status": pmt.payment_status if pmt else (job.payment_status or "PENDING"),
             "is_submitted": proof.is_submitted,
         }, status=status.HTTP_200_OK)
 

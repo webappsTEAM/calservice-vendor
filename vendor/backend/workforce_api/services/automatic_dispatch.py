@@ -203,6 +203,21 @@ EXPLICIT_SERVICE_ALIASES = {
     "goods_transport": {"goods_transport", "goods & transport", "goods and transport", "goods transport", "truck", "two wheeler", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation", "goods_transport_truck", "goods_transport_two_wheeler"},
     "goods_transport_truck": {"goods_transport_truck", "truck", "mini truck", "goods & transport", "goods and transport", "goods transport", "logistics", "packer & mover", "packers & movers"},
     "goods_transport_two_wheeler": {"goods_transport_two_wheeler", "two wheeler", "bike", "scooter", "goods & transport", "goods and transport", "goods transport", "logistics"},
+    "painting": {"painting", "paintings", "painter", "interior painting", "exterior painting", "waterproofing", "wood & metal", "texture decor", "wall painting", "house painting", "epoxy flooring", "industrial epoxy flooring", "whitewash", "distemper", "emulsion", "primer"},
+    "paintings": {"painting", "paintings", "painter", "interior painting", "exterior painting", "waterproofing", "wood & metal", "texture decor", "wall painting", "house painting", "epoxy flooring", "industrial epoxy flooring", "whitewash", "distemper", "emulsion", "primer"},
+    "interior painting": {"painting", "paintings", "painter", "interior painting", "wall painting", "whitewash", "emulsion"},
+    "exterior painting": {"painting", "paintings", "painter", "exterior painting", "weatherproof", "emulsion"},
+    "waterproofing": {"painting", "paintings", "waterproofing", "dampness treatment", "tar sheet", "terrace waterproofing"},
+    "wood & metal": {"painting", "paintings", "wood & metal", "wood and metal", "enamel painting", "pu coating"},
+    "texture decor": {"painting", "paintings", "texture decor", "texture painting", "stencil design", "royal play"},
+    "mason": {"mason", "masonry", "tile fixing", "bathroom tile fixing", "minor masonry", "small construction work", "brick & block work", "plastering & wall repair", "wall & partition construction", "wall breaking & demolition", "civil work", "flooring", "tiling", "civil"},
+    "masonry": {"mason", "masonry", "tile fixing", "bathroom tile fixing", "minor masonry", "small construction work", "brick & block work", "plastering & wall repair", "wall & partition construction", "wall breaking & demolition", "civil work", "flooring", "tiling", "civil"},
+    "bathroom tile fixing": {"mason", "masonry", "tile fixing", "bathroom tile fixing", "tiling", "flooring", "civil"},
+    "minor masonry": {"mason", "masonry", "minor masonry", "small construction work", "brick & block work", "plastering & wall repair", "civil work", "civil"},
+    "brick & block work": {"mason", "masonry", "brick & block work", "brick work", "block work", "civil work", "civil"},
+    "plastering & wall repair": {"mason", "masonry", "plastering & wall repair", "plastering", "wall repair", "civil work", "civil"},
+    "wall & partition construction": {"mason", "masonry", "wall & partition construction", "partition work", "civil work", "civil"},
+    "wall breaking & demolition": {"mason", "masonry", "wall breaking & demolition", "demolition", "civil work", "civil"},
 }
 
 
@@ -217,6 +232,10 @@ def normalize_service_category(cat: str) -> str:
         return "packers_movers"
     if raw in ("goods_transport", "goods_and_transport"):
         return "goods_transport"
+    if raw in ("paintings", "painting", "interior_painting", "exterior_painting", "waterproofing", "texture_decor", "wood_metal"):
+        return "painting"
+    if raw in ("mason", "masonry", "bathroom_tile_fixing", "minor_masonry", "brick_block_work", "plastering_wall_repair", "wall_partition_construction", "wall_breaking_demolition"):
+        return "mason"
     return raw
 
 

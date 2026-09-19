@@ -38,6 +38,7 @@ import { LoadingState } from '../../components/enterprise/LoadingState.jsx';
 import { LocationPickerMap } from '../../components/common/LocationPickerMap.jsx';
 import { loadMapsApi } from '../../utils/loadGoogleMaps.js';
 import { useReverseGeocode } from '../../hooks/useReverseGeocode.js';
+import { JobProofModal } from '../../components/enterprise/JobProofModal.jsx';
 import {
   Send,
   Navigation,
@@ -66,6 +67,7 @@ import {
   Mail,
   User,
   XCircle,
+  Camera,
 } from 'lucide-react';
 
 // ─── Delete location helper ───────────────────────────────────────────────────
@@ -435,6 +437,7 @@ export function AdminOperationsPage() {
   const [timelineJob, setTimelineJob] = useState(null);
   const [timelineLoading, setTimelineLoading] = useState(false);
   const [timelineData, setTimelineData] = useState(null);
+  const [proofModalJob, setProofModalJob] = useState(null);
 
   const loadData = async () => {
     try {
@@ -812,7 +815,18 @@ export function AdminOperationsPage() {
                       </span>
                     </div>
                     {selectedJob && (
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {selectedJob.status === 'proof_submitted' && (
+                          <button
+                            type="button"
+                            onClick={() => setProofModalJob(selectedJob)}
+                            className="px-3.5 py-1.5 min-h-[34px] bg-violet-600 hover:bg-violet-700 active:bg-violet-800 text-white font-bold rounded-lg text-xs inline-flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
+                            title="Review uploaded photos and complete work order"
+                          >
+                            <Camera className="w-3.5 h-3.5" />
+                            <span>Review Proof & Complete</span>
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => handleOpenTimeline(selectedJob)}
@@ -1534,6 +1548,19 @@ export function AdminOperationsPage() {
           </div>
         </div>
       )}
+
+      {/* Operational Service Proof Review Modal */}
+      <JobProofModal
+        job={proofModalJob}
+        isOpen={Boolean(proofModalJob)}
+        onClose={() => setProofModalJob(null)}
+        onSuccess={() => {
+          loadData();
+          if (selectedJob && proofModalJob && selectedJob.id === proofModalJob.id) {
+            setSelectedJob(prev => prev ? { ...prev, status: 'completed' } : null);
+          }
+        }}
+      />
     </AppShell>
   );
 }

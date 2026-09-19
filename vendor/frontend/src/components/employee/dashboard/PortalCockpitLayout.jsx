@@ -20,8 +20,11 @@ import {
   Briefcase,
   Wrench,
   Banknote,
+  Calculator,
+  ArrowRight,
   X,
 } from 'lucide-react';
+import { apiGetQuotes } from '../../../api/workforceService.js';
 import { TechnicianNavigationView } from '../navigation/TechnicianNavigationView.jsx';
 
 /**
@@ -115,6 +118,7 @@ export function PortalCockpitLayout({
   const [shiftElapsedSeconds, setShiftElapsedSeconds] = useState(0);
   const [showHoldPanel, setShowHoldPanel] = useState(false);
   const [holdReason, setHoldReason] = useState('');
+  const [activeQuote, setActiveQuote] = useState(null);
 
   const isClockedIn = Boolean(timeTracking?.is_clocked_in);
   const isBreak = timeTracking?.shift_status === 'on_break';
@@ -197,6 +201,37 @@ export function PortalCockpitLayout({
     const interval = setInterval(updateElapsed, 1000);
     return () => clearInterval(interval);
   }, [isClockedIn, timeTracking?.clock_in_time]);
+
+  // Load latest active quote for this job if applicable
+  useEffect(() => {
+    if (!job?.id) {
+      setActiveQuote(null);
+      return;
+    }
+    let isMounted = true;
+    apiGetQuotes({ job_id: job.id })
+      .then((quotes) => {
+        if (!isMounted) return;
+        if (Array.isArray(quotes) && quotes.length > 0) {
+          // Dynamically prioritize CUSTOMER_ACCEPTED / CONVERTED quote, then latest by ID / version
+          const sorted = [...quotes].sort((a, b) => {
+            const aAccepted = (a.status === 'CUSTOMER_ACCEPTED' || a.status === 'CONVERTED') ? 1 : 0;
+            const bAccepted = (b.status === 'CUSTOMER_ACCEPTED' || b.status === 'CONVERTED') ? 1 : 0;
+            if (bAccepted !== aAccepted) return bAccepted - aAccepted;
+            return (b.id || 0) - (a.id || 0);
+          });
+          setActiveQuote(sorted[0]);
+        } else {
+          setActiveQuote(null);
+        }
+      })
+      .catch(() => {
+        if (isMounted) setActiveQuote(null);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [job?.id]);
 
   const formatElapsed = (totalSecs) => {
     const hours = Math.floor(totalSecs / 3600);
@@ -537,6 +572,64 @@ export function PortalCockpitLayout({
                   </div>
                 )}
 
+                {/* ── COMMERCIAL ESTIMATE & QUOTATION STATUS SUMMARY CARD ── */}
+                {activeQuote && (
+                  <div className={`p-3.5 rounded-xl border space-y-2.5 transition-all shadow-2xs ${
+                    activeQuote.status === 'CUSTOMER_ACCEPTED' || activeQuote.status === 'CONVERTED'
+                      ? 'bg-emerald-50/90 border-emerald-300'
+                      : activeQuote.status === 'CHANGES_REQUESTED' || activeQuote.customer_decision === 'CHANGES_REQUESTED'
+                      ? 'bg-amber-50/90 border-amber-300'
+                      : 'bg-blue-50/90 border-blue-200'
+                  }`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Calculator className="w-4 h-4 text-slate-700" />
+                        <span className="text-xs font-bold text-slate-900 font-mono">
+                          {activeQuote.quote_number} (v{activeQuote.quote_version})
+                        </span>
+                      </div>
+                      <span className={`text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase tracking-wider ${
+                        activeQuote.status === 'CUSTOMER_ACCEPTED' || activeQuote.status === 'CONVERTED'
+                          ? 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                          : activeQuote.status === 'CHANGES_REQUESTED' || activeQuote.customer_decision === 'CHANGES_REQUESTED'
+                          ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                          : 'bg-blue-100 text-blue-900 border border-blue-300'
+                      }`}>
+                        {activeQuote.status === 'CUSTOMER_ACCEPTED'
+                          ? 'Customer Accepted ✓'
+                          : activeQuote.status === 'CHANGES_REQUESTED'
+                          ? 'Re-Quote Requested'
+                          : activeQuote.status.replace(/_/g, ' ')}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-200/70">
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-slate-500 block">
+                          {activeQuote.status === 'CUSTOMER_ACCEPTED' ? 'Approved Total' : 'Estimated Total'}
+                        </span>
+                        <span className="text-sm font-black text-slate-900 font-mono">
+                          ₹{Number(activeQuote.net_payable || activeQuote.total_amount || 0).toLocaleString('en-IN')}
+                        </span>
+                      </div>
+                      <Link
+                        to={`/workforce/employee/estimates?job_id=${job?.id}`}
+                        className="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 font-bold text-xs rounded-lg shadow-2xs transition-all flex items-center gap-1 cursor-pointer"
+                      >
+                        <span>View Breakdown</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </Link>
+                    </div>
+
+                    {activeQuote.customer_notes && (
+                      <div className="text-[11px] text-amber-950 bg-amber-100/80 p-2 rounded-lg border border-amber-200">
+                        <span className="font-bold text-amber-900">Customer Note: </span>
+                        <span>{activeQuote.customer_notes}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* ── CASH PAYMENT CONFIRMATION SECTION (When proof is submitted & cash is pending) ── */}
                 {isCashPending && (
                   <div className="pt-2 space-y-3">
@@ -796,15 +889,25 @@ export function PortalCockpitLayout({
                   </div>
                 )
               ) : isInProgress ? (
-                <button
-                  type="button"
-                  onClick={() => onOpenProofModal && onOpenProofModal(activeJob)}
-                  disabled={actionLoading}
-                  className="w-full py-3.5 rounded-xl font-black text-xs transition-all flex items-center justify-center gap-2 bg-[#2d6a4f] hover:bg-[#1b4332] active:bg-[#153427] text-white shadow-md cursor-pointer"
-                >
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>Complete Service &amp; Submit Proof</span>
-                </button>
+                <div className="space-y-2">
+                  <Link
+                    to={`/workforce/employee/estimates?job_id=${activeJob.id}`}
+                    className="w-full py-3.5 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white shadow-md cursor-pointer"
+                  >
+                    <Calculator className="w-4 h-4" />
+                    <span>Draft &amp; Send Customer Quotation</span>
+                  </Link>
+
+                  <button
+                    type="button"
+                    onClick={() => onOpenProofModal && onOpenProofModal(activeJob)}
+                    disabled={actionLoading}
+                    className="w-full py-3 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-2 bg-[#2d6a4f] hover:bg-[#1b4332] active:bg-[#153427] text-white shadow-md cursor-pointer"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Complete Service &amp; Submit Proof</span>
+                  </button>
+                </div>
               ) : (
                 <button
                   type="button"

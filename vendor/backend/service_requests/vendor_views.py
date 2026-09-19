@@ -144,8 +144,9 @@ def _serialize_estimation(sr, est=None, full_detail=False):
         }
 
     # Technician details
+    tech_id = getattr(sr, "assigned_employee_id", None)
     tech_data = {
-        "id": sr.technician_id,
+        "id": tech_id,
         "name": sr.technician_name or (sr.assigned_employee.user.get_full_name() if sr.assigned_employee and sr.assigned_employee.user else ""),
         "phone": sr.technician_phone or (sr.assigned_employee.phone if sr.assigned_employee else ""),
         "location_name": sr.technician_location_name,
@@ -357,10 +358,10 @@ def _sync_workforce_quote(sr, quote, computed_items=None):
         wf_status = status_map.get(quote.status, WorkforceQuote.Status.DRAFT)
 
         tech_emp = sr.assigned_employee
-        if not tech_emp and sr.technician_id:
+        if not tech_emp and getattr(sr, "assigned_employee_id", None):
             try:
                 from employees.models import Employee
-                tech_emp = Employee.objects.filter(user_id=sr.technician_id).first()
+                tech_emp = Employee.objects.filter(pk=sr.assigned_employee_id).first()
             except Exception:
                 tech_emp = None
 
@@ -640,13 +641,12 @@ class VendorEstimationAssignTechnicianView(APIView):
         sr = ServiceRequest.objects.select_for_update().get(pk=sr.pk)
         sr.technician_name = tech_name
         sr.technician_phone = tech_phone or ""
-        sr.technician_id = user_tech_id
         if emp_obj:
             sr.assigned_employee = emp_obj
             if emp_obj.company and not sr.company:
                 sr.company = emp_obj.company
         sr.status = "technician_assigned"
-        sr.save(update_fields=["technician_name", "technician_phone", "technician_id", "assigned_employee", "company", "status", "updated_at"])
+        sr.save(update_fields=["technician_name", "technician_phone", "assigned_employee", "company", "status", "updated_at"])
 
         # Maintain EmployeeJob mapping for technician queue visibility
         if emp_obj:
@@ -786,8 +786,11 @@ class VendorEstimationVerifyOtpView(APIView):
         sr.otp_verified = True
         sr.otp_verified_at = now
         sr.status = "inspection_in_progress"
-        sr.started_at = sr.started_at or now
-        sr.save(update_fields=["otp_verified", "otp_verified_at", "status", "started_at", "updated_at"])
+        _sr_update_fields = ["otp_verified", "otp_verified_at", "status", "updated_at"]
+        if hasattr(sr, "started_at"):
+            sr.started_at = sr.started_at or now
+            _sr_update_fields.append("started_at")
+        sr.save(update_fields=_sr_update_fields)
 
         if est:
             est.status = "INSPECTION_IN_PROGRESS"
@@ -1047,7 +1050,7 @@ class VendorEstimationQuotationView(APIView):
                 quote_ref=quote_ref,
                 status="DRAFT",
                 vendor_id=sr.vendor_id or str(request.user.id),
-                technician_id=str(sr.technician_id or ""),
+                technician_id=str(sr.assigned_employee_id or ""),
                 subtotal=subtotal,
                 tax_amount=total_tax,
                 discount_amount=discount_amount,
@@ -1299,9 +1302,9 @@ def activate_service_job_from_quotation(sr, est, quote, now=None, target_date=No
 
     # Resolve technician: either existing assigned_employee or inspection technician
     tech_emp = sr.assigned_employee
-    if not tech_emp and sr.technician_id:
+    if not tech_emp and getattr(sr, "assigned_employee_id", None):
         try:
-            tech_emp = Employee.objects.filter(user_id=sr.technician_id).first()
+            tech_emp = Employee.objects.filter(pk=sr.assigned_employee_id).first()
         except Exception:
             tech_emp = None
 
@@ -1346,7 +1349,6 @@ def activate_service_job_from_quotation(sr, est, quote, now=None, target_date=No
             sr.assigned_employee = tech_emp
             sr.technician_name = sr.technician_name or (tech_emp.user.get_full_name() if tech_emp.user else tech_emp.employee_id)
             sr.technician_phone = sr.technician_phone or tech_emp.phone
-            sr.technician_id = tech_emp.user_id
             try:
                 from service_requests.models import EmployeeJob
                 EmployeeJob.objects.update_or_create(
@@ -1363,7 +1365,6 @@ def activate_service_job_from_quotation(sr, est, quote, now=None, target_date=No
             sr.assigned_employee = tech_emp
             sr.technician_name = sr.technician_name or (tech_emp.user.get_full_name() if tech_emp.user else tech_emp.employee_id)
             sr.technician_phone = sr.technician_phone or tech_emp.phone
-            sr.technician_id = tech_emp.user_id
         message = f"Quotation approved! Converted to service job #{sr.request_id} scheduled for {target_date.strftime('%d %b %Y')}."
 
     # 5. Payment Isolation: Waive estimation fee; only service job payment collected upon execution
@@ -1546,8 +1547,8 @@ class VendorEstimationCustomerDecideView(APIView):
                     status="paid",
                     method=method,
                     gateway="razorpay" if method == "ONLINE" else "cash",
-                    razorpay_payment_id=txn_ref,
-                    razorpay_order_id=f"order_est_{sr.id}",
+                    paytm_txn_id=txn_ref,
+                    paytm_order_id=f"order_est_{sr.id}",
                 )
             except Exception as pay_err:
                 logger.warning(f"Could not create ServiceRequestPayment: {pay_err}")
@@ -1643,7 +1644,7 @@ class VendorEstimationInvoiceView(APIView):
             payment_status = "PENDING_COMPLETION" if sr.payment_status != "collected" else "PAID"
             payment_ref = sr.transaction_id or ""
             payment_method = sr.payment_method or "COD"
-            paid_at = (sr.completed_at or sr.updated_at).isoformat() if sr.payment_status == "collected" else None
+            paid_at = (getattr(sr, "completed_at", None) or sr.updated_at).isoformat() if sr.payment_status == "collected" else None
         else:
             amount = float(sr.total_amount or _consultation_fee_for(sr)[0])
             line_items.append({
@@ -1662,11 +1663,11 @@ class VendorEstimationInvoiceView(APIView):
             payment_status = "PAID" if sr.payment_status == "collected" else "PENDING"
             payment_ref = sr.transaction_id or ""
             payment_method = sr.payment_method or "CASH"
-            paid_at = (sr.completed_at or sr.updated_at).isoformat() if sr.payment_status == "collected" else None
+            paid_at = (getattr(sr, "completed_at", None) or sr.updated_at).isoformat() if sr.payment_status == "collected" else None
 
         invoice_data = {
             "invoice_number": inv_num,
-            "invoice_date": (sr.completed_at or sr.updated_at or timezone.now()).strftime("%Y-%m-%d"),
+            "invoice_date": (getattr(sr, "completed_at", None) or sr.updated_at or timezone.now()).strftime("%Y-%m-%d"),
             "status": payment_status,
             "company": {
                 "name": sr.vendor_name or "CalServices Partner Network",

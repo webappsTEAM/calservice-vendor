@@ -315,6 +315,10 @@ export async function apiGetPreServiceStatus(jobId) {
   return await apiRequest(`/workforce/jobs/${jobId}/pre-service-status/`);
 }
 
+export async function apiGetJobProof(jobId) {
+  return await apiRequest(`/workforce/jobs/${jobId}/proof/`);
+}
+
 export async function apiUploadJobProof(jobId, formData) {
   return await apiRequest(`/workforce/jobs/${jobId}/proof/`, {
     method: 'POST',

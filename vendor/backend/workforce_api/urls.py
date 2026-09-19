@@ -448,6 +448,10 @@ urlpatterns = [
     path("quotes/<int:pk>/inspection/", quote_views.QuoteInspectionView.as_view(), name="workforce-quote-inspection"),
     path("quotes/<int:pk>/send/", quote_views.QuoteSendView.as_view(), name="workforce-quote-send"),
     path("quotes/<int:pk>/revise/", quote_views.QuoteReviseView.as_view(), name="workforce-quote-revise"),
+    path("customer/bookings/<str:booking_id>/quote/", quote_views.CustomerJobQuoteView.as_view(), name="workforce-customer-booking-quote"),
+    path("customer/jobs/<str:booking_id>/quote/", quote_views.CustomerJobQuoteView.as_view(), name="workforce-customer-job-quote"),
+    path("jobs/<str:booking_id>/quote/", quote_views.CustomerJobQuoteView.as_view(), name="workforce-job-quote-fallback"),
+
 
     # --- estimation workflow: customer decision -> SEVO admin -> invoice ---
     # NB: the literal "pending-approval" route must precede "<int:pk>" style

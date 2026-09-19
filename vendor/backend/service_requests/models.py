@@ -78,8 +78,14 @@ def is_quotation_service(service_id=None, slug=None, name=None, category=None):
         for q_name in QUOTATION_SERVICE_IDS.values():
             if clean_name == q_name.lower():
                 return True
-    if category and str(category).lower().strip() in ["painting", "mason", "masonry", "painting & waterproofing", "masonry & civil"]:
-        return True
+        if any(keyword in clean_name for keyword in ["painting", "paint", "waterproofing", "masonry", "mason", "civil", "epoxy", "consultation", "plaster", "demolition"]):
+            return True
+    if category:
+        clean_cat = str(category).lower().strip()
+        if clean_cat in ["painting", "paintings", "mason", "masonry", "painting & waterproofing", "masonry & civil"]:
+            return True
+        if any(keyword in clean_cat for keyword in ["paint", "mason", "civil", "waterproof", "epoxy"]):
+            return True
     return False
 
 
@@ -1045,9 +1051,9 @@ class ServiceRequestPayment(models.Model):
     """
     customer_id_snapshot = models.CharField(max_length=50, blank=True, default="")
     service_request_id_snapshot = models.CharField(max_length=50, blank=True, default="")
-    razorpay_order_id = models.CharField(max_length=100, blank=True, default="")
-    razorpay_payment_id = models.CharField(max_length=100, blank=True, default="")
-    razorpay_signature = models.CharField(max_length=255, blank=True, default="")
+    paytm_order_id = models.CharField(max_length=100, blank=True, default="")
+    paytm_txn_id = models.CharField(max_length=100, blank=True, default="")
+    paytm_checksum = models.CharField(max_length=255, blank=True, default="")
     amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
     currency = models.CharField(max_length=10, default="INR")
     status = models.CharField(max_length=30, default="pending")

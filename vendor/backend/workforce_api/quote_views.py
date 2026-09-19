@@ -27,7 +27,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
 from django.db.models import Q
-from rest_framework import status
+from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -51,14 +51,19 @@ EDITABLE_STATUSES = {
 # The tabs the Estimates screen offers, mapped to the statuses behind them.
 TAB_FILTERS = {
     "all": None,
+    "draft": [WorkforceQuote.Status.DRAFT],
     "drafts": [WorkforceQuote.Status.DRAFT],
     "pending": [WorkforceQuote.Status.PENDING_REVIEW],
+    "pending_review": [WorkforceQuote.Status.PENDING_REVIEW],
     "sent": [WorkforceQuote.Status.SENT_TO_CUSTOMER],
+    "sent_to_customer": [WorkforceQuote.Status.SENT_TO_CUSTOMER],
     "accepted": [WorkforceQuote.Status.CUSTOMER_ACCEPTED],
+    "customer_accepted": [WorkforceQuote.Status.CUSTOMER_ACCEPTED],
     "awaiting_approval": [WorkforceQuote.Status.PENDING_ADMIN_APPROVAL],
     "approved": [WorkforceQuote.Status.ADMIN_APPROVED],
     "rejected": [WorkforceQuote.Status.ADMIN_REJECTED],
     "changes": [WorkforceQuote.Status.CHANGES_REQUESTED],
+    "changes_requested": [WorkforceQuote.Status.CHANGES_REQUESTED],
     "declined": [WorkforceQuote.Status.DECLINED],
     "expired": [WorkforceQuote.Status.EXPIRED],
     "converted": [WorkforceQuote.Status.CONVERTED, WorkforceQuote.Status.CONVERSION_PENDING],
@@ -234,8 +239,17 @@ class QuoteListCreateView(APIView):
         qs = _visible_quotes(request)
 
         tab = (request.query_params.get("tab") or "").strip().lower()
-        if tab and tab in TAB_FILTERS and TAB_FILTERS[tab]:
+        if tab in ("changes", "changes_requested"):
+            qs = qs.filter(
+                Q(status=WorkforceQuote.Status.CHANGES_REQUESTED)
+                | Q(customer_decision="CHANGES_REQUESTED")
+                | Q(customer_notes__isnull=False, quote_version__gt=1)
+            ).exclude(status=WorkforceQuote.Status.SUPERSEDED)
+        elif tab and tab in TAB_FILTERS and TAB_FILTERS[tab]:
             qs = qs.filter(status__in=TAB_FILTERS[tab])
+        elif not tab or tab == "all":
+            # For the general 'all' list, hide superseded prior versions by default so technicians see active quotes
+            qs = qs.exclude(status=WorkforceQuote.Status.SUPERSEDED)
 
         status_param = (request.query_params.get("status") or "").strip().upper()
         if status_param:
@@ -659,3 +673,45 @@ class QuoteReviseView(APIView):
             return Response({"error": "Could not create a revision of this quotation."},
                             status=status.HTTP_409_CONFLICT)
         return Response(_serialize(revised, full=True), status=status.HTTP_201_CREATED)
+
+
+class CustomerJobQuoteView(APIView):
+    """
+    Public / Customer / Technician endpoint to fetch the active quote for a given job or booking ID.
+    Accepts numeric job pk or booking request_id (e.g. MS6052, 6055, PA5847).
+    Returns 200 OK with quote data if present, or clean empty state if no quote has been issued yet.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, booking_id):
+        booking_str = str(booking_id or "").strip()
+        if not booking_str:
+            return Response({"has_quote": False, "quote": None}, status=status.HTTP_200_OK)
+
+        q_filter = Q(job__request_id__iexact=booking_str)
+        try:
+            numeric_id = int(booking_str)
+            q_filter |= Q(job_id=numeric_id) | Q(id=numeric_id)
+        except (ValueError, TypeError):
+            pass
+
+        quotes = WorkforceQuote.objects.filter(q_filter).order_by("-quote_version", "-id")
+        quote = quotes.first()
+
+        if not quote:
+            return Response({
+                "has_quote": False,
+                "quote": None,
+                "message": f"No quotation found for booking '{booking_str}'."
+            }, status=status.HTTP_200_OK)
+
+        return Response({
+            "has_quote": True,
+            "quote": _serialize(quote, full=True),
+            "status": quote.status,
+            "quote_number": quote.quote_number,
+            "quote_version": quote.quote_version,
+            "total_amount": str(quote.total_amount or 0),
+            "net_payable": str(quote.net_payable or quote.total_amount or 0),
+        }, status=status.HTTP_200_OK)
+

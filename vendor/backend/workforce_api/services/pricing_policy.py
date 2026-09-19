@@ -33,6 +33,34 @@ DEFAULT_POLICY = {
 }
 
 
+CATEGORY_POLICY_ALIASES = {
+    "paintings": "painting",
+    "interior_painting": "painting",
+    "interior-painting": "painting",
+    "exterior_painting": "painting",
+    "exterior-painting": "painting",
+    "waterproofing": "painting",
+    "texture_decor": "painting",
+    "texture-decor": "painting",
+    "wood_metal": "painting",
+    "wood-metal": "painting",
+    "epoxy_flooring": "painting",
+    "masonry": "mason",
+    "bathroom_tile_fixing": "mason",
+    "bathroom-tile-fixing": "mason",
+    "minor_masonry": "mason",
+    "minor-masonry": "mason",
+    "brick_block_work": "mason",
+    "brick-block-work": "mason",
+    "plastering_wall_repair": "mason",
+    "plastering-wall-repair": "mason",
+    "wall_partition_construction": "mason",
+    "wall-partition-construction": "mason",
+    "wall_breaking_demolition": "mason",
+    "wall-breaking-demolition": "mason",
+}
+
+
 def _normalise(category):
     return str(category or "").strip().lower()
 
@@ -42,11 +70,28 @@ def policy_for(category):
     key = _normalise(category)
     if not key:
         return None
-    return (
+
+    # 1. Direct match
+    direct = (
         WorkforceServicePricingPolicy.objects
         .filter(service_category__iexact=key, is_active=True)
         .first()
     )
+    if direct:
+        return direct
+
+    # 2. Check alias map
+    alias_key = CATEGORY_POLICY_ALIASES.get(key) or CATEGORY_POLICY_ALIASES.get(key.replace("-", "_")) or CATEGORY_POLICY_ALIASES.get(key.replace(" ", "_"))
+    if alias_key:
+        alias_policy = (
+            WorkforceServicePricingPolicy.objects
+            .filter(service_category__iexact=alias_key, is_active=True)
+            .first()
+        )
+        if alias_policy:
+            return alias_policy
+
+    return None
 
 
 def policy_value(category, field):

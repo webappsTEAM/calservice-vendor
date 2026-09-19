@@ -63,8 +63,8 @@ def _emit(event_type, quote, **extra):
             "customer_id": quote.customer_id,
             "net_payable": str(quote.net_payable or quote.total_amount or 0),
         }
-        payload.update(extra)
-        publish_workforce_event(event_type, payload, company=quote.company)
+        user_obj = getattr(quote.technician, "user", None) if getattr(quote, "technician", None) else None
+        publish_workforce_event(event_type, payload, user=user_obj, company=quote.company)
     except Exception as exc:  # pragma: no cover - notification must never raise
         logger.warning("Failed to emit %s for quote %s: %s", event_type, quote.id, exc)
 
@@ -280,6 +280,25 @@ def send_quote_to_customer(quote_id, actor=None, valid_days=7):
         logger.info("Quote %s (v%s) sent to customer", quote.quote_number, quote.quote_version)
         _emit("QUOTATION_SENT", quote, valid_until=quote.valid_until.isoformat() if quote.valid_until else None)
         _project(quote)
+
+        # Notify customer app webhook receiver
+        try:
+            from workforce_api.services.customer_webhook import notify_customer_app
+            notify_customer_app(
+                "quotation.sent",
+                quote.job,
+                quote_id=str(quote.id),
+                quote_number=quote.quote_number,
+                quote_version=quote.quote_version,
+                total_amount=str(quote.total_amount),
+                net_payable=str(quote.net_payable or quote.total_amount),
+                valid_until=quote.valid_until.isoformat() if quote.valid_until else None,
+                service_category=quote.service_category or "",
+                service_name=quote.service_name or "",
+            )
+        except Exception as webhook_err:
+            logger.info("Could not notify Customer app of sent quote %s: %s", quote.quote_number, webhook_err)
+
         return quote
 
 
@@ -392,6 +411,8 @@ def create_revised_quote_version(quote, notes=""):
             customer=quote.customer,
             title=quote.title,
             description=f"Revision v{new_version_number}: {notes}".strip(),
+            customer_notes=notes or quote.customer_notes,
+            customer_decision="CHANGES_REQUESTED",
             service_category=quote.service_category,
             service_name=quote.service_name,
             estimated_labor_cost=quote.estimated_labor_cost,

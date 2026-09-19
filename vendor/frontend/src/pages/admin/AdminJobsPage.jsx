@@ -8,7 +8,8 @@ import { DataTable } from '../../components/enterprise/DataTable.jsx';
 import { StatusBadge } from '../../components/enterprise/StatusBadge.jsx';
 import { Pagination } from '../../components/enterprise/Pagination.jsx';
 import { CustomerLiveTrackingModal } from '../../components/common/CustomerLiveTrackingModal.jsx';
-import { Briefcase, ArrowRight, User, Send, MapPin, Calendar, Navigation } from 'lucide-react';
+import { JobProofModal } from '../../components/enterprise/JobProofModal.jsx';
+import { Briefcase, ArrowRight, User, Send, MapPin, Calendar, Navigation, Camera } from 'lucide-react';
 
 export function AdminJobsPage() {
   const [jobs, setJobs] = useState([]);
@@ -18,6 +19,7 @@ export function AdminJobsPage() {
   const [pageSize] = useState(12);
   const [isLoading, setIsLoading] = useState(true);
   const [liveTrackingJobId, setLiveTrackingJobId] = useState(null);
+  const [proofModalJob, setProofModalJob] = useState(null);
 
   const loadJobs = async (showLoading = true) => {
     try {
@@ -31,17 +33,35 @@ export function AdminJobsPage() {
   };
 
   useEffect(() => {
-    loadJobs(true);
+    let isMounted = true;
+    let inFlight = false;
 
-    // Active real-time polling: refresh jobs every 5s so newly created customer bookings appear automatically
+    const fetchJobsSafe = async (showLoading = false) => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        if (showLoading && isMounted) setIsLoading(true);
+        const data = await apiGetWorkforceJobs();
+        if (isMounted) setJobs(data || []);
+      } catch (_) {
+      } finally {
+        inFlight = false;
+        if (showLoading && isMounted) setIsLoading(false);
+      }
+    };
+
+    fetchJobsSafe(true);
+
+    // Active real-time polling with in-flight overlap protection
     const interval = setInterval(() => {
-      loadJobs(false);
-    }, 5000);
+      fetchJobsSafe(false);
+    }, 15000);
 
-    const onFocus = () => loadJobs(false);
+    const onFocus = () => fetchJobsSafe(false);
     window.addEventListener('focus', onFocus);
 
     return () => {
+      isMounted = false;
       clearInterval(interval);
       window.removeEventListener('focus', onFocus);
     };
@@ -106,7 +126,15 @@ export function AdminJobsPage() {
     {
       key: 'status',
       header: 'Job Status',
-      render: (val) => <StatusBadge status={val} />,
+      render: (val, row) => (
+        <div
+          onClick={() => (val || '').toLowerCase() === 'proof_submitted' && setProofModalJob(row)}
+          className={(val || '').toLowerCase() === 'proof_submitted' ? 'cursor-pointer' : ''}
+          title={(val || '').toLowerCase() === 'proof_submitted' ? 'Click to Review Proof' : ''}
+        >
+          <StatusBadge status={val} />
+        </div>
+      ),
     },
     {
       key: 'payment_status',
@@ -133,10 +161,24 @@ export function AdminJobsPage() {
       header: 'Action',
       align: 'right',
       render: (_, row) => {
-        const isTrackable = ['assigned', 'accepted', 'on_the_way', 'arrived', 'in_progress', 'completed'].includes((row.status || '').toLowerCase());
-        const isEstimation = row.job_type === 'ESTIMATION' || (row.status || '').includes('quotation') || (row.status || '').includes('inspection');
+        const rawStatus = (row.status || '').toLowerCase();
+        const isTrackable = ['assigned', 'accepted', 'on_the_way', 'arrived', 'in_progress', 'proof_submitted', 'completed'].includes(rawStatus);
+        const isEstimation = row.job_type === 'ESTIMATION' || rawStatus.includes('quotation') || rawStatus.includes('inspection');
+        const isProofSubmitted = rawStatus === 'proof_submitted';
+
         return (
-          <div className="flex items-center justify-end gap-1.5">
+          <div className="flex items-center justify-end gap-1.5 flex-wrap">
+            {isProofSubmitted && (
+              <button
+                type="button"
+                onClick={() => setProofModalJob(row)}
+                className="px-2.5 py-1.5 rounded-lg bg-violet-50 hover:bg-violet-100 active:bg-violet-200 text-violet-950 font-bold text-xs border border-violet-200 transition-all shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
+                title="Review Technician Completion Proof"
+              >
+                <Camera className="w-3.5 h-3.5 text-violet-700" />
+                <span>Review Proof</span>
+              </button>
+            )}
             {isEstimation && (
               <Link
                 to="/workforce/vendor/estimations"
@@ -191,10 +233,11 @@ export function AdminJobsPage() {
               label: 'Status',
               options: [
                 { value: 'ALL', label: 'All Statuses' },
+                { value: 'proof_submitted', label: 'Proof Submitted (Review)' },
+                { value: 'in_progress', label: 'In Progress' },
                 { value: 'assigned', label: 'Assigned / Queued' },
                 { value: 'accepted', label: 'Accepted' },
                 { value: 'on_the_way', label: 'On The Way' },
-                { value: 'in_progress', label: 'In Progress' },
                 { value: 'completed', label: 'Completed' },
               ],
             },
@@ -232,6 +275,14 @@ export function AdminJobsPage() {
           isOpen={Boolean(liveTrackingJobId)}
           onClose={() => setLiveTrackingJobId(null)}
           viewRole="admin"
+        />
+
+        {/* Operational Service Proof Review Modal */}
+        <JobProofModal
+          job={proofModalJob}
+          isOpen={Boolean(proofModalJob)}
+          onClose={() => setProofModalJob(null)}
+          onSuccess={loadJobs}
         />
       </div>
     </AppShell>
