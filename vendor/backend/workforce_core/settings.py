@@ -117,6 +117,7 @@ if IS_TESTING:
     }
 elif USE_POSTGRES:
     _db_options = {
+        "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "10")),
         "keepalives": 1,
         "keepalives_idle": 30,
         "keepalives_interval": 10,

@@ -10347,25 +10347,28 @@ class WorkforceDispatchRadarView(APIView):
             live_offers = getattr(j, "prefetched_live_offers", [])
             live_offer = live_offers[0] if live_offers else None
 
-            # Formulate current active offer info
+            # Formulate current active offer info with unambiguous employee identity
             current_offer_info = None
             if live_offer:
                 rem_seconds = max(0, int((live_offer.expires_at - now).total_seconds()))
-                emp_name = live_offer.employee.user.get_full_name() or live_offer.employee.user.username if live_offer.employee and live_offer.employee.user else f"Technician #{live_offer.employee_id}"
+                raw_emp_name = live_offer.employee.user.get_full_name() or live_offer.employee.user.username if live_offer.employee and live_offer.employee.user else f"Technician #{live_offer.employee_id}"
+                emp_name_formatted = f"{raw_emp_name} · EMP #{live_offer.employee_id}"
                 current_offer_info = {
                     "offer_id": live_offer.id,
                     "employee_id": live_offer.employee_id,
-                    "employee_name": emp_name,
+                    "employee_name": emp_name_formatted,
+                    "raw_employee_name": raw_emp_name,
                     "score": round(float(live_offer.rank_score), 1),
                     "offered_at": live_offer.offered_at.isoformat() if live_offer.offered_at else None,
                     "expires_at": live_offer.expires_at.isoformat() if live_offer.expires_at else None,
                     "remaining_seconds": rem_seconds,
-                    "status": live_offer.status,
+                    "status": "OFFERED",
                 }
 
             assigned_tech_name = None
             if j.assigned_employee and j.assigned_employee.user:
-                assigned_tech_name = j.assigned_employee.user.get_full_name() or j.assigned_employee.user.username
+                raw_assigned_name = j.assigned_employee.user.get_full_name() or j.assigned_employee.user.username
+                assigned_tech_name = f"{raw_assigned_name} · EMP #{j.assigned_employee_id}"
             elif j.technician_name:
                 assigned_tech_name = j.technician_name
 
@@ -10410,12 +10413,46 @@ class WorkforceDispatchRadarView(APIView):
             ).first()
 
             if sel_job:
-                # 1. Offers History
-                offers = WorkforceJobOffer.objects.filter(job=sel_job).select_related("employee__user").order_by("offered_at")
+                # 1. Offers History and Lifecycle Event Queries
+                offers = list(WorkforceJobOffer.objects.filter(job=sel_job).select_related("employee__user").order_by("offered_at"))
+                lifecycle_events = list(WorkforceJobLifecycleEvent.objects.filter(job=sel_job).select_related("employee__user", "actor_user").order_by("created_at"))
+                event_logs = list(WorkforceEventLog.objects.filter(
+                    Q(payload__job_id=sel_job.id) | Q(payload__id=sel_job.id)
+                ).select_related("user").order_by("created_at"))
+
+                # Pre-index decisions from lifecycle events and event logs for accurate timestamps
+                # (NEVER use expires_at for decline!)
+                decline_decision_map = {}  # employee_id -> { "timestamp": dt, "reason": str }
+                accept_decision_map = {}   # employee_id -> dt
+
+                for lc in lifecycle_events:
+                    if lc.event_type == WorkforceJobLifecycleEvent.EventType.EMPLOYEE_JOB_DECLINED:
+                        if lc.employee_id and lc.employee_id not in decline_decision_map:
+                            decline_decision_map[lc.employee_id] = {
+                                "timestamp": lc.created_at,
+                                "reason": lc.reason_text or lc.reason_code or "",
+                            }
+                    elif lc.event_type == WorkforceJobLifecycleEvent.EventType.EMPLOYEE_JOB_ACCEPTED:
+                        if lc.employee_id and lc.employee_id not in accept_decision_map:
+                            accept_decision_map[lc.employee_id] = lc.created_at
+
+                for ev in event_logs:
+                    if ev.event_type == "OFFER_REJECTED" and isinstance(ev.payload, dict):
+                        emp_id = ev.payload.get("employee_id")
+                        if emp_id and emp_id not in decline_decision_map:
+                            decline_decision_map[emp_id] = {
+                                "timestamp": ev.created_at,
+                                "reason": ev.payload.get("reason", ""),
+                            }
+                    elif ev.event_type == "OFFER_ACCEPTED" and isinstance(ev.payload, dict):
+                        emp_id = ev.payload.get("employee_id")
+                        if emp_id and emp_id not in accept_decision_map:
+                            accept_decision_map[emp_id] = ev.created_at
+
                 offers_list = []
-                offer_emp_status_map = {}  # employee_id -> latest status
                 for off in offers:
-                    off_emp_name = off.employee.user.get_full_name() or off.employee.user.username if off.employee and off.employee.user else f"Technician #{off.employee_id}"
+                    raw_off_emp_name = off.employee.user.get_full_name() or off.employee.user.username if off.employee and off.employee.user else f"Technician #{off.employee_id}"
+                    off_emp_name = f"{raw_off_emp_name} · EMP #{off.employee_id}"
 
                     # Normalize offer status
                     is_active_unexpired = (off.status == WorkforceJobOffer.Status.OFFERED and off.expires_at > now)
@@ -10423,45 +10460,105 @@ class WorkforceDispatchRadarView(APIView):
                     if off.status == WorkforceJobOffer.Status.OFFERED and off.expires_at <= now:
                         display_status = "EXPIRED"
 
-                    offer_emp_status_map[off.employee_id] = display_status
+                    decision_dt = None
+                    rejection_reason = off.rejection_reason or ""
+                    if display_status in ["REJECTED", "DECLINED"]:
+                        display_status = "DECLINED"
+                        dec_info = decline_decision_map.get(off.employee_id)
+                        if dec_info:
+                            decision_dt = dec_info["timestamp"]
+                            if not rejection_reason:
+                                rejection_reason = dec_info["reason"]
+                        else:
+                            decision_dt = off.offered_at  # fallback, NEVER expires_at
+                    elif display_status == "ACCEPTED":
+                        decision_dt = accept_decision_map.get(off.employee_id) or off.offered_at
+                    elif display_status == "EXPIRED":
+                        decision_dt = off.expires_at
+
                     rem_sec = max(0, int((off.expires_at - now).total_seconds())) if is_active_unexpired else 0
 
                     offers_list.append({
                         "offer_id": off.id,
                         "employee_id": off.employee_id,
                         "employee_name": off_emp_name,
+                        "raw_employee_name": raw_off_emp_name,
                         "score": round(float(off.rank_score), 1),
                         "status": display_status,
                         "is_active": is_active_unexpired,
                         "offered_at": off.offered_at.isoformat() if off.offered_at else None,
                         "expires_at": off.expires_at.isoformat() if off.expires_at else None,
+                        "decision_at": decision_dt.isoformat() if decision_dt else None,
                         "remaining_seconds": rem_sec,
-                        "rejection_reason": off.rejection_reason or "",
+                        "rejection_reason": rejection_reason,
+                        "wave_id": str(off.wave_id) if off.wave_id else None,
+                        "wave_number": off.wave_number,
                     })
 
-                # 2. Immutable Candidate Snapshot from latest CANDIDATES_EVALUATED event
-                candidate_snapshots = []
-                latest_eval_event = WorkforceEventLog.objects.filter(
-                    event_type="CANDIDATES_EVALUATED",
-                    payload__job_id=sel_job.id,
-                ).order_by("-created_at").first()
+                # 2. Multi-Attempt Candidate History from ALL CANDIDATES_EVALUATED events
+                eval_events = [e for e in event_logs if e.event_type == "CANDIDATES_EVALUATED"]
+                if not eval_events:
+                    eval_events = list(WorkforceEventLog.objects.filter(
+                        event_type="CANDIDATES_EVALUATED",
+                        payload__job_id=sel_job.id,
+                    ).order_by("created_at"))
+                if not eval_events:
+                    # Fallback to single lookup if mocked with .first()
+                    single_ev = WorkforceEventLog.objects.filter(
+                        event_type="CANDIDATES_EVALUATED",
+                        payload__job_id=sel_job.id,
+                    ).order_by("-created_at").first()
+                    if single_ev:
+                        eval_events = [single_ev]
 
-                if latest_eval_event and isinstance(latest_eval_event.payload, dict):
-                    raw_snapshot = latest_eval_event.payload.get("eligible_candidates_snapshot") or latest_eval_event.payload.get("candidates_snapshot") or []
+                attempts_data = []
+
+                # Helper to determine candidate result accurately for a given attempt
+                def get_candidate_result(cand_id, off_list):
+                    # Check if candidate received an offer on this job
+                    matching_offers = [o for o in off_list if o["employee_id"] == cand_id]
+                    if matching_offers:
+                        latest_cand_off = matching_offers[-1]
+                        return latest_cand_off["status"]
+                    return "NOT OFFERED"
+
+                for idx, eval_event in enumerate(eval_events):
+                    payload = eval_event.payload if isinstance(eval_event.payload, dict) else {}
+                    attempt_num = payload.get("attempt") or (idx + 1)
+                    raw_snapshot = payload.get("eligible_candidates_snapshot") or payload.get("candidates_snapshot") or []
+                    eligible_count = payload.get("eligible_count") or len(raw_snapshot)
+                    radius_km = payload.get("radius_km") or payload.get("effective_radius_km")
+
+                    attempt_candidates = []
                     for c_snap in raw_snapshot:
                         c_id = c_snap.get("employee_id")
-                        c_res = offer_emp_status_map.get(c_id, "NOT OFFERED")
-                        candidate_snapshots.append({
+                        raw_c_name = c_snap.get("employee_name") or f"Technician #{c_id}"
+                        formatted_c_name = raw_c_name if f"#{c_id}" in raw_c_name else f"{raw_c_name} · EMP #{c_id}"
+                        c_res = get_candidate_result(c_id, offers_list)
+                        attempt_candidates.append({
                             "rank": c_snap.get("rank"),
                             "employee_id": c_id,
-                            "employee_name": c_snap.get("employee_name") or f"Technician #{c_id}",
+                            "employee_name": raw_c_name,
+                            "display_name": formatted_c_name,
                             "distance_km": c_snap.get("distance_km"),
                             "score": c_snap.get("score"),
                             "result": c_res,
                         })
 
-                # 3. Unified Dispatch Lifecycle Timeline
+                    attempts_data.append({
+                        "attempt": attempt_num,
+                        "timestamp": eval_event.created_at.isoformat() if hasattr(eval_event, "created_at") and eval_event.created_at else None,
+                        "radius_km": radius_km,
+                        "eligible_count": eligible_count,
+                        "candidates": attempt_candidates,
+                    })
+
+                # Latest evaluation snapshot for backward compatibility
+                candidate_snapshots = attempts_data[-1]["candidates"] if attempts_data else []
+
+                # 3. Normalized Unified Dispatch Lifecycle Timeline (Single Source of Truth)
                 timeline = []
+
                 # (a) Booking Created
                 if sel_job.created_at:
                     timeline.append({
@@ -10473,105 +10570,142 @@ class WorkforceDispatchRadarView(APIView):
                         "badge": "info",
                     })
 
-                # (b) Event Logs (DISPATCH_STARTED, CANDIDATES_EVALUATED, etc.)
-                logs = WorkforceEventLog.objects.filter(
-                    Q(payload__job_id=sel_job.id) | Q(payload__id=sel_job.id)
-                ).select_related("user").order_by("created_at")
-                for lg in logs:
+                # (b) Search & Candidate Evaluations from event logs
+                for lg in event_logs:
                     ev_type = lg.event_type
                     if ev_type == "DISPATCH_STARTED":
-                        attempt = lg.payload.get("attempt", 1)
+                        attempt = lg.payload.get("attempt", 1) if isinstance(lg.payload, dict) else 1
                         timeline.append({
                             "timestamp": lg.created_at.isoformat(),
                             "event_type": ev_type,
-                            "title": f"Dispatch Started (Attempt {attempt})",
-                            "description": f"Searching eligible technicians for {lg.payload.get('service', 'Service')}.",
+                            "title": f"Dispatch Started (Attempt #{attempt})",
+                            "description": f"Searching eligible technicians for {lg.payload.get('service', sel_job.issue_title or 'Service') if isinstance(lg.payload, dict) else 'Service'}.",
                             "actor": "Dispatch Engine",
                             "badge": "primary",
                         })
                     elif ev_type == "CANDIDATES_EVALUATED":
-                        count = lg.payload.get("eligible_count", 0)
+                        payload = lg.payload if isinstance(lg.payload, dict) else {}
+                        count = payload.get("eligible_count", len(payload.get("eligible_candidates_snapshot", [])))
+                        attempt = payload.get("attempt", 1)
+                        rad = payload.get("radius_km") or payload.get("effective_radius_km")
+                        rad_str = f" · Radius {rad} km" if rad else ""
                         timeline.append({
                             "timestamp": lg.created_at.isoformat(),
                             "event_type": ev_type,
-                            "title": "Candidates Evaluated",
-                            "description": f"Discovered {count} eligible ranked technician(s) within active radius.",
+                            "title": f"Candidates Evaluated (Attempt #{attempt})",
+                            "description": f"Discovered {count} eligible ranked technician(s){rad_str}.",
                             "actor": "Dispatch Engine",
                             "badge": "primary",
                         })
                     elif ev_type == "DISPATCH_UNASSIGNED_REASON":
+                        payload = lg.payload if isinstance(lg.payload, dict) else {}
                         timeline.append({
                             "timestamp": lg.created_at.isoformat(),
                             "event_type": ev_type,
                             "title": "Dispatch Holding / Retry Scheduled",
-                            "description": lg.payload.get("reason_message", "No technician available right now."),
+                            "description": payload.get("reason_message", "No technician available right now."),
                             "actor": "Dispatch Engine",
                             "badge": "warning",
                         })
 
-                # (c) Offers delivered and decisions
+                # (c) Offers delivered and authoritative decision events (Deduplicated)
                 for off in offers:
-                    tech_name = off.employee.user.get_full_name() or off.employee.user.username if off.employee and off.employee.user else f"Technician #{off.employee_id}"
+                    raw_tech_name = off.employee.user.get_full_name() or off.employee.user.username if off.employee and off.employee.user else f"Technician #{off.employee_id}"
+                    tech_display = f"{raw_tech_name} · EMP #{off.employee_id}"
+
+                    # Offer Sent Event
                     timeline.append({
                         "timestamp": off.offered_at.isoformat(),
                         "event_type": "OFFER_DELIVERED",
-                        "title": f"Offer Sent → {tech_name}",
+                        "title": f"Offer Sent → {tech_display}",
                         "description": f"Exclusive offer #{off.id} delivered (Score: {off.rank_score:.1f}).",
                         "actor": "Dispatch Engine",
                         "badge": "primary",
+                        "employee_id": off.employee_id,
+                        "offer_id": off.id,
                     })
-                    if off.status in ["REJECTED", "DECLINED"]:
+
+                    # Single Authoritative Outcome Event per Offer
+                    if off.status in [WorkforceJobOffer.Status.REJECTED, WorkforceJobOffer.Status.DECLINED]:
+                        dec_info = decline_decision_map.get(off.employee_id)
+                        decline_ts = dec_info["timestamp"] if dec_info else off.offered_at
+                        reason_str = off.rejection_reason or (dec_info["reason"] if dec_info else "No reason specified.")
                         timeline.append({
-                            "timestamp": off.expires_at.isoformat(),
+                            "timestamp": decline_ts.isoformat(),
                             "event_type": "OFFER_DECLINED",
-                            "title": f"Offer Declined by {tech_name}",
-                            "description": f"Technician declined: {off.rejection_reason or 'No reason specified.'}",
-                            "actor": tech_name,
+                            "title": f"Offer Declined by {tech_display}",
+                            "description": f'Technician declined: "{reason_str}"' if reason_str else "Technician declined offer.",
+                            "actor": tech_display,
                             "badge": "danger",
+                            "employee_id": off.employee_id,
+                            "offer_id": off.id,
                         })
-                    elif off.status == "EXPIRED" or (off.status == "OFFERED" and off.expires_at <= now):
+                    elif off.status == WorkforceJobOffer.Status.EXPIRED or (off.status == WorkforceJobOffer.Status.OFFERED and off.expires_at <= now):
                         timeline.append({
                             "timestamp": off.expires_at.isoformat(),
                             "event_type": "OFFER_EXPIRED",
-                            "title": f"Offer Expired for {tech_name}",
-                            "description": f"Technician did not respond within offer window. Falling through to next candidate.",
+                            "title": f"Offer Expired for {tech_display}",
+                            "description": "Technician did not respond within offer window. Advancing to next candidate.",
                             "actor": "Dispatch Engine",
                             "badge": "warning",
+                            "employee_id": off.employee_id,
+                            "offer_id": off.id,
                         })
-
-                # (d) Lifecycle Events
-                lcs = WorkforceJobLifecycleEvent.objects.filter(job=sel_job).select_related("employee__user", "actor_user").order_by("created_at")
-                for lc in lcs:
-                    lc_emp_name = lc.employee.user.get_full_name() if lc.employee and lc.employee.user else "Technician"
-                    if lc.event_type == "EMPLOYEE_JOB_ACCEPTED":
+                    elif off.status == WorkforceJobOffer.Status.ACCEPTED:
+                        accept_ts = accept_decision_map.get(off.employee_id) or off.offered_at
                         timeline.append({
-                            "timestamp": lc.created_at.isoformat(),
-                            "event_type": lc.event_type,
-                            "title": f"Job Accepted by {lc_emp_name}",
-                            "description": f"{lc_emp_name} accepted booking #{sel_job.request_id or sel_job.id}.",
-                            "actor": lc_emp_name,
+                            "timestamp": accept_ts.isoformat(),
+                            "event_type": "EMPLOYEE_JOB_ACCEPTED",
+                            "title": f"Job Accepted by {tech_display}",
+                            "description": f"{tech_display} accepted booking #{sel_job.request_id or sel_job.id}.",
+                            "actor": tech_display,
                             "badge": "success",
-                        })
-                    elif lc.event_type == "EMPLOYEE_JOB_DECLINED":
-                        timeline.append({
-                            "timestamp": lc.created_at.isoformat(),
-                            "event_type": lc.event_type,
-                            "title": f"Job Declined by {lc_emp_name}",
-                            "description": lc.reason_text or lc.reason_code or "Technician declined job.",
-                            "actor": lc_emp_name,
-                            "badge": "danger",
-                        })
-                    elif lc.event_type == "EMPLOYEE_JOB_CANCELLED":
-                        timeline.append({
-                            "timestamp": lc.created_at.isoformat(),
-                            "event_type": lc.event_type,
-                            "title": f"Job Cancelled by {lc_emp_name}",
-                            "description": lc.reason_text or "Job cancelled after acceptance.",
-                            "actor": lc_emp_name,
-                            "badge": "danger",
+                            "employee_id": off.employee_id,
+                            "offer_id": off.id,
                         })
 
-                # Sort timeline strictly by timestamp
+                # (d) Subsequent Operational Lifecycle Events (Excluding already-handled declines/accepts)
+                for lc in lifecycle_events:
+                    if lc.event_type in [
+                        WorkforceJobLifecycleEvent.EventType.EMPLOYEE_JOB_DECLINED,
+                        WorkforceJobLifecycleEvent.EventType.EMPLOYEE_JOB_ACCEPTED,
+                    ]:
+                        continue  # Already included above with exact timestamp and offer correlation
+
+                    raw_lc_name = lc.employee.user.get_full_name() if lc.employee and lc.employee.user else f"Technician #{lc.employee_id}" if lc.employee_id else "Technician"
+                    lc_tech_display = f"{raw_lc_name} · EMP #{lc.employee_id}" if lc.employee_id else raw_lc_name
+
+                    if lc.event_type == WorkforceJobLifecycleEvent.EventType.EMPLOYEE_JOB_CANCELLED:
+                        timeline.append({
+                            "timestamp": lc.created_at.isoformat(),
+                            "event_type": lc.event_type,
+                            "title": f"Job Cancelled by {lc_tech_display}",
+                            "description": lc.reason_text or "Job cancelled after acceptance.",
+                            "actor": lc_tech_display,
+                            "badge": "danger",
+                            "employee_id": lc.employee_id,
+                        })
+                    elif lc.event_type == WorkforceJobLifecycleEvent.EventType.EMPLOYEE_JOB_REDISPATCH_STARTED:
+                        timeline.append({
+                            "timestamp": lc.created_at.isoformat(),
+                            "event_type": lc.event_type,
+                            "title": "Redispatch Triggered",
+                            "description": lc.reason_text or "Automated redispatch initiated.",
+                            "actor": "Dispatch Engine",
+                            "badge": "primary",
+                        })
+                    elif lc.event_type == WorkforceJobLifecycleEvent.EventType.NEW_EMPLOYEE_ASSIGNED:
+                        timeline.append({
+                            "timestamp": lc.created_at.isoformat(),
+                            "event_type": lc.event_type,
+                            "title": f"Reassigned → {lc_tech_display}",
+                            "description": f"Assigned to {lc_tech_display}.",
+                            "actor": "Dispatch Engine",
+                            "badge": "success",
+                            "employee_id": lc.employee_id,
+                        })
+
+                # Sort timeline strictly by timestamp ascending
                 timeline.sort(key=lambda x: x["timestamp"])
 
                 # Find current active offer if any
@@ -10580,7 +10714,10 @@ class WorkforceDispatchRadarView(APIView):
                 sel_d_state = getattr(sel_job, "dispatch_state", None)
                 assigned_tech_name = None
                 if sel_job.assigned_employee and sel_job.assigned_employee.user:
-                    assigned_tech_name = sel_job.assigned_employee.user.get_full_name() or sel_job.assigned_employee.user.username
+                    raw_assigned_name = sel_job.assigned_employee.user.get_full_name() or sel_job.assigned_employee.user.username
+                    assigned_tech_name = f"{raw_assigned_name} · EMP #{sel_job.assigned_employee_id}"
+                elif sel_job.technician_name:
+                    assigned_tech_name = sel_job.technician_name
 
                 selected_job_detail = {
                     "id": sel_job.id,
@@ -10602,6 +10739,7 @@ class WorkforceDispatchRadarView(APIView):
                     "assigned_technician_name": assigned_tech_name,
                     "current_offer": current_active_offer,
                     "offers_history": offers_list,
+                    "attempts": attempts_data,
                     "candidate_evaluations": candidate_snapshots,
                     "timeline": timeline,
                 }
