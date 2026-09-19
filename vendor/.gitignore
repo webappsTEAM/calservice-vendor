@@ -80,6 +80,7 @@ pnpm-debug.log*
 # ==========================================
 .vscode/
 .idea/
+pyrightconfig.json
 *.swp
 *.swo
 .DS_Store
