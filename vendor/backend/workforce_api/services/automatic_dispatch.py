@@ -1527,9 +1527,33 @@ def _dispatch_job_two_phase(job_id, max_gps_age_seconds: int = MAX_GPS_AGE_SECON
             radius_km=effective_radius_km,
         )
 
+        eligible_candidates_snapshot = []
+        for idx, c in enumerate(candidates):
+            _emp_obj = c.get("employee")
+            _emp_id = getattr(_emp_obj, "id", None)
+            _emp_user = getattr(_emp_obj, "user", None)
+            _emp_name = ""
+            if _emp_user:
+                _emp_name = _emp_user.get_full_name() or getattr(_emp_user, "username", "")
+            if not _emp_name:
+                _emp_name = f"Technician #{_emp_id}" if _emp_id else "Technician"
+
+            eligible_candidates_snapshot.append({
+                "employee_id": _emp_id,
+                "employee_name": _emp_name,
+                "distance_km": round(float(c["distance_km"]), 2) if c.get("distance_km") is not None else None,
+                "score": round(float(c["score"]), 1) if c.get("score") is not None else None,
+                "rank": idx + 1,
+            })
+
         WorkforceEventLog.objects.create(
             event_type="CANDIDATES_EVALUATED",
-            payload={"job_id": job_obj.id, "eligible_count": len(candidates), "attempt": attempt_num}
+            payload={
+                "job_id": job_obj.id,
+                "eligible_count": len(candidates),
+                "attempt": attempt_num,
+                "eligible_candidates_snapshot": eligible_candidates_snapshot,
+            }
         )
 
         top_candidate = None

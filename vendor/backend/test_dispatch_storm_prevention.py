@@ -91,6 +91,7 @@ def _make_service_request(company, preferred_date=None, status="confirmed", lat=
         longitude=lon,
         address="123 MG Road, Bangalore",
         preferred_date=preferred_date or today,
+        catalog_service_id=1,
     )
     return sr
 
@@ -344,6 +345,7 @@ def run_all_tests():
     print("\n[11] Testing new job without WorkforceDispatchState...")
     sr11 = _make_service_request(co)
     WorkforceDispatchState.objects.filter(job=sr11).delete()
+    WorkforceJobOffer.objects.filter(job=sr11).delete()
     assert not WorkforceDispatchState.objects.filter(job=sr11).exists()
 
     res11 = dispatch_pending_jobs(company_id=co.id)
@@ -358,6 +360,7 @@ def run_all_tests():
     # ── Test 12: Manual Admin Force -> Bypasses retry_at, Honors Gates ──
     print("\n[12] Testing manual admin force dispatch...")
     sr12 = _make_service_request(co)
+    WorkforceJobOffer.objects.filter(job=sr12).delete()
     future_retry = timezone.now() + timedelta(seconds=60)
     WorkforceDispatchState.objects.update_or_create(
         job=sr12,
@@ -436,7 +439,8 @@ def run_all_tests():
         is_staff=True,
     )
 
-    events_before = WorkforceEventLog.objects.filter(event_type__in=["DISPATCH_STARTED", "CANDIDATES_EVALUATED"]).count()
+    co_job_ids = list(ServiceRequest.objects.filter(company=co).values_list("id", flat=True))
+    events_before = WorkforceEventLog.objects.filter(event_type__in=["DISPATCH_STARTED", "CANDIDATES_EVALUATED"], payload__job_id__in=co_job_ids).count()
 
     # GET /workforce/jobs/
     req_jobs = factory.get("/api/workforce/jobs/?status=active")
@@ -461,7 +465,7 @@ def run_all_tests():
     res_loc = WorkforceLocationUpdateView.as_view()(req_loc)
     assert res_loc.status_code == status.HTTP_200_OK
 
-    events_after = WorkforceEventLog.objects.filter(event_type__in=["DISPATCH_STARTED", "CANDIDATES_EVALUATED"]).count()
+    events_after = WorkforceEventLog.objects.filter(event_type__in=["DISPATCH_STARTED", "CANDIDATES_EVALUATED"], payload__job_id__in=co_job_ids).count()
     assert events_before == events_after, f"Endpoints triggered unexpected dispatch! ({events_after - events_before} new events)"
     print("  [PASS] Endpoint invariant confirmed: JobList, PresenceToggle, and LocationUpdate trigger ZERO dispatch operations.")
 

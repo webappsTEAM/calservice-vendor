@@ -366,6 +366,15 @@ export async function apiTriggerAutoDispatch(jobId) {
   });
 }
 
+export async function apiGetDispatchRadar(params = {}) {
+  const query = new URLSearchParams();
+  if (params.jobId) query.set('job_id', params.jobId);
+  if (params.status && params.status !== 'all') query.set('status', params.status);
+  if (params.search) query.set('search', params.search);
+  const qStr = query.toString();
+  return await apiRequest(`/workforce/admin/dispatch-radar/${qStr ? `?${qStr}` : ''}`);
+}
+
 export async function apiAdminCancelJob(jobId, reason = '') {
   return await apiRequest(`/workforce/jobs/${jobId}/admin-cancel/`, {
     method: 'POST',

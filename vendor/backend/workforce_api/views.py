@@ -10231,10 +10231,386 @@ class WorkforceJobTimelineView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+class WorkforceDispatchRadarView(APIView):
+    """
+    Super Admin Dispatch Radar — Read-Only Observability Endpoint.
 
+    Provides real-time and historical visibility into how customer bookings
+    traverse the technician dispatch pipeline.
 
+    NON-NEGOTIABLE SAFETY GUARANTEES:
+    - Strictly READ-ONLY. Never triggers automated dispatch, creates offers, or alters DB state.
+    - Super Admin / Tenant authorized.
+    - Zero MAP coordinates generation or routing calculation.
+    - Bounded and pre-fetched queries to eliminate N+1 latency.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsWorkforceAdmin]
 
+    def get(self, request):
+        user = request.user
+        now = timezone.now()
 
+        # Tenant isolation
+        user_company = getattr(user, "company", None)
+        is_platform_super = getattr(user, "is_superuser", False)
+
+        # Base QuerySet for jobs
+        qs = ServiceRequest.objects.all()
+        if not is_platform_super:
+            if user_company:
+                qs = qs.filter(Q(company_id=user_company.id) | Q(company__isnull=True) | Q(company_id=1))
+            else:
+                qs = qs.filter(company_id=1)
+
+        job_id_param = request.query_params.get("job_id")
+        status_filter = request.query_params.get("status", "all").lower().strip()
+        search_query = request.query_params.get("search", "").strip()
+
+        # Aggregate Summary Metrics across all active/recent jobs
+        active_base = qs.exclude(status__in=["cancelled"])
+
+        summary = {
+            "total_active": active_base.exclude(status="completed").count(),
+            "searching": active_base.filter(
+                Q(dispatch_state__dispatch_status__in=["DISPATCHING", "RETRY_SCHEDULED", "NEVER_ATTEMPTED"]) |
+                Q(status__in=["new_request", "draft", "unassigned", "confirmed", "redispatching"])
+            ).exclude(
+                status__in=["assigned", "accepted", "on_the_way", "en_route", "arrived", "in_progress", "completed"]
+            ).count(),
+            "offered": active_base.filter(
+                Q(dispatch_state__dispatch_status="OFFER_ACTIVE") |
+                Q(job_offers__status="OFFERED", job_offers__expires_at__gt=now)
+            ).distinct().count(),
+            "assigned": active_base.filter(status__in=["assigned", "accepted"]).count(),
+            "en_route": active_base.filter(status__in=["on_the_way", "en_route"]).count(),
+            "in_progress": active_base.filter(status__in=["arrived", "in_progress"]).count(),
+            "completed_today": qs.filter(
+                status="completed",
+                updated_at__date=now.date()
+            ).count(),
+        }
+
+        # Apply filtering for the active jobs queue
+        queue_qs = qs.select_related(
+            "assigned_employee__user",
+            "company",
+            "customer",
+            "dispatch_state",
+        ).prefetch_related(
+            models.Prefetch(
+                "job_offers",
+                queryset=WorkforceJobOffer.objects.filter(
+                    status=WorkforceJobOffer.Status.OFFERED,
+                    expires_at__gt=now,
+                ).select_related("employee__user").order_by("-offered_at"),
+                to_attr="prefetched_live_offers",
+            )
+        )
+
+        if search_query:
+            queue_qs = queue_qs.filter(
+                Q(request_id__icontains=search_query) |
+                Q(issue_title__icontains=search_query) |
+                Q(service_category__icontains=search_query) |
+                Q(customer_name__icontains=search_query) |
+                Q(assigned_employee__user__first_name__icontains=search_query) |
+                Q(assigned_employee__user__last_name__icontains=search_query)
+            )
+
+        if status_filter == "searching":
+            queue_qs = queue_qs.filter(
+                Q(dispatch_state__dispatch_status__in=["DISPATCHING", "RETRY_SCHEDULED", "NEVER_ATTEMPTED"]) |
+                Q(status__in=["new_request", "draft", "unassigned", "confirmed", "redispatching"])
+            ).exclude(status__in=["assigned", "accepted", "on_the_way", "en_route", "arrived", "in_progress", "completed", "cancelled"])
+        elif status_filter == "offered":
+            queue_qs = queue_qs.filter(
+                Q(dispatch_state__dispatch_status="OFFER_ACTIVE") |
+                Q(job_offers__status="OFFERED", job_offers__expires_at__gt=now)
+            ).distinct()
+        elif status_filter == "assigned":
+            queue_qs = queue_qs.filter(status__in=["assigned", "accepted"])
+        elif status_filter == "en_route":
+            queue_qs = queue_qs.filter(status__in=["on_the_way", "en_route"])
+        elif status_filter == "in_progress":
+            queue_qs = queue_qs.filter(status__in=["arrived", "in_progress"])
+        elif status_filter == "completed":
+            queue_qs = queue_qs.filter(status="completed")
+        elif status_filter == "cancelled":
+            queue_qs = queue_qs.filter(status="cancelled")
+
+        # Order by active urgency first, then newest, bounded to 50 items
+        recent_jobs = list(queue_qs.order_by("-created_at")[:50])
+
+        jobs_data = []
+        for j in recent_jobs:
+            d_state = getattr(j, "dispatch_state", None)
+            live_offers = getattr(j, "prefetched_live_offers", [])
+            live_offer = live_offers[0] if live_offers else None
+
+            # Formulate current active offer info
+            current_offer_info = None
+            if live_offer:
+                rem_seconds = max(0, int((live_offer.expires_at - now).total_seconds()))
+                emp_name = live_offer.employee.user.get_full_name() or live_offer.employee.user.username if live_offer.employee and live_offer.employee.user else f"Technician #{live_offer.employee_id}"
+                current_offer_info = {
+                    "offer_id": live_offer.id,
+                    "employee_id": live_offer.employee_id,
+                    "employee_name": emp_name,
+                    "score": round(float(live_offer.rank_score), 1),
+                    "offered_at": live_offer.offered_at.isoformat() if live_offer.offered_at else None,
+                    "expires_at": live_offer.expires_at.isoformat() if live_offer.expires_at else None,
+                    "remaining_seconds": rem_seconds,
+                    "status": live_offer.status,
+                }
+
+            assigned_tech_name = None
+            if j.assigned_employee and j.assigned_employee.user:
+                assigned_tech_name = j.assigned_employee.user.get_full_name() or j.assigned_employee.user.username
+            elif j.technician_name:
+                assigned_tech_name = j.technician_name
+
+            jobs_data.append({
+                "id": j.id,
+                "request_id": j.request_id or f"SR-{j.id}",
+                "service": j.issue_title or j.service_category or "Service Request",
+                "service_category": j.service_category or "",
+                "status": j.status,
+                "created_at": j.created_at.isoformat() if j.created_at else None,
+                "scheduled_date": str(j.preferred_date) if j.preferred_date else None,
+                "scheduled_time": str(j.preferred_time) if j.preferred_time else None,
+                "address": j.address or "",
+                "customer_name": j.customer_name or (j.customer.get_full_name() if j.customer else "Customer"),
+                "dispatch_status": d_state.dispatch_status if d_state else "NEVER_ATTEMPTED",
+                "attempt_count": d_state.attempt_count if d_state else 0,
+                "retry_at": d_state.retry_at.isoformat() if d_state and d_state.retry_at else None,
+                "unassigned_reason_code": d_state.unassigned_reason_code if d_state else "",
+                "unassigned_reason_message": d_state.unassigned_reason_message if d_state else "",
+                "assigned_technician_id": j.assigned_employee_id,
+                "assigned_technician_name": assigned_tech_name,
+                "current_offer": current_offer_info,
+            })
+
+        # Selected Job Detail Section
+        selected_job_detail = None
+        target_job_id = None
+        if job_id_param:
+            try:
+                target_job_id = int(job_id_param)
+            except (ValueError, TypeError):
+                pass
+        elif jobs_data:
+            target_job_id = jobs_data[0]["id"]
+
+        if target_job_id:
+            sel_job = ServiceRequest.objects.filter(pk=target_job_id).select_related(
+                "assigned_employee__user",
+                "company",
+                "customer",
+                "dispatch_state",
+            ).first()
+
+            if sel_job:
+                # 1. Offers History
+                offers = WorkforceJobOffer.objects.filter(job=sel_job).select_related("employee__user").order_by("offered_at")
+                offers_list = []
+                offer_emp_status_map = {}  # employee_id -> latest status
+                for off in offers:
+                    off_emp_name = off.employee.user.get_full_name() or off.employee.user.username if off.employee and off.employee.user else f"Technician #{off.employee_id}"
+
+                    # Normalize offer status
+                    is_active_unexpired = (off.status == WorkforceJobOffer.Status.OFFERED and off.expires_at > now)
+                    display_status = off.status
+                    if off.status == WorkforceJobOffer.Status.OFFERED and off.expires_at <= now:
+                        display_status = "EXPIRED"
+
+                    offer_emp_status_map[off.employee_id] = display_status
+                    rem_sec = max(0, int((off.expires_at - now).total_seconds())) if is_active_unexpired else 0
+
+                    offers_list.append({
+                        "offer_id": off.id,
+                        "employee_id": off.employee_id,
+                        "employee_name": off_emp_name,
+                        "score": round(float(off.rank_score), 1),
+                        "status": display_status,
+                        "is_active": is_active_unexpired,
+                        "offered_at": off.offered_at.isoformat() if off.offered_at else None,
+                        "expires_at": off.expires_at.isoformat() if off.expires_at else None,
+                        "remaining_seconds": rem_sec,
+                        "rejection_reason": off.rejection_reason or "",
+                    })
+
+                # 2. Immutable Candidate Snapshot from latest CANDIDATES_EVALUATED event
+                candidate_snapshots = []
+                latest_eval_event = WorkforceEventLog.objects.filter(
+                    event_type="CANDIDATES_EVALUATED",
+                    payload__job_id=sel_job.id,
+                ).order_by("-created_at").first()
+
+                if latest_eval_event and isinstance(latest_eval_event.payload, dict):
+                    raw_snapshot = latest_eval_event.payload.get("eligible_candidates_snapshot") or latest_eval_event.payload.get("candidates_snapshot") or []
+                    for c_snap in raw_snapshot:
+                        c_id = c_snap.get("employee_id")
+                        c_res = offer_emp_status_map.get(c_id, "NOT OFFERED")
+                        candidate_snapshots.append({
+                            "rank": c_snap.get("rank"),
+                            "employee_id": c_id,
+                            "employee_name": c_snap.get("employee_name") or f"Technician #{c_id}",
+                            "distance_km": c_snap.get("distance_km"),
+                            "score": c_snap.get("score"),
+                            "result": c_res,
+                        })
+
+                # 3. Unified Dispatch Lifecycle Timeline
+                timeline = []
+                # (a) Booking Created
+                if sel_job.created_at:
+                    timeline.append({
+                        "timestamp": sel_job.created_at.isoformat(),
+                        "event_type": "BOOKING_CREATED",
+                        "title": "Booking Created",
+                        "description": f"Booking #{sel_job.request_id or sel_job.id} created for {sel_job.issue_title or sel_job.service_category}.",
+                        "actor": sel_job.customer_name or "Customer",
+                        "badge": "info",
+                    })
+
+                # (b) Event Logs (DISPATCH_STARTED, CANDIDATES_EVALUATED, etc.)
+                logs = WorkforceEventLog.objects.filter(
+                    Q(payload__job_id=sel_job.id) | Q(payload__id=sel_job.id)
+                ).select_related("user").order_by("created_at")
+                for lg in logs:
+                    ev_type = lg.event_type
+                    if ev_type == "DISPATCH_STARTED":
+                        attempt = lg.payload.get("attempt", 1)
+                        timeline.append({
+                            "timestamp": lg.created_at.isoformat(),
+                            "event_type": ev_type,
+                            "title": f"Dispatch Started (Attempt {attempt})",
+                            "description": f"Searching eligible technicians for {lg.payload.get('service', 'Service')}.",
+                            "actor": "Dispatch Engine",
+                            "badge": "primary",
+                        })
+                    elif ev_type == "CANDIDATES_EVALUATED":
+                        count = lg.payload.get("eligible_count", 0)
+                        timeline.append({
+                            "timestamp": lg.created_at.isoformat(),
+                            "event_type": ev_type,
+                            "title": "Candidates Evaluated",
+                            "description": f"Discovered {count} eligible ranked technician(s) within active radius.",
+                            "actor": "Dispatch Engine",
+                            "badge": "primary",
+                        })
+                    elif ev_type == "DISPATCH_UNASSIGNED_REASON":
+                        timeline.append({
+                            "timestamp": lg.created_at.isoformat(),
+                            "event_type": ev_type,
+                            "title": "Dispatch Holding / Retry Scheduled",
+                            "description": lg.payload.get("reason_message", "No technician available right now."),
+                            "actor": "Dispatch Engine",
+                            "badge": "warning",
+                        })
+
+                # (c) Offers delivered and decisions
+                for off in offers:
+                    tech_name = off.employee.user.get_full_name() or off.employee.user.username if off.employee and off.employee.user else f"Technician #{off.employee_id}"
+                    timeline.append({
+                        "timestamp": off.offered_at.isoformat(),
+                        "event_type": "OFFER_DELIVERED",
+                        "title": f"Offer Sent → {tech_name}",
+                        "description": f"Exclusive offer #{off.id} delivered (Score: {off.rank_score:.1f}).",
+                        "actor": "Dispatch Engine",
+                        "badge": "primary",
+                    })
+                    if off.status in ["REJECTED", "DECLINED"]:
+                        timeline.append({
+                            "timestamp": off.expires_at.isoformat(),
+                            "event_type": "OFFER_DECLINED",
+                            "title": f"Offer Declined by {tech_name}",
+                            "description": f"Technician declined: {off.rejection_reason or 'No reason specified.'}",
+                            "actor": tech_name,
+                            "badge": "danger",
+                        })
+                    elif off.status == "EXPIRED" or (off.status == "OFFERED" and off.expires_at <= now):
+                        timeline.append({
+                            "timestamp": off.expires_at.isoformat(),
+                            "event_type": "OFFER_EXPIRED",
+                            "title": f"Offer Expired for {tech_name}",
+                            "description": f"Technician did not respond within offer window. Falling through to next candidate.",
+                            "actor": "Dispatch Engine",
+                            "badge": "warning",
+                        })
+
+                # (d) Lifecycle Events
+                lcs = WorkforceJobLifecycleEvent.objects.filter(job=sel_job).select_related("employee__user", "actor_user").order_by("created_at")
+                for lc in lcs:
+                    lc_emp_name = lc.employee.user.get_full_name() if lc.employee and lc.employee.user else "Technician"
+                    if lc.event_type == "EMPLOYEE_JOB_ACCEPTED":
+                        timeline.append({
+                            "timestamp": lc.created_at.isoformat(),
+                            "event_type": lc.event_type,
+                            "title": f"Job Accepted by {lc_emp_name}",
+                            "description": f"{lc_emp_name} accepted booking #{sel_job.request_id or sel_job.id}.",
+                            "actor": lc_emp_name,
+                            "badge": "success",
+                        })
+                    elif lc.event_type == "EMPLOYEE_JOB_DECLINED":
+                        timeline.append({
+                            "timestamp": lc.created_at.isoformat(),
+                            "event_type": lc.event_type,
+                            "title": f"Job Declined by {lc_emp_name}",
+                            "description": lc.reason_text or lc.reason_code or "Technician declined job.",
+                            "actor": lc_emp_name,
+                            "badge": "danger",
+                        })
+                    elif lc.event_type == "EMPLOYEE_JOB_CANCELLED":
+                        timeline.append({
+                            "timestamp": lc.created_at.isoformat(),
+                            "event_type": lc.event_type,
+                            "title": f"Job Cancelled by {lc_emp_name}",
+                            "description": lc.reason_text or "Job cancelled after acceptance.",
+                            "actor": lc_emp_name,
+                            "badge": "danger",
+                        })
+
+                # Sort timeline strictly by timestamp
+                timeline.sort(key=lambda x: x["timestamp"])
+
+                # Find current active offer if any
+                current_active_offer = next((o for o in offers_list if o["is_active"]), None)
+
+                sel_d_state = getattr(sel_job, "dispatch_state", None)
+                assigned_tech_name = None
+                if sel_job.assigned_employee and sel_job.assigned_employee.user:
+                    assigned_tech_name = sel_job.assigned_employee.user.get_full_name() or sel_job.assigned_employee.user.username
+
+                selected_job_detail = {
+                    "id": sel_job.id,
+                    "request_id": sel_job.request_id or f"SR-{sel_job.id}",
+                    "service": sel_job.issue_title or sel_job.service_category or "Service Request",
+                    "service_category": sel_job.service_category or "",
+                    "status": sel_job.status,
+                    "created_at": sel_job.created_at.isoformat() if sel_job.created_at else None,
+                    "scheduled_date": str(sel_job.preferred_date) if sel_job.preferred_date else None,
+                    "scheduled_time": str(sel_job.preferred_time) if sel_job.preferred_time else None,
+                    "address": sel_job.address or "",
+                    "customer_name": sel_job.customer_name or "Customer",
+                    "dispatch_status": sel_d_state.dispatch_status if sel_d_state else "NEVER_ATTEMPTED",
+                    "attempt_count": sel_d_state.attempt_count if sel_d_state else 0,
+                    "retry_at": sel_d_state.retry_at.isoformat() if sel_d_state and sel_d_state.retry_at else None,
+                    "unassigned_reason_code": sel_d_state.unassigned_reason_code if sel_d_state else "",
+                    "unassigned_reason_message": sel_d_state.unassigned_reason_message if sel_d_state else "",
+                    "assigned_technician_id": sel_job.assigned_employee_id,
+                    "assigned_technician_name": assigned_tech_name,
+                    "current_offer": current_active_offer,
+                    "offers_history": offers_list,
+                    "candidate_evaluations": candidate_snapshots,
+                    "timeline": timeline,
+                }
+
+        return Response({
+            "summary": summary,
+            "jobs": jobs_data,
+            "selected_job": selected_job_detail,
+        }, status=status.HTTP_200_OK)
 
 
 class WorkforceDispatchHealthView(APIView):

@@ -6,6 +6,7 @@ from django.urls import include, path
 from . import quote_views
 from . import invoice_views
 from .views import (
+    WorkforceDispatchRadarView,
     WorkforceDispatchHealthView,
     WorkforceSignupView,
     ProviderSignupView,
@@ -245,6 +246,7 @@ urlpatterns = [
     path("customer/jobs/<int:pk>/payment/confirm/", WorkforceCustomerPaymentConfirmView.as_view(), name="workforce-customer-payment-confirm"),
 
     # Dynamic Dispatch & Skill Matching (Phase 14)
+    path("admin/dispatch-radar/", WorkforceDispatchRadarView.as_view(), name="workforce-admin-dispatch-radar"),
     path("dispatch/eligible-technicians/", WorkforceDispatchEligibleListView.as_view(), name="workforce-dispatch-eligible"),
     path("dispatch/assign/", WorkforceDispatchAssignView.as_view(), name="workforce-dispatch-assign"),
     path("dispatch/auto-dispatch/<int:pk>/", WorkforceAutoDispatchTriggerView.as_view(), name="workforce-auto-dispatch-trigger"),

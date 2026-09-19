@@ -11,6 +11,7 @@ files_to_sync = [
     ("workforce_api/models.py", "/var/www/calservices/current-vendor/backend/workforce_api/models.py"),
     ("workforce_api/services/automatic_dispatch.py", "/var/www/calservices/current-vendor/backend/workforce_api/services/automatic_dispatch.py"),
     ("workforce_api/views.py", "/var/www/calservices/current-vendor/backend/workforce_api/views.py"),
+    ("workforce_api/urls.py", "/var/www/calservices/current-vendor/backend/workforce_api/urls.py"),
     ("service_requests/models.py", "/var/www/calservices/current-vendor/backend/service_requests/models.py"),
     ("workforce_api/migrations/0032_workforcedispatchstate.py", "/var/www/calservices/current-vendor/backend/workforce_api/migrations/0032_workforcedispatchstate.py"),
 ]
