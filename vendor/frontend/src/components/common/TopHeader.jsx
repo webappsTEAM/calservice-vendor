@@ -25,6 +25,8 @@ import {
   Square,
   X,
   CheckCheck,
+  Calendar,
+  Clock,
 } from 'lucide-react';
 
 import { Modal } from '../enterprise/Modal.jsx';
@@ -52,6 +54,36 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
   const [isClearing, setIsClearing] = useState(false);
   const [globalSearch, setGlobalSearch] = useState('');
   const notifRef = useRef(null);
+  const userMenuRef = useRef(null);
+
+  // Section 15: Header Live Clock with single 1-second interval
+  const [headerTime, setHeaderTime] = useState(() => new Date());
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setHeaderTime(new Date());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const desktopDateStr = headerTime.toLocaleDateString('en-GB', {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+  const hours = headerTime.getHours();
+  const minutes = String(headerTime.getMinutes()).padStart(2, '0');
+  const seconds = String(headerTime.getSeconds()).padStart(2, '0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  const displayHours = String(hours % 12 || 12).padStart(2, '0');
+  const desktopTimePart = `${displayHours}:${minutes}`;
+  const desktopTimeStr = `${desktopTimePart}:${seconds} ${ampm}`;
+  const mobileDayMonth = headerTime.toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+  });
+  const mobileTimePart = `${displayHours}:${minutes} ${ampm}`;
+  const mobileTimeStr = `${mobileDayMonth} • ${mobileTimePart}`;
 
   const notifications = employeeRuntime ? employeeRuntime.notifications : localNotifications;
   const unreadCount = employeeRuntime ? employeeRuntime.unreadCount : localUnreadCount;
@@ -74,6 +106,23 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
       document.removeEventListener('touchstart', handleOutsideClick);
     };
   }, [showNotifMenu]);
+
+  // Close user menu dropdown when clicking outside
+  useEffect(() => {
+    const handleUserMenuOutsideClick = (e) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target)) {
+        setShowUserMenu(false);
+      }
+    };
+    if (showUserMenu) {
+      document.addEventListener('mousedown', handleUserMenuOutsideClick);
+      document.addEventListener('touchstart', handleUserMenuOutsideClick);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleUserMenuOutsideClick);
+      document.removeEventListener('touchstart', handleUserMenuOutsideClick);
+    };
+  }, [showUserMenu]);
 
   // Location Scan State
   const [localLocState, setLocalLocState] = useState('idle'); // 'idle' | 'locating' | 'success' | 'error'
@@ -379,75 +428,117 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
 
   return (
     <>
-      <header className="bg-slate-900 text-slate-100 border-b border-slate-800 shrink-0 z-40 h-13 flex items-center px-3 sm:px-5 select-none">
+      <header className="bg-slate-900 text-slate-100 border-b border-slate-800 shrink-0 z-40 h-14 flex items-center px-3 sm:px-5 select-none">
         <div className="w-full flex items-center justify-between gap-3">
-          {/* Left: Mobile Menu Toggle & Brand */}
-          <div className="flex items-center gap-3 shrink-0">
+          {/* LEFT: Mobile Menu Toggle & Workforce Brand */}
+          <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
             <button
               type="button"
               onClick={onToggleSidebar}
-              className="lg:hidden p-2 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
+              className="lg:hidden p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
               title="Toggle Menu"
+              aria-label="Toggle navigation menu"
             >
               <Menu className="w-4 h-4" />
             </button>
 
             <Link to="/" className="flex items-center gap-2.5 group">
-              <div className="w-7 h-7 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-white font-bold shadow-xs group-hover:border-slate-600 transition-colors">
-                <Wrench className="w-4 h-4 text-slate-200" />
+              <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-slate-800 border border-slate-700/80 flex items-center justify-center text-white shadow-xs group-hover:border-slate-600 transition-colors shrink-0">
+                <Wrench className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-slate-200" />
               </div>
-              <div className="flex items-baseline gap-1.5">
+              <div className="flex flex-col justify-center leading-none">
                 <span className="font-bold text-xs sm:text-sm tracking-tight text-white font-sans">
-                  {user?.companyName || 'Workforce'}
+                  SEVO
                 </span>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                  Portal
+                <span className="text-[9px] font-semibold uppercase tracking-widest text-slate-400 mt-0.5">
+                  Partner
                 </span>
               </div>
             </Link>
           </div>
 
-          {/* Right: Availability Toggle, Notifications & Profile */}
-          <div className="flex items-center gap-3 sm:gap-4 shrink-0">
+          {/* CENTER: Flexible empty space */}
+          <div className="flex-1 min-w-0" />
+
+          {/* RIGHT: Presence Switch, Date/Time, Notifications & Account */}
+          <div className="flex items-center gap-2 sm:gap-2.5 md:gap-3 shrink-0">
             {user ? (
               <>
-                {/* Technician Online / Offline / Busy Toggle */}
+                {/* Technician Online / Offline / Busy Switch */}
                 {isEmployee && registrationStatus === 'approved' && (
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handlePresenceToggle}
-                      disabled={isToggling || isBusy}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold border transition-all ${
-                        isBusy
-                          ? 'bg-blue-500/20 text-blue-300 border-blue-500/40 cursor-not-allowed'
-                          : isOnline
-                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30'
-                            : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
-                      }`}
-                      title={
-                        isBusy
-                          ? 'Locked Online: You are actively working on an assigned job (BUSY).'
-                          : isOnline
-                            ? 'You are ONLINE. Click to go OFFLINE'
-                            : 'You are OFFLINE. Click to go ONLINE'
-                      }
-                    >
-                      <span
-                        className={`w-2 h-2 rounded-full ${
-                          isBusy
-                            ? 'bg-blue-400 animate-pulse'
-                            : isOnline
-                              ? 'bg-emerald-400 animate-pulse'
-                              : 'bg-slate-500'
-                        }`}
-                      />
-                      <span className="text-[11px] uppercase font-bold">
-                        {isBusy ? 'ON JOB (BUSY)' : isOnline ? 'ONLINE' : 'OFFLINE'}
-                      </span>
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={isOnline}
+                    aria-label={`Technician presence status: ${isBusy ? 'Busy on job' : isOnline ? 'Online' : 'Offline'}`}
+                    onClick={handlePresenceToggle}
+                    disabled={isToggling || isBusy}
+                    className={`inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full text-xs font-medium border transition-colors select-none focus:outline-none focus:ring-1 focus:ring-offset-1 focus:ring-offset-slate-900 ${
+                      isBusy
+                        ? 'bg-blue-950/40 border-blue-500/40 text-blue-300 cursor-not-allowed'
+                        : isOnline
+                          ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300 hover:bg-emerald-900/40 hover:border-emerald-500/60'
+                          : 'bg-slate-800/80 border border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-slate-300 hover:border-slate-600'
+                    } ${isToggling ? 'opacity-75 cursor-wait' : ''}`}
+                    title={
+                      isBusy
+                        ? 'Locked Online: You are actively working on an assigned job (BUSY).'
+                        : isOnline
+                          ? 'You are ONLINE. Click to go OFFLINE'
+                          : 'You are OFFLINE. Click to go ONLINE'
+                    }
+                  >
+                    {isBusy ? (
+                      <>
+                        <span className="text-[10px] sm:text-[11px] font-bold tracking-wider uppercase text-blue-300">
+                          BUSY
+                        </span>
+                        <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse shadow-[0_0_6px_rgba(96,165,250,0.6)] shrink-0" />
+                      </>
+                    ) : isOnline ? (
+                      <>
+                        <span className="text-[10px] sm:text-[11px] font-bold tracking-wider uppercase text-emerald-300">
+                          ONLINE
+                        </span>
+                        {isToggling ? (
+                          <Loader2 className="w-2.5 h-2.5 text-emerald-400 animate-spin shrink-0" />
+                        ) : (
+                          <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.6)] shrink-0" />
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-[10px] sm:text-[11px] font-bold tracking-wider uppercase text-slate-400">
+                          OFFLINE
+                        </span>
+                        {isToggling ? (
+                          <Loader2 className="w-2.5 h-2.5 text-slate-400 animate-spin shrink-0" />
+                        ) : (
+                          <span className="w-2 h-2 rounded-full border border-slate-400 bg-transparent shrink-0" />
+                        )}
+                      </>
+                    )}
+                  </button>
                 )}
+
+                {/* Subtle Divider between Presence and Date/Time */}
+                {isEmployee && registrationStatus === 'approved' && (
+                  <div className="hidden sm:block h-4 w-px bg-slate-800 shrink-0" />
+                )}
+
+                {/* Live Header Date & Time (Display-Only, Compact Group) */}
+                <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-800/40 border border-slate-800/80 text-xs select-none">
+                  <span className="font-medium text-slate-200">{desktopDateStr}</span>
+                  <span className="text-slate-600 select-none">·</span>
+                  <span className="font-mono text-[11px] text-slate-400">
+                    {desktopTimePart}
+                    <span className="text-slate-500 text-[10px]">:{seconds}</span>
+                    <span className="text-slate-400 text-[10px] ml-1">{ampm}</span>
+                  </span>
+                </div>
+
+                {/* Subtle Divider before Actions */}
+                <div className="hidden sm:block h-4 w-px bg-slate-800 shrink-0" />
 
                 {/* Notifications Bell & Dropdown */}
                 <div className="relative" ref={notifRef}>
@@ -461,12 +552,14 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                         setSelectedNotifIds(new Set());
                       }
                     }}
-                    className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors relative"
+                    className="p-1.5 sm:p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800/80 transition-colors relative focus:outline-none focus:ring-1 focus:ring-slate-700"
                     title="Notifications"
+                    aria-label={`Notifications${unreadCount > 0 ? `, ${unreadCount} unread` : ''}`}
+                    aria-expanded={showNotifMenu}
                   >
                     <Bell className="w-4 h-4" />
                     {unreadCount > 0 && (
-                      <span className="absolute 0 top-0.5 right-0.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-rose-600 text-white text-[9px] font-bold flex items-center justify-center animate-pulse">
+                      <span className="absolute top-1 right-1 min-w-[14px] h-3.5 px-0.5 rounded-full bg-rose-500 text-white text-[9px] font-bold leading-none flex items-center justify-center pointer-events-none">
                         {unreadCount > 9 ? '9+' : unreadCount}
                       </span>
                     )}
@@ -689,20 +782,33 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
                 </div>
 
 
+                {/* Subtle Divider before User Account */}
+                <div className="h-4 w-px bg-slate-800 shrink-0" />
+
                 {/* User Dropdown */}
-                <div className="relative">
+                <div className="relative" ref={userMenuRef}>
                   <button
                     type="button"
-                    onClick={() => setShowUserMenu(!showUserMenu)}
-                    className="flex items-center gap-2 pl-2 border-l border-zinc-800 text-zinc-300 hover:text-white transition-colors"
+                    onClick={() => {
+                      setShowUserMenu(!showUserMenu);
+                      setShowNotifMenu(false);
+                    }}
+                    className="flex items-center gap-2 p-1 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800/60 transition-colors focus:outline-none focus:ring-1 focus:ring-slate-700"
+                    aria-expanded={showUserMenu}
+                    aria-haspopup="true"
+                    aria-label="User account menu"
                   >
-                    <div className="w-7 h-7 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-xs font-bold text-white shadow-xs">
-                      {user.firstName ? user.firstName[0].toUpperCase() : <User className="w-3.5 h-3.5" />}
+                    <div className="w-7 h-7 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-xs font-semibold text-white shadow-xs shrink-0">
+                      {user.firstName ? user.firstName[0].toUpperCase() : <User className="w-3.5 h-3.5 text-slate-300" />}
                     </div>
-                    <span className="hidden sm:inline text-xs font-medium max-w-[120px] truncate">
+                    <span className="hidden md:inline text-xs font-medium text-slate-200 max-w-[110px] lg:max-w-[140px] truncate">
                       {user.firstName ? `${user.firstName} ${user.lastName}` : user.username}
                     </span>
-                    <ChevronDown className="w-3 h-3 opacity-60" />
+                    <ChevronDown
+                      className={`w-3.5 h-3.5 text-slate-400 shrink-0 transition-transform duration-150 ${
+                        showUserMenu ? 'rotate-180 text-white' : ''
+                      }`}
+                    />
                   </button>
 
                   {showUserMenu && (
@@ -752,13 +858,13 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
               <div className="flex items-center gap-2">
                 <Link
                   to="/workforce/login"
-                  className="px-3 py-1.5 rounded-lg text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-900 transition-colors"
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"
                 >
                   Sign In
                 </Link>
                 <Link
                   to="/workforce/signup"
-                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white hover:bg-zinc-100 text-zinc-950 transition-colors shadow-xs"
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white hover:bg-slate-100 text-slate-900 transition-colors shadow-xs"
                 >
                   Sign Up
                 </Link>
@@ -778,7 +884,7 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
       >
         <div className="space-y-3 text-xs text-zinc-600">
           <p>
-            Welcome to the <strong>{user?.companyName || 'Workforce'} Enterprise Operations Hub</strong>.
+            Welcome to the <strong>{user?.companyName || 'SEVO Partner'} Enterprise Operations Hub</strong>.
           </p>
           <div className="bg-zinc-50 border border-zinc-200/80 rounded-lg p-3.5 space-y-2">
             <h4 className="font-bold text-zinc-900">Operational Guidelines:</h4>

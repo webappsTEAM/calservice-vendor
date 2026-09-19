@@ -519,6 +519,7 @@ class WorkforceJobLifecycleEvent(models.Model):
     class EventType(models.TextChoices):
         EMPLOYEE_JOB_ACCEPTED = "EMPLOYEE_JOB_ACCEPTED", "Employee Job Accepted"
         EMPLOYEE_JOB_CANCELLED = "EMPLOYEE_JOB_CANCELLED", "Employee Job Cancelled"
+        EMPLOYEE_JOB_DECLINED = "EMPLOYEE_JOB_DECLINED", "Employee Job Declined"
         EMPLOYEE_JOB_REDISPATCH_STARTED = "EMPLOYEE_JOB_REDISPATCH_STARTED", "Employee Job Redispatch Started"
         NEW_EMPLOYEE_ASSIGNED = "NEW_EMPLOYEE_ASSIGNED", "New Employee Assigned"
 

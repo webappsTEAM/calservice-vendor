@@ -133,6 +133,10 @@ const CACHED_COMPLETED_JOBS_KEY = 'calservice_workforce_cached_completed_jobs';
     return activeJobs.filter(
       (j) =>
         (j.is_offer === true || j.active_offer?.status === 'OFFERED') &&
+        j.active_offer?.status !== 'REJECTED' &&
+        j.active_offer?.status !== 'DECLINED' &&
+        (j.offer_status || '').toUpperCase() !== 'REJECTED' &&
+        (j.offer_status || '').toUpperCase() !== 'DECLINED' &&
         !j.active_offer?.is_expired &&
         !j.is_assigned_to_current_employee
     );

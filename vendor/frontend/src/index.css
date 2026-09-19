@@ -77,6 +77,17 @@
   background: #94a3b8;
 }
 
+.scrollbar-none::-webkit-scrollbar,
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.scrollbar-none,
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 /* Enterprise & Bento Card Classes (Medium-Sharp Edges) */
 .enterprise-card,
 .bento-card {

@@ -15,7 +15,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.files.storage import default_storage
 from django.db import models, transaction
-from django.db.models import Q
+from django.db.models import Q, OuterRef, Exists
 
 logger = logging.getLogger(__name__)
 
@@ -2500,9 +2500,11 @@ class WorkforceJobListView(APIView):
 
             jobs = list(jobs_qs.select_related("customer", "assigned_employee", "assigned_employee__user", "company").order_by("-created_at")[:100])
         elif emp:
-            now = timezone.now()
+            server_now = timezone.now()
             from workforce_api.models import WorkforceJobOffer, WorkforceJobLifecycleEvent, WorkforceWorkExtension, JobPayment
             from workforce_api.services.workload import ACTIVE_QUEUE_STATUSES, WORKLOAD_OCCUPIED_STATUSES
+            from workforce_api.services.automatic_dispatch import get_scheduled_dispatch_window, check_candidate_eligibility
+            from service_requests.models import EmployeeJob
 
             # 1. Hard Single Active Job Invariant: Check if technician already has an active assignment
             from workforce_api.services.workload import get_employee_active_job
@@ -2514,16 +2516,43 @@ class WorkforceJobListView(APIView):
                 emp.current_availability = new_avail
                 Employee.objects.filter(pk=emp.pk).update(current_availability=new_avail)
 
-            from service_requests.models import EmployeeJob
-
             today = timezone.localdate()
+
+            # Subquery: check if THIS technician declined/rejected THIS job
+            declined_by_emp_subquery = WorkforceJobOffer.objects.filter(
+                job_id=OuterRef("pk"),
+                employee=emp,
+                status__in=[WorkforceJobOffer.Status.REJECTED, WorkforceJobOffer.Status.DECLINED]
+            )
+            declined_lifecycle_by_emp_subquery = WorkforceJobLifecycleEvent.objects.filter(
+                job_id=OuterRef("pk"),
+                employee=emp,
+                event_type="EMPLOYEE_JOB_DECLINED",
+            )
+            is_declined_by_emp = Exists(declined_by_emp_subquery) | Exists(declined_lifecycle_by_emp_subquery)
+
+            # Active unexpired offers for this technician
+            # Past-dated jobs must never appear as a new offer; declined jobs must be excluded
+            declined_job_ids_for_emp = WorkforceJobOffer.objects.filter(
+                employee=emp,
+                status__in=[WorkforceJobOffer.Status.REJECTED, WorkforceJobOffer.Status.DECLINED]
+            ).values("job_id")
+            declined_lifecycle_job_ids_for_emp = WorkforceJobLifecycleEvent.objects.filter(
+                employee=emp,
+                event_type="EMPLOYEE_JOB_DECLINED"
+            ).values("job_id")
+
             offered_job_ids_qs = WorkforceJobOffer.objects.filter(
                 employee=emp,
-                status="OFFERED",
-                expires_at__gt=now,
+                status=WorkforceJobOffer.Status.OFFERED,
+                expires_at__gt=server_now,
             ).filter(
-                Q(job__preferred_date=today) |
+                Q(job__preferred_date__gte=today) |
                 Q(job__preferred_date__isnull=True, job__created_at__date=today)
+            ).exclude(
+                job_id__in=declined_job_ids_for_emp
+            ).exclude(
+                job_id__in=declined_lifecycle_job_ids_for_emp
             ).values("job_id")
 
             emp_job_sr_ids_qs = EmployeeJob.objects.filter(
@@ -2533,8 +2562,6 @@ class WorkforceJobListView(APIView):
             ).values("service_request_id")
 
             # Canonical query definitions using subqueries to avoid extra roundtrips
-            # NOTE: technician_id is a CharField snapshot on ServiceRequest — it cannot
-            # be used as a Django ORM lookup field. Use the assigned_employee FK instead.
             assigned_active_qs = Q(
                 status__in=ACTIVE_QUEUE_STATUSES,
                 assigned_employee=emp,
@@ -2551,27 +2578,32 @@ class WorkforceJobListView(APIView):
             )
 
             # 5. Future scheduled bookings: upcoming unassigned bookings matching employee's company and capabilities
+            # Exclude jobs this technician has declined
             future_jobs_filter = Q(
                 status__in=["confirmed", "unassigned", "new_request", "draft"],
                 assigned_employee__isnull=True,
-                preferred_date__gt=today,
+                preferred_date__gte=today,
             )
             if emp.company_id and emp.company_id > 1 and getattr(emp.company, "slug", "") not in ("calservices", "caldim-engineering-pvt-ltd", "caldim-platform", "caldim-services"):
                 future_jobs_filter &= Q(company_id=emp.company_id)
             else:
                 future_jobs_filter &= (Q(company_id=1) | Q(company__isnull=True))
 
-            from workforce_api.services.automatic_dispatch import check_candidate_eligibility
             future_candidates = list(
                 ServiceRequest.objects.filter(future_jobs_filter)
+                .annotate(is_declined=is_declined_by_emp)
+                .filter(is_declined=False)
                 .select_related("company", "customer")
-                .order_by("preferred_date", "preferred_time", "-created_at")[:25]
+                .order_by("preferred_date", "preferred_time", "-created_at")[:50]
             )
             future_job_ids = []
             for fj in future_candidates:
-                eligible, _, _ = check_candidate_eligibility(emp, fj.service_category or fj.issue_title, fj, purpose="offer_reception")
-                if eligible:
-                    future_job_ids.append(fj.id)
+                # Reuse canonical get_scheduled_dispatch_window to determine if future scheduled
+                win = get_scheduled_dispatch_window(fj, now=server_now)
+                if win.is_future:
+                    eligible, _, _ = check_candidate_eligibility(emp, fj.service_category or fj.issue_title, fj, purpose="offer_reception")
+                    if eligible:
+                        future_job_ids.append(fj.id)
 
             future_scheduled_qs = Q(id__in=future_job_ids)
 
@@ -2579,18 +2611,21 @@ class WorkforceJobListView(APIView):
             status_filter = str(params.get("status", "active")).lower().strip()
 
             if status_filter == "completed":
+                # Section 11: preserve historical records
                 qs = ServiceRequest.objects.filter(
                     Q(assigned_employee=emp, status="completed") |
                     (employee_job_qs & Q(status="completed"))
                 )
             elif status_filter == "all":
+                # Section 10 & 11: exclude declined actionable/unassigned jobs
                 qs = ServiceRequest.objects.filter(
                     assigned_active_qs | completed_qs | offered_qs | employee_job_qs | future_scheduled_qs
-                )
+                ).exclude(~Q(status__in=["completed", "cancelled"]) & is_declined_by_emp)
             else: # "active" default
+                # Section 10: OFFERS, ACTIVE, SCHEDULED actionable jobs exclude declined
                 qs = ServiceRequest.objects.filter(
                     assigned_active_qs | offered_qs | (employee_job_qs & Q(status__in=ACTIVE_QUEUE_STATUSES)) | future_scheduled_qs
-                ).exclude(status__in=["completed", "cancelled"])
+                ).exclude(status__in=["completed", "cancelled"]).exclude(is_declined_by_emp)
 
             if emp.company:
                 if emp.company.id == 1 or getattr(emp.company, "slug", "") in ("calservices", "caldim-engineering-pvt-ltd", "caldim-platform", "caldim-services"):
@@ -4075,12 +4110,24 @@ class WorkforceJobAcceptOfferView(APIView):
                 employee=emp_obj,
             ).order_by("-offered_at").first()
 
+            if offer and offer.status in [WorkforceJobOffer.Status.REJECTED, WorkforceJobOffer.Status.DECLINED]:
+                return Response({
+                    "error": "You previously declined this job offer and cannot accept it.",
+                    "code": "OFFER_ALREADY_DECLINED"
+                }, status=status.HTTP_400_BAD_REQUEST)
+
             if offer and offer.status == WorkforceJobOffer.Status.SUPERSEDED_BY_ACCEPTANCE:
                 return Response({
                     "error": "This job has already been accepted by another professional.",
                     "code": "JOB_ALREADY_ACCEPTED",
                     "message": "This job has already been accepted by another professional."
                 }, status=status.HTTP_409_CONFLICT)
+
+            if offer and offer.status == WorkforceJobOffer.Status.OFFERED and offer.expires_at <= timezone.now():
+                return Response({
+                    "error": "This job offer has expired.",
+                    "code": "OFFER_EXPIRED"
+                }, status=status.HTTP_400_BAD_REQUEST)
 
             has_employee_job = EmployeeJob.objects.filter(service_request=job_obj, employee=emp_obj).exists()
             is_direct_assigned = (job_obj.assigned_employee == emp_obj)
@@ -4837,11 +4884,11 @@ class WorkforceJobRejectOfferView(APIView):
     def post(self, request, pk):
         job = ServiceRequest.objects.filter(pk=pk).first()
         if not job:
-            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Job not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
         emp = getattr(request.user, "employee_profile", None)
         if not emp:
-            return Response({"error": "Employee profile not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Employee profile not found.", "code": "PROFILE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
         if not is_employee_authorized_for_job(emp, job):
             return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
@@ -4851,7 +4898,7 @@ class WorkforceJobRejectOfferView(APIView):
         with transaction.atomic():
             job_obj = ServiceRequest.objects.select_for_update().filter(pk=pk).first()
             if not job_obj:
-                return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+                return Response({"error": "Job not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
             from service_requests.models import EmployeeJob
             from workforce_api.models import WorkforceEventLog
@@ -4859,20 +4906,45 @@ class WorkforceJobRejectOfferView(APIView):
             offer = WorkforceJobOffer.objects.select_for_update().filter(
                 job=job_obj,
                 employee=emp
-            ).order_by("-id").first()
+            ).order_by("-offered_at", "-id").first()
 
-            if offer:
-                offer.status = "REJECTED"
-                offer.rejection_reason = reason
-                offer.save(update_fields=["status", "rejection_reason"])
-            else:
-                WorkforceJobOffer.objects.create(
-                    job=job_obj,
-                    employee=emp,
-                    status="REJECTED",
-                    rejection_reason=reason,
-                    expires_at=timezone.now()
-                )
+            # 1. Do not create fake rejection offers if no valid offer exists
+            if not offer:
+                return Response({
+                    "error": "No active job offer found for this technician.",
+                    "code": "NO_ACTIVE_OFFER"
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # 2. Idempotent handling for repeated / concurrent decline requests
+            if offer.status in [WorkforceJobOffer.Status.REJECTED, WorkforceJobOffer.Status.DECLINED]:
+                return Response({
+                    "message": "Job offer already declined.",
+                    "job_id": job_obj.id,
+                    "status": job_obj.status,
+                }, status=status.HTTP_200_OK)
+
+            # 3. Expiration verification
+            now = timezone.now()
+            if offer.status == WorkforceJobOffer.Status.EXPIRED or (offer.status == WorkforceJobOffer.Status.OFFERED and offer.expires_at <= now):
+                if offer.status != WorkforceJobOffer.Status.EXPIRED:
+                    offer.status = WorkforceJobOffer.Status.EXPIRED
+                    offer.save(update_fields=["status"])
+                return Response({
+                    "error": "This job offer has already expired.",
+                    "code": "OFFER_EXPIRED"
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # 4. Verify offer is still in OFFERED status
+            if offer.status != WorkforceJobOffer.Status.OFFERED:
+                return Response({
+                    "error": f"Cannot decline offer: current offer status is {offer.status}.",
+                    "code": "INVALID_OFFER_STATE"
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # 5. Atomic state transition: OFFERED -> REJECTED
+            offer.status = WorkforceJobOffer.Status.REJECTED
+            offer.rejection_reason = reason
+            offer.save(update_fields=["status", "rejection_reason"])
 
             if job_obj.assigned_employee == emp:
                 job_obj.assigned_employee = None
@@ -4884,28 +4956,51 @@ class WorkforceJobRejectOfferView(APIView):
                 employee=emp
             ).exclude(status="COMPLETED").delete()
 
+            from workforce_api.models import WorkforceJobLifecycleEvent
+
+            WorkforceJobLifecycleEvent.objects.create(
+                job=job_obj,
+                employee=emp,
+                company=job_obj.company,
+                actor_user=request.user,
+                event_type="EMPLOYEE_JOB_DECLINED",
+                previous_status=job_obj.status,
+                new_status=job_obj.status,
+                reason_code="TECHNICIAN_DECLINED",
+                reason_text=reason,
+                metadata={
+                    "job_id": job_obj.id,
+                    "employee_id": emp.id,
+                    "offer_id": offer.id,
+                    "preferred_date": str(job_obj.preferred_date) if job_obj.preferred_date else None,
+                    "preferred_time": str(job_obj.preferred_time) if job_obj.preferred_time else None,
+                    "declined_at": now.isoformat(),
+                }
+            )
+
             WorkforceEventLog.objects.create(
                 user=emp.user,
                 event_type="OFFER_REJECTED",
-                payload={"job_id": job_obj.id, "employee_id": emp.id, "reason": reason}
+                payload={
+                    "job_id": job_obj.id,
+                    "employee_id": emp.id,
+                    "reason": reason,
+                    "preferred_date": str(job_obj.preferred_date) if job_obj.preferred_date else None,
+                    "preferred_time": str(job_obj.preferred_time) if job_obj.preferred_time else None,
+                    "declined_at": now.isoformat(),
+                }
             )
 
-            # Trigger immediate dispatch to next ranked technician
-            success, msg = run_automatic_dispatch(job_obj)
+            job_id_val = job_obj.id
+            emp_id_val = emp.id
 
-            # Ensure job is properly marked unassigned if no other candidate received it
-            job_obj.refresh_from_db()
-            has_new_offer = WorkforceJobOffer.objects.filter(
-                job=job_obj,
-                status="OFFERED",
-                expires_at__gt=timezone.now()
-            ).exists()
-            if not has_new_offer and job_obj.assigned_employee is None and job_obj.status == "assigned":
-                job_obj.status = "unassigned"
-                job_obj.save(update_fields=["status"])
+            # Section 7: Trigger next candidate dispatch after decline transaction commits
+            transaction.on_commit(
+                lambda: run_automatic_dispatch(job_id_val, excluded_employee_ids=[emp_id_val])
+            )
 
             return Response({
-                "message": f"Job offer declined. Next candidate dispatch status: {msg}",
+                "message": "Job offer declined.",
                 "job_id": job_obj.id,
                 "status": job_obj.status,
             }, status=status.HTTP_200_OK)

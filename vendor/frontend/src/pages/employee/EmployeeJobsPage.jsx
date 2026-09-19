@@ -347,6 +347,38 @@ function getStatusTag(job) {
   };
 }
 
+const CATEGORIES = [
+  { id: 'ALL', label: 'All Categories' },
+  { id: 'goods_transport_truck', label: '🚚 Mini Truck' },
+  { id: 'goods_transport_two_wheeler', label: '🛵 Two-Wheeler' },
+  { id: 'packers_movers', label: '📦 Packers & Movers' },
+  { id: 'electrical', label: '⚡ Electrical' },
+  { id: 'ac', label: '❄️ AC & Appliances' },
+  { id: 'plumbing', label: '💧 Plumbing' },
+  { id: 'carpentry', label: '🔨 Locks & Carpentry' },
+  { id: 'cleaning', label: '🌿 Cleaning' },
+];
+
+function matchesCategory(jobCategoryId, targetCategoryId) {
+  if (!targetCategoryId || targetCategoryId === 'ALL') return true;
+  if (jobCategoryId === targetCategoryId) return true;
+  if (targetCategoryId === 'goods_transport_truck' && (jobCategoryId === 'goods_transport' || jobCategoryId === 'goods_transport_truck')) return true;
+  if (targetCategoryId === 'goods_transport' && (jobCategoryId === 'goods_transport_truck' || jobCategoryId === 'goods_transport')) return true;
+  return false;
+}
+
+function isOfferJobPastDated(job, todayStr) {
+  if (!isOfferJob(job)) return false;
+  if (job?.preferred_date) {
+    return job.preferred_date < todayStr;
+  }
+  if (job?.created_at) {
+    const createdDateStr = String(job.created_at).slice(0, 10);
+    return createdDateStr < todayStr;
+  }
+  return false;
+}
+
 export function EmployeeJobsPage() {
   const { user } = useAuth();
   const employeeRuntime = useContext(EmployeeRuntimeContext);
@@ -612,55 +644,89 @@ export function EmployeeJobsPage() {
     }
   };
 
-  // Helper: Defensive UI check to ensure past-dated jobs never display as available / new offers
-  const isOfferJobPastDated = (job) => {
-    if (!isOfferJob(job)) return false;
-
+  // 1. Memoized todayStr to avoid calling new Date() repeatedly in filter loops
+  const todayStr = useMemo(() => {
     const now = new Date();
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  }, []);
 
-    if (job?.preferred_date) {
-      return job.preferred_date < todayStr;
-    }
-    if (job?.created_at) {
-      const createdDateStr = String(job.created_at).slice(0, 10);
-      return createdDateStr < todayStr;
-    }
-    return false;
-  };
-
-  // Tab counts
+  // 2. Tab counts — single-pass O(N) evaluation
   const counts = useMemo(() => {
-    const validActive = activeJobs.filter((j) => !isOfferJobPastDated(j));
-    const validCompleted = completedJobs.filter((j) => !isOfferJobPastDated(j));
-    const offers = incomingOffers.filter((j) => !isOfferJobPastDated(j)).length;
-    const scheduled = validActive.filter((j) => j.is_scheduled_future).length;
-    const active = validActive.filter((j) => {
-      if (isOfferJob(j) || j.is_scheduled_future) return false;
-      const st = (j.status || '').toUpperCase();
-      return ['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'PROOF_SUBMITTED'].includes(st);
-    }).length;
-    const completed = validCompleted.length;
+    let active = 0;
+    let scheduled = 0;
+    let validActiveCount = 0;
+
+    activeJobs.forEach((j) => {
+      if (isOfferJobPastDated(j, todayStr)) return;
+      validActiveCount++;
+      if (j.is_scheduled_future) {
+        scheduled++;
+      } else if (!isOfferJob(j)) {
+        const st = (j.status || '').toUpperCase();
+        if (['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'PROOF_SUBMITTED'].includes(st)) {
+          active++;
+        }
+      }
+    });
+
+    let completed = 0;
+    completedJobs.forEach((j) => {
+      if (!isOfferJobPastDated(j, todayStr)) completed++;
+    });
+
+    let offers = 0;
+    incomingOffers.forEach((j) => {
+      if (!isOfferJobPastDated(j, todayStr)) offers++;
+    });
 
     return {
-      ALL: validActive.length + completed,
+      ALL: validActiveCount + completed,
       OFFERS: offers,
       ACTIVE: active,
       SCHEDULED: scheduled,
       COMPLETED: completed,
     };
-  }, [activeJobs, completedJobs, incomingOffers]);
+  }, [activeJobs, completedJobs, incomingOffers, todayStr]);
 
-  // Filtered jobs list
+  // 3. Category counts — evaluated for the active tab jobs and current search
+  const categoryCounts = useMemo(() => {
+    const countsMap = { ALL: 0 };
+    const term = searchTerm.toLowerCase().trim();
+
+    jobs.forEach((job) => {
+      if (isOfferJobPastDated(job, todayStr)) return;
+
+      if (term) {
+        const matches =
+          (job.service_title || job.service_category || '').toLowerCase().includes(term) ||
+          (job.customer_display_name || '').toLowerCase().includes(term) ||
+          (job.address || '').toLowerCase().includes(term) ||
+          String(job.request_id || job.id).toLowerCase().includes(term);
+        if (!matches) return;
+      }
+
+      countsMap.ALL = (countsMap.ALL || 0) + 1;
+      const meta = getServiceCategoryMeta(job.service_category, job.service_title);
+      const catId = meta.id;
+      countsMap[catId] = (countsMap[catId] || 0) + 1;
+      if (catId === 'goods_transport') {
+        countsMap['goods_transport_truck'] = (countsMap['goods_transport_truck'] || 0) + 1;
+      }
+    });
+
+    return countsMap;
+  }, [jobs, searchTerm, todayStr]);
+
+  // 4. Filtered jobs list with hoisted term and streamlined category matching
   const filteredJobs = useMemo(() => {
+    const term = searchTerm.toLowerCase().trim();
+
     return jobs.filter((job) => {
-      if (isOfferJobPastDated(job)) {
+      if (isOfferJobPastDated(job, todayStr)) {
         return false;
       }
       const isOffer = isOfferJob(job);
       const status = (job.status || '').toUpperCase();
-      const term = searchTerm.toLowerCase().trim();
-      const meta = getServiceCategoryMeta(job.service_category, job.service_title);
 
       if (activeTab === 'OFFERS' && !isOffer) {
         return false;
@@ -668,15 +734,26 @@ export function EmployeeJobsPage() {
       if (activeTab === 'SCHEDULED' && !job.is_scheduled_future) {
         return false;
       }
-      if (activeTab === 'ACTIVE' && (job.is_scheduled_future || isOffer || !['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'PROOF_SUBMITTED'].includes(status))) {
+      if (
+        activeTab === 'ACTIVE' &&
+        (job.is_scheduled_future ||
+          isOffer ||
+          !['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'PROOF_SUBMITTED'].includes(status))
+      ) {
         return false;
       }
-      if (activeTab === 'COMPLETED' && (isOffer || !['COMPLETED', 'WORK_COMPLETED', 'WAITING_FOR_PAYMENT'].includes(status))) {
+      if (
+        activeTab === 'COMPLETED' &&
+        (isOffer || !['COMPLETED', 'WORK_COMPLETED', 'WAITING_FOR_PAYMENT'].includes(status))
+      ) {
         return false;
       }
 
-      if (selectedCategory !== 'ALL' && meta.id !== selectedCategory) {
-        return false;
+      if (selectedCategory !== 'ALL') {
+        const meta = getServiceCategoryMeta(job.service_category, job.service_title);
+        if (!matchesCategory(meta.id, selectedCategory)) {
+          return false;
+        }
       }
 
       if (term) {
@@ -690,7 +767,7 @@ export function EmployeeJobsPage() {
 
       return true;
     });
-  }, [jobs, activeTab, selectedCategory, searchTerm]);
+  }, [jobs, activeTab, selectedCategory, searchTerm, todayStr]);
 
   return (
     <AppShell breadcrumbs={[{ label: 'Home', to: '/workforce/employee/dashboard' }, { label: 'Jobs' }]}>
@@ -775,74 +852,99 @@ export function EmployeeJobsPage() {
           </div>
         )}
 
-        {/* ── SEGMENTED TAB SELECTOR (Swiggy Partner Style) ── */}
-        <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
-          {[
-            { id: 'ALL', label: 'All Jobs', count: counts.ALL },
-            { id: 'OFFERS', label: '⚡ New Offers', count: counts.OFFERS, isOffer: true },
-            { id: 'ACTIVE', label: '▶️ In Progress', count: counts.ACTIVE },
-            { id: 'SCHEDULED', label: '📅 Scheduled', count: counts.SCHEDULED },
-            { id: 'COMPLETED', label: '✅ Completed', count: counts.COMPLETED },
-          ].map((tab) => {
-            const isActive = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => handleTabChange(tab.id)}
-                className={`px-4 py-2.5 rounded-xl font-bold text-xs whitespace-nowrap transition-all flex items-center gap-2 cursor-pointer ${
-                  isActive
-                    ? 'bg-slate-900 text-white shadow-sm'
-                    : 'bg-white hover:bg-slate-100 text-slate-700 border border-slate-200/80 shadow-2xs'
-                }`}
-              >
-                <span>{tab.label}</span>
-                {tab.count > 0 && (
-                  <span
-                    className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-black ${
-                      tab.isOffer && counts.OFFERS > 0
-                        ? 'bg-amber-500 text-white animate-pulse'
-                        : isActive
-                        ? 'bg-slate-800 text-white'
-                        : 'bg-slate-100 text-slate-700'
-                    }`}
-                  >
-                    {tab.count}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
+        {/* ── FILTER & CATEGORY CONTROL BAR (Unified Segmented Panel) ── */}
+        <div className="bg-white border border-slate-200/90 rounded-2xl p-3 sm:p-3.5 shadow-2xs space-y-2.5">
+          {/* 1. Status Segmented Tabs */}
+          <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto pb-0.5 scrollbar-none no-scrollbar scroll-smooth">
+            {[
+              { id: 'ALL', label: 'All Jobs', count: counts.ALL },
+              { id: 'OFFERS', label: '⚡ New Offers', count: counts.OFFERS, isOffer: true },
+              { id: 'ACTIVE', label: '▶️ In Progress', count: counts.ACTIVE },
+              { id: 'SCHEDULED', label: '📅 Scheduled', count: counts.SCHEDULED },
+              { id: 'COMPLETED', label: '✅ Completed', count: counts.COMPLETED },
+            ].map((tab) => {
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => handleTabChange(tab.id)}
+                  className={`px-3.5 py-2 sm:px-4 sm:py-2.5 rounded-xl font-bold text-xs whitespace-nowrap transition-all flex items-center gap-2 cursor-pointer shrink-0 ${
+                    isActive
+                      ? 'bg-slate-900 text-white shadow-xs'
+                      : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200/80 shadow-2xs'
+                  }`}
+                >
+                  <span>{tab.label}</span>
+                  {tab.count > 0 && (
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-black ${
+                        tab.isOffer && counts.OFFERS > 0
+                          ? 'bg-amber-500 text-white animate-pulse'
+                          : isActive
+                          ? 'bg-white/20 text-white'
+                          : 'bg-slate-200/80 text-slate-700'
+                      }`}
+                    >
+                      {tab.count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
 
-        {/* ── CATEGORY FILTER CHIPS ── */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
-          {[
-            { id: 'ALL', label: 'All Categories' },
-            { id: 'goods_transport_truck', label: '🚚 Mini Truck' },
-            { id: 'goods_transport_two_wheeler', label: '🛵 Two-Wheeler' },
-            { id: 'packers_movers', label: '📦 Packers & Movers' },
-            { id: 'electrical', label: '⚡ Electrical' },
-            { id: 'ac', label: '❄️ AC & Appliances' },
-            { id: 'plumbing', label: '💧 Plumbing' },
-            { id: 'carpentry', label: '🔨 Locks & Carpentry' },
-            { id: 'cleaning', label: '🌿 Cleaning' },
-          ].map((cat) => {
-            const isSelected = selectedCategory === cat.id;
-            return (
+          {/* Hairline Divider */}
+          <div className="h-px bg-slate-100 w-full" />
+
+          {/* 2. Category Filter Chips */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none no-scrollbar scroll-smooth text-xs">
+            {CATEGORIES.map((cat) => {
+              const isSelected = selectedCategory === cat.id;
+              const catCount = categoryCounts[cat.id] || 0;
+              return (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => {
+                    // Toggle deselection: clicking active category resets to ALL
+                    setSelectedCategory((prev) => (prev === cat.id ? 'ALL' : cat.id));
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all cursor-pointer inline-flex items-center gap-1.5 shrink-0 ${
+                    isSelected
+                      ? 'bg-indigo-50 text-indigo-900 border border-indigo-300 font-bold shadow-2xs ring-2 ring-indigo-500/15'
+                      : 'bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/80'
+                  }`}
+                >
+                  <span>{cat.label}</span>
+                  {catCount > 0 && (
+                    <span
+                      className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold ${
+                        isSelected
+                          ? 'bg-indigo-200/80 text-indigo-950'
+                          : 'bg-slate-100 text-slate-600 border border-slate-200/60'
+                      }`}
+                    >
+                      {catCount}
+                    </span>
+                  )}
+                  {isSelected && cat.id !== 'ALL' && (
+                    <span className="text-indigo-400 hover:text-indigo-700 ml-0.5 font-bold">×</span>
+                  )}
+                </button>
+              );
+            })}
+
+            {selectedCategory !== 'ALL' && (
               <button
-                key={cat.id}
-                onClick={() => setSelectedCategory(cat.id)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
-                  isSelected
-                    ? 'bg-indigo-50 text-indigo-900 border border-indigo-300 font-bold'
-                    : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200/80'
-                }`}
+                type="button"
+                onClick={() => setSelectedCategory('ALL')}
+                className="px-2 py-1 text-[11px] font-medium text-slate-400 hover:text-slate-700 underline decoration-slate-300 underline-offset-2 whitespace-nowrap cursor-pointer shrink-0 ml-1"
               >
-                {cat.label}
+                Reset filter
               </button>
-            );
-          })}
+            )}
+          </div>
         </div>
 
         {/* ── CLEAN SWIGGY-STYLE JOB CARDS GRID ── */}

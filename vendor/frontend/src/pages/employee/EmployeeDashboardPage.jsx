@@ -162,6 +162,7 @@ export function EmployeeDashboardPage() {
     reconcileJobAccepted,
     reconcileJobCompleted,
     reconcileOfferRemoved,
+    declineOfferOptimistic,
     liveLocation,
     locationError,
     scanCurrentLocation,
@@ -1103,6 +1104,8 @@ export function EmployeeDashboardPage() {
       try {
         setIsDecliningOffer(true);
         setActionLoading(decliningId);
+        // Optimistically remove from runtime state instantly
+        declineOfferOptimistic?.(decliningId);
         await apiRejectJobOffer(decliningId, finalReason);
         setDeclineModalJob(null);
         setSelectedJob((prev) => (prev?.id === decliningId ? null : prev));
@@ -1111,6 +1114,8 @@ export function EmployeeDashboardPage() {
         await loadDashboard();
         setTimeout(() => setSuccessMsg(''), 4000);
       } catch (err) {
+        // Rollback optimistic removal on error
+        refreshActiveJobs({ force: true });
         setError(err.message || 'Failed to decline job offer.');
       } finally {
         setIsDecliningOffer(false);
