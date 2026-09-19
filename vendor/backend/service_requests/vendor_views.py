@@ -337,6 +337,57 @@ def _get_target_estimation(pk):
     return None, None
 
 
+# ── GT audit Update 13b fix: cross-tenant ownership on the estimation/survey
+# flow ────────────────────────────────────────────────────────────────────
+#
+# _get_target_estimation() above resolves a raw pk with no company scoping
+# at all -- every detail/action view in this file was calling it and then
+# reading or mutating the result with only permission_classes=[IsAuthenticated]
+# standing in the way. That let any authenticated vendor-side actor, from
+# any company, read another company's estimation/customer/quotation detail,
+# and even overwrite ServiceRequest.vendor_id via the confirm endpoint to
+# hijack a lead already claimed by someone else.
+#
+# Mirrors the tenant-scoping pattern already proven correct elsewhere in
+# this codebase (workforce_api/quote_views.py's _visible_quotes/_get_or_404):
+# scope by company, and return an identical 404 for "doesn't exist" vs
+# "belongs to someone else" so a caller can't distinguish the two.
+def _actor_vendor_key(request):
+    """
+    The same value VendorEstimationConfirmView.post() writes into
+    ServiceRequest.vendor_id when an actor confirms/claims a lead: the
+    actor's company_id if they have one, else their own user id (identical
+    fallback to that view's own vendor_id assignment, so an actor can
+    always recognize a lead they themselves claimed).
+    """
+    return str(getattr(request.user, "company_id", "") or request.user.id)
+
+
+def _may_access_estimation(sr, request):
+    """
+    Is this actor allowed to read or act on this ServiceRequest's
+    estimation?
+      - Platform superuser: always.
+      - Unclaimed lead (sr.vendor_id blank): visible to any authenticated
+        vendor-side actor -- this is a shared, unclaimed lead pool by
+        design (see VendorEstimationConfirmView's claim flow); leaving it
+        open here is intentional, not a gap.
+      - Claimed lead: only the same actor/company that already claimed it.
+    """
+    if getattr(request.user, "is_superuser", False):
+        return True
+    if not (sr.vendor_id or "").strip():
+        return True
+    return sr.vendor_id == _actor_vendor_key(request)
+
+
+def _estimation_ownership_denied(pk):
+    # Deliberately identical to _get_target_estimation's own "not found"
+    # response -- a caller must not be able to tell "doesn't exist" from
+    # "belongs to another company".
+    return Response({"error": f"Estimation #{pk} not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+
 def _sync_workforce_quote(sr, quote, computed_items=None):
     """
     Synchronizes EstimationQuotation into the canonical WorkforceQuote & WorkforceQuoteItem
@@ -547,6 +598,8 @@ class VendorEstimationDetailView(APIView):
         sr, est = _get_target_estimation(pk)
         if not sr:
             return Response({"error": f"Estimation #{pk} not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+        if not _may_access_estimation(sr, request):
+            return _estimation_ownership_denied(pk)
 
         data = _serialize_estimation(sr, est, full_detail=True)
         return Response(data)
@@ -564,6 +617,8 @@ class VendorEstimationConfirmView(APIView):
         sr, est = _get_target_estimation(pk)
         if not sr:
             return Response({"error": f"Estimation #{pk} not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+        if not _may_access_estimation(sr, request):
+            return _estimation_ownership_denied(pk)
 
         # Lock rows
         sr = ServiceRequest.objects.select_for_update().get(pk=sr.pk)
@@ -605,6 +660,8 @@ class VendorEstimationAssignTechnicianView(APIView):
         sr, est = _get_target_estimation(pk)
         if not sr:
             return Response({"error": f"Estimation #{pk} not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+        if not _may_access_estimation(sr, request):
+            return _estimation_ownership_denied(pk)
 
         tech_id = request.data.get("technician_id")
         tech_name = request.data.get("technician_name")
@@ -704,6 +761,8 @@ class VendorEstimationStartJourneyView(APIView):
         sr, est = _get_target_estimation(pk)
         if not sr:
             return Response({"error": f"Estimation #{pk} not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+        if not _may_access_estimation(sr, request):
+            return _estimation_ownership_denied(pk)
 
         sr.status = "technician_on_the_way"
         sr.save(update_fields=["status", "updated_at"])
@@ -730,6 +789,8 @@ class VendorEstimationArrivedView(APIView):
         sr, est = _get_target_estimation(pk)
         if not sr:
             return Response({"error": f"Estimation #{pk} not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+        if not _may_access_estimation(sr, request):
+            return _estimation_ownership_denied(pk)
 
         sr.status = "technician_arrived"
         # technician_arrived_at is not a column on this app's ServiceRequest
@@ -766,6 +827,8 @@ class VendorEstimationVerifyOtpView(APIView):
         sr, est = _get_target_estimation(pk)
         if not sr:
             return Response({"error": f"Estimation #{pk} not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+        if not _may_access_estimation(sr, request):
+            return _estimation_ownership_denied(pk)
 
         provided_otp = str(request.data.get("otp", "")).strip()
         expected_otp = str(sr.start_otp or "").strip()
@@ -822,6 +885,8 @@ class VendorEstimationFindingsView(APIView):
         sr, est = _get_target_estimation(pk)
         if not sr or not est:
             return Response({"error": f"Estimation #{pk} not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+        if not _may_access_estimation(sr, request):
+            return _estimation_ownership_denied(pk)
 
         findings_data = request.data
         if isinstance(findings_data, dict) and "findings" in findings_data:
@@ -883,6 +948,8 @@ class VendorEstimationPhotosView(APIView):
         sr, est = _get_target_estimation(pk)
         if not sr or not est:
             return Response({"error": f"Estimation #{pk} not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+        if not _may_access_estimation(sr, request):
+            return _estimation_ownership_denied(pk)
 
         inspection, _ = Inspection.objects.get_or_create(
             estimation=est,
@@ -936,6 +1003,8 @@ class VendorEstimationInspectionCompleteView(APIView):
         sr, est = _get_target_estimation(pk)
         if not sr or not est:
             return Response({"error": f"Estimation #{pk} not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+        if not _may_access_estimation(sr, request):
+            return _estimation_ownership_denied(pk)
 
         diagnosis_summary = request.data.get("diagnosis_summary") or request.data.get("diagnosis") or "Inspection completed."
         notes = request.data.get("notes", "")
@@ -977,6 +1046,8 @@ class VendorEstimationQuotationView(APIView):
         sr, est = _get_target_estimation(pk)
         if not sr or not est:
             return Response({"error": f"Estimation #{pk} not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+        if not _may_access_estimation(sr, request):
+            return _estimation_ownership_denied(pk)
 
         data = request.data
         items_data = data.get("items", [])
@@ -1098,6 +1169,8 @@ class VendorEstimationQuotationSendView(APIView):
         sr, est = _get_target_estimation(pk)
         if not sr or not est:
             return Response({"error": f"Estimation #{pk} not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+        if not _may_access_estimation(sr, request):
+            return _estimation_ownership_denied(pk)
 
         quote = est.quotations.filter(pk=quote_id).first()
         if not quote:
@@ -1135,6 +1208,8 @@ class VendorEstimationQuotationReviseView(APIView):
         sr, est = _get_target_estimation(pk)
         if not sr or not est:
             return Response({"error": f"Estimation #{pk} not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+        if not _may_access_estimation(sr, request):
+            return _estimation_ownership_denied(pk)
 
         orig_quote = est.quotations.filter(pk=quote_id).first()
         if not orig_quote:
@@ -1203,6 +1278,8 @@ class VendorEstimationFeeCollectView(APIView):
         sr, est = _get_target_estimation(pk)
         if not sr or not est:
             return Response({"error": f"Estimation #{pk} not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+        if not _may_access_estimation(sr, request):
+            return _estimation_ownership_denied(pk)
 
         fee = est.fees.first()
         if not fee:
@@ -1248,6 +1325,8 @@ class VendorEstimationFeeWaiveView(APIView):
         sr, est = _get_target_estimation(pk)
         if not sr or not est:
             return Response({"error": f"Estimation #{pk} not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+        if not _may_access_estimation(sr, request):
+            return _estimation_ownership_denied(pk)
 
         fee = est.fees.first()
         if not fee:
@@ -1407,6 +1486,8 @@ class VendorEstimationCustomerDecideView(APIView):
         sr, est = _get_target_estimation(pk)
         if not sr or not est:
             return Response({"error": f"Estimation #{pk} not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+        if not _may_access_estimation(sr, request):
+            return _estimation_ownership_denied(pk)
 
         # Lock rows
         sr = ServiceRequest.objects.select_for_update().get(pk=sr.pk)
@@ -1589,6 +1670,17 @@ class VendorEstimationInvoiceView(APIView):
     Returns full authoritative invoice data from the database.
     Can be fetched by the customer app to display and generate downloadable PDF invoice.
     Pass ?format=html for a ready-to-print HTML view.
+
+    GT audit Update 13b fix: this was permission_classes=[AllowAny] with no
+    further check at all -- a raw, guessable/enumerable numeric pk was the
+    *only* thing standing between an anonymous caller and someone else's
+    full invoice (line items, amounts, customer-facing details). It has to
+    stay reachable without vendor-side login (that's the customer-app use
+    case the docstring describes), but a real capability is now required:
+    the same tracking_token (ServiceRequest.tracking_token, a UUID) already
+    used elsewhere in this codebase for exactly this "public but
+    capability-gated" access pattern. An authenticated vendor-side actor
+    who owns the estimation may still fetch it without a token.
     """
     permission_classes = [permissions.AllowAny]
     renderer_classes = [renderers.JSONRenderer, renderers.StaticHTMLRenderer]
@@ -1597,6 +1689,18 @@ class VendorEstimationInvoiceView(APIView):
         sr, est = _get_target_estimation(pk)
         if not sr:
             return Response({"error": f"Estimation #{pk} not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        provided_token = request.query_params.get("token") or request.data.get("token")
+        token_ok = bool(
+            provided_token and sr.tracking_token and
+            str(sr.tracking_token).strip().lower() == str(provided_token).strip().lower()
+        )
+        if not token_ok:
+            is_owning_actor = bool(
+                request.user and request.user.is_authenticated and _may_access_estimation(sr, request)
+            )
+            if not is_owning_actor:
+                return Response({"error": f"Estimation #{pk} not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
         fee = est.fees.first() if est else None
         inv_num = sr.invoice_id or f"INV-EST-{sr.id}-{sr.request_id or f'AC{sr.id}'}"

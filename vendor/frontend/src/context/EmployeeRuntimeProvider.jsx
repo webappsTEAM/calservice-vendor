@@ -672,26 +672,51 @@ const CACHED_COMPLETED_JOBS_KEY = 'calservice_workforce_cached_completed_jobs';
       refreshActiveJobs,
       refreshCompletedJobs,
       reconcileJobAccepted: (jobId, updatedJob) => {
-        setActiveJobs((prev) =>
-          prev.map((j) =>
-            j.id === jobId
+        const idNum = Number(jobId);
+        setActiveJobs((prev) => {
+          const next = prev.map((j) =>
+            j.id === jobId || j.id === idNum
               ? { ...j, ...(updatedJob || {}), status: 'accepted', is_offer: false, is_assigned_to_current_employee: true }
               : j
-          )
-        );
+          );
+          try {
+            localStorage.setItem(CACHED_ACTIVE_JOBS_KEY, JSON.stringify(next));
+          } catch (_) {}
+          return next;
+        });
         setSelectedJob((prev) =>
-          prev?.id === jobId
+          prev?.id === jobId || prev?.id === idNum
             ? { ...prev, ...(updatedJob || {}), status: 'accepted', is_offer: false, is_assigned_to_current_employee: true }
             : prev
         );
       },
       reconcileJobCompleted: (jobId) => {
-        setActiveJobs((prev) => prev.filter((j) => j.id !== jobId));
-        setSelectedJob((prev) => (prev?.id === jobId ? null : prev));
+        const idNum = Number(jobId);
+        setActiveJobs((prev) => {
+          const next = prev.filter((j) => j.id !== jobId && j.id !== idNum);
+          try {
+            localStorage.setItem(CACHED_ACTIVE_JOBS_KEY, JSON.stringify(next));
+          } catch (_) {}
+          return next;
+        });
+        setSelectedJob((prev) => (prev?.id === jobId || prev?.id === idNum ? null : prev));
       },
       reconcileOfferRemoved: (jobId) => {
-        setActiveJobs((prev) => prev.filter((j) => j.id !== jobId));
-        setSelectedJob((prev) => (prev?.id === jobId ? null : prev));
+        const idNum = Number(jobId);
+        setActiveJobs((prev) => {
+          const next = prev.filter((j) => j.id !== jobId && j.id !== idNum);
+          try {
+            localStorage.setItem(CACHED_ACTIVE_JOBS_KEY, JSON.stringify(next));
+          } catch (_) {}
+          return next;
+        });
+        setSelectedJob((prev) => (prev?.id === jobId || prev?.id === idNum ? null : prev));
+        try {
+          knownOfferIdsRef.current.delete(jobId);
+          knownOfferIdsRef.current.delete(idNum);
+          knownOfferIdsRef.current.delete(`job_${jobId}`);
+          knownOfferIdsRef.current.delete(`job_${idNum}`);
+        } catch (_) {}
       },
 
       // Location & Presence State Machine

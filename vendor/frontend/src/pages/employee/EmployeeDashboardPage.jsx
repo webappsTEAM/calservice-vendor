@@ -1121,7 +1121,11 @@ export function EmployeeDashboardPage() {
         setActionLoading(decliningId);
         await apiRejectJobOffer(decliningId, finalReason);
         setDeclineModalJob(null);
-        setSelectedJob((prev) => (prev?.id === decliningId ? null : prev));
+        if (typeof reconcileOfferRemoved === 'function') {
+          reconcileOfferRemoved(decliningId);
+        } else {
+          setSelectedJob((prev) => (prev?.id === decliningId ? null : prev));
+        }
         refreshActiveJobs({ force: true });
         setSuccessMsg('Job offer declined.');
         await loadDashboard();

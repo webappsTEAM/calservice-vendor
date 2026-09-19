@@ -135,7 +135,7 @@ MAX_WIDENED_DISPATCH_RADIUS_KM = 100.0
 CUSTOMER_DELAY_SIGNAL_AFTER_CYCLES = 2
 
 # Dispatchable database statuses
-DISPATCHABLE_STATUSES = ["draft", "new_request", "confirmed", "unassigned", "assigned", "redispatching"]
+DISPATCHABLE_STATUSES = ["draft", "new_request", "confirmed", "unassigned", "assigned", "redispatching", "received"]
 
 # GT-A-01/GT-A-02: service_name values that require a vehicle on file with
 # current insurance/permit/PUC (Gate 3). Mirrors
@@ -188,7 +188,7 @@ EXPLICIT_SERVICE_ALIASES = {
 
 def normalize_service_category(cat: str) -> str:
     """Normalizes service category into canonical lowercase slug."""
-    raw = str(cat or "").strip().lower().replace("-", "_").replace(" ", "_")
+    raw = (cat or "").strip().lower().replace("-", "_").replace(" ", "_")
     if raw in ("truck", "mini_truck", "goods_transport_truck"):
         return "goods_transport_truck"
     if raw in ("two_wheeler", "2_wheeler", "goods_transport_two_wheeler"):
@@ -584,7 +584,18 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
             from workforce_api.services.cash_reconciliation import compute_outstanding_cash
 
             outstanding, _qs = compute_outstanding_cash(emp)
-            if outstanding is not None and Decimal(outstanding) > Decimal(str(cash_ceiling)):
+            if outstanding is None:
+                gate_results["G10"] = False
+                logger.warning(
+                    f"[DISPATCH_GATE10_UNAVAILABLE] employee={getattr(emp, 'id', None)} "
+                    f"outstanding cash returned None, failing closed."
+                )
+                return (
+                    False,
+                    "Gate 10: Cash float ceiling could not be safely verified (missing data). Failing closed.",
+                    gate_results,
+                )
+            if Decimal(outstanding) > Decimal(str(cash_ceiling)):
                 gate_results["G10"] = False
                 logger.info(
                     f"[DISPATCH_REJECT] employee={getattr(emp, 'id', None)} reason=CASH_FLOAT_CEILING_EXCEEDED "
@@ -599,10 +610,16 @@ def check_candidate_eligibility(emp: Employee, service_name: Optional[str] = Non
                     gate_results,
                 )
         except Exception as exc:
-            # Fails OPEN for Gate 10
+            # Fails CLOSED for Gate 10 (SEC-B-03 / FIN-D-01)
+            gate_results["G10"] = False
             logger.warning(
                 f"[DISPATCH_GATE10_UNAVAILABLE] employee={getattr(emp, 'id', None)} "
-                f"could not evaluate cash float ceiling, allowing: {exc}"
+                f"could not evaluate cash float ceiling, failing closed: {exc}"
+            )
+            return (
+                False,
+                "Gate 10: Cash float ceiling could not be safely verified. Failing closed.",
+                gate_results,
             )
 
     return True, "All 10 Eligibility Gates Passed", gate_results
@@ -920,7 +937,7 @@ def compute_offer_window_seconds(job_obj, pool_size: int, failed_cycles: int = 0
     if not ladder:
         return compute_offer_window_minutes(job_obj, pool_size) * 60
 
-    index = min(max(int(failed_cycles or 0), 0), len(ladder) - 1)
+    index = min(max(failed_cycles or 0, 0), len(ladder) - 1)
     seconds = ladder[index]
 
     thin_threshold = getattr(settings, "DISPATCH_THIN_POOL_CANDIDATE_THRESHOLD", THIN_POOL_CANDIDATE_THRESHOLD)
@@ -1226,6 +1243,12 @@ def _dispatch_job_locked(job_id, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS,
         if top_emp is None:
             reason = "; ".join(_skipped) or "no candidate passed the final concurrency check"
             logger.info(f"[DISPATCH_NO_CANDIDATE] job={job_obj.id} {reason}")
+            # BUS-C-01: When no candidate is available, ensure job reaches the correct dispatchable/unassigned state
+            if job_obj.status not in ("completed", "cancelled", "unable_to_complete"):
+                if job_obj.status != "unassigned" or job_obj.assigned_employee is not None:
+                    job_obj.status = "unassigned"
+                    job_obj.assigned_employee = None
+                    job_obj.save(update_fields=["status", "assigned_employee"])
             _maybe_signal_customer_delay(job_obj, failed_cycle_count)
             return False, f"No technician could be offered Job #{job_obj.id} right now ({reason})."
 
@@ -1281,7 +1304,7 @@ def _dispatch_job_locked(job_id, max_gps_age_seconds: int = MAX_GPS_AGE_SECONDS,
                 "employee_id": top_emp.id,
                 "service_title": job_obj.issue_title or job_obj.service_category or "Service Request",
                 "service_category": job_obj.service_category or "",
-                "distance_km": round(top_dist_km, 2),
+                "distance_km": round(top_dist_km, 2) if top_dist_km is not None else 0.0,
                 "address": job_obj.address or "",
                 "expires_at": expires_at.isoformat(),
             }
@@ -1464,3 +1487,4 @@ def reconsider_jobs_for_employee(employee_or_id) -> int:
 def reconcile_booking_for_dispatch(job_id_or_obj, use_redis_geo=False):
     """Fallback entry point for post-commit dispatch triggers."""
     return dispatch_job(job_id_or_obj)
+

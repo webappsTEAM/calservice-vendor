@@ -229,6 +229,10 @@ def settle_completed_job(service_request):
     paid.
     """
     from workforce_api.models import WalletLedgerEntry, JobPayment
+    from service_requests.models import ServiceRequest
+
+    # Exclusively lock ServiceRequest to serialize concurrent settlement attempts (BUS-C-03)
+    ServiceRequest.objects.select_for_update().filter(pk=service_request.pk).first()
 
     existing = WalletLedgerEntry.objects.filter(
         job=service_request, entry_type=WalletLedgerEntry.EntryType.JOB_CREDIT
@@ -249,13 +253,18 @@ def settle_completed_job(service_request):
         logger.error(msg)
         raise SettlementError(msg)
 
-    payment = JobPayment.objects.filter(job=service_request).first()
+    payment = JobPayment.objects.select_for_update().filter(job=service_request).first()
     if not payment:
         msg = f"[SETTLEMENT_NO_PAYMENT] Job #{service_request.id} completed but has no JobPayment record."
         logger.error(msg)
         raise SettlementError(msg)
 
-    gross = payment.amount_due or payment.amount_paid or Decimal("0")
+    # FIN-D-02: Authoritative financial snapshot - prefer amount_paid for PAID jobs
+    if payment.payment_status == JobPayment.PaymentStatus.PAID and payment.amount_paid and payment.amount_paid > 0:
+        gross = payment.amount_paid
+    else:
+        gross = payment.amount_due or payment.amount_paid or Decimal("0")
+
     if gross <= 0:
         msg = f"[SETTLEMENT_ZERO_AMOUNT] Job #{service_request.id} has gross amount {gross} -- skipping settlement."
         logger.warning(msg)
@@ -269,38 +278,41 @@ def settle_completed_job(service_request):
     worker_performed = service_request.assigned_employee
     promo = is_in_promo_period(wallet)
 
-    credit_entry = WalletLedgerEntry.objects.create(
+    credit_entry, created = WalletLedgerEntry.objects.get_or_create(
         wallet=wallet,
         job=service_request,
-        worker_performed=worker_performed,
         entry_type=WalletLedgerEntry.EntryType.JOB_CREDIT,
-        signed_amount=net,
-        gross_job_amount=gross,
-        commission_rate_applied=rate,
-        status=WalletLedgerEntry.Status.HELD,
-        hold_release_at=hold_release_at,
-        notes=f"Job #{service_request.id} ({channel}, {'promo' if promo else 'standard'} rate {rate})",
+        defaults={
+            "worker_performed": worker_performed,
+            "signed_amount": net,
+            "gross_job_amount": gross,
+            "commission_rate_applied": rate,
+            "status": WalletLedgerEntry.Status.HELD,
+            "hold_release_at": hold_release_at,
+            "notes": f"Job #{service_request.id} ({channel}, {'promo' if promo else 'standard'} rate {rate})",
+        }
     )
+    if not created:
+        sync_employee_wallet_mirror(service_request)
+        return credit_entry
 
     is_cash_job = payment.payment_method == JobPayment.PaymentMethod.CASH_ON_SERVICE
     commission_entry_type = (
         WalletLedgerEntry.EntryType.COD_COMMISSION_PAYABLE if is_cash_job
         else WalletLedgerEntry.EntryType.COMMISSION_DEBIT
     )
-    WalletLedgerEntry.objects.create(
+    WalletLedgerEntry.objects.get_or_create(
         wallet=wallet,
         job=service_request,
-        worker_performed=worker_performed,
         entry_type=commission_entry_type,
-        signed_amount=-commission,
-        gross_job_amount=gross,
-        commission_rate_applied=rate,
-        # A cash job's commission isn't collectable yet (SEVO never touched
-        # the cash) -- it's recorded HELD and gets netted against this
-        # wallet's next digital payout rather than debited from a balance
-        # that doesn't reflect real money yet. See net_cod_commission_payable().
-        status=WalletLedgerEntry.Status.HELD if is_cash_job else WalletLedgerEntry.Status.RELEASED,
-        notes=f"Commission for Job #{service_request.id}" + (" (cash job, payable)" if is_cash_job else ""),
+        defaults={
+            "worker_performed": worker_performed,
+            "signed_amount": -commission,
+            "gross_job_amount": gross,
+            "commission_rate_applied": rate,
+            "status": WalletLedgerEntry.Status.HELD if is_cash_job else WalletLedgerEntry.Status.RELEASED,
+            "notes": f"Commission for Job #{service_request.id}" + (" (cash job, payable)" if is_cash_job else ""),
+        }
     )
 
     logger.info(

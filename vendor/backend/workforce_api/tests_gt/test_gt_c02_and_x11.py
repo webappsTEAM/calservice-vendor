@@ -120,10 +120,9 @@ class CashFloatCeilingGateTests(SimpleTestCase):
     def test_ceiling_of_zero_disables_the_gate(self):
         self.assertFalse(self._evaluate("50000.00", job=_job(), ceiling=Decimal("0")))
 
-    def test_gate_fails_open_when_the_payment_tables_are_unreadable(self):
-        # A financial-risk control must not be able to take dispatch down
-        # platform-wide. Drive the real gate with a stub employee and a
-        # compute_outstanding_cash that blows up.
+    def test_gate_fails_closed_when_the_payment_tables_are_unreadable(self):
+        # SEC-B-03 / FIN-D-01: A financial-risk control must FAIL CLOSED if
+        # cash-float evaluation cannot be safely determined.
         emp = SimpleNamespace(id=1)
         with patch(
             "workforce_api.services.cash_reconciliation.compute_outstanding_cash",
@@ -135,11 +134,16 @@ class CashFloatCeilingGateTests(SimpleTestCase):
             try:
                 from workforce_api.services.cash_reconciliation import compute_outstanding_cash
                 outstanding, _ = compute_outstanding_cash(emp)
-                blocked = Decimal(outstanding) > Decimal(str(cash_ceiling))
+                if outstanding is None:
+                    blocked = True
+                    gate_results["G10"] = False
+                else:
+                    blocked = Decimal(outstanding) > Decimal(str(cash_ceiling))
             except Exception:
-                blocked = False  # fail open
-            self.assertFalse(blocked)
-            self.assertTrue(gate_results["G10"])
+                blocked = True  # fail closed (SEC-B-03)
+                gate_results["G10"] = False
+            self.assertTrue(blocked)
+            self.assertFalse(gate_results["G10"])
 
     def test_gate_results_dict_now_has_ten_entries(self):
         gate_results = {f"G{i}": True for i in range(1, 11)}

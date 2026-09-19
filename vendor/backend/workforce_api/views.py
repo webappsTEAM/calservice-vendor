@@ -2157,6 +2157,9 @@ def sync_payment_amount_due(pmt, job):
         return False
     if pmt.payment_status != JobPayment.PaymentStatus.PENDING:
         return False
+    # FIN-D-02: Never alter payment basis if job is already completed or terminal
+    if getattr(job, "status", "").lower() in ("completed", "cancelled", "unable_to_complete"):
+        return False
     expected = job.total_amount or Decimal("0.00")
     if pmt.amount_due == expected:
         return False
@@ -3358,6 +3361,8 @@ class WorkforceCustomerPaymentConfirmView(APIView):
     - On PROBLEM: Disputed event logged, notifies operations, keeps CASH_PENDING.
     """
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]  # SEC-B-04: OTP / payment confirmation throttling
+    throttle_scope = "workforce_otp"
 
     def post(self, request, pk):
         job = ServiceRequest.objects.filter(pk=pk).first()
@@ -3740,6 +3745,14 @@ class WorkforceJobAcceptOfferView(APIView):
             if not emp_obj:
                 return Response({"error": "Employee profile not found.", "code": "PROFILE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
+            # Re-evaluate tenant authorization under lock with fresh emp_obj and job_obj
+            # This protects against an employee's company being changed or reassigned after offer creation
+            if not is_employee_authorized_for_job(emp_obj, job_obj):
+                return Response({
+                    "error": "Unauthorized access to job belonging to another company.",
+                    "code": "CROSS_TENANT_FORBIDDEN",
+                }, status=status.HTTP_403_FORBIDDEN)
+
             # Prevent acceptance on cancelled or terminal jobs
             from workforce_api.models import WorkforceJobOffer
             if job_obj.status == "cancelled":
@@ -3841,7 +3854,11 @@ class WorkforceJobAcceptOfferView(APIView):
                     return Response({"error": f"Cannot accept offer: {reason}", "code": "INELIGIBLE_TECHNICIAN"}, status=status.HTTP_400_BAD_REQUEST)
 
             job_obj.assigned_employee = emp_obj
-            job_obj.save(update_fields=["assigned_employee"])
+            if not job_obj.company_id and emp_obj.company_id:
+                job_obj.company = emp_obj.company
+                job_obj.save(update_fields=["assigned_employee", "company"])
+            else:
+                job_obj.save(update_fields=["assigned_employee"])
             apply_transition(job_obj, "accepted", actor=request.user)
 
             # Atomically mark employee availability as BUSY
@@ -3894,15 +3911,34 @@ class WorkforceJobAcceptOfferView(APIView):
             )
 
             # Activate JobTrackingSession
+            effective_company = job_obj.company or emp_obj.company
             JobTrackingSession.objects.update_or_create(
                 job=job_obj,
                 employee=emp_obj,
-                company=job_obj.company,
+                company=effective_company,
                 defaults={
                     "status": JobTrackingSession.SessionStatus.ACTIVE,
                     "ended_at": None,
                 }
             )
+
+            # Ensure authoritative JobPayment snapshot exists upon acceptance (FIN-D-02)
+            from workforce_api.models import JobPayment
+            is_online = (job_obj.payment_method or "").upper() in ["ONLINE", "PREPAID"]
+            is_paid = str(getattr(job_obj, "payment_status", "") or "").lower() in ["paid", "collected"]
+            job = job_obj
+            pmt, _ = JobPayment.objects.get_or_create(
+                job=job,
+                defaults={
+                    "company": effective_company,
+                    "employee": emp_obj,
+                    "payment_method": JobPayment.PaymentMethod.ONLINE if is_online else JobPayment.PaymentMethod.CASH_ON_SERVICE,
+                    "payment_status": JobPayment.PaymentStatus.PAID if is_paid else JobPayment.PaymentStatus.PENDING,
+                    "amount_due": job.total_amount or Decimal("0.00"),
+                    "amount_paid": job.total_amount if is_paid else Decimal("0.00"),
+                }
+            )
+            sync_payment_amount_due(pmt, job)
 
             # Log immutable lifecycle audit event
             WorkforceJobLifecycleEvent.objects.create(
@@ -4107,10 +4143,10 @@ class WorkforceJobCancelAssignmentView(APIView):
 
             prev_status = job_obj.status
 
-            # Transition ServiceRequest to 'redispatching' and remove assignment via state machine
+            # Transition ServiceRequest to 'redispatching' before clearing assigned_employee (BUS-C-02)
+            apply_transition(job_obj, "redispatching", actor=request.user)
             job_obj.assigned_employee = None
             job_obj.save(update_fields=["assigned_employee"])
-            apply_transition(job_obj, "redispatching", actor=request.user)
 
             # Transition EmployeeJob to EMPLOYEE_CANCELLED and unset primary
             if emp_job:
@@ -4597,9 +4633,10 @@ class WorkforceJobRejectOfferView(APIView):
                 status="OFFERED",
                 expires_at__gt=timezone.now()
             ).exists()
-            if not has_new_offer and job_obj.assigned_employee is None and job_obj.status == "assigned":
-                job_obj.status = "unassigned"
-                job_obj.save(update_fields=["status"])
+            if not has_new_offer and job_obj.assigned_employee is None and job_obj.status not in ("completed", "cancelled", "unable_to_complete"):
+                if job_obj.status != "unassigned":
+                    job_obj.status = "unassigned"
+                    job_obj.save(update_fields=["status"])
 
             return Response({
                 "message": f"Job offer declined. Next candidate dispatch status: {msg}",
@@ -8071,12 +8108,19 @@ class WorkforceJobArriveView(APIView):
 
         verification, _ = PreServiceVerification.objects.get_or_create(
             job=job,
-            employee=emp,
-            lat=lat_val,
-            lon=lon_val,
-            is_automatic=False,
-            actor=request.user
+            defaults={
+                "employee": emp,
+                "arrival_lat": lat_val,
+                "arrival_lon": lon_val,
+                "arrived_at": now,
+                "geofence_passed": True,
+            }
         )
+        verification.employee = emp
+        verification.arrival_lat = lat_val
+        verification.arrival_lon = lon_val
+        verification.arrived_at = now
+        verification.geofence_passed = True
 
         # ── Authoritative Single OTP Resolution ──────────────────────────────
         # Priority: start_otp on ServiceRequest (set during booking) > existing
@@ -8167,121 +8211,130 @@ class WorkforceJobVerifyOTPView(APIView):
     throttle_scope = "workforce_otp"
 
     def post(self, request, pk):
-        job = ServiceRequest.objects.filter(pk=pk).first()
-        if not job:
-            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
-
         emp = getattr(request.user, "employee_profile", None)
-        if not emp or job.assigned_employee != emp:
-            return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
+        if not emp:
+            return Response({"error": "Employee profile not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        otp_input = str(request.data.get("otp") or request.data.get("otp_code") or "").strip()
-        if not otp_input:
-            return Response({"error": "Customer OTP code required."}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            job = ServiceRequest.objects.select_for_update().filter(pk=pk).first()
+            if not job:
+                return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        verification = PreServiceVerification.objects.filter(job=job).first()
+            if job.assigned_employee != emp:
+                return Response({"error": "Unauthorized: Job is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
 
-        # ── Authoritative OTP source ─────────────────────────────────────────
-        # ServiceRequest.start_otp = booking-level canonical OTP (no TTL).
-        # PreServiceVerification.otp_code = arrival-path OTP (has 15-min TTL).
-        # Accept whichever is non-empty, preferring start_otp.
-        booking_otp = (getattr(job, "start_otp", None) or "").strip()
-        psv_otp = (getattr(verification, "otp_code", None) or "").strip() if verification else ""
-        canonical_otp = booking_otp or psv_otp
+            # Tenant isolation guard (SEC-B-04)
+            if not is_employee_authorized_for_job(emp, job):
+                return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
-        if not canonical_otp:
+            otp_input = str(request.data.get("otp") or request.data.get("otp_code") or "").strip()
+            if not otp_input:
+                return Response({"error": "Customer OTP code required."}, status=status.HTTP_400_BAD_REQUEST)
+
+            verification = PreServiceVerification.objects.select_for_update().filter(job=job).first()
+
+            # ── Authoritative OTP source ─────────────────────────────────────────
+            # ServiceRequest.start_otp = booking-level canonical OTP (no TTL).
+            # PreServiceVerification.otp_code = arrival-path OTP (has 15-min TTL).
+            # Accept whichever is non-empty, preferring start_otp.
+            booking_otp = (getattr(job, "start_otp", None) or "").strip()
+            psv_otp = (getattr(verification, "otp_code", None) or "").strip() if verification else ""
+            canonical_otp = booking_otp or psv_otp
+
+            if not canonical_otp:
+                return Response({
+                    "error": "No OTP generated for this job. Technician must arrive at the job location first."
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Ensure PSV record exists; create it if auto-arrival skipped it
+            if not verification:
+                verification, _ = PreServiceVerification.objects.get_or_create(
+                    job=job,
+                    defaults={"employee": emp, "geofence_passed": True, "otp_code": canonical_otp}
+                )
+                verification = PreServiceVerification.objects.select_for_update().filter(pk=verification.pk).first()
+
+            # Sync canonical_otp into PSV.otp_code so all subsequent reads are consistent
+            if verification.otp_code != canonical_otp:
+                verification.otp_code = canonical_otp
+                verification.save(update_fields=["otp_code", "updated_at"])
+
+            def _ensure_job_started(job_obj, verification_obj):
+                # Delegates to the shared module-level helper so that every
+                # pre-service gate endpoint starts the job by exactly the same
+                # path. See ensure_job_started() for why this was hoisted.
+                ensure_job_started(
+                    job_obj, emp, request.user,
+                    notes="Auto clock-in on Work Start OTP verification",
+                )
+
+            if verification.otp_verified:
+                _ensure_job_started(job, verification)
+                return Response({
+                    "message": "Customer OTP already verified.",
+                    "otp_verified": True,
+                    "is_complete": verification.is_complete,
+                    "status": job.status,
+                }, status=status.HTTP_200_OK)
+
+            # Max 5 attempts enforced
+            if verification.otp_attempts >= 5:
+                return Response({
+                    "error": "Maximum OTP verification attempts exceeded (5/5). Please click 'Resend OTP' to generate a fresh code.",
+                    "code": "MAX_OTP_ATTEMPTS_EXCEEDED",
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            now = timezone.now()
+            otp_expired = bool(verification.otp_expires_at and now > verification.otp_expires_at)
+
+            # Expiry only blocks if the submitted code does NOT match the booking-level start_otp
+            # (start_otp is permanent; only arrival-path OTPs have a TTL)
+            submitted_matches_booking = bool(booking_otp and booking_otp == otp_input)
+            if otp_expired and not submitted_matches_booking:
+                return Response({
+                    "error": "Customer OTP has expired. Please click 'Resend OTP' to generate a fresh code.",
+                    "code": "OTP_EXPIRED",
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Match check against canonical code
+            if canonical_otp == otp_input:
+                verification.otp_verified = True
+                verification.otp_attempts = 0
+                verification.otp_verified_at = now
+                if otp_expired and submitted_matches_booking:
+                    # Retroactively extend the window so check_completion() passes
+                    verification.otp_expires_at = now + timedelta(minutes=15)
+                is_complete = verification.check_completion()
+                verification.save()
+
+                # Synchronize authoritative ServiceRequest OTP fields
+                job.otp_verified = True
+                job.otp_verified_at = now
+                job.save(update_fields=["otp_verified", "otp_verified_at", "updated_at"])
+
+                _ensure_job_started(job, verification)
+                job.refresh_from_db()
+
+                msg = "Customer OTP verified successfully."
+                if not is_complete and not verification.presence_photo:
+                    msg = "Customer OTP verified successfully. Please take your presence selfie in the Job Cockpit to start work."
+
+                return Response({
+                    "message": msg,
+                    "otp_verified": True,
+                    "is_complete": is_complete,
+                    "status": job.status,
+                    "requires_selfie": not bool(verification.presence_photo),
+                }, status=status.HTTP_200_OK)
+
+            verification.otp_attempts += 1
+            verification.save(update_fields=["otp_attempts", "updated_at"])
+            remaining = max(0, 5 - verification.otp_attempts)
             return Response({
-                "error": "No OTP generated for this job. Technician must arrive at the job location first."
+                "error": f"Invalid Customer OTP code. {remaining} attempt(s) remaining. Ask customer for the 6-digit code displayed in their app.",
+                "code": "INVALID_OTP",
+                "attempts_remaining": remaining,
             }, status=status.HTTP_400_BAD_REQUEST)
-
-        # Ensure PSV record exists; create it if auto-arrival skipped it
-        if not verification:
-            verification, _ = PreServiceVerification.objects.get_or_create(
-                job=job,
-                defaults={"employee": emp, "geofence_passed": True, "otp_code": canonical_otp}
-            )
-
-        # Sync canonical_otp into PSV.otp_code so all subsequent reads are consistent
-        if verification.otp_code != canonical_otp:
-            verification.otp_code = canonical_otp
-            verification.save(update_fields=["otp_code", "updated_at"])
-
-        def _ensure_job_started(job_obj, verification_obj):
-            # Delegates to the shared module-level helper so that every
-            # pre-service gate endpoint starts the job by exactly the same
-            # path. See ensure_job_started() for why this was hoisted.
-            ensure_job_started(
-                job_obj, emp, request.user,
-                notes="Auto clock-in on Work Start OTP verification",
-            )
-
-        if verification.otp_verified:
-            _ensure_job_started(job, verification)
-            return Response({
-                "message": "Customer OTP already verified.",
-                "otp_verified": True,
-                "is_complete": verification.is_complete,
-                "status": job.status,
-            }, status=status.HTTP_200_OK)
-
-        # Max 5 attempts enforced
-        if verification.otp_attempts >= 5:
-            return Response({
-                "error": "Maximum OTP verification attempts exceeded (5/5). Please click 'Resend OTP' to generate a fresh code.",
-                "code": "MAX_OTP_ATTEMPTS_EXCEEDED",
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        now = timezone.now()
-        otp_expired = bool(verification.otp_expires_at and now > verification.otp_expires_at)
-
-        # Expiry only blocks if the submitted code does NOT match the booking-level start_otp
-        # (start_otp is permanent; only arrival-path OTPs have a TTL)
-        submitted_matches_booking = bool(booking_otp and booking_otp == otp_input)
-        if otp_expired and not submitted_matches_booking:
-            return Response({
-                "error": "Customer OTP has expired. Please click 'Resend OTP' to generate a fresh code.",
-                "code": "OTP_EXPIRED",
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        # Match check against canonical code
-        if canonical_otp == otp_input:
-            verification.otp_verified = True
-            verification.otp_attempts = 0
-            verification.otp_verified_at = now
-            if otp_expired and submitted_matches_booking:
-                # Retroactively extend the window so check_completion() passes
-                verification.otp_expires_at = now + timedelta(minutes=15)
-            is_complete = verification.check_completion()
-            verification.save()
-
-            # Synchronize authoritative ServiceRequest OTP fields
-            job.otp_verified = True
-            job.otp_verified_at = now
-            job.save(update_fields=["otp_verified", "otp_verified_at", "updated_at"])
-
-            _ensure_job_started(job, verification)
-            job.refresh_from_db()
-
-            msg = "Customer OTP verified successfully."
-            if not is_complete and not verification.presence_photo:
-                msg = "Customer OTP verified successfully. Please take your presence selfie in the Job Cockpit to start work."
-
-            return Response({
-                "message": msg,
-                "otp_verified": True,
-                "is_complete": is_complete,
-                "status": job.status,
-                "requires_selfie": not bool(verification.presence_photo),
-            }, status=status.HTTP_200_OK)
-
-        verification.otp_attempts += 1
-        verification.save(update_fields=["otp_attempts", "updated_at"])
-        remaining = max(0, 5 - verification.otp_attempts)
-        return Response({
-            "error": f"Invalid Customer OTP code. {remaining} attempt(s) remaining. Ask customer for the 6-digit code displayed in their app.",
-            "code": "INVALID_OTP",
-            "attempts_remaining": remaining,
-        }, status=status.HTTP_400_BAD_REQUEST)
 
 
 class WorkforceJobResendOTPView(APIView):

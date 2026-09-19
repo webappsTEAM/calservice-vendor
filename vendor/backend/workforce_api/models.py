@@ -1667,6 +1667,13 @@ class WalletLedgerEntry(models.Model):
             models.Index(fields=["wallet", "status", "created_at"]),
             models.Index(fields=["job", "entry_type"]),
         ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["job", "entry_type"],
+                condition=models.Q(job__isnull=False, entry_type__in=["JOB_CREDIT", "COMMISSION_DEBIT", "COD_COMMISSION_PAYABLE"]),
+                name="wle_job_settlement_unique",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.get_entry_type_display()} {self.signed_amount} -> wallet #{self.wallet_id}"

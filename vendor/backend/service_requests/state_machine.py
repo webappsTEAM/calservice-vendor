@@ -173,7 +173,7 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
             )
 
 
-    # Sync EmployeeJob status and timestamps
+    # Sync EmployeeJob status and timestamps (BUS-C-02)
     try:
         from service_requests.models import EmployeeJob
         now = timezone.now()
@@ -184,11 +184,33 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
             emp_job_updates["started_date"] = now
         elif target == "accepted":
             emp_job_updates["accepted_date"] = now
-        elif target == "redispatching":
-            emp_job_updates["status"] = "EMPLOYEE_CANCELLED"
-            emp_job_updates["is_primary"] = False
 
-        EmployeeJob.objects.filter(service_request=service_request).update(**emp_job_updates)
+        target_emp = (getattr(actor, "employee_profile", None) if actor else None) or service_request.assigned_employee
+
+        if target == "redispatching":
+            # BUS-C-02: Target only the actual cancelling employee's EmployeeJob
+            if target_emp:
+                EmployeeJob.objects.filter(
+                    service_request=service_request,
+                    employee=target_emp,
+                ).update(status="EMPLOYEE_CANCELLED", is_primary=False)
+            else:
+                # If no specific employee identified, only cancel the primary assignment
+                EmployeeJob.objects.filter(
+                    service_request=service_request,
+                    is_primary=True,
+                ).update(status="EMPLOYEE_CANCELLED", is_primary=False)
+        else:
+            if target_emp:
+                EmployeeJob.objects.filter(
+                    service_request=service_request,
+                    employee=target_emp,
+                ).update(**emp_job_updates)
+            else:
+                EmployeeJob.objects.filter(
+                    service_request=service_request,
+                    is_primary=True,
+                ).update(**emp_job_updates)
 
         # SEVO business plan Section 4: the instant a job becomes COMPLETED
         # is the single authoritative moment it becomes billable -- settle
