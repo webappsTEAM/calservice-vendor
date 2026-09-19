@@ -402,12 +402,12 @@ export function AdminApplicationDetailPage() {
                         <span className="text-slate-800">{application?.email}</span>
                       </div>
                       <div className="flex justify-between border-b border-slate-200 pb-1">
-                        <span className="text-slate-500">City / Territory:</span>
-                        <span className="text-slate-800">{draft.address?.city || '—'}</span>
+                        <span className="text-slate-500">City / State:</span>
+                        <span className="text-slate-800">{[draft.address?.city, draft.address?.state].filter(Boolean).join(', ') || '—'}</span>
                       </div>
                       <div className="flex justify-between">
-                        <span className="text-slate-500">Service Radius:</span>
-                        <span className="font-bold text-slate-800">{draft.address?.serviceRadius ? `${draft.address.serviceRadius} km` : '—'}</span>
+                        <span className="text-slate-500">Pincode:</span>
+                        <span className="font-mono font-bold text-slate-800">{draft.address?.pincode || '—'}</span>
                       </div>
                     </div>
                   </div>
@@ -502,13 +502,9 @@ export function AdminApplicationDetailPage() {
                           {[draft.address?.city, draft.address?.state].filter(Boolean).join(', ') || '—'}
                         </span>
                       </div>
-                      <div className="flex justify-between border-b border-slate-200 pb-1">
+                      <div className="flex justify-between">
                         <span className="text-slate-500">Pincode:</span>
                         <span className="font-mono font-medium text-slate-800">{draft.address?.pincode || '—'}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-500">Max Dispatch Radius:</span>
-                        <span className="font-bold text-blue-700">{draft.address?.serviceRadius ? `${draft.address.serviceRadius} km` : '—'}</span>
                       </div>
                     </div>
                   </div>

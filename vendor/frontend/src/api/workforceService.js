@@ -167,9 +167,10 @@ export async function apiUploadDocument(categoryOrFormData, file = null, title =
 
 export const apiUploadOnboardingDocument = apiUploadDocument;
 
-export async function apiSubmitOnboarding() {
+export async function apiSubmitOnboarding(payload = { declaration_accepted: true }) {
   return await apiRequest('/workforce/onboarding/submit/', {
     method: 'POST',
+    json: payload,
   });
 }
 
@@ -367,6 +368,15 @@ export async function apiTriggerAutoDispatch(jobId) {
   return await apiRequest(`/workforce/dispatch/auto-dispatch/${jobId}/`, {
     method: 'POST',
   });
+}
+
+export async function apiGetDispatchRadar(params = {}) {
+  const query = new URLSearchParams();
+  if (params.jobId) query.set('job_id', params.jobId);
+  if (params.status && params.status !== 'all') query.set('status', params.status);
+  if (params.search) query.set('search', params.search);
+  const qStr = query.toString();
+  return await apiRequest(`/workforce/admin/dispatch-radar/${qStr ? `?${qStr}` : ''}`);
 }
 
 export async function apiAdminCancelJob(jobId, reason = '') {

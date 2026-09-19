@@ -36,6 +36,7 @@ def get_employee_onboarding_dict(emp: Any) -> Dict[str, Any]:
         return {
             "status": REGISTRATION_STATUS_NOT_STARTED,
             "step": 1,
+            "completed_steps": [],
             "draft": {},
             "services": [],
             "documents": {},
@@ -49,11 +50,14 @@ def get_employee_onboarding_dict(emp: Any) -> Dict[str, Any]:
     if isinstance(bank_details, dict):
         ob = bank_details.get("onboarding")
         if isinstance(ob, dict):
+            if "completed_steps" not in ob:
+                ob["completed_steps"] = []
             return ob
 
     return {
         "status": REGISTRATION_STATUS_NOT_STARTED,
         "step": 1,
+        "completed_steps": [],
         "draft": {},
         "services": [],
         "documents": {},
@@ -168,6 +172,7 @@ def get_or_create_employee_profile(user: Any):
                 "onboarding": {
                     "status": REGISTRATION_STATUS_NOT_STARTED,
                     "step": 1,
+                    "completed_steps": [],
                     "draft": {
                         "personal": {
                             "first_name": user.first_name or "",

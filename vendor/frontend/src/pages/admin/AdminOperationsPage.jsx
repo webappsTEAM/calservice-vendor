@@ -36,6 +36,7 @@ import { StatusBadge } from '../../components/enterprise/StatusBadge.jsx';
 import { ErrorState } from '../../components/enterprise/ErrorState.jsx';
 import { LoadingState } from '../../components/enterprise/LoadingState.jsx';
 import { LocationPickerMap } from '../../components/common/LocationPickerMap.jsx';
+import { AdminDispatchRadar } from '../../components/admin/AdminDispatchRadar.jsx';
 import { loadMapsApi } from '../../utils/loadGoogleMaps.js';
 import { useReverseGeocode } from '../../hooks/useReverseGeocode.js';
 import { JobProofModal } from '../../components/enterprise/JobProofModal.jsx';
@@ -732,8 +733,7 @@ export function AdminOperationsPage() {
           <Tabs tabs={tabs} activeTab={activeTab} onChange={setActiveTab} />
 
           <div className="p-4 sm:p-5">
-
-            {/* ── TAB 1: AUTOMATED DISPATCH RADAR & MONITOR ── */}
+            {/* ── TAB 1: CALTRACK SUPER ADMIN DISPATCH RADAR (READ-ONLY OBSERVABILITY) ── */}
             {activeTab === 'dispatch' && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
                 {/* Service Request Queue Column (5 cols) */}

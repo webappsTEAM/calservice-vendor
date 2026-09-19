@@ -15,7 +15,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.files.storage import default_storage
 from django.db import models, transaction
-from django.db.models import Q
+from django.db.models import Q, OuterRef, Exists
 
 logger = logging.getLogger(__name__)
 
@@ -353,38 +353,44 @@ class WorkforceSignupView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        with transaction.atomic():
-            company_id = request.data.get("company_id")
-            company_slug = request.data.get("company_slug")
-            # Whether this signup explicitly asked to join a specific
-            # provider's team (vs. falling through to the shared default
-            # company below) -- decides which wallet channel this worker
-            # gets provisioned into. See SEVO business plan Section 2.
-            joining_provider_team = bool(company_id or company_slug)
-            company = None
-            if company_id:
+        account_type = str(data.get("account_type") or request.data.get("account_type") or "independent").strip().lower()
+        if account_type in ["service_provider", "organization"]:
+            return Response(
+                {"error": "To register as a Service Provider, please use the Service Provider registration endpoint.", "code": "USE_SERVICE_PROVIDER_SIGNUP"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        provider_id = data.get("provider_id") or data.get("company_id") or request.data.get("provider_id") or request.data.get("company_id")
+        provider_slug = data.get("provider_slug") or data.get("company_slug") or request.data.get("provider_slug") or request.data.get("company_slug")
+
+        is_provider_technician = account_type in ["provider_technician", "provider"]
+        target_provider = None
+
+        if is_provider_technician:
+            if not provider_id and not provider_slug:
+                return Response(
+                    {"error": "Provider selection is mandatory when joining a Service Provider.", "code": "PROVIDER_SELECTION_REQUIRED"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if provider_id:
                 try:
-                    company = Company.objects.filter(pk=int(company_id), is_active=True).first()
+                    target_provider = Company.objects.filter(pk=int(provider_id), is_active=True).first()
                 except (ValueError, TypeError):
                     pass
-            if not company and company_slug:
-                company = Company.objects.filter(slug=company_slug, is_active=True).first()
-            if not company:
-                company = Company.objects.filter(slug="calservices", is_active=True).first()
-            if not company:
-                region, _ = Region.objects.get_or_create(
-                    code="IN",
-                    defaults={"name": "India", "currency": "INR", "currency_symbol": "₹"},
-                )
-                company = Company.objects.create(
-                    company_name="CalServices Operations",
-                    display_id="CALS",
-                    slug="calservices",
-                    primary_country="IN",
-                    region=region,
-                    is_active=True,
-                )
+            if not target_provider and provider_slug:
+                target_provider = Company.objects.filter(slug=str(provider_slug).strip(), is_active=True).first()
 
+            if not target_provider:
+                return Response(
+                    {"error": "Please select a valid active Service Provider.", "code": "INVALID_SERVICE_PROVIDER"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            target_provider = None
+
+        from .models import WorkforceProviderJoinRequest
+
+        with transaction.atomic():
             username_candidate = data["email"].split("@")[0].lower()
             username = username_candidate
             counter = 1
@@ -392,6 +398,9 @@ class WorkforceSignupView(APIView):
                 username = f"{username_candidate}_{counter}"
                 counter += 1
 
+            # IMPORTANT ARCHITECTURAL RULE (Phase 2D):
+            # During signup, both independent technicians and technicians requesting to join a provider
+            # MUST be created with company=None! Membership is only granted upon provider approval.
             user = User.objects.create(
                 username=username,
                 email=data["email"],
@@ -400,7 +409,7 @@ class WorkforceSignupView(APIView):
                 first_name=data["first_name"],
                 last_name=data.get("last_name", ""),
                 role="employee",
-                company=company,
+                company=None,
                 is_active=True,
                 totp_secret="",
                 bio="",
@@ -408,10 +417,35 @@ class WorkforceSignupView(APIView):
             user.set_password(data["password"])
             user.save()
 
-            employee_id = generate_next_employee_id(company)
+            employee_id = generate_next_employee_id(None)
+            bank_details = {
+                "onboarding": {
+                    "status": "not_started",
+                    "step": 1,
+                    "account_type": "provider" if target_provider else "independent",
+                    "join_request": None,
+                    "completed_steps": [],
+                    "draft": {
+                        "personal": {
+                            "first_name": user.first_name,
+                            "last_name": user.last_name,
+                            "email": user.email,
+                            "mobile_number": user.mobile_number,
+                        }
+                    },
+                    "services": [],
+                    "documents": {},
+                    "correction_notes": "",
+                    "rejection_reason": "",
+                    "submitted_at": None,
+                    "approved_at": None,
+                    "channel": "provider_team" if target_provider else "individual",
+                }
+            }
+
             employee = Employee.objects.create(
                 user=user,
-                company=company,
+                company=None,
                 employee_id=employee_id,
                 title="Technician Candidate",
                 exempt_status="non_exempt",
@@ -419,30 +453,32 @@ class WorkforceSignupView(APIView):
                 is_online=False,
                 current_availability="offline",
                 is_active=True,
-                bank_details={
-                    "onboarding": {
-                        "status": "not_started",
-                        "step": 1,
-                        "draft": {
-                            "personal": {
-                                "first_name": user.first_name,
-                                "last_name": user.last_name,
-                                "email": user.email,
-                                "mobile_number": user.mobile_number,
-                            }
-                        },
-                        "services": [],
-                        "documents": {},
-                        "correction_notes": "",
-                        "rejection_reason": "",
-                        "submitted_at": None,
-                        "approved_at": None,
-                        "channel": "provider_team" if joining_provider_team else "individual",
-                    }
-                },
+                bank_details=bank_details,
             )
 
-            if not joining_provider_team:
+            if target_provider:
+                join_request_obj = WorkforceProviderJoinRequest.objects.create(
+                    technician=employee,
+                    provider=target_provider,
+                    status=WorkforceProviderJoinRequest.Status.PENDING,
+                )
+                now_iso = timezone.now().isoformat()
+                onboarding = bank_details["onboarding"]
+                onboarding["join_request"] = {
+                    "id": join_request_obj.id,
+                    "provider_id": target_provider.id,
+                    "provider_name": target_provider.company_name,
+                    "provider_display_id": target_provider.display_id,
+                    "provider_slug": target_provider.slug,
+                    "status": "PENDING",
+                    "requested_at": now_iso,
+                    "decided_at": None,
+                    "decided_by": None,
+                    "rejection_reason": "",
+                }
+                employee.bank_details = bank_details
+                employee.save(update_fields=["bank_details"])
+            else:
                 # SEVO Individual Worker Model: this technician has no
                 # provider umbrella, so their own personal wallet -- not
                 # the shared default company's head wallet -- is what
@@ -467,7 +503,7 @@ class WorkforceSignupView(APIView):
                 logger.exception("Failed to backfill vendor invitations for employee #%s", employee.id)
 
         refresh = RefreshToken.for_user(user)
-        refresh["company_id"] = company.id
+        refresh["company_id"] = None
         refresh["role"] = user.role
 
         response = Response(
@@ -483,6 +519,14 @@ class WorkforceSignupView(APIView):
                     "first_name": user.first_name,
                     "last_name": user.last_name,
                     "role": user.role,
+                    "company_id": None,
+                    "company_name": None,
+                    "provider_id": None,
+                    "provider_name": None,
+                    "is_independent": not bool(target_provider),
+                    "association_status": "PENDING" if target_provider else "INDEPENDENT",
+                    "requested_provider_id": target_provider.id if target_provider else None,
+                    "requested_provider_name": target_provider.company_name if target_provider else None,
                     "employee_id": employee.employee_id,
                     "registration_status": "not_started",
                 },
@@ -906,10 +950,7 @@ class WorkforceOnboardingMeView(APIView):
         if not emp:
             return Response({"error": "No employee profile found for user."}, status=status.HTTP_404_NOT_FOUND)
 
-        from workforce_api.services.workload import reconcile_employee_availability
-        reconcile_employee_availability(emp)
-        emp.refresh_from_db(fields=["current_availability", "is_online"])
-
+        # GET is strictly read-only: NO availability reconciliation side effects
         serializer = WorkforceEmployeeProfileSerializer(emp)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -919,62 +960,167 @@ class WorkforceOnboardingDraftView(APIView):
 
     def patch(self, request):
         from workforce_api.services.registration import get_or_create_employee_profile
-        user = request.user
-        emp = get_or_create_employee_profile(user)
-        if not emp:
-            return Response({"error": "Employee record not found."}, status=status.HTTP_404_NOT_FOUND)
+        from workforce_api.services.onboarding import (
+            CANDIDATE_EDITABLE_STATUSES,
+            OnboardingValidationError,
+            validate_personal_step,
+            validate_address_step,
+            validate_services_step,
+            validate_skills_step,
+            validate_bank_step,
+            validate_documents_step,
+            can_access_onboarding_step,
+        )
 
+        user = request.user
         serializer = WorkforceOnboardingDraftSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        step = serializer.validated_data.get("step")
+        target_step = serializer.validated_data.get("step")
         draft_data = serializer.validated_data.get("draft_data", {})
 
-        bank_details = emp.bank_details or {}
-        onboarding = bank_details.get("onboarding", {})
+        with transaction.atomic():
+            emp = Employee.objects.select_for_update().filter(user=user).first()
+            if not emp:
+                emp = get_or_create_employee_profile(user)
+            if not emp:
+                return Response({"error": "Employee record not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        current_status = onboarding.get("status", "not_started")
-        if current_status == "not_started":
-            onboarding["status"] = "in_progress"
+            bank_details = emp.bank_details or {}
+            onboarding = bank_details.get("onboarding", {})
 
-        if step:
-            onboarding["step"] = step
+            current_status = str(onboarding.get("status", "not_started")).strip().lower()
+            if current_status not in CANDIDATE_EDITABLE_STATUSES:
+                return Response({
+                    "error": "LIFECYCLE_CONFLICT",
+                    "message": f"Cannot edit onboarding draft while status is '{current_status}'.",
+                    "status": current_status,
+                }, status=status.HTTP_409_CONFLICT)
 
-        existing_draft = onboarding.get("draft", {})
-        existing_draft.update(draft_data)
-        onboarding["draft"] = existing_draft
+            completed_steps = list(onboarding.get("completed_steps", []))
+            is_locked = current_status in ("submitted", "under_review", "approved")
+            existing_draft = onboarding.get("draft", {})
+            errors = {}
 
-        # Sync core fields
-        if "personal" in draft_data:
-            p = draft_data["personal"]
-            if p.get("dob"):
-                emp.date_of_birth = p.get("dob")
-        if "services" in draft_data:
-            selected_services = draft_data["services"]
-            current_services = onboarding.get("services", [])
-            existing_statuses = {s.get("id"): s.get("status", "pending") for s in current_services}
+            # Validate the sections supplied in draft_data
+            if "personal" in draft_data:
+                try:
+                    clean_personal = validate_personal_step(draft_data["personal"])
+                    existing_draft["personal"] = clean_personal
+                    if clean_personal.get("dob"):
+                        emp.date_of_birth = clean_personal["dob"]
+                    if 1 not in completed_steps:
+                        completed_steps.append(1)
+                except OnboardingValidationError as e:
+                    errors.update(e.fields)
 
-            merged_services = []
-            for svc in selected_services:
-                s_id = svc.get("id")
-                merged_services.append({
-                    "id": s_id,
-                    "name": svc.get("name", ""),
-                    "category": svc.get("category", ""),
-                    "status": existing_statuses.get(s_id, "pending"),
-                    "rejection_reason": "",
-                })
-            onboarding["services"] = merged_services
-            emp.service_roles = [s["name"] for s in merged_services]
+            if "address" in draft_data:
+                try:
+                    clean_address = validate_address_step(draft_data["address"])
+                    existing_draft["address"] = clean_address
+                    if 1 in completed_steps and 2 not in completed_steps:
+                        completed_steps.append(2)
+                except OnboardingValidationError as e:
+                    errors.update(e.fields)
 
-        bank_details["onboarding"] = onboarding
-        emp.bank_details = bank_details
-        emp.save()
+            if "services" in draft_data:
+                try:
+                    clean_services = validate_services_step(
+                        draft_data["services"],
+                        existing_services=onboarding.get("services", [])
+                    )
+                    existing_draft["services"] = clean_services
+                    onboarding["services"] = clean_services
+                    emp.service_roles = [s["name"] for s in clean_services]
+                    if 2 in completed_steps and 3 not in completed_steps:
+                        completed_steps.append(3)
+                except OnboardingValidationError as e:
+                    errors.update(e.fields)
+
+            if "skills" in draft_data:
+                try:
+                    clean_skills = validate_skills_step(draft_data["skills"])
+                    existing_draft["skills"] = clean_skills
+                    if 3 in completed_steps and 4 not in completed_steps:
+                        completed_steps.append(4)
+                except OnboardingValidationError as e:
+                    errors.update(e.fields)
+
+            if "documents" in draft_data:
+                existing_docs = onboarding.get("documents", {})
+                try:
+                    validate_documents_step(existing_docs, employee_id=emp.id)
+                    if 4 in completed_steps and 5 not in completed_steps:
+                        completed_steps.append(5)
+                except OnboardingValidationError:
+                    pass
+
+            if "bank" in draft_data:
+                try:
+                    clean_bank = validate_bank_step(draft_data["bank"])
+                    # confirmAccountNumber is stripped by validate_bank_step
+                    existing_draft["bank"] = clean_bank
+                    if 5 in completed_steps and 6 not in completed_steps:
+                        completed_steps.append(6)
+
+                    # Non-fatal sync to individual wallet payout details
+                    try:
+                        from workforce_api.services.wallet_onboarding import resolve_wallet_for_user, set_payout_details
+                        wallet, _ = resolve_wallet_for_user(user)
+                        if wallet:
+                            set_payout_details(
+                                wallet,
+                                bank_account_name=clean_bank.get("accountHolder", ""),
+                                bank_account_number=clean_bank.get("accountNumber", ""),
+                                ifsc=clean_bank.get("ifsc", ""),
+                                upi_id=clean_bank.get("upiId", ""),
+                            )
+                    except Exception as wex:
+                        logger.warning("Non-fatal wallet payout details sync warning: %s", wex)
+                except OnboardingValidationError as e:
+                    errors.update(e.fields)
+
+            if errors:
+                flat_errors = []
+                for f_list in errors.values():
+                    if isinstance(f_list, list):
+                        flat_errors.extend([str(x) for x in f_list if x])
+                    elif isinstance(f_list, str) and f_list.strip():
+                        flat_errors.append(f_list.strip())
+                summary_msg = " • ".join(flat_errors) if flat_errors else "Please correct the highlighted fields."
+                return Response({
+                    "error": "ONBOARDING_VALIDATION_FAILED",
+                    "message": summary_msg,
+                    "fields": errors,
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Check step progression for target_step (prevent skipping uncompleted steps)
+            if target_step and not can_access_onboarding_step(target_step, completed_steps, is_locked):
+                return Response({
+                    "error": "ONBOARDING_STEP_SKIPPED",
+                    "message": f"Cannot advance to step {target_step} before completing earlier required steps.",
+                    "current_step": onboarding.get("step", 1),
+                    "completed_steps": completed_steps,
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Transition from not_started to in_progress on first successful draft save
+            if current_status == "not_started":
+                onboarding["status"] = "in_progress"
+
+            if target_step:
+                onboarding["step"] = target_step
+
+            onboarding["draft"] = existing_draft
+            onboarding["completed_steps"] = sorted(list(set(completed_steps)))
+            bank_details["onboarding"] = onboarding
+            emp.bank_details = bank_details
+            emp.save()
 
         return Response({
             "message": "Draft saved successfully.",
             "step": onboarding.get("step"),
             "status": onboarding.get("status"),
+            "completed_steps": onboarding.get("completed_steps", []),
         }, status=status.HTTP_200_OK)
 
 
@@ -985,45 +1131,127 @@ class WorkforceOnboardingDocumentUploadView(APIView):
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
+        from workforce_api.services.onboarding import (
+            CANONICAL_DOCUMENT_CATEGORIES,
+            REQUIRED_DOCUMENT_CATEGORIES,
+            ALLOWED_DOC_EXTENSIONS,
+            ALLOWED_DOC_MIMES,
+            MAX_DOC_FILE_SIZE_BYTES,
+            CANDIDATE_EDITABLE_STATUSES,
+        )
+
         user = request.user
         emp = getattr(user, "employee_profile", None)
         if not emp:
             return Response({"error": "Employee record not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        file_obj = request.FILES.get("file")
-        category = request.data.get("category", "identification")
-        title = request.data.get("title", category)
-        document_number = request.data.get("document_number", "")
-
-        if not file_obj:
-            return Response({"error": "No file uploaded."}, status=status.HTTP_400_BAD_REQUEST)
-
-        filename = f"workforce_docs/emp_{emp.id}_{category}_{uuid.uuid4().hex[:8]}_{file_obj.name}"
-        saved_path = default_storage.save(filename, file_obj)
-        file_url = default_storage.url(saved_path)
-
         bank_details = emp.bank_details or {}
         onboarding = bank_details.get("onboarding", {})
-        documents = onboarding.get("documents", {})
+        current_status = str(onboarding.get("status", "not_started")).strip().lower()
 
-        documents[category] = {
-            "category": category,
-            "title": title,
-            "document_number": document_number,
-            "file_url": file_url,
-            "status": "uploaded",
-            "uploaded_at": timezone.now().isoformat(),
-            "rejection_reason": "",
-        }
+        if current_status not in CANDIDATE_EDITABLE_STATUSES:
+            return Response({
+                "error": "LIFECYCLE_CONFLICT",
+                "message": f"Cannot upload documents while application is '{current_status}'.",
+            }, status=status.HTTP_403_FORBIDDEN)
 
-        onboarding["documents"] = documents
-        bank_details["onboarding"] = onboarding
-        emp.bank_details = bank_details
-        emp.save()
+        category = str(request.data.get("category", "") or "").strip().lower()
+        if category not in CANONICAL_DOCUMENT_CATEGORIES:
+            return Response({
+                "error": "INVALID_DOCUMENT_CATEGORY",
+                "message": f"Invalid document category '{category}'. Allowed categories: {', '.join(sorted(CANONICAL_DOCUMENT_CATEGORIES))}.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        file_obj = request.FILES.get("file")
+        if not file_obj or file_obj.size == 0:
+            return Response({"error": "No file uploaded or file is empty."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if file_obj.size > MAX_DOC_FILE_SIZE_BYTES:
+            return Response({
+                "error": "FILE_TOO_LARGE",
+                "message": f"File size ({file_obj.size / (1024 * 1024):.1f}MB) exceeds the 5MB limit.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        ext = os.path.splitext(file_obj.name)[1].lower()
+        if ext not in ALLOWED_DOC_EXTENSIONS:
+            return Response({
+                "error": "UNSUPPORTED_FILE_TYPE",
+                "message": f"File extension '{ext}' is not permitted. Allowed extensions: {', '.join(sorted(ALLOWED_DOC_EXTENSIONS))}.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        content_type = getattr(file_obj, "content_type", "")
+        if content_type and content_type.lower() not in ALLOWED_DOC_MIMES:
+            return Response({
+                "error": "UNSUPPORTED_MIME_TYPE",
+                "message": f"MIME type '{content_type}' is not supported.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        title = str(request.data.get("title", "") or "").strip() or category.replace("_", " ").title()
+        document_number = str(request.data.get("document_number", "") or "").strip()
+
+        # Generate safe server-side storage path
+        safe_filename = f"workforce_docs/emp_{emp.id}_{category}_{uuid.uuid4().hex[:12]}{ext}"
+        saved_path = default_storage.save(safe_filename, file_obj)
+        file_url = default_storage.url(saved_path)
+
+        with transaction.atomic():
+            emp.refresh_from_db(fields=["bank_details"])
+            bank_details = emp.bank_details or {}
+            onboarding = bank_details.get("onboarding", {})
+            documents = onboarding.get("documents", {})
+
+            # Preserve previous rejection history if replacing a rejected document
+            previous_doc = documents.get(category, {})
+            previous_rejections = previous_doc.get("previous_rejections", [])
+            if previous_doc.get("status") == "rejected":
+                previous_rejections.append({
+                    "reason": previous_doc.get("rejection_reason", ""),
+                    "rejection_reason": previous_doc.get("rejection_reason", ""),
+                    "verified_at": previous_doc.get("verified_at"),
+                    "verified_by": previous_doc.get("verified_by"),
+                    "replaced_at": timezone.now().isoformat(),
+                })
+
+            new_doc_entry = {
+                "category": category,
+                "title": title,
+                "document_number": document_number,
+                "file_url": file_url,
+                "storage_path": saved_path,
+                "file_name": os.path.basename(file_obj.name),
+                "file_size": file_obj.size,
+                "mime_type": content_type,
+                "status": "uploaded",
+                "uploaded_at": timezone.now().isoformat(),
+                "rejection_reason": "",
+                "previous_rejections": previous_rejections,
+                "verified_at": None,
+                "verified_by": None,
+            }
+
+            documents[category] = new_doc_entry
+            onboarding["documents"] = documents
+
+            # Check if all required documents are now present
+            has_all_required = all(
+                documents.get(rc, {}).get("status") in ("uploaded", "approved", "pending")
+                and documents.get(rc, {}).get("file_url")
+                for rc in REQUIRED_DOCUMENT_CATEGORIES
+            )
+            completed_steps = set(onboarding.get("completed_steps", []))
+            if has_all_required:
+                completed_steps.add(5)
+            else:
+                completed_steps.discard(5)
+            onboarding["completed_steps"] = sorted(list(completed_steps))
+
+            bank_details["onboarding"] = onboarding
+            emp.bank_details = bank_details
+            emp.save()
 
         return Response({
-            "message": f"Document {title} uploaded successfully.",
-            "document": documents[category],
+            "message": f"Document '{title}' uploaded successfully.",
+            "document": new_doc_entry,
         }, status=status.HTTP_201_CREATED)
 
 
@@ -1033,25 +1261,96 @@ class WorkforceOnboardingSubmitView(APIView):
     permission_classes = [IsWorkforceEmployee]
 
     def post(self, request):
+        from workforce_api.services.onboarding import (
+            validate_full_onboarding_submission,
+            OnboardingValidationError,
+            CANDIDATE_EDITABLE_STATUSES,
+        )
+
         user = request.user
         emp = getattr(user, "employee_profile", None)
         if not emp:
             return Response({"error": "Employee record not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        bank_details = emp.bank_details or {}
-        onboarding = bank_details.get("onboarding", {})
+        with transaction.atomic():
+            emp = Employee.objects.select_for_update().filter(id=emp.id).first()
+            bank_details = emp.bank_details or {}
+            onboarding = bank_details.get("onboarding", {})
+            current_status = str(onboarding.get("status", "not_started")).strip().lower()
 
-        onboarding["status"] = "submitted"
-        onboarding["submitted_at"] = timezone.now().isoformat()
-        bank_details["onboarding"] = onboarding
-        emp.bank_details = bank_details
-        emp.is_online = False
-        emp.current_availability = "offline"
-        emp.save()
+            # Idempotency / state check: if already submitted, return 409 conflict
+            if current_status in ("submitted", "under_review"):
+                return Response({
+                    "error": "ALREADY_SUBMITTED",
+                    "message": "Application has already been submitted and is pending verification.",
+                    "status": current_status,
+                    "submitted_at": onboarding.get("submitted_at"),
+                }, status=status.HTTP_409_CONFLICT)
+
+            if current_status == "approved":
+                return Response({
+                    "error": "ALREADY_APPROVED",
+                    "message": "Application has already been approved.",
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            if current_status == "rejected":
+                return Response({
+                    "error": "APPLICATION_REJECTED",
+                    "message": "Application was declined. Resubmission is not permitted.",
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            declaration_accepted = bool(request.data.get("declaration_accepted", False))
+            if not declaration_accepted:
+                return Response({
+                    "error": "DECLARATION_REQUIRED",
+                    "message": "Please accept the declaration to submit your application.",
+                    "fields": {"declaration": ["You must accept the declaration to submit your application."]},
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            try:
+                cleaned_payload = validate_full_onboarding_submission(emp, declaration_accepted=True)
+            except OnboardingValidationError as e:
+                return Response(e.to_dict(), status=status.HTTP_400_BAD_REQUEST)
+
+            now_iso = timezone.now().isoformat()
+            onboarding["status"] = "submitted"
+            onboarding["submitted_at"] = now_iso
+            onboarding["step"] = 7
+            onboarding["completed_steps"] = [1, 2, 3, 4, 5, 6, 7]
+            onboarding["declaration_accepted"] = True
+            onboarding["declaration_accepted_at"] = now_iso
+
+            # Update draft with validated representations
+            draft = onboarding.get("draft", {})
+            draft["personal"] = cleaned_payload["personal"]
+            draft["address"] = cleaned_payload["address"]
+            draft["skills"] = cleaned_payload["skills"]
+            draft["bank"] = cleaned_payload["bank"]
+            draft["services"] = cleaned_payload["services"]
+            draft["documents"] = cleaned_payload["documents"]
+            onboarding["draft"] = draft
+            onboarding["services"] = cleaned_payload["services"]
+            onboarding["documents"] = cleaned_payload["documents"]
+
+            if onboarding.get("correction_notes"):
+                if "correction_history" not in onboarding:
+                    onboarding["correction_history"] = []
+                onboarding["correction_history"].append({
+                    "notes": onboarding["correction_notes"],
+                    "resubmitted_at": now_iso,
+                })
+                onboarding["correction_notes"] = ""
+
+            bank_details["onboarding"] = onboarding
+            emp.bank_details = bank_details
+            emp.is_online = False
+            emp.current_availability = "offline"
+            emp.save()
 
         return Response({
             "message": "Application submitted successfully for Workforce Admin verification.",
             "status": "submitted",
+            "submitted_at": now_iso,
         }, status=status.HTTP_200_OK)
 
 
@@ -1244,10 +1543,14 @@ class WorkforceAdminDocumentVerifyView(APIView):
             if emp.company_id != user_company.id:
                 return Response({"error": "Unauthorized cross-company action.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
-        action = request.data.get("action", "").lower()
-        reason = request.data.get("reason", "")
+        raw_action = str(request.data.get("action") or request.data.get("status") or "").lower().strip()
+        reason = str(request.data.get("reason") or request.data.get("rejection_reason") or "").strip()
 
-        if action not in ["approve", "reject"]:
+        if raw_action in ("approve", "approved"):
+            action = "approve"
+        elif raw_action in ("reject", "rejected"):
+            action = "reject"
+        else:
             return Response({"error": "Action must be 'approve' or 'reject'."}, status=status.HTTP_400_BAD_REQUEST)
 
         bank_details = emp.bank_details or {}
@@ -1261,6 +1564,11 @@ class WorkforceAdminDocumentVerifyView(APIView):
         documents[category]["rejection_reason"] = reason if action == "reject" else ""
         documents[category]["verified_at"] = timezone.now().isoformat()
         documents[category]["verified_by"] = request.user.username
+
+        if action == "reject" and onboarding.get("status") in ("submitted", "under_review"):
+            onboarding["status"] = "correction_required"
+            if reason:
+                onboarding["correction_notes"] = reason
 
         onboarding["documents"] = documents
         bank_details["onboarding"] = onboarding
@@ -1972,6 +2280,12 @@ class WorkforceAdminApproveApplicationView(APIView):
 
         bank_details = emp.bank_details or {}
         onboarding = bank_details.get("onboarding", {})
+        current_reg_status = str(onboarding.get("status", "not_started")).strip().lower()
+        if current_reg_status not in ["submitted", "under_review"]:
+            return Response({
+                "error": f"Cannot approve candidate: Application has not been submitted (current status: '{current_reg_status}')."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         documents = onboarding.get("documents", {})
         services = onboarding.get("services", [])
 
@@ -2086,13 +2400,6 @@ class WorkforcePresenceToggleView(APIView):
         reconcile_employee_availability(emp)
         emp.refresh_from_db(fields=["current_availability", "is_online"])
 
-        if emp.is_online and emp.current_availability == "available":
-            try:
-                import threading
-                from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
-                threading.Thread(target=reconsider_jobs_for_employee, args=(emp.id,), daemon=True).start()
-            except Exception as e:
-                logger.debug(f"[PRESENCE_TOGGLE_DISPATCH_ERR] {e}")
 
         try:
             PresenceLog.objects.create(
@@ -2176,8 +2483,7 @@ def is_employee_authorized_for_job(emp, job) -> bool:
     Validates tenant compatibility between an employee and a job:
     - Solo technician (emp.company_id is None) can handle platform jobs (job.company_id in (None, 1)).
     - Platform technician (emp.company_id == 1) can handle platform jobs (job.company_id in (None, 1)).
-    - Vendor technician (emp.company_id > 1) can handle jobs belonging to their company (job.company_id == emp.company_id)
-      as well as platform/marketplace jobs (job.company_id in (None, 1)).
+    - Vendor technician (emp.company_id > 1) can only handle jobs belonging to their own company (job.company_id == emp.company_id).
     """
     if not emp or not job:
         return False
@@ -2185,7 +2491,7 @@ def is_employee_authorized_for_job(emp, job) -> bool:
     emp_cid = getattr(emp, "company_id", None)
     if emp_cid is None or emp_cid == 1:
         return job_cid is None or job_cid == 1
-    return job_cid == emp_cid or job_cid is None or job_cid == 1
+    return job_cid == emp_cid
 
 
 class WorkforceJobListView(APIView):
@@ -2297,19 +2603,13 @@ class WorkforceJobListView(APIView):
                 "emp_jobs_map": {},
             }
         elif emp:
-            now = timezone.now()
+            server_now = timezone.now()
             from workforce_api.models import WorkforceJobOffer, WorkforceJobLifecycleEvent, WorkforceWorkExtension, JobPayment
             from workforce_api.services.workload import ACTIVE_QUEUE_STATUSES, WORKLOAD_OCCUPIED_STATUSES
-            from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee, expire_and_reassign_offers
+            from workforce_api.services.automatic_dispatch import get_scheduled_dispatch_window, check_candidate_eligibility
+            from service_requests.models import EmployeeJob
 
-            # 1. Sweep expired offers asynchronously so response returns instantly
-            try:
-                import threading
-                threading.Thread(target=expire_and_reassign_offers, daemon=True).start()
-            except Exception:
-                pass
-
-            # 2. Hard Single Active Job Invariant: Check if technician already has an active assignment
+            # 1. Hard Single Active Job Invariant: Check if technician already has an active assignment
             from workforce_api.services.workload import get_employee_active_job
             active_job = get_employee_active_job(emp.id)
             has_active_job = bool(active_job)
@@ -2319,25 +2619,44 @@ class WorkforceJobListView(APIView):
                 emp.current_availability = new_avail
                 Employee.objects.filter(pk=emp.pk).update(current_availability=new_avail)
 
-            from service_requests.models import EmployeeJob
+            today = timezone.localdate()
 
-            if has_active_job:
-                offered_job_ids_qs = ServiceRequest.objects.none().values("id")
-            else:
-                # Reconsider pending customer bookings in Supabase for this available technician
-                if emp.is_active and emp.is_online and emp.current_availability == "available":
-                    try:
-                        import threading
-                        from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
-                        threading.Thread(target=reconsider_jobs_for_employee, args=(emp.id,), daemon=True).start()
-                    except Exception as e:
-                        logger.debug(f"[DISPATCH_RECONSIDER_ERROR] {e}")
+            # Subquery: check if THIS technician declined/rejected THIS job
+            declined_by_emp_subquery = WorkforceJobOffer.objects.filter(
+                job_id=OuterRef("pk"),
+                employee=emp,
+                status__in=[WorkforceJobOffer.Status.REJECTED, WorkforceJobOffer.Status.DECLINED]
+            )
+            declined_lifecycle_by_emp_subquery = WorkforceJobLifecycleEvent.objects.filter(
+                job_id=OuterRef("pk"),
+                employee=emp,
+                event_type="EMPLOYEE_JOB_DECLINED",
+            )
+            is_declined_by_emp = Exists(declined_by_emp_subquery) | Exists(declined_lifecycle_by_emp_subquery)
 
-                offered_job_ids_qs = WorkforceJobOffer.objects.filter(
-                    employee=emp,
-                    status="OFFERED",
-                    expires_at__gt=now
-                ).values("job_id")
+            # Active unexpired offers for this technician
+            # Past-dated jobs must never appear as a new offer; declined jobs must be excluded
+            declined_job_ids_for_emp = WorkforceJobOffer.objects.filter(
+                employee=emp,
+                status__in=[WorkforceJobOffer.Status.REJECTED, WorkforceJobOffer.Status.DECLINED]
+            ).values("job_id")
+            declined_lifecycle_job_ids_for_emp = WorkforceJobLifecycleEvent.objects.filter(
+                employee=emp,
+                event_type="EMPLOYEE_JOB_DECLINED"
+            ).values("job_id")
+
+            offered_job_ids_qs = WorkforceJobOffer.objects.filter(
+                employee=emp,
+                status=WorkforceJobOffer.Status.OFFERED,
+                expires_at__gt=server_now,
+            ).filter(
+                Q(job__preferred_date__gte=today) |
+                Q(job__preferred_date__isnull=True, job__created_at__date=today)
+            ).exclude(
+                job_id__in=declined_job_ids_for_emp
+            ).exclude(
+                job_id__in=declined_lifecycle_job_ids_for_emp
+            ).values("job_id")
 
             emp_job_sr_ids_qs = EmployeeJob.objects.filter(
                 employee=emp
@@ -2346,8 +2665,6 @@ class WorkforceJobListView(APIView):
             ).values("service_request_id")
 
             # Canonical query definitions using subqueries to avoid extra roundtrips
-            # NOTE: technician_id is a CharField snapshot on ServiceRequest — it cannot
-            # be used as a Django ORM lookup field. Use the assigned_employee FK instead.
             assigned_active_qs = Q(
                 status__in=ACTIVE_QUEUE_STATUSES,
                 assigned_employee=emp,
@@ -2363,48 +2680,88 @@ class WorkforceJobListView(APIView):
                 id__in=emp_job_sr_ids_qs
             )
 
+            # 5. Future scheduled bookings: upcoming unassigned bookings matching employee's company and capabilities
+            # Exclude jobs this technician has declined
+            future_jobs_filter = Q(
+                status__in=["confirmed", "unassigned", "new_request", "draft"],
+                assigned_employee__isnull=True,
+                preferred_date__gte=today,
+            )
+            if emp.company_id and emp.company_id > 1 and getattr(emp.company, "slug", "") not in ("calservices", "caldim-engineering-pvt-ltd", "caldim-platform", "caldim-services"):
+                future_jobs_filter &= Q(company_id=emp.company_id)
+            else:
+                future_jobs_filter &= (Q(company_id=1) | Q(company__isnull=True))
+
+            future_candidates = list(
+                ServiceRequest.objects.filter(future_jobs_filter)
+                .annotate(is_declined=is_declined_by_emp)
+                .filter(is_declined=False)
+                .select_related("company", "customer")
+                .order_by("preferred_date", "preferred_time", "-created_at")[:50]
+            )
+            future_job_ids = []
+            for fj in future_candidates:
+                # Reuse canonical get_scheduled_dispatch_window to determine if future scheduled
+                win = get_scheduled_dispatch_window(fj, now=server_now)
+                if win.is_future:
+                    eligible, _, _ = check_candidate_eligibility(emp, fj.service_category or fj.issue_title, fj, purpose="offer_reception")
+                    if eligible:
+                        future_job_ids.append(fj.id)
+
+            future_scheduled_qs = Q(id__in=future_job_ids)
+
             params = getattr(request, "query_params", request.GET)
             status_filter = str(params.get("status", "active")).lower().strip()
 
             if status_filter == "completed":
+                # Section 11: preserve historical records
                 qs = ServiceRequest.objects.filter(
                     Q(assigned_employee=emp, status="completed") |
                     (employee_job_qs & Q(status="completed"))
                 )
             elif status_filter == "all":
+                # Section 10 & 11: exclude declined actionable/unassigned jobs
                 qs = ServiceRequest.objects.filter(
-                    assigned_active_qs | completed_qs | offered_qs | employee_job_qs
-                )
+                    assigned_active_qs | completed_qs | offered_qs | employee_job_qs | future_scheduled_qs
+                ).exclude(~Q(status__in=["completed", "cancelled"]) & is_declined_by_emp)
             else: # "active" default
+                # Section 10: OFFERS, ACTIVE, SCHEDULED actionable jobs exclude declined
                 qs = ServiceRequest.objects.filter(
-                    assigned_active_qs | offered_qs | (employee_job_qs & Q(status__in=ACTIVE_QUEUE_STATUSES))
-                ).exclude(status__in=["completed", "cancelled"])
+                    assigned_active_qs | offered_qs | (employee_job_qs & Q(status__in=ACTIVE_QUEUE_STATUSES)) | future_scheduled_qs
+                ).exclude(status__in=["completed", "cancelled"]).exclude(is_declined_by_emp)
 
             if emp.company:
                 if emp.company.id == 1 or getattr(emp.company, "slug", "") in ("calservices", "caldim-engineering-pvt-ltd", "caldim-platform", "caldim-services"):
                     # Platform technicians can service jobs from any partner company
                     pass
                 else:
-                    qs = qs.filter(Q(company=emp.company) | Q(assigned_employee=emp) | Q(id__in=offered_job_ids_qs) | Q(company__isnull=True))
+                    qs = qs.filter(Q(company=emp.company) | Q(assigned_employee=emp) | Q(id__in=offered_job_ids_qs) | Q(id__in=future_job_ids) | Q(company__isnull=True))
 
             qs = qs.select_related("customer", "assigned_employee", "assigned_employee__user", "company")
             qs = qs.distinct().order_by("-updated_at", "-created_at")
-            job_list = list(qs[:100])
+            jobs = list(qs[:100])
+        else:
+            jobs = []
 
-            job_ids = [j.id for j in job_list]
-            emp_offers_map = {}
-            active_offers_map = {}
-            lifecycle_events_map = {}
-            extensions_map = {}
-            active_extensions_map = {}
-            payments_map = {}
-            quotes_map = {}
-            psvs_map = {}
-            trip_stops_map = {}
-            emp_jobs_map = {}
+        job_ids = [j.id for j in jobs]
+        emp_offers_map = {}
+        active_offers_map = {}
+        lifecycle_events_map = {}
+        extensions_map = {}
+        active_extensions_map = {}
+        payments_map = {}
+        quotes_map = {}
+        psvs_map = {}
+        trip_stops_map = {}
+        emp_jobs_map = {}
+        wallets_map = {}
 
-            if job_ids:
-                # 1. Bulk fetch employee job offers
+        if job_ids:
+            now = timezone.now()
+            from workforce_api.models import WorkforceJobOffer, WorkforceJobLifecycleEvent, WorkforceWorkExtension, JobPayment, WorkforceQuote, PreServiceVerification, WalletAccount, VendorTechnicianRelationship
+
+            # 1. Bulk fetch employee job offers (for employee)
+            if emp:
                 offers = list(WorkforceJobOffer.objects.filter(job_id__in=job_ids, employee=emp).order_by("offered_at"))
                 for o in offers:
                     emp_offers_map[o.job_id] = o
@@ -2420,49 +2777,7 @@ class WorkforceJobListView(APIView):
                 for ev in events:
                     lifecycle_events_map[ev.job_id] = ev
 
-                # 3. Bulk fetch work extensions
-                exts = list(WorkforceWorkExtension.objects.filter(job_id__in=job_ids).select_related("technician", "technician__user").order_by("-created_at"))
-                for ext in exts:
-                    extensions_map.setdefault(ext.job_id, []).append(ext)
-                    if ext.status in ["REQUESTED", "ADMIN_APPROVED", "CUSTOMER_ACCEPTED", "IN_PROGRESS"] and ext.job_id not in active_extensions_map:
-                        active_extensions_map[ext.job_id] = ext
-
-                # 4. Bulk fetch payments
-                payments = list(JobPayment.objects.filter(job_id__in=job_ids))
-                for p in payments:
-                    payments_map[p.job_id] = p
-
-                # 5. Bulk fetch active quotes for estimation jobs
-                from .models import WorkforceQuote, PreServiceVerification
-                quotes_map = {}
-                quotes = list(
-                    WorkforceQuote.objects.filter(job_id__in=job_ids)
-                    .exclude(status__in=[WorkforceQuote.Status.SUPERSEDED, WorkforceQuote.Status.CANCELLED])
-                    .order_by("job_id", "-quote_version")
-                )
-                for q in quotes:
-                    if q.job_id not in quotes_map:
-                        quotes_map[q.job_id] = q
-
-                # 6. Bulk fetch pre-service verifications
-                psvs_map = {}
-                psvs = list(PreServiceVerification.objects.filter(job_id__in=job_ids))
-                for psv in psvs:
-                    psvs_map[psv.job_id] = psv
-
-                # 7. Bulk fetch trip stop counts
-                trip_stops_map = {}
-                try:
-                    from service_requests.models import TripStop
-                    from django.db.models import Count
-                    ts_counts = TripStop.objects.filter(booking_id__in=job_ids).values("booking_id").annotate(cnt=Count("id"))
-                    for ts in ts_counts:
-                        trip_stops_map[ts["booking_id"]] = ts["cnt"]
-                except Exception:
-                    pass
-
-                # 8. Bulk fetch EmployeeJob records for cancellation deadline & status
-                emp_jobs_map = {}
+                # 3. Bulk fetch EmployeeJob records for cancellation deadline & status
                 try:
                     from service_requests.models import EmployeeJob
                     emp_jobs = list(EmployeeJob.objects.filter(service_request_id__in=job_ids, employee=emp))
@@ -2471,23 +2786,92 @@ class WorkforceJobListView(APIView):
                 except Exception:
                     pass
 
-            context = {
-                "request": request,
-                "emp_offers_map": emp_offers_map,
-                "active_offers_map": active_offers_map,
-                "lifecycle_events_map": lifecycle_events_map,
-                "extensions_map": extensions_map,
-                "active_extensions_map": active_extensions_map,
-                "payments_map": payments_map,
-                "quotes_map": quotes_map,
-                "psvs_map": psvs_map,
-                "trip_stops_map": trip_stops_map,
-                "emp_jobs_map": emp_jobs_map,
-            }
-            jobs = job_list
-        else:
-            jobs = []
-            context = {"request": request}
+            # 4. Bulk fetch work extensions (for both admin and technician)
+            exts = list(WorkforceWorkExtension.objects.filter(job_id__in=job_ids).select_related("technician", "technician__user").order_by("-created_at"))
+            for ext in exts:
+                extensions_map.setdefault(ext.job_id, []).append(ext)
+                if ext.status in ["REQUESTED", "ADMIN_APPROVED", "CUSTOMER_ACCEPTED", "IN_PROGRESS"] and ext.job_id not in active_extensions_map:
+                    active_extensions_map[ext.job_id] = ext
+
+            # 5. Bulk fetch payments (for both admin and technician)
+            payments = list(JobPayment.objects.filter(job_id__in=job_ids))
+            for p in payments:
+                payments_map[p.job_id] = p
+
+            # 6. Bulk fetch active quotes for estimation jobs
+            quotes = list(
+                WorkforceQuote.objects.filter(job_id__in=job_ids)
+                .exclude(status__in=[WorkforceQuote.Status.SUPERSEDED, WorkforceQuote.Status.CANCELLED])
+                .order_by("job_id", "-quote_version")
+            )
+            for q in quotes:
+                if q.job_id not in quotes_map:
+                    quotes_map[q.job_id] = q
+
+            # 7. Bulk fetch pre-service verifications
+            psvs = list(PreServiceVerification.objects.filter(job_id__in=job_ids))
+            for psv in psvs:
+                psvs_map[psv.job_id] = psv
+
+            # 8. Bulk fetch trip stop counts
+            try:
+                from service_requests.models import TripStop
+                from django.db.models import Count
+                ts_counts = TripStop.objects.filter(booking_id__in=job_ids).values("booking_id").annotate(cnt=Count("id"))
+                for ts in ts_counts:
+                    trip_stops_map[ts["booking_id"]] = ts["cnt"]
+            except Exception:
+                pass
+
+            # 9. Bulk resolve wallets for assigned employees to avoid per-row queries
+            emp_ids = {j.assigned_employee_id for j in jobs if j.assigned_employee_id}
+            if emp_ids:
+                rels = {r.technician_id: r for r in VendorTechnicianRelationship.objects.filter(
+                    technician_id__in=emp_ids, status=VendorTechnicianRelationship.Status.ACTIVE
+                ).select_related("vendor")}
+                emp_map = {j.assigned_employee.id: j.assigned_employee for j in jobs if j.assigned_employee}
+                comp_ids = set()
+                solo_emp_ids = set()
+                for eid in emp_ids:
+                    rel = rels.get(eid)
+                    e = emp_map.get(eid)
+                    if rel and rel.vendor_id:
+                        comp_ids.add(rel.vendor_id)
+                    elif e and e.company_id:
+                        comp_ids.add(e.company_id)
+                    else:
+                        solo_emp_ids.add(eid)
+
+                head_wallets = {w.company_id: w for w in WalletAccount.objects.filter(
+                    company_id__in=comp_ids, account_type=WalletAccount.AccountType.PROVIDER_HEAD
+                ).select_related("company")}
+                ind_wallets = {w.employee_id: w for w in WalletAccount.objects.filter(
+                    employee_id__in=solo_emp_ids, account_type=WalletAccount.AccountType.INDIVIDUAL_WORKER
+                ).select_related("employee", "employee__user")}
+
+                for eid in emp_ids:
+                    rel = rels.get(eid)
+                    e = emp_map.get(eid)
+                    cid = rel.vendor_id if (rel and rel.vendor_id) else (e.company_id if e else None)
+                    if cid and cid in head_wallets:
+                        wallets_map[eid] = (head_wallets[cid], "PROVIDER_HEAD")
+                    elif eid in ind_wallets:
+                        wallets_map[eid] = (ind_wallets[eid], "INDIVIDUAL_WORKER")
+
+        context = {
+            "request": request,
+            "emp_offers_map": emp_offers_map,
+            "active_offers_map": active_offers_map,
+            "lifecycle_events_map": lifecycle_events_map,
+            "extensions_map": extensions_map,
+            "active_extensions_map": active_extensions_map,
+            "payments_map": payments_map,
+            "quotes_map": quotes_map,
+            "psvs_map": psvs_map,
+            "trip_stops_map": trip_stops_map,
+            "emp_jobs_map": emp_jobs_map,
+            "wallets_map": wallets_map,
+        }
 
         serializer = WorkforceJobSerializer(jobs, many=True, context=context)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -3823,13 +4207,13 @@ class WorkforceDispatchAssignView(APIView):
 
 # ─── Automatic Dispatch Engine ────────────────────────────────────────────────
 
-def run_automatic_dispatch(job, excluded_employee_ids=None):
+def run_automatic_dispatch(job, excluded_employee_ids=None, force=False):
     """
     Delegates to authoritative automatic dispatch service:
     workforce_api.services.automatic_dispatch.dispatch_job
     """
     from workforce_api.services.automatic_dispatch import dispatch_job
-    return dispatch_job(job, exclude_employee_ids=excluded_employee_ids)
+    return dispatch_job(job, exclude_employee_ids=excluded_employee_ids, force=force)
 
 
 from workforce_api.services.workload import ACTIVE_WORKLOAD_STATUSES, supersede_other_offers_for_employee
@@ -3875,6 +4259,23 @@ class WorkforceJobAcceptOfferView(APIView):
                     "code": "JOB_ALREADY_ACCEPTED"
                 }, status=status.HTTP_409_CONFLICT)
 
+            # Authoritative Safety Gate: Future-scheduled bookings cannot be accepted before their lead window opens
+            from workforce_api.services.automatic_dispatch import get_scheduled_dispatch_window
+            is_future, scheduled_dt, window_open = get_scheduled_dispatch_window(job_obj)
+            if is_future:
+                msg = "This job is scheduled for a future date and cannot be accepted yet."
+                if scheduled_dt and window_open:
+                    msg = (
+                        f"Cannot accept job: Service is scheduled for {scheduled_dt.strftime('%d %b %Y at %I:%M %p')}. "
+                        f"Acceptance opens at {window_open.strftime('%I:%M %p')}."
+                    )
+                return Response({
+                    "error": msg,
+                    "code": "SCHEDULED_JOB_NOT_YET_ACCEPTABLE",
+                    "scheduled_start": scheduled_dt.isoformat() if scheduled_dt else None,
+                    "window_open": window_open.isoformat() if window_open else None,
+                }, status=status.HTTP_400_BAD_REQUEST)
+
             from service_requests.models import EmployeeJob
             from workforce_api.models import WorkforceJobOffer, WorkforceJobLifecycleEvent, JobTrackingSession, WorkforceEventLog
 
@@ -3883,12 +4284,24 @@ class WorkforceJobAcceptOfferView(APIView):
                 employee=emp_obj,
             ).order_by("-offered_at").first()
 
+            if offer and offer.status in [WorkforceJobOffer.Status.REJECTED, WorkforceJobOffer.Status.DECLINED]:
+                return Response({
+                    "error": "You previously declined this job offer and cannot accept it.",
+                    "code": "OFFER_ALREADY_DECLINED"
+                }, status=status.HTTP_400_BAD_REQUEST)
+
             if offer and offer.status == WorkforceJobOffer.Status.SUPERSEDED_BY_ACCEPTANCE:
                 return Response({
                     "error": "This job has already been accepted by another professional.",
                     "code": "JOB_ALREADY_ACCEPTED",
                     "message": "This job has already been accepted by another professional."
                 }, status=status.HTTP_409_CONFLICT)
+
+            if offer and offer.status == WorkforceJobOffer.Status.OFFERED and offer.expires_at <= timezone.now():
+                return Response({
+                    "error": "This job offer has expired.",
+                    "code": "OFFER_EXPIRED"
+                }, status=status.HTTP_400_BAD_REQUEST)
 
             has_employee_job = EmployeeJob.objects.filter(service_request=job_obj, employee=emp_obj).exists()
             is_direct_assigned = (job_obj.assigned_employee == emp_obj)
@@ -3902,6 +4315,27 @@ class WorkforceJobAcceptOfferView(APIView):
             now = timezone.now()
             cancellation_deadline = now + timedelta(minutes=5)
 
+            # Hard Single Active Job Rule: Check if employee has a conflicting active job BEFORE mutating offer
+            from workforce_api.services.workload import get_employee_active_job
+            conflicting = ServiceRequest.objects.filter(
+                assigned_employee=emp_obj,
+                status__in=[
+                    "accepted", "on_the_way", "en_route", "arrived",
+                    "service_started", "in_progress", "proof_submitted",
+                    "service_completed", "payment_pending", "cash_pending"
+                ]
+            ).exclude(pk=job_obj.pk).first()
+            if not conflicting:
+                act = get_employee_active_job(emp_obj.id, for_update=True)
+                if act and act.pk != job_obj.pk:
+                    conflicting = act
+
+            if conflicting:
+                return Response({
+                    "error": f"Cannot accept job: Technician already has an active assigned Job #{conflicting.id}.",
+                    "code": "EMPLOYEE_ALREADY_BUSY"
+                }, status=status.HTTP_409_CONFLICT)
+
             if offer and offer.status == WorkforceJobOffer.Status.OFFERED:
                 if offer.expires_at < now:
                     offer.status = WorkforceJobOffer.Status.EXPIRED
@@ -3914,21 +4348,6 @@ class WorkforceJobAcceptOfferView(APIView):
                 offer.status = "ACCEPTED"
                 offer.save()
 
-            # Hard Single Active Job Rule: Check if employee has a conflicting active job
-            conflicting = ServiceRequest.objects.filter(
-                assigned_employee=emp,
-                status__in=[
-                    "accepted", "on_the_way", "en_route", "arrived",
-                    "service_started", "in_progress", "proof_submitted",
-                    "service_completed", "payment_pending", "cash_pending"
-                ]
-            ).exclude(pk=job_obj.pk).first()
-            if conflicting:
-                return Response({
-                    "error": f"Cannot accept job: Technician already has an active assigned Job #{conflicting.id}.",
-                    "code": "EMPLOYEE_ALREADY_BUSY"
-                }, status=status.HTTP_409_CONFLICT)
-
             # Verify technician eligibility if accepting without an existing vetted offer
             if not offer:
                 is_eligible, reason, _ = check_technician_eligibility(emp_obj, job_obj.service_category)
@@ -3940,6 +4359,14 @@ class WorkforceJobAcceptOfferView(APIView):
             job_obj.assigned_employee = emp_obj
             job_obj.save(update_fields=["assigned_employee"])
             apply_transition(job_obj, "accepted", actor=request.user)
+
+            # Synchronize WorkforceDispatchState to ASSIGNED
+            from workforce_api.models import WorkforceDispatchState
+            WorkforceDispatchState.objects.filter(job=job_obj).update(
+                dispatch_status=WorkforceDispatchState.DispatchStatus.ASSIGNED,
+                retry_at=None,
+                locked_at=None,
+            )
 
             # Atomically mark employee availability as BUSY
             emp_obj.current_availability = "busy"
@@ -3967,6 +4394,12 @@ class WorkforceJobAcceptOfferView(APIView):
                             "message": "Another professional accepted this request. Offer closed automatically."
                         }
                     )
+                    WorkforceNotification.objects.filter(
+                        recipient=c_off.employee.user,
+                        notification_type="JOB_OFFER",
+                        related_object_id=str(job_obj.id),
+                        is_read=False,
+                    ).update(is_read=True, read_at=now)
 
             # Supersede all other pending OFFERED jobs for this winning employee
             supersede_other_offers_for_employee(emp_obj, job_obj)
@@ -4625,11 +5058,11 @@ class WorkforceJobRejectOfferView(APIView):
     def post(self, request, pk):
         job = ServiceRequest.objects.filter(pk=pk).first()
         if not job:
-            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Job not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
         emp = getattr(request.user, "employee_profile", None)
         if not emp:
-            return Response({"error": "Employee profile not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Employee profile not found.", "code": "PROFILE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
         if not is_employee_authorized_for_job(emp, job):
             return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
@@ -4639,7 +5072,7 @@ class WorkforceJobRejectOfferView(APIView):
         with transaction.atomic():
             job_obj = ServiceRequest.objects.select_for_update().filter(pk=pk).first()
             if not job_obj:
-                return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+                return Response({"error": "Job not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
             from service_requests.models import EmployeeJob
             from workforce_api.models import WorkforceEventLog
@@ -4647,20 +5080,45 @@ class WorkforceJobRejectOfferView(APIView):
             offer = WorkforceJobOffer.objects.select_for_update().filter(
                 job=job_obj,
                 employee=emp
-            ).order_by("-id").first()
+            ).order_by("-offered_at", "-id").first()
 
-            if offer:
-                offer.status = "REJECTED"
-                offer.rejection_reason = reason
-                offer.save(update_fields=["status", "rejection_reason"])
-            else:
-                WorkforceJobOffer.objects.create(
-                    job=job_obj,
-                    employee=emp,
-                    status="REJECTED",
-                    rejection_reason=reason,
-                    expires_at=timezone.now()
-                )
+            # 1. Do not create fake rejection offers if no valid offer exists
+            if not offer:
+                return Response({
+                    "error": "No active job offer found for this technician.",
+                    "code": "NO_ACTIVE_OFFER"
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # 2. Idempotent handling for repeated / concurrent decline requests
+            if offer.status in [WorkforceJobOffer.Status.REJECTED, WorkforceJobOffer.Status.DECLINED]:
+                return Response({
+                    "message": "Job offer already declined.",
+                    "job_id": job_obj.id,
+                    "status": job_obj.status,
+                }, status=status.HTTP_200_OK)
+
+            # 3. Expiration verification
+            now = timezone.now()
+            if offer.status == WorkforceJobOffer.Status.EXPIRED or (offer.status == WorkforceJobOffer.Status.OFFERED and offer.expires_at <= now):
+                if offer.status != WorkforceJobOffer.Status.EXPIRED:
+                    offer.status = WorkforceJobOffer.Status.EXPIRED
+                    offer.save(update_fields=["status"])
+                return Response({
+                    "error": "This job offer has already expired.",
+                    "code": "OFFER_EXPIRED"
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # 4. Verify offer is still in OFFERED status
+            if offer.status != WorkforceJobOffer.Status.OFFERED:
+                return Response({
+                    "error": f"Cannot decline offer: current offer status is {offer.status}.",
+                    "code": "INVALID_OFFER_STATE"
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # 5. Atomic state transition: OFFERED -> REJECTED
+            offer.status = WorkforceJobOffer.Status.REJECTED
+            offer.rejection_reason = reason
+            offer.save(update_fields=["status", "rejection_reason"])
 
             if job_obj.assigned_employee == emp:
                 job_obj.assigned_employee = None
@@ -4672,28 +5130,51 @@ class WorkforceJobRejectOfferView(APIView):
                 employee=emp
             ).exclude(status="COMPLETED").delete()
 
+            from workforce_api.models import WorkforceJobLifecycleEvent
+
+            WorkforceJobLifecycleEvent.objects.create(
+                job=job_obj,
+                employee=emp,
+                company=job_obj.company,
+                actor_user=request.user,
+                event_type="EMPLOYEE_JOB_DECLINED",
+                previous_status=job_obj.status,
+                new_status=job_obj.status,
+                reason_code="TECHNICIAN_DECLINED",
+                reason_text=reason,
+                metadata={
+                    "job_id": job_obj.id,
+                    "employee_id": emp.id,
+                    "offer_id": offer.id,
+                    "preferred_date": str(job_obj.preferred_date) if job_obj.preferred_date else None,
+                    "preferred_time": str(job_obj.preferred_time) if job_obj.preferred_time else None,
+                    "declined_at": now.isoformat(),
+                }
+            )
+
             WorkforceEventLog.objects.create(
                 user=emp.user,
                 event_type="OFFER_REJECTED",
-                payload={"job_id": job_obj.id, "employee_id": emp.id, "reason": reason}
+                payload={
+                    "job_id": job_obj.id,
+                    "employee_id": emp.id,
+                    "reason": reason,
+                    "preferred_date": str(job_obj.preferred_date) if job_obj.preferred_date else None,
+                    "preferred_time": str(job_obj.preferred_time) if job_obj.preferred_time else None,
+                    "declined_at": now.isoformat(),
+                }
             )
 
-            # Trigger immediate dispatch to next ranked technician
-            success, msg = run_automatic_dispatch(job_obj)
+            job_id_val = job_obj.id
+            emp_id_val = emp.id
 
-            # Ensure job is properly marked unassigned if no other candidate received it
-            job_obj.refresh_from_db()
-            has_new_offer = WorkforceJobOffer.objects.filter(
-                job=job_obj,
-                status="OFFERED",
-                expires_at__gt=timezone.now()
-            ).exists()
-            if not has_new_offer and job_obj.assigned_employee is None and job_obj.status == "assigned":
-                job_obj.status = "unassigned"
-                job_obj.save(update_fields=["status"])
+            # Section 7: Trigger next candidate dispatch after decline transaction commits
+            transaction.on_commit(
+                lambda: run_automatic_dispatch(job_id_val, excluded_employee_ids=[emp_id_val])
+            )
 
             return Response({
-                "message": f"Job offer declined. Next candidate dispatch status: {msg}",
+                "message": "Job offer declined.",
                 "job_id": job_obj.id,
                 "status": job_obj.status,
             }, status=status.HTTP_200_OK)
@@ -4712,7 +5193,10 @@ class WorkforceAutoDispatchTriggerView(APIView):
         if not _is_admin_authorized_for_company(request, job.company):
             return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
-        success, msg = run_automatic_dispatch(job)
+        force = True
+        if hasattr(request, "data") and isinstance(request.data, dict) and "force" in request.data:
+            force = bool(request.data.get("force"))
+        success, msg = run_automatic_dispatch(job, force=force)
         return Response({"message": msg, "success": success, "status": job.status}, status=status.HTTP_200_OK)
 
 
@@ -6596,13 +7080,6 @@ class WorkforceLocationUpdateView(APIView):
             except Exception as e:
                 logger.error(f"[LOCATION_UPDATE_ERROR] Error evaluating Job #{job.id}: {e}", exc_info=True)
 
-        # Reconsider pending dispatchable customer jobs upon fresh GPS update asynchronously
-        try:
-            import threading
-            from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
-            threading.Thread(target=reconsider_jobs_for_employee, args=(emp.id,), daemon=True).start()
-        except Exception:
-            pass
 
         return Response({
             "message": "Live GPS coordinates updated.",
@@ -7543,18 +8020,6 @@ class WorkforceRealtimeStreamView(APIView):
                         logger.debug("[Realtime SSE HEARTBEAT] Sending keepalive ping to user_id=%s.", user_id_val)
                         yield f": heartbeat\n\n"
 
-                    # Periodic Discovery / Reconciliation for connected technician (every 10s)
-                    if not is_admin and (loop_now - last_reconcile_time >= 10):
-                        last_reconcile_time = loop_now
-                        try:
-                            emp_obj = getattr(user, "employee_profile", None)
-                            if emp_obj and emp_obj.is_online and emp_obj.current_availability == "available":
-                                from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
-                                reconsider_jobs_for_employee(emp_obj)
-                        except Exception as rec_err:
-                            logger.debug(f"[Realtime SSE RECONCILE ERR] {rec_err}")
-                        finally:
-                            connection.close()
 
                     # Fetch newly emitted events using pure dictionary projection
                     try:
@@ -9940,10 +10405,524 @@ class WorkforceJobTimelineView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+class WorkforceDispatchRadarView(APIView):
+    """
+    Super Admin Dispatch Radar — Read-Only Observability Endpoint.
 
+    Provides real-time and historical visibility into how customer bookings
+    traverse the technician dispatch pipeline.
 
+    NON-NEGOTIABLE SAFETY GUARANTEES:
+    - Strictly READ-ONLY. Never triggers automated dispatch, creates offers, or alters DB state.
+    - Super Admin / Tenant authorized.
+    - Zero MAP coordinates generation or routing calculation.
+    - Bounded and pre-fetched queries to eliminate N+1 latency.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsWorkforceAdmin]
 
+    def get(self, request):
+        user = request.user
+        now = timezone.now()
 
+        # Tenant isolation
+        user_company = getattr(user, "company", None)
+        is_platform_super = getattr(user, "is_superuser", False)
+
+        # Base QuerySet for jobs
+        qs = ServiceRequest.objects.all()
+        if not is_platform_super:
+            if user_company:
+                qs = qs.filter(Q(company_id=user_company.id) | Q(company__isnull=True) | Q(company_id=1))
+            else:
+                qs = qs.filter(company_id=1)
+
+        job_id_param = request.query_params.get("job_id")
+        status_filter = request.query_params.get("status", "all").lower().strip()
+        search_query = request.query_params.get("search", "").strip()
+
+        # Aggregate Summary Metrics across all active/recent jobs
+        active_base = qs.exclude(status__in=["cancelled"])
+
+        summary = {
+            "total_active": active_base.exclude(status="completed").count(),
+            "searching": active_base.filter(
+                Q(dispatch_state__dispatch_status__in=["DISPATCHING", "RETRY_SCHEDULED", "NEVER_ATTEMPTED"]) |
+                Q(status__in=["new_request", "draft", "unassigned", "confirmed", "redispatching"])
+            ).exclude(
+                status__in=["assigned", "accepted", "on_the_way", "en_route", "arrived", "in_progress", "completed"]
+            ).count(),
+            "offered": active_base.filter(
+                Q(dispatch_state__dispatch_status="OFFER_ACTIVE") |
+                Q(job_offers__status="OFFERED", job_offers__expires_at__gt=now)
+            ).distinct().count(),
+            "assigned": active_base.filter(status__in=["assigned", "accepted"]).count(),
+            "en_route": active_base.filter(status__in=["on_the_way", "en_route"]).count(),
+            "in_progress": active_base.filter(status__in=["arrived", "in_progress"]).count(),
+            "completed_today": qs.filter(
+                status="completed",
+                updated_at__date=now.date()
+            ).count(),
+        }
+
+        # Apply filtering for the active jobs queue
+        queue_qs = qs.select_related(
+            "assigned_employee__user",
+            "company",
+            "customer",
+            "dispatch_state",
+        ).prefetch_related(
+            models.Prefetch(
+                "job_offers",
+                queryset=WorkforceJobOffer.objects.filter(
+                    status=WorkforceJobOffer.Status.OFFERED,
+                    expires_at__gt=now,
+                ).select_related("employee__user").order_by("-offered_at"),
+                to_attr="prefetched_live_offers",
+            )
+        )
+
+        if search_query:
+            queue_qs = queue_qs.filter(
+                Q(request_id__icontains=search_query) |
+                Q(issue_title__icontains=search_query) |
+                Q(service_category__icontains=search_query) |
+                Q(customer_name__icontains=search_query) |
+                Q(assigned_employee__user__first_name__icontains=search_query) |
+                Q(assigned_employee__user__last_name__icontains=search_query)
+            )
+
+        if status_filter == "searching":
+            queue_qs = queue_qs.filter(
+                Q(dispatch_state__dispatch_status__in=["DISPATCHING", "RETRY_SCHEDULED", "NEVER_ATTEMPTED"]) |
+                Q(status__in=["new_request", "draft", "unassigned", "confirmed", "redispatching"])
+            ).exclude(status__in=["assigned", "accepted", "on_the_way", "en_route", "arrived", "in_progress", "completed", "cancelled"])
+        elif status_filter == "offered":
+            queue_qs = queue_qs.filter(
+                Q(dispatch_state__dispatch_status="OFFER_ACTIVE") |
+                Q(job_offers__status="OFFERED", job_offers__expires_at__gt=now)
+            ).distinct()
+        elif status_filter == "assigned":
+            queue_qs = queue_qs.filter(status__in=["assigned", "accepted"])
+        elif status_filter == "en_route":
+            queue_qs = queue_qs.filter(status__in=["on_the_way", "en_route"])
+        elif status_filter == "in_progress":
+            queue_qs = queue_qs.filter(status__in=["arrived", "in_progress"])
+        elif status_filter == "completed":
+            queue_qs = queue_qs.filter(status="completed")
+        elif status_filter == "cancelled":
+            queue_qs = queue_qs.filter(status="cancelled")
+
+        # Order by active urgency first, then newest, bounded to 50 items
+        recent_jobs = list(queue_qs.order_by("-created_at")[:50])
+
+        jobs_data = []
+        for j in recent_jobs:
+            d_state = getattr(j, "dispatch_state", None)
+            live_offers = getattr(j, "prefetched_live_offers", [])
+            live_offer = live_offers[0] if live_offers else None
+
+            # Formulate current active offer info with unambiguous employee identity
+            current_offer_info = None
+            if live_offer:
+                rem_seconds = max(0, int((live_offer.expires_at - now).total_seconds()))
+                raw_emp_name = live_offer.employee.user.get_full_name() or live_offer.employee.user.username if live_offer.employee and live_offer.employee.user else f"Technician #{live_offer.employee_id}"
+                emp_name_formatted = f"{raw_emp_name} · EMP #{live_offer.employee_id}"
+                current_offer_info = {
+                    "offer_id": live_offer.id,
+                    "employee_id": live_offer.employee_id,
+                    "employee_name": emp_name_formatted,
+                    "raw_employee_name": raw_emp_name,
+                    "score": round(float(live_offer.rank_score), 1),
+                    "offered_at": live_offer.offered_at.isoformat() if live_offer.offered_at else None,
+                    "expires_at": live_offer.expires_at.isoformat() if live_offer.expires_at else None,
+                    "remaining_seconds": rem_seconds,
+                    "status": "OFFERED",
+                }
+
+            assigned_tech_name = None
+            if j.assigned_employee and j.assigned_employee.user:
+                raw_assigned_name = j.assigned_employee.user.get_full_name() or j.assigned_employee.user.username
+                assigned_tech_name = f"{raw_assigned_name} · EMP #{j.assigned_employee_id}"
+            elif j.technician_name:
+                assigned_tech_name = j.technician_name
+
+            jobs_data.append({
+                "id": j.id,
+                "request_id": j.request_id or f"SR-{j.id}",
+                "service": j.issue_title or j.service_category or "Service Request",
+                "service_category": j.service_category or "",
+                "status": j.status,
+                "created_at": j.created_at.isoformat() if j.created_at else None,
+                "scheduled_date": str(j.preferred_date) if j.preferred_date else None,
+                "scheduled_time": str(j.preferred_time) if j.preferred_time else None,
+                "address": j.address or "",
+                "customer_name": j.customer_name or (j.customer.get_full_name() if j.customer else "Customer"),
+                "dispatch_status": d_state.dispatch_status if d_state else "NEVER_ATTEMPTED",
+                "attempt_count": d_state.attempt_count if d_state else 0,
+                "retry_at": d_state.retry_at.isoformat() if d_state and d_state.retry_at else None,
+                "unassigned_reason_code": d_state.unassigned_reason_code if d_state else "",
+                "unassigned_reason_message": d_state.unassigned_reason_message if d_state else "",
+                "assigned_technician_id": j.assigned_employee_id,
+                "assigned_technician_name": assigned_tech_name,
+                "current_offer": current_offer_info,
+            })
+
+        # Selected Job Detail Section
+        selected_job_detail = None
+        target_job_id = None
+        if job_id_param:
+            try:
+                target_job_id = int(job_id_param)
+            except (ValueError, TypeError):
+                pass
+        elif jobs_data:
+            target_job_id = jobs_data[0]["id"]
+
+        if target_job_id:
+            sel_job = ServiceRequest.objects.filter(pk=target_job_id).select_related(
+                "assigned_employee__user",
+                "company",
+                "customer",
+                "dispatch_state",
+            ).first()
+
+            if sel_job:
+                # 1. Offers History and Lifecycle Event Queries
+                offers = list(WorkforceJobOffer.objects.filter(job=sel_job).select_related("employee__user").order_by("offered_at"))
+                lifecycle_events = list(WorkforceJobLifecycleEvent.objects.filter(job=sel_job).select_related("employee__user", "actor_user").order_by("created_at"))
+                event_logs = list(WorkforceEventLog.objects.filter(
+                    Q(payload__job_id=sel_job.id) | Q(payload__id=sel_job.id)
+                ).select_related("user").order_by("created_at"))
+
+                # Pre-index decisions from lifecycle events and event logs for accurate timestamps
+                # (NEVER use expires_at for decline!)
+                decline_decision_map = {}  # employee_id -> { "timestamp": dt, "reason": str }
+                accept_decision_map = {}   # employee_id -> dt
+
+                for lc in lifecycle_events:
+                    if lc.event_type == WorkforceJobLifecycleEvent.EventType.EMPLOYEE_JOB_DECLINED:
+                        if lc.employee_id and lc.employee_id not in decline_decision_map:
+                            decline_decision_map[lc.employee_id] = {
+                                "timestamp": lc.created_at,
+                                "reason": lc.reason_text or lc.reason_code or "",
+                            }
+                    elif lc.event_type == WorkforceJobLifecycleEvent.EventType.EMPLOYEE_JOB_ACCEPTED:
+                        if lc.employee_id and lc.employee_id not in accept_decision_map:
+                            accept_decision_map[lc.employee_id] = lc.created_at
+
+                for ev in event_logs:
+                    if ev.event_type == "OFFER_REJECTED" and isinstance(ev.payload, dict):
+                        emp_id = ev.payload.get("employee_id")
+                        if emp_id and emp_id not in decline_decision_map:
+                            decline_decision_map[emp_id] = {
+                                "timestamp": ev.created_at,
+                                "reason": ev.payload.get("reason", ""),
+                            }
+                    elif ev.event_type == "OFFER_ACCEPTED" and isinstance(ev.payload, dict):
+                        emp_id = ev.payload.get("employee_id")
+                        if emp_id and emp_id not in accept_decision_map:
+                            accept_decision_map[emp_id] = ev.created_at
+
+                offers_list = []
+                for off in offers:
+                    raw_off_emp_name = off.employee.user.get_full_name() or off.employee.user.username if off.employee and off.employee.user else f"Technician #{off.employee_id}"
+                    off_emp_name = f"{raw_off_emp_name} · EMP #{off.employee_id}"
+
+                    # Normalize offer status
+                    is_active_unexpired = (off.status == WorkforceJobOffer.Status.OFFERED and off.expires_at > now)
+                    display_status = off.status
+                    if off.status == WorkforceJobOffer.Status.OFFERED and off.expires_at <= now:
+                        display_status = "EXPIRED"
+
+                    decision_dt = None
+                    rejection_reason = off.rejection_reason or ""
+                    if display_status in ["REJECTED", "DECLINED"]:
+                        display_status = "DECLINED"
+                        dec_info = decline_decision_map.get(off.employee_id)
+                        if dec_info:
+                            decision_dt = dec_info["timestamp"]
+                            if not rejection_reason:
+                                rejection_reason = dec_info["reason"]
+                        else:
+                            decision_dt = off.offered_at  # fallback, NEVER expires_at
+                    elif display_status == "ACCEPTED":
+                        decision_dt = accept_decision_map.get(off.employee_id) or off.offered_at
+                    elif display_status == "EXPIRED":
+                        decision_dt = off.expires_at
+
+                    rem_sec = max(0, int((off.expires_at - now).total_seconds())) if is_active_unexpired else 0
+
+                    offers_list.append({
+                        "offer_id": off.id,
+                        "employee_id": off.employee_id,
+                        "employee_name": off_emp_name,
+                        "raw_employee_name": raw_off_emp_name,
+                        "score": round(float(off.rank_score), 1),
+                        "status": display_status,
+                        "is_active": is_active_unexpired,
+                        "offered_at": off.offered_at.isoformat() if off.offered_at else None,
+                        "expires_at": off.expires_at.isoformat() if off.expires_at else None,
+                        "decision_at": decision_dt.isoformat() if decision_dt else None,
+                        "remaining_seconds": rem_sec,
+                        "rejection_reason": rejection_reason,
+                        "wave_id": str(off.wave_id) if off.wave_id else None,
+                        "wave_number": off.wave_number,
+                    })
+
+                # 2. Multi-Attempt Candidate History from ALL CANDIDATES_EVALUATED events
+                eval_events = [e for e in event_logs if e.event_type == "CANDIDATES_EVALUATED"]
+                if not eval_events:
+                    eval_events = list(WorkforceEventLog.objects.filter(
+                        event_type="CANDIDATES_EVALUATED",
+                        payload__job_id=sel_job.id,
+                    ).order_by("created_at"))
+                if not eval_events:
+                    # Fallback to single lookup if mocked with .first()
+                    single_ev = WorkforceEventLog.objects.filter(
+                        event_type="CANDIDATES_EVALUATED",
+                        payload__job_id=sel_job.id,
+                    ).order_by("-created_at").first()
+                    if single_ev:
+                        eval_events = [single_ev]
+
+                attempts_data = []
+
+                # Helper to determine candidate result accurately for a given attempt
+                def get_candidate_result(cand_id, off_list):
+                    # Check if candidate received an offer on this job
+                    matching_offers = [o for o in off_list if o["employee_id"] == cand_id]
+                    if matching_offers:
+                        latest_cand_off = matching_offers[-1]
+                        return latest_cand_off["status"]
+                    return "NOT OFFERED"
+
+                for idx, eval_event in enumerate(eval_events):
+                    payload = eval_event.payload if isinstance(eval_event.payload, dict) else {}
+                    attempt_num = payload.get("attempt") or (idx + 1)
+                    raw_snapshot = payload.get("eligible_candidates_snapshot") or payload.get("candidates_snapshot") or []
+                    eligible_count = payload.get("eligible_count") or len(raw_snapshot)
+                    radius_km = payload.get("radius_km") or payload.get("effective_radius_km")
+
+                    attempt_candidates = []
+                    for c_snap in raw_snapshot:
+                        c_id = c_snap.get("employee_id")
+                        raw_c_name = c_snap.get("employee_name") or f"Technician #{c_id}"
+                        formatted_c_name = raw_c_name if f"#{c_id}" in raw_c_name else f"{raw_c_name} · EMP #{c_id}"
+                        c_res = get_candidate_result(c_id, offers_list)
+                        attempt_candidates.append({
+                            "rank": c_snap.get("rank"),
+                            "employee_id": c_id,
+                            "employee_name": raw_c_name,
+                            "display_name": formatted_c_name,
+                            "distance_km": c_snap.get("distance_km"),
+                            "score": c_snap.get("score"),
+                            "result": c_res,
+                        })
+
+                    attempts_data.append({
+                        "attempt": attempt_num,
+                        "timestamp": eval_event.created_at.isoformat() if hasattr(eval_event, "created_at") and eval_event.created_at else None,
+                        "radius_km": radius_km,
+                        "eligible_count": eligible_count,
+                        "candidates": attempt_candidates,
+                    })
+
+                # Latest evaluation snapshot for backward compatibility
+                candidate_snapshots = attempts_data[-1]["candidates"] if attempts_data else []
+
+                # 3. Normalized Unified Dispatch Lifecycle Timeline (Single Source of Truth)
+                timeline = []
+
+                # (a) Booking Created
+                if sel_job.created_at:
+                    timeline.append({
+                        "timestamp": sel_job.created_at.isoformat(),
+                        "event_type": "BOOKING_CREATED",
+                        "title": "Booking Created",
+                        "description": f"Booking #{sel_job.request_id or sel_job.id} created for {sel_job.issue_title or sel_job.service_category}.",
+                        "actor": sel_job.customer_name or "Customer",
+                        "badge": "info",
+                    })
+
+                # (b) Search & Candidate Evaluations from event logs
+                for lg in event_logs:
+                    ev_type = lg.event_type
+                    if ev_type == "DISPATCH_STARTED":
+                        attempt = lg.payload.get("attempt", 1) if isinstance(lg.payload, dict) else 1
+                        timeline.append({
+                            "timestamp": lg.created_at.isoformat(),
+                            "event_type": ev_type,
+                            "title": f"Dispatch Started (Attempt #{attempt})",
+                            "description": f"Searching eligible technicians for {lg.payload.get('service', sel_job.issue_title or 'Service') if isinstance(lg.payload, dict) else 'Service'}.",
+                            "actor": "Dispatch Engine",
+                            "badge": "primary",
+                        })
+                    elif ev_type == "CANDIDATES_EVALUATED":
+                        payload = lg.payload if isinstance(lg.payload, dict) else {}
+                        count = payload.get("eligible_count", len(payload.get("eligible_candidates_snapshot", [])))
+                        attempt = payload.get("attempt", 1)
+                        rad = payload.get("radius_km") or payload.get("effective_radius_km")
+                        rad_str = f" · Radius {rad} km" if rad else ""
+                        timeline.append({
+                            "timestamp": lg.created_at.isoformat(),
+                            "event_type": ev_type,
+                            "title": f"Candidates Evaluated (Attempt #{attempt})",
+                            "description": f"Discovered {count} eligible ranked technician(s){rad_str}.",
+                            "actor": "Dispatch Engine",
+                            "badge": "primary",
+                        })
+                    elif ev_type == "DISPATCH_UNASSIGNED_REASON":
+                        payload = lg.payload if isinstance(lg.payload, dict) else {}
+                        timeline.append({
+                            "timestamp": lg.created_at.isoformat(),
+                            "event_type": ev_type,
+                            "title": "Dispatch Holding / Retry Scheduled",
+                            "description": payload.get("reason_message", "No technician available right now."),
+                            "actor": "Dispatch Engine",
+                            "badge": "warning",
+                        })
+
+                # (c) Offers delivered and authoritative decision events (Deduplicated)
+                for off in offers:
+                    raw_tech_name = off.employee.user.get_full_name() or off.employee.user.username if off.employee and off.employee.user else f"Technician #{off.employee_id}"
+                    tech_display = f"{raw_tech_name} · EMP #{off.employee_id}"
+
+                    # Offer Sent Event
+                    timeline.append({
+                        "timestamp": off.offered_at.isoformat(),
+                        "event_type": "OFFER_DELIVERED",
+                        "title": f"Offer Sent → {tech_display}",
+                        "description": f"Exclusive offer #{off.id} delivered (Score: {off.rank_score:.1f}).",
+                        "actor": "Dispatch Engine",
+                        "badge": "primary",
+                        "employee_id": off.employee_id,
+                        "offer_id": off.id,
+                    })
+
+                    # Single Authoritative Outcome Event per Offer
+                    if off.status in [WorkforceJobOffer.Status.REJECTED, WorkforceJobOffer.Status.DECLINED]:
+                        dec_info = decline_decision_map.get(off.employee_id)
+                        decline_ts = dec_info["timestamp"] if dec_info else off.offered_at
+                        reason_str = off.rejection_reason or (dec_info["reason"] if dec_info else "No reason specified.")
+                        timeline.append({
+                            "timestamp": decline_ts.isoformat(),
+                            "event_type": "OFFER_DECLINED",
+                            "title": f"Offer Declined by {tech_display}",
+                            "description": f'Technician declined: "{reason_str}"' if reason_str else "Technician declined offer.",
+                            "actor": tech_display,
+                            "badge": "danger",
+                            "employee_id": off.employee_id,
+                            "offer_id": off.id,
+                        })
+                    elif off.status == WorkforceJobOffer.Status.EXPIRED or (off.status == WorkforceJobOffer.Status.OFFERED and off.expires_at <= now):
+                        timeline.append({
+                            "timestamp": off.expires_at.isoformat(),
+                            "event_type": "OFFER_EXPIRED",
+                            "title": f"Offer Expired for {tech_display}",
+                            "description": "Technician did not respond within offer window. Advancing to next candidate.",
+                            "actor": "Dispatch Engine",
+                            "badge": "warning",
+                            "employee_id": off.employee_id,
+                            "offer_id": off.id,
+                        })
+                    elif off.status == WorkforceJobOffer.Status.ACCEPTED:
+                        accept_ts = accept_decision_map.get(off.employee_id) or off.offered_at
+                        timeline.append({
+                            "timestamp": accept_ts.isoformat(),
+                            "event_type": "EMPLOYEE_JOB_ACCEPTED",
+                            "title": f"Job Accepted by {tech_display}",
+                            "description": f"{tech_display} accepted booking #{sel_job.request_id or sel_job.id}.",
+                            "actor": tech_display,
+                            "badge": "success",
+                            "employee_id": off.employee_id,
+                            "offer_id": off.id,
+                        })
+
+                # (d) Subsequent Operational Lifecycle Events (Excluding already-handled declines/accepts)
+                for lc in lifecycle_events:
+                    if lc.event_type in [
+                        WorkforceJobLifecycleEvent.EventType.EMPLOYEE_JOB_DECLINED,
+                        WorkforceJobLifecycleEvent.EventType.EMPLOYEE_JOB_ACCEPTED,
+                    ]:
+                        continue  # Already included above with exact timestamp and offer correlation
+
+                    raw_lc_name = lc.employee.user.get_full_name() if lc.employee and lc.employee.user else f"Technician #{lc.employee_id}" if lc.employee_id else "Technician"
+                    lc_tech_display = f"{raw_lc_name} · EMP #{lc.employee_id}" if lc.employee_id else raw_lc_name
+
+                    if lc.event_type == WorkforceJobLifecycleEvent.EventType.EMPLOYEE_JOB_CANCELLED:
+                        timeline.append({
+                            "timestamp": lc.created_at.isoformat(),
+                            "event_type": lc.event_type,
+                            "title": f"Job Cancelled by {lc_tech_display}",
+                            "description": lc.reason_text or "Job cancelled after acceptance.",
+                            "actor": lc_tech_display,
+                            "badge": "danger",
+                            "employee_id": lc.employee_id,
+                        })
+                    elif lc.event_type == WorkforceJobLifecycleEvent.EventType.EMPLOYEE_JOB_REDISPATCH_STARTED:
+                        timeline.append({
+                            "timestamp": lc.created_at.isoformat(),
+                            "event_type": lc.event_type,
+                            "title": "Redispatch Triggered",
+                            "description": lc.reason_text or "Automated redispatch initiated.",
+                            "actor": "Dispatch Engine",
+                            "badge": "primary",
+                        })
+                    elif lc.event_type == WorkforceJobLifecycleEvent.EventType.NEW_EMPLOYEE_ASSIGNED:
+                        timeline.append({
+                            "timestamp": lc.created_at.isoformat(),
+                            "event_type": lc.event_type,
+                            "title": f"Reassigned → {lc_tech_display}",
+                            "description": f"Assigned to {lc_tech_display}.",
+                            "actor": "Dispatch Engine",
+                            "badge": "success",
+                            "employee_id": lc.employee_id,
+                        })
+
+                # Sort timeline strictly by timestamp ascending
+                timeline.sort(key=lambda x: x["timestamp"])
+
+                # Find current active offer if any
+                current_active_offer = next((o for o in offers_list if o["is_active"]), None)
+
+                sel_d_state = getattr(sel_job, "dispatch_state", None)
+                assigned_tech_name = None
+                if sel_job.assigned_employee and sel_job.assigned_employee.user:
+                    raw_assigned_name = sel_job.assigned_employee.user.get_full_name() or sel_job.assigned_employee.user.username
+                    assigned_tech_name = f"{raw_assigned_name} · EMP #{sel_job.assigned_employee_id}"
+                elif sel_job.technician_name:
+                    assigned_tech_name = sel_job.technician_name
+
+                selected_job_detail = {
+                    "id": sel_job.id,
+                    "request_id": sel_job.request_id or f"SR-{sel_job.id}",
+                    "service": sel_job.issue_title or sel_job.service_category or "Service Request",
+                    "service_category": sel_job.service_category or "",
+                    "status": sel_job.status,
+                    "created_at": sel_job.created_at.isoformat() if sel_job.created_at else None,
+                    "scheduled_date": str(sel_job.preferred_date) if sel_job.preferred_date else None,
+                    "scheduled_time": str(sel_job.preferred_time) if sel_job.preferred_time else None,
+                    "address": sel_job.address or "",
+                    "customer_name": sel_job.customer_name or "Customer",
+                    "dispatch_status": sel_d_state.dispatch_status if sel_d_state else "NEVER_ATTEMPTED",
+                    "attempt_count": sel_d_state.attempt_count if sel_d_state else 0,
+                    "retry_at": sel_d_state.retry_at.isoformat() if sel_d_state and sel_d_state.retry_at else None,
+                    "unassigned_reason_code": sel_d_state.unassigned_reason_code if sel_d_state else "",
+                    "unassigned_reason_message": sel_d_state.unassigned_reason_message if sel_d_state else "",
+                    "assigned_technician_id": sel_job.assigned_employee_id,
+                    "assigned_technician_name": assigned_tech_name,
+                    "current_offer": current_active_offer,
+                    "offers_history": offers_list,
+                    "attempts": attempts_data,
+                    "candidate_evaluations": candidate_snapshots,
+                    "timeline": timeline,
+                }
+
+        return Response({
+            "summary": summary,
+            "jobs": jobs_data,
+            "selected_job": selected_job_detail,
+        }, status=status.HTTP_200_OK)
 
 
 class WorkforceDispatchHealthView(APIView):

@@ -170,7 +170,31 @@ export function getEmployeeJobPresentation(job, hasActiveJob = false) {
     };
   }
 
-  // ── State C: Historical / Other Jobs ────────────────────────────────────────
+  // ── State C: Future Scheduled Booking ──────────────────────────────────────
+  if (job.is_scheduled_future) {
+    return {
+      state: 'SCHEDULED',
+      displayStatus: 'SCHEDULED (UPCOMING)',
+      badgeStatus: 'scheduled',
+      badgeLabel: 'SCHEDULED',
+      badgeColorClass: 'bg-purple-50 text-purple-800 border-purple-300',
+      badgeDotClass: 'bg-purple-600',
+      isOffer: false,
+      isScheduled: true,
+      isAccepted: false,
+      canAccept: false,
+      canDecline: false,
+      canCancel: false,
+      canTrack: false,
+      showOfferCountdown: false,
+      showCancellationCountdown: false,
+      offerExpiresAt: null,
+      acceptedAt: null,
+      cancellationDeadline: null,
+    };
+  }
+
+  // ── State D: Historical / Other Jobs ────────────────────────────────────────
   const rawStatus = (job.status || 'unassigned').toLowerCase();
   return {
     state: rawStatus.toUpperCase(),

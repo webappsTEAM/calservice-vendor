@@ -5,6 +5,7 @@ Tests for the three Vendor GT blocker fixes:
 3. Scheduled GT Dispatch: get_scheduled_dispatch_window() holds future bookings outside lead window.
 """
 import datetime
+import zoneinfo
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -200,9 +201,9 @@ class ScheduledDispatchSafetyGateTests(SimpleTestCase):
         self.assertFalse(is_future)
 
     def test_same_day_job_within_lead_window_dispatches_immediately(self):
-        tz = timezone.get_current_timezone()
-        ref_now = timezone.make_aware(datetime.datetime(2026, 9, 8, 14, 0), tz)
-        slot_str = "14:20"  # 20 minutes ahead (< 45 min lead time)
+        tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+        ref_now = datetime.datetime(2026, 9, 8, 14, 0, tzinfo=tz)
+        slot_str = "14:30"  # 30 minutes ahead (< 1 hour lead window)
 
         job = SimpleNamespace(
             service_category="goods_transport_truck",
@@ -210,11 +211,11 @@ class ScheduledDispatchSafetyGateTests(SimpleTestCase):
             preferred_time=slot_str,
         )
         is_future, sched_dt, win_open = ad.get_scheduled_dispatch_window(job, now=ref_now)
-        self.assertFalse(is_future, "Job within 45 min lead window must dispatch immediately")
+        self.assertFalse(is_future, "Job within 1 hour lead window must dispatch immediately")
 
     def test_same_day_job_outside_lead_window_is_held(self):
-        tz = timezone.get_current_timezone()
-        ref_now = timezone.make_aware(datetime.datetime(2026, 9, 8, 10, 0), tz)
+        tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+        ref_now = datetime.datetime(2026, 9, 8, 10, 0, tzinfo=tz)
         slot_str = "14:00"
 
         job = SimpleNamespace(
@@ -224,11 +225,11 @@ class ScheduledDispatchSafetyGateTests(SimpleTestCase):
         )
         is_future, sched_dt, win_open = ad.get_scheduled_dispatch_window(job, now=ref_now)
         self.assertTrue(is_future, "Job 4 hours away must be held from immediate dispatch")
-        self.assertEqual(win_open, timezone.make_aware(datetime.datetime(2026, 9, 8, 13, 15), tz))
+        self.assertEqual(win_open, datetime.datetime(2026, 9, 8, 13, 0, tzinfo=tz))
 
     def test_future_day_job_is_held(self):
-        tz = timezone.get_current_timezone()
-        ref_now = timezone.make_aware(datetime.datetime(2026, 9, 8, 10, 0), tz)
+        tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+        ref_now = datetime.datetime(2026, 9, 8, 10, 0, tzinfo=tz)
         tomorrow = ref_now.date() + datetime.timedelta(days=1)
 
         job = SimpleNamespace(
@@ -239,9 +240,9 @@ class ScheduledDispatchSafetyGateTests(SimpleTestCase):
         is_future, sched_dt, win_open = ad.get_scheduled_dispatch_window(job, now=ref_now)
         self.assertTrue(is_future, "Job scheduled for tomorrow must be held")
 
-    def test_packers_movers_uses_120_minute_lead_window(self):
-        tz = timezone.get_current_timezone()
-        ref_now = timezone.make_aware(datetime.datetime(2026, 9, 8, 10, 0), tz)
+    def test_packers_movers_uses_standard_lead_window(self):
+        tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+        ref_now = datetime.datetime(2026, 9, 8, 10, 0, tzinfo=tz)
 
         job_held = SimpleNamespace(
             service_category="packers_movers",
@@ -250,12 +251,12 @@ class ScheduledDispatchSafetyGateTests(SimpleTestCase):
         )
         is_future_a, _, win_open_a = ad.get_scheduled_dispatch_window(job_held, now=ref_now)
         self.assertTrue(is_future_a)
-        self.assertEqual(win_open_a, timezone.make_aware(datetime.datetime(2026, 9, 8, 11, 0), tz))
+        self.assertEqual(win_open_a, datetime.datetime(2026, 9, 8, 12, 0, tzinfo=tz))
 
         job_active = SimpleNamespace(
             service_category="packers_movers",
             preferred_date=ref_now.date(),
-            preferred_time="11:30",
+            preferred_time="10:30",
         )
         is_future_b, _, _ = ad.get_scheduled_dispatch_window(job_active, now=ref_now)
         self.assertFalse(is_future_b)
@@ -268,3 +269,124 @@ class ScheduledDispatchSafetyGateTests(SimpleTestCase):
         self.assertEqual(ad.parse_preferred_slot_time("02:30 PM - 04:30 PM"), datetime.time(14, 30))
         self.assertIsNone(ad.parse_preferred_slot_time("ASAP"))
         self.assertIsNone(ad.parse_preferred_slot_time(""))
+
+
+# ─── 4. Date-Based Dispatch Safety Tests ─────────────────────────────────────
+
+class DateBasedDispatchSafetyTests(SimpleTestCase):
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.now = timezone.now()
+
+    @patch("django.db.transaction.atomic")
+    @patch("workforce_api.models.WorkforceDispatchState.objects.filter")
+    @patch("service_requests.models.ServiceRequest.objects.select_for_update")
+    def test_past_preferred_date_refused_with_schedule_date_expired(self, mock_sfu, mock_ds_filt, mock_atomic):
+        past_job = SimpleNamespace(
+            id=1001,
+            preferred_date=self.today - datetime.timedelta(days=1),
+            created_at=self.now - datetime.timedelta(days=2),
+            status="unassigned",
+            assigned_employee=None,
+        )
+        mock_sfu.return_value.filter.return_value.first.return_value = past_job
+
+        ok, reason = ad._dispatch_job_locked(1001, max_gps_age_seconds=120, exclude_employee_ids=set())
+        self.assertFalse(ok)
+        self.assertEqual(reason, "SCHEDULE_DATE_EXPIRED")
+
+    @patch("django.db.transaction.atomic")
+    @patch("workforce_api.models.WorkforceDispatchState.objects.filter")
+    @patch("service_requests.models.ServiceRequest.objects.select_for_update")
+    def test_stale_immediate_booking_refused_with_schedule_date_expired(self, mock_sfu, mock_ds_filt, mock_atomic):
+        stale_immediate_job = SimpleNamespace(
+            id=1002,
+            preferred_date=None,
+            created_at=self.now - datetime.timedelta(days=2),
+            status="unassigned",
+            assigned_employee=None,
+        )
+        mock_sfu.return_value.filter.return_value.first.return_value = stale_immediate_job
+
+        ok, reason = ad._dispatch_job_locked(1002, max_gps_age_seconds=120, exclude_employee_ids=set())
+        self.assertFalse(ok)
+        self.assertEqual(reason, "SCHEDULE_DATE_EXPIRED")
+
+    @patch("django.db.transaction.atomic")
+    @patch("workforce_api.models.WorkforceDispatchState.objects.select_for_update")
+    @patch("workforce_api.services.automatic_dispatch.get_user_model")
+    @patch("workforce_api.models.WorkforceJobOffer.objects.select_for_update")
+    @patch("workforce_api.services.automatic_dispatch.describe_unassigned_reason", return_value=("NO_TECH", "No tech nearby"))
+    @patch("workforce_api.services.automatic_dispatch._count_failed_offer_cycles", return_value=0)
+    @patch("workforce_api.models.WorkforceEventLog.objects.create")
+    @patch("workforce_api.services.automatic_dispatch.get_eligible_candidates", return_value=[])
+    @patch("service_requests.models.ServiceRequest.objects.select_for_update")
+    def test_today_immediate_booking_passes_date_gate(self, mock_sfu, mock_cands, mock_event, mock_cycles, mock_desc, mock_offer_sfu, mock_user_model, mock_ds_sfu, mock_atomic):
+        mock_user_model.return_value.objects.filter.return_value.first.return_value = None
+        mock_offer_sfu.return_value.filter.return_value.first.return_value = None
+        mock_ds = MagicMock(dispatch_status="never_attempted", attempt_count=0, retry_at=None, locked_at=None)
+        mock_ds_sfu.return_value.filter.return_value.first.return_value = mock_ds
+        mock_ds_sfu.return_value.get.return_value = mock_ds
+        today_immediate_job = SimpleNamespace(
+            id=1003,
+            preferred_date=None,
+            created_at=self.now,
+            status="unassigned",
+            assigned_employee=None,
+            service_category="electrical",
+            latitude=12.97,
+            longitude=77.59,
+            company=None,
+            company_id=1,
+            issue_title=None,
+            save=MagicMock(),
+        )
+        mock_sfu.return_value.filter.return_value.first.return_value = today_immediate_job
+        mock_sfu.return_value.get.return_value = today_immediate_job
+
+        ok, reason = ad._dispatch_job_locked(1003, max_gps_age_seconds=120, exclude_employee_ids=set())
+        self.assertNotEqual(reason, "SCHEDULE_DATE_EXPIRED")
+
+    @patch("django.db.transaction.atomic")
+    @patch("workforce_api.models.WorkforceDispatchState.objects.select_for_update")
+    @patch("workforce_api.services.automatic_dispatch.get_user_model")
+    @patch("workforce_api.models.WorkforceJobOffer.objects.select_for_update")
+    @patch("workforce_api.services.automatic_dispatch.describe_unassigned_reason", return_value=("NO_TECH", "No tech nearby"))
+    @patch("workforce_api.services.automatic_dispatch._count_failed_offer_cycles", return_value=0)
+    @patch("workforce_api.models.WorkforceEventLog.objects.create")
+    @patch("workforce_api.services.automatic_dispatch.get_eligible_candidates", return_value=[])
+    @patch("service_requests.models.ServiceRequest.objects.select_for_update")
+    def test_today_scheduled_booking_passes_date_gate(self, mock_sfu, mock_cands, mock_event, mock_cycles, mock_desc, mock_offer_sfu, mock_user_model, mock_ds_sfu, mock_atomic):
+        mock_user_model.return_value.objects.filter.return_value.first.return_value = None
+        mock_offer_sfu.return_value.filter.return_value.first.return_value = None
+        mock_ds = MagicMock(dispatch_status="never_attempted", attempt_count=0, retry_at=None, locked_at=None)
+        mock_ds_sfu.return_value.filter.return_value.first.return_value = mock_ds
+        mock_ds_sfu.return_value.get.return_value = mock_ds
+        today_scheduled_job = SimpleNamespace(
+            id=1004,
+            preferred_date=self.today,
+            preferred_time="ASAP",
+            created_at=self.now,
+            status="unassigned",
+            assigned_employee=None,
+            service_category="electrical",
+            latitude=12.97,
+            longitude=77.59,
+            company=None,
+            company_id=1,
+            issue_title=None,
+            save=MagicMock(),
+        )
+        mock_sfu.return_value.filter.return_value.first.return_value = today_scheduled_job
+        mock_sfu.return_value.get.return_value = today_scheduled_job
+
+        ok, reason = ad._dispatch_job_locked(1004, max_gps_age_seconds=120, exclude_employee_ids=set())
+        self.assertNotEqual(reason, "SCHEDULE_DATE_EXPIRED")
+
+
+
+
+
+
+
+

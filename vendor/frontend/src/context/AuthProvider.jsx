@@ -97,6 +97,7 @@ export function AuthProvider({ children }) {
             isTiedWorker: isTiedWorker,
             isSoloWorker: isSoloWorker,
             registrationStatus: empData?.registration_status || me.registration_status || (isAdmin ? 'approved' : 'not_started'),
+            onboarding_data: empData?.onboarding_data || null,
             isOnline: empData ? Boolean(empData.is_online) : false,
             availability: empData ? (empData.live_availability || 'offline') : 'offline',
           };

@@ -210,5 +210,15 @@ def supersede_other_offers_for_employee(employee, accepted_job, reason: str = "E
                     "message": "Offer closed automatically because you accepted another job.",
                 }
             )
+            # Reconcile unread JOB_OFFER notifications for superseded offers
+            # so the notification count and actionable offers do not misleadingly diverge.
+            from workforce_api.models import WorkforceNotification
+            from django.utils import timezone
+            WorkforceNotification.objects.filter(
+                recipient=user_obj,
+                notification_type="JOB_OFFER",
+                related_object_id=str(offer.job_id),
+                is_read=False,
+            ).update(is_read=True, read_at=timezone.now())
 
     return closed_count

@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useMemo, useContext } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import React, { useEffect, useState, useMemo, useContext, useCallback, useRef } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../context/AuthProvider.jsx';
 import { EmployeeRuntimeContext } from '../../context/EmployeeRuntimeContext.jsx';
 import { getGPSPosition } from '../../hooks/useGPSPosition.js';
@@ -45,6 +45,7 @@ import {
   Eye,
   Check,
   Copy,
+  Lock,
 } from 'lucide-react';
 
 /**
@@ -262,17 +263,48 @@ function getServiceCategoryMeta(categoryName = '', title = '') {
 }
 
 /**
+ * Authoritative Offer Status Helper
+ * Respects server-provided is_offer and offer_status.
+ * Technicians assigned or accepted to the job are never treated as offers.
+ */
+function isOfferJob(job) {
+  if (!job) return false;
+  if (job.is_assigned_to_current_employee || job.is_accepted_by_current_employee) {
+    return false;
+  }
+  if (job.is_offer === true) {
+    return true;
+  }
+  const offerSt = (job.offer_status || job.active_offer?.status || '').toUpperCase();
+  if (offerSt === 'OFFERED') {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Status Tag (Clear, high-visibility status pill)
  */
-function getStatusTag(status = '') {
-  const st = (status || '').toUpperCase();
-  if (['OFFERED', 'PENDING', 'UNASSIGNED', 'DISPATCHING', 'REDISPATCHING'].includes(st)) {
+function getStatusTag(job) {
+  if (!job) return { label: 'Scheduled', badgeClass: 'bg-slate-600 text-white font-bold' };
+
+  if (job?.is_scheduled_future) {
     return {
-      label: st === 'UNASSIGNED' ? 'Available' : 'New Offer',
+      label: 'Scheduled',
+      badgeClass: 'bg-purple-600 text-white font-bold',
+      isScheduled: true,
+    };
+  }
+
+  if (isOfferJob(job)) {
+    return {
+      label: 'New Offer',
       badgeClass: 'bg-amber-500 text-white font-bold',
       isOffer: true,
     };
   }
+
+  const st = ((typeof job === 'string' ? job : job.status) || '').toUpperCase();
   if (['ASSIGNED', 'ACCEPTED'].includes(st)) {
     return {
       label: 'Assigned',
@@ -310,29 +342,95 @@ function getStatusTag(status = '') {
     };
   }
   return {
-    label: status || 'Scheduled',
+    label: (typeof job === 'string' ? job : job.status) || 'Scheduled',
     badgeClass: 'bg-slate-600 text-white font-bold',
   };
+}
+
+const CATEGORIES = [
+  { id: 'ALL', label: 'All Categories' },
+  { id: 'goods_transport_truck', label: '🚚 Mini Truck' },
+  { id: 'goods_transport_two_wheeler', label: '🛵 Two-Wheeler' },
+  { id: 'packers_movers', label: '📦 Packers & Movers' },
+  { id: 'electrical', label: '⚡ Electrical' },
+  { id: 'ac', label: '❄️ AC & Appliances' },
+  { id: 'plumbing', label: '💧 Plumbing' },
+  { id: 'carpentry', label: '🔨 Locks & Carpentry' },
+  { id: 'cleaning', label: '🌿 Cleaning' },
+];
+
+function matchesCategory(jobCategoryId, targetCategoryId) {
+  if (!targetCategoryId || targetCategoryId === 'ALL') return true;
+  if (jobCategoryId === targetCategoryId) return true;
+  if (targetCategoryId === 'goods_transport_truck' && (jobCategoryId === 'goods_transport' || jobCategoryId === 'goods_transport_truck')) return true;
+  if (targetCategoryId === 'goods_transport' && (jobCategoryId === 'goods_transport_truck' || jobCategoryId === 'goods_transport')) return true;
+  return false;
+}
+
+function isOfferJobPastDated(job, todayStr) {
+  if (!isOfferJob(job)) return false;
+  if (job?.preferred_date) {
+    return job.preferred_date < todayStr;
+  }
+  if (job?.created_at) {
+    const createdDateStr = String(job.created_at).slice(0, 10);
+    return createdDateStr < todayStr;
+  }
+  return false;
 }
 
 export function EmployeeJobsPage() {
   const { user } = useAuth();
   const employeeRuntime = useContext(EmployeeRuntimeContext);
   const navigate = useNavigate();
-  const [jobs, setJobs] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const {
+    activeJobs = [],
+    completedJobs = [],
+    isJobsLoading = false,
+    refreshActiveJobs,
+    refreshCompletedJobs,
+    activeAssignedJob,
+    hasActiveJob = false,
+    incomingOffers = [],
+    declineOfferOptimistic,
+    jobsRevision = 0,
+  } = employeeRuntime || {};
+
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [activeTab, setActiveTab] = useState('ALL'); // 'ALL' | 'OFFERS' | 'ACTIVE' | 'COMPLETED'
+
+  const initialTab = (searchParams.get('tab') || '').toUpperCase();
+  const [activeTab, setActiveTab] = useState(
+    ['OFFERS', 'ACTIVE', 'SCHEDULED', 'COMPLETED'].includes(initialTab) ? initialTab : 'ALL'
+  );
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [actionLoadingId, setActionLoadingId] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
+
+  const initialLoading = isJobsLoading && activeJobs.length === 0;
+
+  const handleTabChange = (tabId) => {
+    setActiveTab(tabId);
+    const nextParams = new URLSearchParams(searchParams);
+    if (tabId === 'ALL') {
+      nextParams.delete('tab');
+    } else {
+      nextParams.set('tab', tabId.toLowerCase());
+    }
+    setSearchParams(nextParams, { replace: true });
+    if (tabId === 'COMPLETED' || tabId === 'ALL') {
+      refreshCompletedJobs?.();
+    }
+  };
 
   // Job Details Modal
   const [selectedJobForDetails, setSelectedJobForDetails] = useState(null);
 
   // Per-job inline action errors — replaces alert() entirely.
-  // Maps jobId → { code, message, isExpired, isAlreadyAccepted }
+  // Maps jobId → { code, message, isExpired, isAlreadyAccepted, isBusy }
   const [actionErrors, setActionErrors] = useState({});
 
   const clearJobError = (jobId) =>
@@ -344,24 +442,47 @@ export function EmployeeJobsPage() {
   const [otpError, setOtpError] = useState('');
   const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
 
-  const loadJobs = async () => {
-    try {
-      setIsLoading(true);
-      setError('');
-      // Request all relevant workforce jobs for the authenticated user
-      const data = await apiGetWorkforceJobs('all');
-      const jobsList = Array.isArray(data) ? data : (data?.results || []);
-      setJobs(jobsList);
-    } catch (err) {
-      setError(cleanErrorMessage(err?.message || 'Failed to load your field jobs.'));
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
+  // Fetch completed jobs if tab is COMPLETED or ALL
   useEffect(() => {
-    loadJobs();
-  }, []);
+    if (activeTab === 'COMPLETED' || activeTab === 'ALL') {
+      refreshCompletedJobs?.();
+    }
+  }, [activeTab, refreshCompletedJobs]);
+
+  const loadJobs = useCallback(async (options = {}) => {
+    const isBackground = options?.background === true;
+    try {
+      setIsRefreshing(true);
+      setError('');
+      await refreshActiveJobs?.({ force: true, silent: isBackground });
+      if (activeTab === 'COMPLETED' || activeTab === 'ALL') {
+        await refreshCompletedJobs?.();
+      }
+    } catch (err) {
+      if (!isBackground) {
+        setError(cleanErrorMessage(err?.message || 'Failed to load your field jobs.'));
+      }
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [refreshActiveJobs, refreshCompletedJobs, activeTab]);
+
+  // Combined jobs according to active tab
+  const jobs = useMemo(() => {
+    if (activeTab === 'COMPLETED') return completedJobs;
+    if (activeTab === 'OFFERS') return incomingOffers;
+    if (activeTab === 'SCHEDULED') return activeJobs.filter((j) => j.is_scheduled_future);
+    if (activeTab === 'ACTIVE') {
+      return activeJobs.filter((j) => !isOfferJob(j) && !j.is_scheduled_future);
+    }
+    // 'ALL' tab: combines activeJobs and completedJobs
+    const map = new Map();
+    activeJobs.forEach(j => map.set(j.id, j));
+    completedJobs.forEach(j => {
+      if (!map.has(j.id)) map.set(j.id, j);
+    });
+    return Array.from(map.values());
+  }, [activeTab, activeJobs, completedJobs, incomingOffers]);
 
   const handleCopyId = (id, e) => {
     e?.stopPropagation?.();
@@ -388,7 +509,7 @@ export function EmployeeJobsPage() {
     } catch (err) {
       const msg = cleanErrorMessage(err?.message || 'Could not accept job offer.');
       const code = err?.code || '';
-      // Classify the error so the card can show the right inline state
+      const isBusy = code === 'EMPLOYEE_ALREADY_BUSY' || msg.includes('already has an active assigned');
       const isExpired =
         code === 'OFFER_EXPIRED' ||
         code === 'NO_ACTIVE_OFFER' ||
@@ -399,10 +520,12 @@ export function EmployeeJobsPage() {
         msg.toLowerCase().includes('already been accepted');
       setActionErrors(prev => ({
         ...prev,
-        [jobId]: { code, message: msg, isExpired, isAlreadyAccepted },
+        [jobId]: { code, message: msg, isExpired, isAlreadyAccepted, isBusy },
       }));
-      // Refresh the list so the card reflects server reality (may disappear if reassigned)
-      loadJobs();
+      // Only refresh if expired or already taken, keeping offer visible when busy
+      if (isExpired || isAlreadyAccepted) {
+        refreshActiveJobs?.({ force: true });
+      }
     } finally {
       setActionLoadingId(null);
     }
@@ -414,8 +537,10 @@ export function EmployeeJobsPage() {
     clearJobError(jobId);
     try {
       setActionLoadingId(jobId);
+      // Optimistically remove from runtime state instantly without waiting
+      declineOfferOptimistic?.(jobId);
       await apiRejectJobOffer(jobId, 'Technician declined');
-      await loadJobs();
+      refreshActiveJobs?.({ force: true, silent: true });
       if (selectedJobForDetails?.id === jobId) setSelectedJobForDetails(null);
     } catch (err) {
       const msg = cleanErrorMessage(err?.message || 'Could not decline job offer.');
@@ -424,6 +549,8 @@ export function EmployeeJobsPage() {
         ...prev,
         [jobId]: { code, message: msg, isExpired: false, isAlreadyAccepted: false },
       }));
+      // Rollback optimistic removal
+      refreshActiveJobs?.({ force: true });
     } finally {
       setActionLoadingId(null);
     }
@@ -517,45 +644,116 @@ export function EmployeeJobsPage() {
     }
   };
 
-  // Tab counts
+  // 1. Memoized todayStr to avoid calling new Date() repeatedly in filter loops
+  const todayStr = useMemo(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  }, []);
+
+  // 2. Tab counts — single-pass O(N) evaluation
   const counts = useMemo(() => {
-    const offers = jobs.filter((j) =>
-      ['OFFERED', 'PENDING', 'UNASSIGNED', 'DISPATCHING', 'REDISPATCHING'].includes((j.status || '').toUpperCase())
-    ).length;
-    const active = jobs.filter((j) =>
-      ['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'PROOF_SUBMITTED'].includes((j.status || '').toUpperCase())
-    ).length;
-    const completed = jobs.filter((j) =>
-      ['COMPLETED', 'WORK_COMPLETED', 'WAITING_FOR_PAYMENT'].includes((j.status || '').toUpperCase())
-    ).length;
+    let active = 0;
+    let scheduled = 0;
+    let validActiveCount = 0;
+
+    activeJobs.forEach((j) => {
+      if (isOfferJobPastDated(j, todayStr)) return;
+      validActiveCount++;
+      if (j.is_scheduled_future) {
+        scheduled++;
+      } else if (!isOfferJob(j)) {
+        const st = (j.status || '').toUpperCase();
+        if (['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'PROOF_SUBMITTED'].includes(st)) {
+          active++;
+        }
+      }
+    });
+
+    let completed = 0;
+    completedJobs.forEach((j) => {
+      if (!isOfferJobPastDated(j, todayStr)) completed++;
+    });
+
+    let offers = 0;
+    incomingOffers.forEach((j) => {
+      if (!isOfferJobPastDated(j, todayStr)) offers++;
+    });
 
     return {
-      ALL: jobs.length,
+      ALL: validActiveCount + completed,
       OFFERS: offers,
       ACTIVE: active,
+      SCHEDULED: scheduled,
       COMPLETED: completed,
     };
-  }, [jobs]);
+  }, [activeJobs, completedJobs, incomingOffers, todayStr]);
 
-  // Filtered jobs list
-  const filteredJobs = useMemo(() => {
-    return jobs.filter((job) => {
-      const status = (job.status || '').toUpperCase();
-      const term = searchTerm.toLowerCase().trim();
+  // 3. Category counts — evaluated for the active tab jobs and current search
+  const categoryCounts = useMemo(() => {
+    const countsMap = { ALL: 0 };
+    const term = searchTerm.toLowerCase().trim();
+
+    jobs.forEach((job) => {
+      if (isOfferJobPastDated(job, todayStr)) return;
+
+      if (term) {
+        const matches =
+          (job.service_title || job.service_category || '').toLowerCase().includes(term) ||
+          (job.customer_display_name || '').toLowerCase().includes(term) ||
+          (job.address || '').toLowerCase().includes(term) ||
+          String(job.request_id || job.id).toLowerCase().includes(term);
+        if (!matches) return;
+      }
+
+      countsMap.ALL = (countsMap.ALL || 0) + 1;
       const meta = getServiceCategoryMeta(job.service_category, job.service_title);
+      const catId = meta.id;
+      countsMap[catId] = (countsMap[catId] || 0) + 1;
+      if (catId === 'goods_transport') {
+        countsMap['goods_transport_truck'] = (countsMap['goods_transport_truck'] || 0) + 1;
+      }
+    });
 
-      if (activeTab === 'OFFERS' && !['OFFERED', 'PENDING', 'UNASSIGNED', 'DISPATCHING', 'REDISPATCHING'].includes(status)) {
+    return countsMap;
+  }, [jobs, searchTerm, todayStr]);
+
+  // 4. Filtered jobs list with hoisted term and streamlined category matching
+  const filteredJobs = useMemo(() => {
+    const term = searchTerm.toLowerCase().trim();
+
+    return jobs.filter((job) => {
+      if (isOfferJobPastDated(job, todayStr)) {
         return false;
       }
-      if (activeTab === 'ACTIVE' && !['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'PROOF_SUBMITTED'].includes(status)) {
+      const isOffer = isOfferJob(job);
+      const status = (job.status || '').toUpperCase();
+
+      if (activeTab === 'OFFERS' && !isOffer) {
         return false;
       }
-      if (activeTab === 'COMPLETED' && !['COMPLETED', 'WORK_COMPLETED', 'WAITING_FOR_PAYMENT'].includes(status)) {
+      if (activeTab === 'SCHEDULED' && !job.is_scheduled_future) {
+        return false;
+      }
+      if (
+        activeTab === 'ACTIVE' &&
+        (job.is_scheduled_future ||
+          isOffer ||
+          !['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'IN_SERVICE', 'INSPECTION', 'PROOF_SUBMITTED'].includes(status))
+      ) {
+        return false;
+      }
+      if (
+        activeTab === 'COMPLETED' &&
+        (isOffer || !['COMPLETED', 'WORK_COMPLETED', 'WAITING_FOR_PAYMENT'].includes(status))
+      ) {
         return false;
       }
 
-      if (selectedCategory !== 'ALL' && meta.id !== selectedCategory) {
-        return false;
+      if (selectedCategory !== 'ALL') {
+        const meta = getServiceCategoryMeta(job.service_category, job.service_title);
+        if (!matchesCategory(meta.id, selectedCategory)) {
+          return false;
+        }
       }
 
       if (term) {
@@ -569,7 +767,7 @@ export function EmployeeJobsPage() {
 
       return true;
     });
-  }, [jobs, activeTab, selectedCategory, searchTerm]);
+  }, [jobs, activeTab, selectedCategory, searchTerm, todayStr]);
 
   return (
     <AppShell breadcrumbs={[{ label: 'Home', to: '/workforce/employee/dashboard' }, { label: 'Jobs' }]}>
@@ -613,89 +811,144 @@ export function EmployeeJobsPage() {
             </div>
 
             <button
-              onClick={loadJobs}
-              disabled={isLoading}
+              onClick={() => loadJobs({ background: true })}
+              disabled={isRefreshing || initialLoading}
               className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl transition-all cursor-pointer shrink-0"
               title="Refresh"
             >
-              <RotateCcw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+              <RotateCcw className={`w-4 h-4 ${isRefreshing || initialLoading ? 'animate-spin' : ''}`} />
             </button>
           </div>
         </div>
 
         {error && <ErrorState message={error} onDismiss={() => setError('')} />}
 
-        {/* ── SEGMENTED TAB SELECTOR (Swiggy Partner Style) ── */}
-        <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
-          {[
-            { id: 'ALL', label: 'All Jobs', count: counts.ALL },
-            { id: 'OFFERS', label: '⚡ New Offers', count: counts.OFFERS, isOffer: true },
-            { id: 'ACTIVE', label: '▶️ In Progress', count: counts.ACTIVE },
-            { id: 'COMPLETED', label: '✅ Completed', count: counts.COMPLETED },
-          ].map((tab) => {
-            const isActive = activeTab === tab.id;
-            return (
+        {/* ── BUSY TECHNICIAN OFFERS BANNER ── */}
+        {hasActiveJob && incomingOffers.length > 0 && (
+          <div className="bg-amber-500/10 border border-amber-300/80 rounded-2xl p-4 flex items-start justify-between gap-3 text-amber-950 shadow-xs">
+            <div className="flex items-start gap-3 min-w-0">
+              <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-xs sm:text-sm font-black text-amber-950">
+                  You're currently on Job #{activeAssignedJob?.request_id || activeAssignedJob?.id}.
+                </p>
+                <p className="text-xs text-amber-800 mt-0.5 font-medium">
+                  {incomingOffers.length} new service offer{incomingOffers.length > 1 ? 's are' : ' is'} available. You can accept one after completing your current job.
+                </p>
+              </div>
+            </div>
+            {activeTab !== 'OFFERS' && (
               <button
-                key={tab.id}
                 type="button"
-                onClick={() => setActiveTab(tab.id)}
-                className={`px-4 py-2.5 rounded-xl font-bold text-xs whitespace-nowrap transition-all flex items-center gap-2 cursor-pointer ${
-                  isActive
-                    ? 'bg-slate-900 text-white shadow-sm'
-                    : 'bg-white hover:bg-slate-100 text-slate-700 border border-slate-200/80 shadow-2xs'
-                }`}
+                onClick={() => handleTabChange('OFFERS')}
+                className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-white font-black text-xs rounded-xl shrink-0 transition-colors shadow-2xs cursor-pointer inline-flex items-center gap-1.5"
               >
-                <span>{tab.label}</span>
-                {tab.count > 0 && (
-                  <span
-                    className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-black ${
-                      tab.isOffer && counts.OFFERS > 0
-                        ? 'bg-amber-500 text-white animate-pulse'
-                        : isActive
-                        ? 'bg-slate-800 text-white'
-                        : 'bg-slate-100 text-slate-700'
-                    }`}
-                  >
-                    {tab.count}
-                  </span>
-                )}
+                <span>View Offers</span>
+                <span className="bg-amber-700/60 px-1.5 py-0.5 rounded-md text-[10px] font-mono">
+                  {incomingOffers.length}
+                </span>
               </button>
-            );
-          })}
-        </div>
+            )}
+          </div>
+        )}
 
-        {/* ── CATEGORY FILTER CHIPS ── */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
-          {[
-            { id: 'ALL', label: 'All Categories' },
-            { id: 'goods_transport_truck', label: '🚚 Mini Truck' },
-            { id: 'goods_transport_two_wheeler', label: '🛵 Two-Wheeler' },
-            { id: 'packers_movers', label: '📦 Packers & Movers' },
-            { id: 'electrical', label: '⚡ Electrical' },
-            { id: 'ac', label: '❄️ AC & Appliances' },
-            { id: 'plumbing', label: '💧 Plumbing' },
-            { id: 'carpentry', label: '🔨 Locks & Carpentry' },
-            { id: 'cleaning', label: '🌿 Cleaning' },
-          ].map((cat) => {
-            const isSelected = selectedCategory === cat.id;
-            return (
+        {/* ── FILTER & CATEGORY CONTROL BAR (Unified Segmented Panel) ── */}
+        <div className="bg-white border border-slate-200/90 rounded-2xl p-3 sm:p-3.5 shadow-2xs space-y-2.5">
+          {/* 1. Status Segmented Tabs */}
+          <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto pb-0.5 scrollbar-none no-scrollbar scroll-smooth">
+            {[
+              { id: 'ALL', label: 'All Jobs', count: counts.ALL },
+              { id: 'OFFERS', label: '⚡ New Offers', count: counts.OFFERS, isOffer: true },
+              { id: 'ACTIVE', label: '▶️ In Progress', count: counts.ACTIVE },
+              { id: 'SCHEDULED', label: '📅 Scheduled', count: counts.SCHEDULED },
+              { id: 'COMPLETED', label: '✅ Completed', count: counts.COMPLETED },
+            ].map((tab) => {
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => handleTabChange(tab.id)}
+                  className={`px-3.5 py-2 sm:px-4 sm:py-2.5 rounded-xl font-bold text-xs whitespace-nowrap transition-all flex items-center gap-2 cursor-pointer shrink-0 ${
+                    isActive
+                      ? 'bg-slate-900 text-white shadow-xs'
+                      : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200/80 shadow-2xs'
+                  }`}
+                >
+                  <span>{tab.label}</span>
+                  {tab.count > 0 && (
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-black ${
+                        tab.isOffer && counts.OFFERS > 0
+                          ? 'bg-amber-500 text-white animate-pulse'
+                          : isActive
+                          ? 'bg-white/20 text-white'
+                          : 'bg-slate-200/80 text-slate-700'
+                      }`}
+                    >
+                      {tab.count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Hairline Divider */}
+          <div className="h-px bg-slate-100 w-full" />
+
+          {/* 2. Category Filter Chips */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none no-scrollbar scroll-smooth text-xs">
+            {CATEGORIES.map((cat) => {
+              const isSelected = selectedCategory === cat.id;
+              const catCount = categoryCounts[cat.id] || 0;
+              return (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => {
+                    // Toggle deselection: clicking active category resets to ALL
+                    setSelectedCategory((prev) => (prev === cat.id ? 'ALL' : cat.id));
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all cursor-pointer inline-flex items-center gap-1.5 shrink-0 ${
+                    isSelected
+                      ? 'bg-indigo-50 text-indigo-900 border border-indigo-300 font-bold shadow-2xs ring-2 ring-indigo-500/15'
+                      : 'bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/80'
+                  }`}
+                >
+                  <span>{cat.label}</span>
+                  {catCount > 0 && (
+                    <span
+                      className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold ${
+                        isSelected
+                          ? 'bg-indigo-200/80 text-indigo-950'
+                          : 'bg-slate-100 text-slate-600 border border-slate-200/60'
+                      }`}
+                    >
+                      {catCount}
+                    </span>
+                  )}
+                  {isSelected && cat.id !== 'ALL' && (
+                    <span className="text-indigo-400 hover:text-indigo-700 ml-0.5 font-bold">×</span>
+                  )}
+                </button>
+              );
+            })}
+
+            {selectedCategory !== 'ALL' && (
               <button
-                key={cat.id}
-                onClick={() => setSelectedCategory(cat.id)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
-                  isSelected
-                    ? 'bg-indigo-50 text-indigo-900 border border-indigo-300 font-bold'
-                    : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200/80'
-                }`}
+                type="button"
+                onClick={() => setSelectedCategory('ALL')}
+                className="px-2 py-1 text-[11px] font-medium text-slate-400 hover:text-slate-700 underline decoration-slate-300 underline-offset-2 whitespace-nowrap cursor-pointer shrink-0 ml-1"
               >
-                {cat.label}
+                Reset filter
               </button>
-            );
-          })}
+            )}
+          </div>
         </div>
 
         {/* ── CLEAN SWIGGY-STYLE JOB CARDS GRID ── */}
-        {isLoading ? (
+        {initialLoading ? (
           <div className="bg-white border border-slate-200/80 rounded-2xl p-16 text-center shadow-xs">
             <LoadingState message="Loading your orders..." />
           </div>
@@ -715,7 +968,7 @@ export function EmployeeJobsPage() {
                 onClick={() => {
                   setSearchTerm('');
                   setSelectedCategory('ALL');
-                  setActiveTab('ALL');
+                  handleTabChange('ALL');
                 }}
                 className="px-4 py-2 bg-slate-900 text-white text-xs font-bold rounded-xl shadow-xs cursor-pointer inline-flex items-center gap-1.5"
               >
@@ -727,16 +980,16 @@ export function EmployeeJobsPage() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {filteredJobs.map((job) => {
+              const isOffer = isOfferJob(job);
               const status = (job.status || '').toUpperCase();
-              const isOffer = status === 'OFFERED' || status === 'PENDING' || status === 'UNASSIGNED' || status === 'DISPATCHING' || status === 'REDISPATCHING';
-              const isAssigned = status === 'ASSIGNED' || status === 'ACCEPTED';
-              const isOnTheWay = status === 'ON_THE_WAY' || status === 'EN_ROUTE';
-              const isArrived = status === 'ARRIVED';
-              const isInProgress = status === 'IN_PROGRESS' || status === 'IN_SERVICE' || status === 'INSPECTION' || status === 'PROOF_SUBMITTED';
-              const isCompleted = status === 'COMPLETED' || status === 'WORK_COMPLETED' || status === 'WAITING_FOR_PAYMENT';
+              const isAssigned = !isOffer && (status === 'ASSIGNED' || status === 'ACCEPTED');
+              const isOnTheWay = !isOffer && (status === 'ON_THE_WAY' || status === 'EN_ROUTE');
+              const isArrived = !isOffer && status === 'ARRIVED';
+              const isInProgress = !isOffer && (status === 'IN_PROGRESS' || status === 'IN_SERVICE' || status === 'INSPECTION' || status === 'PROOF_SUBMITTED');
+              const isCompleted = !isOffer && (status === 'COMPLETED' || status === 'WORK_COMPLETED' || status === 'WAITING_FOR_PAYMENT');
 
               const catMeta = getServiceCategoryMeta(job.service_category, job.service_title);
-              const statusTag = getStatusTag(job.status);
+              const statusTag = getStatusTag(job);
               const CategoryIcon = catMeta.icon;
 
               const mapUrl = job.address
@@ -756,7 +1009,9 @@ export function EmployeeJobsPage() {
                 <div
                   key={job.id}
                   className={`bg-white rounded-2xl border transition-all flex flex-col justify-between overflow-hidden shadow-2xs hover:shadow-md ${
-                    isOffer
+                    job.is_scheduled_future
+                      ? 'border-purple-300 ring-2 ring-purple-400/20'
+                      : isOffer
                       ? 'border-amber-300 ring-2 ring-amber-400/20'
                       : isInProgress
                       ? 'border-emerald-300 ring-2 ring-emerald-400/20'
@@ -886,10 +1141,37 @@ export function EmployeeJobsPage() {
                     </button>
 
                     <div className="flex items-center gap-2">
+                      {/* SCHEDULED FUTURE BOOKINGS (Locked until date) */}
+                      {job.is_scheduled_future && (
+                        <div className="flex items-center gap-1.5 px-3 py-2 bg-purple-50 text-purple-900 border border-purple-200 rounded-xl text-xs font-semibold max-w-[280px]">
+                          <Lock className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                          <span className="truncate">{job.scheduled_hold_reason || `Locked until ${job.preferred_date}`}</span>
+                        </div>
+                      )}
+
                       {/* OFFER ACTIONS — or inline error state when accept/decline fails */}
-                      {isOffer && (() => {
+                      {!job.is_scheduled_future && isOffer && (() => {
                         const jobErr = actionErrors[job.id];
                         if (jobErr) {
+                          // Busy error: technician already has an active job
+                          if (jobErr.isBusy) {
+                            return (
+                              <>
+                                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 text-amber-800 border border-amber-200 text-xs font-semibold rounded-xl max-w-[280px]">
+                                  <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                                  <span className="truncate">{jobErr.message}</span>
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleRejectOffer(job.id, e)}
+                                  disabled={actionLoadingId === job.id}
+                                  className="px-3.5 py-2 bg-white hover:bg-rose-50 text-slate-700 hover:text-rose-700 border border-slate-200 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                                >
+                                  Decline
+                                </button>
+                              </>
+                            );
+                          }
                           // Offer expired / no longer active → subdued pill + refresh
                           if (jobErr.isExpired || jobErr.isAlreadyAccepted) {
                             return (
@@ -932,6 +1214,7 @@ export function EmployeeJobsPage() {
                           );
                         }
                         // Normal offer state — Decline + Accept buttons
+                        const isBusyWithActiveJob = Boolean(hasActiveJob);
                         return (
                           <>
                             <button
@@ -945,11 +1228,16 @@ export function EmployeeJobsPage() {
                             <button
                               type="button"
                               onClick={(e) => handleAcceptOffer(job.id, e)}
-                              disabled={actionLoadingId === job.id}
-                              className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-black rounded-xl shadow-sm transition-all cursor-pointer flex items-center gap-1.5"
+                              disabled={actionLoadingId === job.id || isBusyWithActiveJob}
+                              title={isBusyWithActiveJob ? "Finish current job to accept" : "Accept job offer"}
+                              className={`px-5 py-2 text-xs font-black rounded-xl shadow-sm transition-all flex items-center gap-1.5 ${
+                                isBusyWithActiveJob
+                                  ? 'bg-slate-200 text-slate-500 cursor-not-allowed border border-slate-300'
+                                  : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white cursor-pointer'
+                              }`}
                             >
                               <Zap className="w-4 h-4 fill-current" />
-                              <span>Accept • ₹{payoutAmount}</span>
+                              <span>{isBusyWithActiveJob ? 'Finish current job to accept' : `Accept • ₹${payoutAmount}`}</span>
                             </button>
                           </>
                         );
@@ -1158,7 +1446,12 @@ export function EmployeeJobsPage() {
                 >
                   Close
                 </button>
-                {(selectedJobForDetails.status === 'OFFERED' || selectedJobForDetails.status === 'PENDING' || selectedJobForDetails.status === 'UNASSIGNED') && (
+                {selectedJobForDetails.is_scheduled_future ? (
+                  <div className="flex items-center gap-1.5 px-4 py-2 bg-purple-50 text-purple-900 border border-purple-200 rounded-xl text-xs font-semibold">
+                    <Lock className="w-4 h-4 text-purple-700 shrink-0" />
+                    <span>{selectedJobForDetails.scheduled_hold_reason || 'Scheduled for future date — acceptance locked.'}</span>
+                  </div>
+                ) : isOfferJob(selectedJobForDetails) && (
                   <button
                     type="button"
                     onClick={(e) => handleAcceptOffer(selectedJobForDetails.id, e)}

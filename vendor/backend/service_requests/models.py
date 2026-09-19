@@ -256,6 +256,10 @@ class ServiceRequest(models.Model):
     # look up the customer's permanent ID (e.g. for a payslip/invoice
     # reference) had no field to read it from.
     customer_code = models.CharField(max_length=30, blank=True, null=True, db_index=True)
+    catalog_service_id = models.IntegerField(default=1, db_column="catalog_service_id")
+    package_id = models.IntegerField(default=1, db_column="package_id")
+    package_version = models.IntegerField(default=1, db_column="package_version")
+    package_display = models.JSONField(default=dict, blank=True, db_column="package_display")
 
     service_category = models.CharField(max_length=150)
     issue_title = models.CharField(max_length=300)
@@ -328,14 +332,6 @@ class ServiceRequest(models.Model):
 
     status = models.CharField(max_length=30, choices=Status.choices, default=Status.NEW_REQUEST)
     priority = models.CharField(max_length=20, choices=Priority.choices, default=Priority.NORMAL)
-    # X-04: were missing -- this app's own request_id auto-numbering only
-    # makes sense in the context of what KIND of request it is, and quote
-    # jobs are a first-class case the workforce app should be able to see.
-    request_kind = models.CharField(max_length=30, default="standard", db_index=True,
-                                     choices=[("standard", "Standard"),
-                                              ("inspection", "Inspection"),
-                                              ("quoted_work", "Quoted Work")])
-    quote_number = models.CharField(max_length=100, blank=True, null=True, unique=True, db_index=True)
 
     # X-04: pricing snapshot fields, all missing from this mirror -- a
     # technician-facing payslip/earnings view that wants to show what a
@@ -454,6 +450,18 @@ class ServiceRequest(models.Model):
                 if self.assigned_employee:
                     from workforce_api.services.workload import reconcile_employee_availability
                     reconcile_employee_availability(self.assigned_employee)
+
+                from workforce_api.models import WorkforceDispatchState
+                target_state = (
+                    WorkforceDispatchState.DispatchStatus.COMPLETED
+                    if self.status == "completed"
+                    else WorkforceDispatchState.DispatchStatus.CANCELLED
+                )
+                WorkforceDispatchState.objects.filter(job=self).update(
+                    dispatch_status=target_state,
+                    retry_at=None,
+                    locked_at=None,
+                )
             except Exception as e:
                 import logging
                 logging.getLogger("workforce.cancel").warning(
