@@ -89,6 +89,8 @@ export function AuthProvider({ children }) {
             me.business_type === 'grocery_supplier' ||
             me.business_type === 'hybrid'
           );
+          const isSoloWorker = Boolean(me.is_solo_worker) || (!isTiedWorker && !isAdmin);
+          const computedRole = me.role || (isPlatformAdmin ? 'platform_admin' : (isSeller ? 'seller' : (isVendorAdmin ? 'vendor_admin' : (isAdmin ? 'admin' : 'employee'))));
 
           const u = {
             id: me.id,

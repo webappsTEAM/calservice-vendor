@@ -161,7 +161,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
             </div>
           </div>
 
-          {/* 8 Seller Hub Navigation Modules */}
+          {/* 7 Seller Hub Navigation Modules (Categories managed exclusively by Admin) */}
           <div className="space-y-0.5">
             {renderNavLink('/workforce/seller/dashboard', Home, 'Home', null, true)}
             {renderNavLink('/workforce/seller-hub/orders', ShoppingBag, 'Orders')}
@@ -169,8 +169,8 @@ export function Sidebar({ onCloseMobile = () => {} }) {
             {renderNavLink('/workforce/seller-hub/claims', ShieldAlert, 'Claims')}
             {renderNavLink('/workforce/seller-hub/inventory', Package, 'Inventory')}
             {renderNavLink('/workforce/seller-hub/catalog-uploads', UploadCloud, 'Catalog Uploads')}
-            {renderNavLink('/workforce/admin/seller-hub/categories', Layers, 'Categories')}
             {renderNavLink('/workforce/admin/seller-hub/coupons', Tag, 'Coupons')}
+            {renderNavLink('/workforce/seller-hub/reports', BarChart3, 'Reports & Quality')}
           </div>
         </div>
 
@@ -252,6 +252,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
                 {renderNavLink('/workforce/seller-hub/catalog-uploads', UploadCloud, 'Catalog Uploads')}
                 {renderNavLink('/workforce/admin/seller-hub/categories', Layers, 'Categories')}
                 {renderNavLink('/workforce/admin/seller-hub/coupons', Tag, 'Coupons')}
+                {renderNavLink('/workforce/seller-hub/reports', BarChart3, 'Reports & Quality')}
               </div>
             )}
           </div>
@@ -388,6 +389,7 @@ export function Sidebar({ onCloseMobile = () => {} }) {
                 {renderNavLink('/workforce/seller-hub/catalog-uploads', UploadCloud, 'Catalog Uploads')}
                 {renderNavLink('/workforce/admin/seller-hub/categories', Layers, 'Categories')}
                 {renderNavLink('/workforce/admin/seller-hub/coupons', Tag, 'Coupons')}
+                {renderNavLink('/workforce/seller-hub/reports', BarChart3, 'Reports & Quality')}
               </div>
             )}
           </div>

@@ -13339,6 +13339,38 @@ from .views_seller_hub import (
     SellerOrderStatusTransitionView,
     SellerOrderItemPickView,
     SellerOrderPackingSlipView,
+    SellerReturnListView,
+    SellerReturnDetailView,
+    SellerReturnReviewView,
+    SellerReturnSchedulePickupView,
+    SellerReturnReceiveView,
+    SellerReturnQualityCheckView,
+    SellerReturnRestockView,
+    SellerReturnCloseView,
+    SellerReturnIntakeView,
+    SellerClaimListView,
+    SellerClaimDetailView,
+    SellerClaimRespondView,
+    SellerClaimEscalateView,
+    SellerClaimAdminDecisionView,
+    SellerClaimCloseView,
+    SellerClaimIntakeView,
+    SellerReportsSummaryView,
+    SellerReportsPerformanceView,
+    SellerReportsQualityAuditView,
+    SellerReportsExportCSVView,
+)
+
+# ── Marketplace Integration Views Exporters (Phase 8A & Phase 10B) ───────────
+from .views_marketplace_integration import (
+    MarketplaceCategoryFeedView,
+    MarketplaceCategoryListView,
+    MarketplaceProductListView,
+    MarketplaceProductDetailView,
+    MarketplaceCartValidateView,
+    MarketplaceOrderIntakeView,
+    MarketplaceOrderCancelReleaseView,
+    MarketplaceOrderStatusView,
 )
 
 

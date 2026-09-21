@@ -12,12 +12,34 @@ Automated Verification Suite for Seller Hub Category Database Separation:
 """
 import os
 import sys
-import django
+import uuid
+import tempfile
+
+if not os.environ.get("SEVO_E2E_SQLITE_PATH"):
+    temp_sqlite = os.path.join(tempfile.gettempdir(), f"sevo_cat_sep_test_{uuid.uuid4().hex[:8]}.sqlite3")
+    os.environ["SEVO_E2E_SQLITE_PATH"] = temp_sqlite
 
 # Setup Django environment
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "workforce_core.settings")
+import django
 django.setup()
+
+from django.apps import apps
+from django.db import connection
+
+created_table_count = 0
+with connection.schema_editor() as schema_editor:
+    for model in apps.get_models():
+        try:
+            schema_editor.create_model(model)
+            created_table_count += 1
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "already exists" in err_msg or "duplicate table" in err_msg:
+                continue
+            raise RuntimeError(f"Failed to create schema for model {model.__name__}: {e}") from e
+print(f"SQLite Schema Initialized: {created_table_count} tables created.")
 
 from django.conf import settings
 if "testserver" not in settings.ALLOWED_HOSTS and "*" not in settings.ALLOWED_HOSTS:

@@ -14,7 +14,8 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Load .env file with override=True to guarantee local .env takes precedence over inherited shell env vars
-load_dotenv(BASE_DIR / ".env", override=True)
+_dotenv_override = os.getenv("SEVO_DOTENV_OVERRIDE", "1").strip() != "0"
+load_dotenv(BASE_DIR / ".env", override=_dotenv_override)
 
 _raw_secret = os.getenv("SECRET_KEY") or os.getenv("DJANGO_SECRET_KEY")
 # SECURITY: DEBUG defaults to FALSE. A missing or misspelled env var must never
@@ -170,6 +171,13 @@ else:
             "ENGINE": "django.db.backends.sqlite3",
             "NAME": BASE_DIR / "db.sqlite3",
         }
+    }
+
+_e2e_sqlite_path = os.getenv("SEVO_E2E_SQLITE_PATH")
+if _e2e_sqlite_path:
+    DATABASES["default"] = {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": Path(_e2e_sqlite_path),
     }
 
 _cache_backend = "django.core.cache.backends.locmem.LocMemCache"

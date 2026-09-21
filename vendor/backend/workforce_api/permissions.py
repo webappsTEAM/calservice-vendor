@@ -106,35 +106,103 @@ class IsInternalWorkforceCaller(BasePermission):
     """
     Authorizes server-to-server calls from the Customer app's
     WorkforceIntegrationService -- there is no vendor-side user session for
-    these calls, the Customer app is acting on a customer's behalf (e.g.
-    "the customer cancelled their booking, release the technician").
-    Authenticated by a shared secret, not a session/JWT.
-
-    Reuses WORKFORCE_WEBHOOK_SECRET rather than introducing a second shared
-    secret: it's the same value already used (in the other direction) to
-    authenticate this app's webhook calls INTO the Customer app, so both
-    apps already need to have it configured identically, and it now fails
-    closed in production if unset (see workforce_core/settings.py).
+    these calls, the Customer app is acting on a customer's behalf.
+    Authenticated by a shared secret or API key (Bearer token), not a session/JWT.
+    Fail-closed.
     """
     def has_permission(self, request, view):
         import hmac
         import os
         from django.conf import settings
-        provided = request.META.get("HTTP_AUTHORIZATION", "")
-        if provided.startswith("Bearer "):
-            provided = provided[len("Bearer "):].strip()
-        else:
-            provided = ""
+
+        provided = ""
+        auth_header = request.META.get("HTTP_AUTHORIZATION", "")
+        if auth_header.startswith("Bearer "):
+            provided = auth_header[len("Bearer "):].strip()
+
+        if not provided or provided == "wf_integration_key_default":
+            return False
 
         expected_secret = getattr(settings, "WORKFORCE_WEBHOOK_SECRET", "") or ""
-        expected_api_key = getattr(settings, "WORKFORCE_API_KEY", "") or os.getenv("WORKFORCE_API_KEY", "wf_integration_key_default")
+        if expected_secret == "wf_integration_key_default":
+            expected_secret = ""
 
-        valid_secret = bool(provided and expected_secret and hmac.compare_digest(provided, expected_secret))
-        valid_api_key = bool(provided and expected_api_key and hmac.compare_digest(provided, expected_api_key))
-        source_header = request.META.get("HTTP_X_CALSERVICES_SOURCE", "")
-        valid_source = bool(getattr(settings, "DEBUG", False) and source_header == "calservices-platform")
+        expected_api_key = getattr(settings, "WORKFORCE_API_KEY", "") or os.getenv("WORKFORCE_API_KEY", "")
+        if expected_api_key == "wf_integration_key_default":
+            expected_api_key = ""
 
-        return valid_secret or valid_api_key or valid_source
+        valid_secret = False
+        if expected_secret:
+            try:
+                valid_secret = hmac.compare_digest(provided.encode("utf-8"), expected_secret.encode("utf-8"))
+            except Exception:
+                valid_secret = False
+
+        valid_api_key = False
+        if expected_api_key:
+            try:
+                valid_api_key = hmac.compare_digest(provided.encode("utf-8"), expected_api_key.encode("utf-8"))
+            except Exception:
+                valid_api_key = False
+
+        return valid_secret or valid_api_key
+
+
+class IsMarketplaceIntegrationCaller(BasePermission):
+    """
+    Authorizes server-to-server integration calls from Sevo-customer marketplace backend.
+    Enforces shared secret / webhook token authentication with strict fail-closed behavior.
+    Accepts EXACTLY:
+      - Authorization: Bearer <secret> (validated against WORKFORCE_WEBHOOK_SECRET)
+      - X-Workforce-Webhook-Secret: <secret> (validated against WORKFORCE_WEBHOOK_SECRET)
+      - X-Workforce-Api-Key: <key> (validated against WORKFORCE_API_KEY)
+    """
+    def has_permission(self, request, view):
+        import hmac
+        import os
+        from django.conf import settings
+
+        # 1. Authorization: Bearer <secret>
+        auth_header = request.META.get("HTTP_AUTHORIZATION", "")
+        if auth_header.startswith("Bearer "):
+            provided_secret = auth_header[len("Bearer "):].strip()
+            if provided_secret and provided_secret != "wf_integration_key_default":
+                expected_secret = getattr(settings, "WORKFORCE_WEBHOOK_SECRET", "") or ""
+                if expected_secret and expected_secret != "wf_integration_key_default":
+                    try:
+                        if hmac.compare_digest(provided_secret.encode("utf-8"), expected_secret.encode("utf-8")):
+                            return True
+                    except Exception:
+                        pass
+            return False
+
+        # 2. X-Workforce-Webhook-Secret: <secret>
+        webhook_header = request.META.get("HTTP_X_WORKFORCE_WEBHOOK_SECRET", "").strip()
+        if webhook_header:
+            if webhook_header != "wf_integration_key_default":
+                expected_secret = getattr(settings, "WORKFORCE_WEBHOOK_SECRET", "") or ""
+                if expected_secret and expected_secret != "wf_integration_key_default":
+                    try:
+                        if hmac.compare_digest(webhook_header.encode("utf-8"), expected_secret.encode("utf-8")):
+                            return True
+                    except Exception:
+                        pass
+            return False
+
+        # 3. X-Workforce-Api-Key: <key>
+        api_key_header = request.META.get("HTTP_X_WORKFORCE_API_KEY", "").strip()
+        if api_key_header:
+            if api_key_header != "wf_integration_key_default":
+                expected_api_key = getattr(settings, "WORKFORCE_API_KEY", "") or os.getenv("WORKFORCE_API_KEY", "")
+                if expected_api_key and expected_api_key != "wf_integration_key_default":
+                    try:
+                        if hmac.compare_digest(api_key_header.encode("utf-8"), expected_api_key.encode("utf-8")):
+                            return True
+                    except Exception:
+                        pass
+            return False
+
+        return False
 
 
 class IsApprovedTechnician(BasePermission):

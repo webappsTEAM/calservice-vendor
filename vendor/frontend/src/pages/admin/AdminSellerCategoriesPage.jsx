@@ -730,8 +730,8 @@ export function AdminSellerCategoriesPage() {
                                     {cat.name}
                                   </button>
 
-                                  {/* Subcategories count badge */}
-                                  {cat.hasChildren && (
+                                  {/* Subcategories count badge or Leaf indicator */}
+                                  {cat.hasChildren ? (
                                     <span
                                       onClick={(e) => handleToggleExpand(cat.id, e)}
                                       className={`inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full cursor-pointer transition-colors ${
@@ -744,6 +744,10 @@ export function AdminSellerCategoriesPage() {
                                       <span>
                                         {cat.childCount} {cat.childCount === 1 ? 'subcategory' : 'subcategories'}
                                       </span>
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200" title="Vendors can assign products to this leaf category">
+                                      Leaf Category
                                     </span>
                                   )}
 

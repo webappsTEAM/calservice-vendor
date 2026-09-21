@@ -28,6 +28,7 @@ import {
   Info,
   ChevronRight,
   Boxes,
+  BarChart3,
 } from 'lucide-react';
 
 export function SellerDashboardPage() {
@@ -45,6 +46,11 @@ export function SellerDashboardPage() {
   const [pendingOrdersCount, setPendingOrdersCount] = useState(0);
   const [inPrepOrdersCount, setInPrepOrdersCount] = useState(0);
   const [completedOrdersCount, setCompletedOrdersCount] = useState(0);
+  const [totalReturnsCount, setTotalReturnsCount] = useState(0);
+  const [pendingReturnsCount, setPendingReturnsCount] = useState(0);
+  const [openClaimsCount, setOpenClaimsCount] = useState(0);
+  const [claimsRequiringResponseCount, setClaimsRequiringResponseCount] = useState(0);
+  const [totalClaimsCount, setTotalClaimsCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -69,6 +75,11 @@ export function SellerDashboardPage() {
           setPendingOrdersCount(metRes.pending_orders_count || 0);
           setInPrepOrdersCount(metRes.in_prep_orders_count || 0);
           setCompletedOrdersCount(metRes.completed_orders_count || 0);
+          setTotalReturnsCount(metRes.total_returns_count || 0);
+          setPendingReturnsCount(metRes.pending_returns_count || 0);
+          setOpenClaimsCount(metRes.open_claims_count || 0);
+          setClaimsRequiringResponseCount(metRes.claims_requiring_response_count || 0);
+          setTotalClaimsCount(metRes.total_claims_count || 0);
           if (metRes.active_categories !== undefined) setCategoriesCount(metRes.active_categories);
           if (metRes.active_coupons !== undefined) setCouponsCount(metRes.active_coupons);
         }
@@ -106,13 +117,23 @@ export function SellerDashboardPage() {
           </div>
 
           <div className="flex items-center gap-2.5">
-            <Link
-              to="/workforce/admin/seller-hub/categories"
-              className="px-3.5 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors flex items-center gap-1.5"
-            >
-              <Layers className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Categories</span>
-            </Link>
+            {isPlatformAdmin || isAdmin ? (
+              <Link
+                to="/workforce/admin/seller-hub/categories"
+                className="px-3.5 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors flex items-center gap-1.5"
+              >
+                <Layers className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Categories</span>
+              </Link>
+            ) : (
+              <Link
+                to="/workforce/seller-hub/catalog-uploads"
+                className="px-3.5 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors flex items-center gap-1.5"
+              >
+                <UploadCloud className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Add Products</span>
+              </Link>
+            )}
             <Link
               to="/workforce/admin/seller-hub/coupons"
               className="px-3.5 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors flex items-center gap-1.5 shadow-xs"
@@ -175,13 +196,23 @@ export function SellerDashboardPage() {
                   <p className="text-[11px] text-slate-400 mt-0.5">Hierarchical grocery department classifications</p>
                 </div>
                 <div className="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between text-xs">
-                  <Link
-                    to="/workforce/admin/seller-hub/categories"
-                    className="font-bold text-emerald-700 hover:text-emerald-800 flex items-center gap-1 group-hover:underline"
-                  >
-                    <span>Manage Categories</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </Link>
+                  {isPlatformAdmin || isAdmin ? (
+                    <Link
+                      to="/workforce/admin/seller-hub/categories"
+                      className="font-bold text-emerald-700 hover:text-emerald-800 flex items-center gap-1 group-hover:underline"
+                    >
+                      <span>Manage Categories</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </Link>
+                  ) : (
+                    <Link
+                      to="/workforce/seller-hub/catalog-uploads"
+                      className="font-bold text-emerald-700 hover:text-emerald-800 flex items-center gap-1 group-hover:underline"
+                    >
+                      <span>View Products</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </Link>
+                  )}
                 </div>
               </div>
 
@@ -330,9 +361,9 @@ export function SellerDashboardPage() {
                   <span className="text-xs font-semibold text-slate-600">Return Requests</span>
                   <RotateCcw className="w-4 h-4 text-amber-500" />
                 </div>
-                <p className="text-2xl font-extrabold text-slate-900 font-mono mt-2">0</p>
+                <p className="text-2xl font-extrabold text-slate-900 font-mono mt-2">{pendingReturnsCount}</p>
                 <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-100">
-                  <span className="text-[10px] text-slate-400">Inspection queue</span>
+                  <span className="text-[10px] text-slate-400">{totalReturnsCount} total cases</span>
                   <ChevronRight className="w-3 h-3 text-slate-300 group-hover:text-amber-600 transition-colors" />
                 </div>
               </Link>
@@ -346,9 +377,11 @@ export function SellerDashboardPage() {
                   <span className="text-xs font-semibold text-slate-600">Open Claims</span>
                   <ShieldAlert className="w-4 h-4 text-red-500" />
                 </div>
-                <p className="text-2xl font-extrabold text-slate-900 font-mono mt-2">0</p>
+                <p className="text-2xl font-extrabold text-slate-900 font-mono mt-2">{openClaimsCount}</p>
                 <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-100">
-                  <span className="text-[10px] text-slate-400">Damage & disputes</span>
+                  <span className="text-[10px] text-slate-400">
+                    {claimsRequiringResponseCount > 0 ? `${claimsRequiringResponseCount} need response` : `${totalClaimsCount} total cases`}
+                  </span>
                   <ChevronRight className="w-3 h-3 text-slate-300 group-hover:text-red-600 transition-colors" />
                 </div>
               </Link>
@@ -549,20 +582,22 @@ export function SellerDashboardPage() {
 
               {/* 7. Categories */}
               <Link
-                to="/workforce/admin/seller-hub/categories"
+                to={isPlatformAdmin || isAdmin ? "/workforce/admin/seller-hub/categories" : "/workforce/seller-hub/catalog-uploads"}
                 className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs hover:border-emerald-400 transition-all flex flex-col justify-between group"
               >
                 <div>
                   <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold mb-3">
                     <Layers className="w-4 h-4" />
                   </div>
-                  <h3 className="font-bold text-slate-900 text-sm">7. Categories</h3>
+                  <h3 className="font-bold text-slate-900 text-sm">7. Catalog Categories</h3>
                   <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
-                    Multi-level expandable folder tree for merchandise organization.
+                    {isPlatformAdmin || isAdmin
+                      ? "Multi-level expandable folder tree for merchandise organization."
+                      : "Hierarchical department structure. Picked during single & bulk product cataloging."}
                   </p>
                 </div>
                 <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-semibold text-emerald-700">
-                  <span>Manage ({categoriesCount})</span>
+                  <span>{isPlatformAdmin || isAdmin ? `Manage (${categoriesCount})` : 'Browse Catalog'}</span>
                   <ArrowRight className="w-3.5 h-3.5" />
                 </div>
               </Link>
@@ -583,6 +618,26 @@ export function SellerDashboardPage() {
                 </div>
                 <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-semibold text-indigo-700">
                   <span>Manage ({couponsCount})</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </div>
+              </Link>
+
+              {/* 9. Reports & Quality */}
+              <Link
+                to="/workforce/seller-hub/reports"
+                className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs hover:border-blue-400 transition-all flex flex-col justify-between group"
+              >
+                <div>
+                  <div className="w-9 h-9 rounded-xl bg-blue-100 text-blue-800 flex items-center justify-center font-bold mb-3">
+                    <BarChart3 className="w-4 h-4" />
+                  </div>
+                  <h3 className="font-bold text-slate-900 text-sm">9. Reports & Quality</h3>
+                  <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                    Quality scorecards, inventory velocity, returns/claims audits, and CSV data exports.
+                  </p>
+                </div>
+                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-semibold text-blue-700">
+                  <span>Open Reports</span>
                   <ArrowRight className="w-3.5 h-3.5" />
                 </div>
               </Link>

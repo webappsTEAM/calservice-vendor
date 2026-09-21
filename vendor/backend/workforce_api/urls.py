@@ -201,6 +201,7 @@ from workforce_api.views_seller_hub import (
     AdminCatalogCategoryDetailView,
     AdminCatalogCategoryActiveListView,
     AdminCatalogCategoryTreeView,
+    SellerCatalogCategoryListView,
     AdminSellerCouponListView,
     AdminSellerCouponDetailView,
     SellerProductListView,
@@ -223,6 +224,36 @@ from workforce_api.views_seller_hub import (
     SellerOrderStatusTransitionView,
     SellerOrderItemPickView,
     SellerOrderPackingSlipView,
+    SellerReturnListView,
+    SellerReturnDetailView,
+    SellerReturnReviewView,
+    SellerReturnSchedulePickupView,
+    SellerReturnReceiveView,
+    SellerReturnQualityCheckView,
+    SellerReturnRestockView,
+    SellerReturnCloseView,
+    SellerReturnIntakeView,
+    SellerClaimListView,
+    SellerClaimDetailView,
+    SellerClaimRespondView,
+    SellerClaimEscalateView,
+    SellerClaimAdminDecisionView,
+    SellerClaimCloseView,
+    SellerClaimIntakeView,
+    SellerReportsSummaryView,
+    SellerReportsPerformanceView,
+    SellerReportsQualityAuditView,
+    SellerReportsExportCSVView,
+)
+from workforce_api.views_marketplace_integration import (
+    MarketplaceCategoryFeedView,
+    MarketplaceCategoryListView,
+    MarketplaceProductListView,
+    MarketplaceProductDetailView,
+    MarketplaceCartValidateView,
+    MarketplaceOrderIntakeView,
+    MarketplaceOrderCancelReleaseView,
+    MarketplaceOrderStatusView,
 )
 
 
@@ -560,6 +591,7 @@ urlpatterns = [
     path("seller-hub/categories/tree/", AdminCatalogCategoryTreeView.as_view(), name="seller-hub-categories-tree"),
     path("seller-hub/categories/active/", AdminCatalogCategoryActiveListView.as_view(), name="seller-hub-categories-active"),
     path("seller-hub/categories/<int:pk>/", AdminCatalogCategoryDetailView.as_view(), name="seller-hub-category-detail"),
+    path("seller-hub/catalog/categories/", SellerCatalogCategoryListView.as_view(), name="seller-hub-catalog-categories"),
     path("seller-hub/coupons/", AdminSellerCouponListView.as_view(), name="seller-hub-coupons"),
     path("seller-hub/coupons/<int:pk>/", AdminSellerCouponDetailView.as_view(), name="seller-hub-coupon-detail"),
 
@@ -589,12 +621,47 @@ urlpatterns = [
     path("seller-hub/orders/<int:pk>/item-pick/", SellerOrderItemPickView.as_view(), name="seller-hub-orders-item-pick"),
     path("seller-hub/orders/<int:pk>/packing-slip/", SellerOrderPackingSlipView.as_view(), name="seller-hub-orders-packing-slip"),
 
+    # Phase 5: Seller Hub Returns & Reverse Logistics
+    path("seller-hub/returns/", SellerReturnListView.as_view(), name="seller-hub-returns-list"),
+    path("seller-hub/returns/intake/", SellerReturnIntakeView.as_view(), name="seller-hub-returns-intake"),
+    path("seller-hub/returns/<int:pk>/", SellerReturnDetailView.as_view(), name="seller-hub-returns-detail"),
+    path("seller-hub/returns/<int:pk>/review/", SellerReturnReviewView.as_view(), name="seller-hub-returns-review"),
+    path("seller-hub/returns/<int:pk>/schedule-pickup/", SellerReturnSchedulePickupView.as_view(), name="seller-hub-returns-schedule-pickup"),
+    path("seller-hub/returns/<int:pk>/receive/", SellerReturnReceiveView.as_view(), name="seller-hub-returns-receive"),
+    path("seller-hub/returns/<int:pk>/quality-check/", SellerReturnQualityCheckView.as_view(), name="seller-hub-returns-quality-check"),
+    path("seller-hub/returns/<int:pk>/restock/", SellerReturnRestockView.as_view(), name="seller-hub-returns-restock"),
+    path("seller-hub/returns/<int:pk>/close/", SellerReturnCloseView.as_view(), name="seller-hub-returns-close"),
+
+    # Phase 6: Seller Hub Claims & Disputes
+    path("seller-hub/claims/", SellerClaimListView.as_view(), name="seller-hub-claims-list"),
+    path("seller-hub/claims/intake/", SellerClaimIntakeView.as_view(), name="seller-hub-claims-intake"),
+    path("seller-hub/claims/<int:pk>/", SellerClaimDetailView.as_view(), name="seller-hub-claims-detail"),
+    path("seller-hub/claims/<int:pk>/respond/", SellerClaimRespondView.as_view(), name="seller-hub-claims-respond"),
+    path("seller-hub/claims/<int:pk>/escalate/", SellerClaimEscalateView.as_view(), name="seller-hub-claims-escalate"),
+    path("seller-hub/claims/<int:pk>/admin-decision/", SellerClaimAdminDecisionView.as_view(), name="seller-hub-claims-admin-decision"),
+    path("seller-hub/claims/<int:pk>/close/", SellerClaimCloseView.as_view(), name="seller-hub-claims-close"),
+
+    # Phase 7: Seller Hub Reports, Quality Controls & Performance
+    path("seller-hub/reports/summary/", SellerReportsSummaryView.as_view(), name="seller-hub-reports-summary"),
+    path("seller-hub/reports/performance/", SellerReportsPerformanceView.as_view(), name="seller-hub-reports-performance"),
+    path("seller-hub/reports/quality-audit/", SellerReportsQualityAuditView.as_view(), name="seller-hub-reports-quality-audit"),
+    path("seller-hub/reports/export-csv/", SellerReportsExportCSVView.as_view(), name="seller-hub-reports-export-csv"),
+
     # ── Public Customer Marketplace Cart, Checkout & Order Tracking ────────────
     path("public/cart/", PublicGroceryCartView.as_view(), name="workforce-public-cart"),
     path("public/cart/clear/", PublicGroceryCartClearView.as_view(), name="workforce-public-cart-clear"),
     path("public/checkout/", PublicGroceryCheckoutView.as_view(), name="workforce-public-checkout"),
     path("public/orders/<str:order_number>/", PublicGroceryOrderTrackingView.as_view(), name="workforce-public-order-tracking"),
     path("public/orders/<str:order_number>/review/", PublicGroceryOrderReviewView.as_view(), name="workforce-public-order-review"),
+
+    # ── Phase 8A: Customer Marketplace Server-to-Server Integration APIs ────────
+    path("marketplace/categories/", MarketplaceCategoryFeedView.as_view(), name="marketplace-categories-feed"),
+    path("marketplace/products/", MarketplaceProductListView.as_view(), name="marketplace-products-list"),
+    path("marketplace/products/<int:pk>/", MarketplaceProductDetailView.as_view(), name="marketplace-product-detail"),
+    path("marketplace/cart/validate/", MarketplaceCartValidateView.as_view(), name="marketplace-cart-validate"),
+    path("marketplace/orders/intake/", MarketplaceOrderIntakeView.as_view(), name="marketplace-order-intake"),
+    path("marketplace/orders/<str:source_order_id>/cancel/", MarketplaceOrderCancelReleaseView.as_view(), name="marketplace-order-cancel-release"),
+    path("marketplace/orders/<str:source_order_id>/status/", MarketplaceOrderStatusView.as_view(), name="marketplace-order-status"),
 ]
 
 

@@ -5,15 +5,9 @@ Supports multi-level parent/child categories in service_requests_catalogcategory
 from django.db import migrations
 
 
-class Migration(migrations.Migration):
-
-    dependencies = [
-        ("workforce_api", "0032_vendor_store_onboarding"),
-    ]
-
-    operations = [
-        migrations.RunSQL(
-            sql="""
+def add_parent_id(apps, schema_editor):
+    if schema_editor.connection.vendor == "postgresql":
+        schema_editor.execute("""
             DO $$
             BEGIN
                 IF NOT EXISTS (
@@ -29,10 +23,23 @@ class Migration(migrations.Migration):
 
             CREATE INDEX IF NOT EXISTS service_requests_catalogcategory_parent_id_idx 
             ON service_requests_catalogcategory(parent_id);
-            """,
-            reverse_sql="""
+        """)
+
+
+def drop_parent_id(apps, schema_editor):
+    if schema_editor.connection.vendor == "postgresql":
+        schema_editor.execute("""
             DROP INDEX IF EXISTS service_requests_catalogcategory_parent_id_idx;
             ALTER TABLE service_requests_catalogcategory DROP COLUMN IF EXISTS parent_id;
-            """
-        ),
+        """)
+
+
+class Migration(migrations.Migration):
+
+    dependencies = [
+        ("workforce_api", "0032_vendor_store_onboarding"),
+    ]
+
+    operations = [
+        migrations.RunPython(add_parent_id, drop_parent_id),
     ]

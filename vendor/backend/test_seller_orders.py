@@ -16,6 +16,7 @@ Comprehensive test suite for Phase 4: Seller Hub Orders and Fulfilment:
 12. Dashboard metrics accuracy from real DB records.
 """
 import os
+import uuid
 import django
 from decimal import Decimal
 
@@ -26,7 +27,7 @@ from django.conf import settings
 if "testserver" not in settings.ALLOWED_HOSTS and "*" not in settings.ALLOWED_HOSTS:
     settings.ALLOWED_HOSTS = list(settings.ALLOWED_HOSTS) + ["testserver", "localhost", "127.0.0.1"]
 
-from django.test import TestCase
+import unittest
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 from rest_framework import status
@@ -46,46 +47,50 @@ from workforce_api.models import (
 User = get_user_model()
 
 
-class SellerOrdersTestCase(TestCase):
+class SellerOrdersTestCase(unittest.TestCase):
     def setUp(self):
         self.client = APIClient()
+        self.uid = uuid.uuid4().hex[:6]
 
         # 1. Create Sellers and Companies
-        self.company_a = Company.objects.create(
-            company_name="Organic Farms Hub",
-            slug="organic-farms-hub",
-            is_active=True,
+        self.company_a, _ = Company.objects.get_or_create(
+            slug=f"organic-farms-{self.uid}",
+            defaults={"company_name": "Organic Farms Hub", "is_active": True},
         )
-        self.company_b = Company.objects.create(
-            company_name="Daily Fresh Grocers",
-            slug="daily-fresh-grocers",
-            is_active=True,
+        self.company_b, _ = Company.objects.get_or_create(
+            slug=f"daily-fresh-{self.uid}",
+            defaults={"company_name": "Daily Fresh Grocers", "is_active": True},
         )
 
-        self.seller_a = User.objects.create_user(
-            username="seller_orders_a",
-            email="seller_a@orders.com",
-            password="Password123!",
-            first_name="Alice",
-            last_name="Farmer",
-            is_active=True,
-            company=self.company_a,
+        self.seller_a, _ = User.objects.get_or_create(
+            username=f"seller_orders_a_{self.uid}",
+            defaults={
+                "email": f"seller_a_{self.uid}@orders.com",
+                "first_name": "Alice",
+                "last_name": "Farmer",
+                "is_active": True,
+                "company": self.company_a,
+            }
         )
-        self.seller_b = User.objects.create_user(
-            username="seller_orders_b",
-            email="seller_b@orders.com",
-            password="Password123!",
-            first_name="Bob",
-            last_name="Grocer",
-            is_active=True,
-            company=self.company_b,
+        self.seller_b, _ = User.objects.get_or_create(
+            username=f"seller_orders_b_{self.uid}",
+            defaults={
+                "email": f"seller_b_{self.uid}@orders.com",
+                "first_name": "Bob",
+                "last_name": "Grocer",
+                "is_active": True,
+                "company": self.company_b,
+            }
         )
-        self.superadmin = User.objects.create_superuser(
-            username="orders_superadmin",
-            email="admin@orders.com",
-            password="Password123!",
-            first_name="Admin",
-            last_name="User",
+        self.superadmin, _ = User.objects.get_or_create(
+            username=f"orders_superadmin_{self.uid}",
+            defaults={
+                "email": f"admin_{self.uid}@orders.com",
+                "first_name": "Admin",
+                "last_name": "User",
+                "is_superuser": True,
+                "is_staff": True,
+            }
         )
 
         # Authenticate tokens / headers
@@ -95,15 +100,21 @@ class SellerOrdersTestCase(TestCase):
         self.token_admin = str(RefreshToken.for_user(self.superadmin).access_token)
 
         # 2. Categories
-        self.root_cat = SellerHubCategory.objects.create(name="Groceries", slug="groceries", is_active=True)
-        self.oil_cat = SellerHubCategory.objects.create(name="Oils", slug="oils", parent=self.root_cat, is_active=True)
+        self.root_cat, _ = SellerHubCategory.objects.get_or_create(
+            slug=f"groceries-{self.uid}",
+            defaults={"name": "Groceries", "is_active": True}
+        )
+        self.oil_cat, _ = SellerHubCategory.objects.get_or_create(
+            slug=f"oils-{self.uid}",
+            defaults={"name": "Oils", "parent": self.root_cat, "is_active": True}
+        )
 
         # 3. Approved Products
         self.product_a1 = SellerProduct.objects.create(
             company=self.company_a,
             category=self.oil_cat,
             title="Cold Pressed Coconut Oil 1L",
-            sku="COC-OIL-1L",
+            sku=f"COC-OIL-1L-{self.uid}",
             unit="litre",
             pack_size="1 Litre",
             mrp=Decimal("350.00"),
@@ -114,7 +125,7 @@ class SellerOrdersTestCase(TestCase):
             company=self.company_a,
             category=self.oil_cat,
             title="Cold Pressed Groundnut Oil 1L",
-            sku="GND-OIL-1L",
+            sku=f"GND-OIL-1L-{self.uid}",
             unit="litre",
             pack_size="1 Litre",
             mrp=Decimal("280.00"),
@@ -126,7 +137,7 @@ class SellerOrdersTestCase(TestCase):
             company=self.company_b,
             category=self.oil_cat,
             title="Refined Sunflower Oil 1L",
-            sku="SUN-OIL-1L",
+            sku=f"SUN-OIL-1L-{self.uid}",
             unit="litre",
             pack_size="1 Litre",
             mrp=Decimal("150.00"),
@@ -157,12 +168,15 @@ class SellerOrdersTestCase(TestCase):
             low_stock_threshold=Decimal("20.000"),
         )
 
+    def tearDown(self):
+        pass
+
     def test_01_create_seller_order_with_items_and_snapshots(self):
         """Test creating a seller fulfilment order with snapshot item attributes."""
         order = SellerOrder.objects.create(
-            source_order_id="CUST-ORD-1001",
+            source_order_id=f"CUST-ORD-1001-{self.uid}",
             company=self.company_a,
-            order_number="SO-2026-0001",
+            order_number=f"SO-2026-0001-{self.uid}",
             customer_name="John Doe",
             customer_phone="9876543210",
             delivery_address="123 Palm Grove, Chennai",
@@ -200,16 +214,16 @@ class SellerOrdersTestCase(TestCase):
             HTTP_AUTHORIZATION=f"Bearer {self.token_a}",
         )
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(resp.data["order_number"], "SO-2026-0001")
+        self.assertEqual(resp.data["order_number"], f"SO-2026-0001-{self.uid}")
         self.assertEqual(len(resp.data["items"]), 2)
         self.assertEqual(resp.data["status"], "NEW")
 
     def test_02_strict_state_machine_happy_path(self):
         """Test transitioning order step-by-step through full state machine."""
         order = SellerOrder.objects.create(
-            source_order_id="CUST-ORD-1002",
+            source_order_id=f"CUST-ORD-1002-{self.uid}",
             company=self.company_a,
-            order_number="SO-2026-0002",
+            order_number=f"SO-2026-0002-{self.uid}",
             customer_name="Jane Smith",
             total_amount=Decimal("320.00"),
             status=SellerOrder.Status.NEW,
@@ -287,9 +301,9 @@ class SellerOrdersTestCase(TestCase):
         initial_on_hand = self.inv_a1.on_hand_qty  # 50.000
 
         order = SellerOrder.objects.create(
-            source_order_id="CUST-ORD-1003",
+            source_order_id=f"CUST-ORD-1003-{self.uid}",
             company=self.company_a,
-            order_number="SO-2026-0003",
+            order_number=f"SO-2026-0003-{self.uid}",
             customer_name="Ravi Kumar",
             total_amount=Decimal("640.00"),
             status=SellerOrder.Status.READY_FOR_PICKUP,
@@ -329,9 +343,9 @@ class SellerOrdersTestCase(TestCase):
         self.inv_a1.save()
 
         order = SellerOrder.objects.create(
-            source_order_id="CUST-ORD-1004",
+            source_order_id=f"CUST-ORD-1004-{self.uid}",
             company=self.company_a,
-            order_number="SO-2026-0004",
+            order_number=f"SO-2026-0004-{self.uid}",
             customer_name="Suresh Raina",
             status=SellerOrder.Status.ACCEPTED,
         )
@@ -368,9 +382,9 @@ class SellerOrdersTestCase(TestCase):
     def test_05_cancellation_requires_mandatory_reason(self):
         """Test cancelling an order without a reason returns HTTP 400 Bad Request."""
         order = SellerOrder.objects.create(
-            source_order_id="CUST-ORD-1005",
+            source_order_id=f"CUST-ORD-1005-{self.uid}",
             company=self.company_a,
-            order_number="SO-2026-0005",
+            order_number=f"SO-2026-0005-{self.uid}",
             status=SellerOrder.Status.NEW,
         )
 
@@ -385,9 +399,9 @@ class SellerOrdersTestCase(TestCase):
     def test_06_invalid_state_transition_blocked(self):
         """Test invalid out-of-order state transitions are rejected."""
         order = SellerOrder.objects.create(
-            source_order_id="CUST-ORD-1006",
+            source_order_id=f"CUST-ORD-1006-{self.uid}",
             company=self.company_a,
-            order_number="SO-2026-0006",
+            order_number=f"SO-2026-0006-{self.uid}",
             status=SellerOrder.Status.NEW,
         )
 
@@ -403,9 +417,9 @@ class SellerOrdersTestCase(TestCase):
     def test_07_item_pick_checklist_api(self):
         """Test updating item picked / packed status and fulfilled quantities."""
         order = SellerOrder.objects.create(
-            source_order_id="CUST-ORD-1007",
+            source_order_id=f"CUST-ORD-1007-{self.uid}",
             company=self.company_a,
-            order_number="SO-2026-0007",
+            order_number=f"SO-2026-0007-{self.uid}",
             status=SellerOrder.Status.PICKING,
         )
         item = SellerOrderItem.objects.create(
@@ -436,9 +450,9 @@ class SellerOrdersTestCase(TestCase):
     def test_08_tenant_isolation_cross_seller_access_blocked(self):
         """Test Seller A cannot view or transition Seller B's orders."""
         order_b = SellerOrder.objects.create(
-            source_order_id="CUST-ORD-B-1001",
+            source_order_id=f"CUST-ORD-B-1001-{self.uid}",
             company=self.company_b,
-            order_number="SO-B-0001",
+            order_number=f"SO-B-0001-{self.uid}",
             status=SellerOrder.Status.NEW,
         )
 
@@ -460,9 +474,9 @@ class SellerOrdersTestCase(TestCase):
     def test_09_packing_slip_api(self):
         """Test structured packing slip generation endpoint."""
         order = SellerOrder.objects.create(
-            source_order_id="CUST-ORD-1009",
+            source_order_id=f"CUST-ORD-1009-{self.uid}",
             company=self.company_a,
-            order_number="SO-2026-0009",
+            order_number=f"SO-2026-0009-{self.uid}",
             customer_name="Pooja Hegde",
             customer_phone="9988776655",
             delivery_address="Flat 402, Sea View Apartments",
@@ -488,7 +502,7 @@ class SellerOrdersTestCase(TestCase):
             HTTP_AUTHORIZATION=f"Bearer {self.token_a}",
         )
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(resp.data["order_number"], "SO-2026-0009")
+        self.assertEqual(resp.data["order_number"], f"SO-2026-0009-{self.uid}")
         self.assertEqual(resp.data["customer"]["name"], "Pooja Hegde")
         self.assertEqual(resp.data["seller"]["name"], "Organic Farms Hub")
         self.assertEqual(len(resp.data["items"]), 1)
@@ -496,21 +510,21 @@ class SellerOrdersTestCase(TestCase):
     def test_10_dashboard_metrics_real_db_order_counts(self):
         """Test Seller Hub metrics endpoint returns accurate live DB order counts."""
         SellerOrder.objects.create(
-            source_order_id="CUST-MTR-1",
+            source_order_id=f"CUST-MTR-1-{self.uid}",
             company=self.company_a,
-            order_number="SO-MTR-1",
+            order_number=f"SO-MTR-1-{self.uid}",
             status=SellerOrder.Status.NEW,
         )
         SellerOrder.objects.create(
-            source_order_id="CUST-MTR-2",
+            source_order_id=f"CUST-MTR-2-{self.uid}",
             company=self.company_a,
-            order_number="SO-MTR-2",
+            order_number=f"SO-MTR-2-{self.uid}",
             status=SellerOrder.Status.ACCEPTED,
         )
         SellerOrder.objects.create(
-            source_order_id="CUST-MTR-3",
+            source_order_id=f"CUST-MTR-3-{self.uid}",
             company=self.company_a,
-            order_number="SO-MTR-3",
+            order_number=f"SO-MTR-3-{self.uid}",
             status=SellerOrder.Status.DELIVERED,
         )
 

@@ -83,6 +83,7 @@ import { SellerReturnsPage } from './pages/seller/SellerReturnsPage.jsx';
 import { SellerClaimsPage } from './pages/seller/SellerClaimsPage.jsx';
 import { SellerInventoryPage } from './pages/seller/SellerInventoryPage.jsx';
 import { SellerCatalogUploadsPage } from './pages/seller/SellerCatalogUploadsPage.jsx';
+import { SellerReportsPage } from './pages/seller/SellerReportsPage.jsx';
 
 
 function EmployeeWorkspaceLayout() {
@@ -732,13 +733,13 @@ export function App() {
             element={<Navigate to="/workforce/seller-hub/catalog-uploads" replace />}
           />
 
-          {/* 7. Categories */}
+          {/* 7. Categories (Admin / Super Admin Only) */}
           <Route
             path="/workforce/admin/seller-hub/categories"
             element={
-              <SellerHubRoute>
+              <AdminRoute>
                 <AdminSellerCategoriesPage />
-              </SellerHubRoute>
+              </AdminRoute>
             }
           />
           <Route
@@ -766,6 +767,28 @@ export function App() {
           <Route
             path="/workforce/seller-hub/coupons"
             element={<Navigate to="/workforce/admin/seller-hub/coupons" replace />}
+          />
+
+          {/* 9. Reports & Quality */}
+          <Route
+            path="/workforce/seller-hub/reports"
+            element={
+              <SellerHubRoute>
+                <SellerReportsPage />
+              </SellerHubRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/seller-hub/reports"
+            element={
+              <SellerHubRoute>
+                <SellerReportsPage />
+              </SellerHubRoute>
+            }
+          />
+          <Route
+            path="/workforce/seller/reports"
+            element={<Navigate to="/workforce/seller-hub/reports" replace />}
           />
 
           <Route

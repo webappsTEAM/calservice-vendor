@@ -183,9 +183,116 @@ export function SellerCatalogUploadsPage() {
     });
   }, [products, statusFilter, categoryFilter, searchQuery]);
 
+  // Meesho Category Picker states (Step 1)
+  const [productModalStep, setProductModalStep] = useState(1); // 1: Select Category, 2: Add Product Details
+  const [pickerSearch, setPickerSearch] = useState('');
+  const [pickerSearchResults, setPickerSearchResults] = useState([]);
+  const [pickerSearchLoading, setPickerSearchLoading] = useState(false);
+  const [pickerColumns, setPickerColumns] = useState([]); // Array of column arrays: [[rootCats], [subCats], [leafCats]]
+  const [pickerSelectedPath, setPickerSelectedPath] = useState([]); // Selected category object per column
+  const [pickerSelectedLeaf, setPickerSelectedLeaf] = useState(null); // The final selected leaf category
+  const [pickerCache, setPickerCache] = useState({}); // { [parentId || 'root']: Array<Category> }
+  const [pickerColumnLoading, setPickerColumnLoading] = useState({}); // { [colIndex]: boolean }
+  const [categoryWarning, setCategoryWarning] = useState(null);
+  const pickerSearchTimerRef = useRef(null);
+
+  // Load a column for parentId (or 'root' if null)
+  const loadPickerColumn = async (parentId = null, colIndex = 0) => {
+    const cacheKey = parentId ? String(parentId) : 'root';
+    if (pickerCache[cacheKey]) {
+      setPickerColumns((prev) => {
+        const next = prev.slice(0, colIndex);
+        next[colIndex] = pickerCache[cacheKey];
+        return next;
+      });
+      return pickerCache[cacheKey];
+    }
+
+    setPickerColumnLoading((prev) => ({ ...prev, [colIndex]: true }));
+    try {
+      const url = parentId
+        ? `/api/workforce/seller-hub/catalog/categories/?parent_id=${parentId}`
+        : '/api/workforce/seller-hub/catalog/categories/?parent_id=null';
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const items = await res.json();
+        setPickerCache((prev) => ({ ...prev, [cacheKey]: items }));
+        setPickerColumns((prev) => {
+          const next = prev.slice(0, colIndex);
+          next[colIndex] = items;
+          return next;
+        });
+        return items;
+      }
+    } catch (e) {
+      console.error('Error fetching category column', e);
+    } finally {
+      setPickerColumnLoading((prev) => ({ ...prev, [colIndex]: false }));
+    }
+    return [];
+  };
+
+  // Handle category search input
+  const handlePickerSearchChange = (text) => {
+    setPickerSearch(text);
+    if (pickerSearchTimerRef.current) clearTimeout(pickerSearchTimerRef.current);
+    const q = text.trim();
+    if (q.length >= 2) {
+      setPickerSearchLoading(true);
+      pickerSearchTimerRef.current = setTimeout(async () => {
+        try {
+          const res = await fetch(`/api/workforce/seller-hub/catalog/categories/?q=${encodeURIComponent(q)}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (res.ok) {
+            const data = await res.json();
+            setPickerSearchResults(data || []);
+          }
+        } catch (e) {
+          console.error('Category search error', e);
+        } finally {
+          setPickerSearchLoading(false);
+        }
+      }, 250);
+    } else {
+      setPickerSearchResults([]);
+      setPickerSearchLoading(false);
+    }
+  };
+
+  // Handle selecting a category from cascading column
+  const handleColumnItemClick = (cat, colIndex) => {
+    const nextPath = pickerSelectedPath.slice(0, colIndex);
+    nextPath[colIndex] = cat;
+    setPickerSelectedPath(nextPath);
+
+    if (cat.has_children) {
+      setPickerSelectedLeaf(null);
+      loadPickerColumn(cat.id, colIndex + 1);
+    } else {
+      setPickerSelectedLeaf(cat);
+      setPickerColumns((prev) => prev.slice(0, colIndex + 1));
+    }
+  };
+
+  // Handle selecting a category from search results
+  const handleSearchResultClick = (cat) => {
+    if (!cat.is_leaf) return;
+    setPickerSelectedLeaf(cat);
+    setPickerSelectedPath(cat.path || [cat]);
+    setPickerSearch('');
+    setPickerSearchResults([]);
+  };
+
   // Open single product creator / editor
   const handleOpenProductModal = (prod = null) => {
     setFormErrors({});
+    setCategoryWarning(null);
+    setPickerSearch('');
+    setPickerSearchResults([]);
+
     if (prod) {
       setEditingProduct(prod);
       setProductForm({
@@ -206,14 +313,32 @@ export function SellerCatalogUploadsPage() {
         images: prod.primary_image ? [prod.primary_image] : [],
         status: prod.status || 'DRAFT',
       });
+
+      // Match category details or path
+      const matched = leafCategories.find((c) => c.id === prod.category);
+      if (matched) {
+        setPickerSelectedLeaf(matched);
+        setPickerSelectedPath(matched.path || [matched]);
+      } else {
+        setPickerSelectedLeaf({
+          id: prod.category,
+          name: prod.category_name || `Category #${prod.category}`,
+          path_string: prod.category_path || `Category #${prod.category}`,
+          is_leaf: true,
+        });
+      }
+      // Opens on step 2 for edit
+      setProductModalStep(2);
     } else {
       setEditingProduct(null);
+      setPickerSelectedLeaf(null);
+      setPickerSelectedPath([]);
       setProductForm({
         title: '',
         brand: '',
         sku: '',
         barcode: '',
-        category: leafCategories[0]?.id || '',
+        category: '',
         unit: 'piece',
         pack_size: '1',
         mrp: '',
@@ -226,6 +351,9 @@ export function SellerCatalogUploadsPage() {
         images: [],
         status: 'DRAFT',
       });
+      // Opens on step 1 for add product
+      setProductModalStep(1);
+      loadPickerColumn(null, 0);
     }
     setShowProductModal(true);
   };
@@ -1209,345 +1337,680 @@ export function SellerCatalogUploadsPage() {
         </div>
 
         {/* ════════════════════════════════════════════════════════════════════ */}
-        {/* MODAL 1: ADD / EDIT SINGLE PRODUCT                                 */}
+        {/* MODAL 1: ADD / EDIT SINGLE PRODUCT (MEESHO 2-STEP WORKFLOW)         */}
         {/* ════════════════════════════════════════════════════════════════════ */}
         {showProductModal && (
           <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-2xl w-full my-8 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div
+              className={`bg-white rounded-2xl border border-slate-200 shadow-2xl w-full my-8 overflow-hidden animate-in fade-in zoom-in-95 duration-150 ${
+                productModalStep === 1 ? 'max-w-4xl' : 'max-w-2xl'
+              }`}
+            >
+              {/* Modal Header */}
               <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
-                <div className="flex items-center gap-2">
-                  <Tag className="w-5 h-5 text-emerald-600" />
-                  <h3 className="font-bold text-slate-900 text-sm">
-                    {editingProduct ? `Edit Product: ${editingProduct.title}` : 'Add Single Product to Catalog'}
-                  </h3>
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold">
+                    {productModalStep === 1 ? <Layers className="w-4 h-4" /> : <Tag className="w-4 h-4" />}
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-900 text-sm">
+                      {editingProduct
+                        ? `Edit Product: ${editingProduct.title}`
+                        : productModalStep === 1
+                        ? 'Select Product Category (Step 1 of 2)'
+                        : 'Add Product Details (Step 2 of 2)'}
+                    </h3>
+                    <p className="text-[11px] text-slate-500">
+                      {productModalStep === 1
+                        ? 'Browse cascading department columns or search to pick the exact leaf category'
+                        : 'Fill in pricing, packaging specs, and grocery inventory specifications'}
+                    </p>
+                  </div>
                 </div>
                 <button
-                  onClick={() => setShowProductModal(false)}
-                  className="text-slate-400 hover:text-slate-600 p-1"
+                  onClick={() => handleCloseProductModal()}
+                  className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
-              <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
-                {/* Basic Details */}
-                <div className="space-y-3">
-                  <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 border-b pb-1">
-                    1. General Information
-                  </h4>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div className="sm:col-span-2">
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
-                        Product Title <span className="text-rose-500">*</span>
-                      </label>
+              {/* ───────────────────────────────────────────────────────────── */}
+              {/* STEP 1: MEESHO-STYLE CASCADING CATEGORY PICKER                */}
+              {/* ───────────────────────────────────────────────────────────── */}
+              {productModalStep === 1 ? (
+                <div className="p-6 space-y-4">
+                  {/* Top Search Category Input */}
+                  <div className="relative">
+                    <div className="relative flex items-center">
+                      <Search className="w-4 h-4 text-slate-400 absolute left-3.5 pointer-events-none" />
                       <input
                         type="text"
-                        placeholder="e.g. Fortune Sunlite Refined Sunflower Oil 1L"
-                        value={productForm.title}
-                        onChange={(e) => setProductForm({ ...productForm, title: e.target.value })}
-                        className={`w-full px-3.5 py-2 bg-slate-50 border rounded-xl text-xs text-slate-800 ${
-                          formErrors.title ? 'border-rose-500 ring-1 ring-rose-500/20' : 'border-slate-200'
-                        }`}
+                        placeholder="Search Category (Try Milk, Rice, Oil, Vegetables, Biscuits and more...)"
+                        value={pickerSearch}
+                        onChange={(e) => handlePickerSearchChange(e.target.value)}
+                        className="w-full pl-10 pr-10 py-2.5 bg-slate-50 hover:bg-slate-100/80 focus:bg-white border border-slate-200 focus:border-emerald-500 rounded-xl text-xs text-slate-800 transition-colors shadow-2xs"
                       />
-                      {formErrors.title && <p className="text-[10px] text-rose-600 mt-0.5">{formErrors.title}</p>}
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
-                        SKU (Store Unique) <span className="text-rose-500">*</span>
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="e.g. FORT-SUN-1L"
-                        value={productForm.sku}
-                        onChange={(e) => setProductForm({ ...productForm, sku: e.target.value })}
-                        className={`w-full px-3.5 py-2 bg-slate-50 border rounded-xl text-xs text-slate-800 font-mono ${
-                          formErrors.sku ? 'border-rose-500 ring-1 ring-rose-500/20' : 'border-slate-200'
-                        }`}
-                      />
-                      {formErrors.sku && <p className="text-[10px] text-rose-600 mt-0.5">{formErrors.sku}</p>}
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">Brand Name</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. Fortune, Tata, Aashirvaad"
-                        value={productForm.brand}
-                        onChange={(e) => setProductForm({ ...productForm, brand: e.target.value })}
-                        className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">Barcode / EAN (Optional)</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. 8901234567890"
-                        value={productForm.barcode}
-                        onChange={(e) => setProductForm({ ...productForm, barcode: e.target.value })}
-                        className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 font-mono"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
-                        Seller Hub Category <span className="text-rose-500">*</span>
-                      </label>
-                      <select
-                        value={productForm.category}
-                        onChange={(e) => setProductForm({ ...productForm, category: e.target.value })}
-                        className={`w-full px-3.5 py-2 bg-slate-50 border rounded-xl text-xs text-slate-800 ${
-                          formErrors.category ? 'border-rose-500 ring-1 ring-rose-500/20' : 'border-slate-200'
-                        }`}
-                      >
-                        <option value="">Select an active leaf category...</option>
-                        {leafCategories.map((cat) => (
-                          <option key={cat.id} value={cat.id}>
-                            {cat.path}
-                          </option>
-                        ))}
-                      </select>
-                      {formErrors.category && (
-                        <p className="text-[10px] text-rose-600 mt-0.5">{formErrors.category}</p>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Pricing & Taxes */}
-                <div className="space-y-3 pt-2">
-                  <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 border-b pb-1">
-                    2. Pricing, Margin & Taxes
-                  </h4>
-
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
-                        MRP (₹) <span className="text-rose-500">*</span>
-                      </label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        placeholder="180.00"
-                        value={productForm.mrp}
-                        onChange={(e) => setProductForm({ ...productForm, mrp: e.target.value })}
-                        className={`w-full px-3.5 py-2 bg-slate-50 border rounded-xl text-xs text-slate-800 font-mono ${
-                          formErrors.mrp ? 'border-rose-500' : 'border-slate-200'
-                        }`}
-                      />
-                      {formErrors.mrp && <p className="text-[10px] text-rose-600 mt-0.5">{formErrors.mrp}</p>}
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
-                        Selling Price (₹) <span className="text-rose-500">*</span>
-                      </label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        placeholder="165.00"
-                        value={productForm.selling_price}
-                        onChange={(e) => setProductForm({ ...productForm, selling_price: e.target.value })}
-                        className={`w-full px-3.5 py-2 bg-slate-50 border rounded-xl text-xs text-slate-800 font-mono ${
-                          formErrors.selling_price ? 'border-rose-500' : 'border-slate-200'
-                        }`}
-                      />
-                      {formErrors.selling_price && (
-                        <p className="text-[10px] text-rose-600 mt-0.5">{formErrors.selling_price}</p>
+                      {pickerSearch && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPickerSearch('');
+                            setPickerSearchResults([]);
+                          }}
+                          className="absolute right-3 text-slate-400 hover:text-slate-600"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
                       )}
                     </div>
 
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">GST Tax Rate (%)</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        placeholder="5.00"
-                        value={productForm.tax_rate}
-                        onChange={(e) => setProductForm({ ...productForm, tax_rate: e.target.value })}
-                        className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 font-mono"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">HSN Code</label>
-                      <input
-                        type="text"
-                        placeholder="1512"
-                        value={productForm.hsn_code}
-                        onChange={(e) => setProductForm({ ...productForm, hsn_code: e.target.value })}
-                        className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 font-mono"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Packaging & Storage */}
-                <div className="space-y-3 pt-2">
-                  <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 border-b pb-1">
-                    3. Packaging & Grocery Specs
-                  </h4>
-
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">Unit</label>
-                      <select
-                        value={productForm.unit}
-                        onChange={(e) => setProductForm({ ...productForm, unit: e.target.value })}
-                        className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800"
-                      >
-                        <option value="piece">piece</option>
-                        <option value="pack">pack</option>
-                        <option value="g">g (Grams)</option>
-                        <option value="kg">kg (Kilograms)</option>
-                        <option value="ml">ml (Millilitres)</option>
-                        <option value="litre">litre (Litres)</option>
-                        <option value="box">box</option>
-                        <option value="bottle">bottle</option>
-                        <option value="can">can</option>
-                        <option value="bunch">bunch</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">Pack Size / Value</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. 1L, 500g, Pack of 3"
-                        value={productForm.pack_size}
-                        onChange={(e) => setProductForm({ ...productForm, pack_size: e.target.value })}
-                        className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800"
-                      />
-                    </div>
-
-                    <div className="sm:col-span-2">
-                      <label className="block text-xs font-bold text-slate-700 mb-1">Storage Instructions</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. Store in a cool and dry place away from heat"
-                        value={productForm.storage_info}
-                        onChange={(e) => setProductForm({ ...productForm, storage_info: e.target.value })}
-                        className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800"
-                      />
-                    </div>
-
-                    <div className="sm:col-span-4">
-                      <label className="block text-xs font-bold text-slate-700 mb-1">Expiry / Shelf Life Info</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. Best before 9 months from date of packaging"
-                        value={productForm.expiry_info}
-                        onChange={(e) => setProductForm({ ...productForm, expiry_info: e.target.value })}
-                        className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Product Media */}
-                <div className="space-y-3 pt-2">
-                  <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 border-b pb-1">
-                    4. Product Image Media
-                  </h4>
-
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-3">
-                      <label className="cursor-pointer px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold border border-slate-200 transition-colors inline-flex items-center gap-1.5">
-                        <ImageIcon className="w-4 h-4 text-slate-500" />
-                        <span>Upload Photo File</span>
-                        <input
-                          type="file"
-                          accept="image/*"
-                          onChange={handleImageFileUpload}
-                          className="hidden"
-                        />
-                      </label>
-                      <span className="text-[11px] text-slate-400">or paste a direct web image URL below</span>
-                    </div>
-
-                    {/* Image URL input */}
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        placeholder="https://example.com/product-image.jpg"
-                        value={productForm.images[0] || ''}
-                        onChange={(e) => {
-                          const val = e.target.value.trim();
-                          setProductForm({ ...productForm, images: val ? [val] : [] });
-                        }}
-                        className="flex-1 px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800"
-                      />
-                    </div>
-                    {formErrors.images && <p className="text-[10px] text-rose-600">{formErrors.images}</p>}
-
-                    {/* Thumbnail preview */}
-                    {productForm.images.length > 0 && (
-                      <div className="flex items-center gap-2 pt-1">
-                        {productForm.images.map((img, idx) => (
-                          <div
-                            key={idx}
-                            className="relative w-16 h-16 rounded-xl border border-slate-200 overflow-hidden bg-slate-50"
-                          >
-                            <img src={img} alt="Product" className="w-full h-full object-cover" />
-                            <button
-                              type="button"
-                              onClick={() => setProductForm({ ...productForm, images: [] })}
-                              className="absolute top-1 right-1 bg-slate-900/80 text-white rounded-full p-0.5"
-                            >
-                              <X className="w-3 h-3" />
-                            </button>
+                    {/* Search Results Dropdown Overlay */}
+                    {pickerSearch.trim().length >= 2 && (
+                      <div className="absolute top-full left-0 right-0 mt-1.5 bg-white rounded-xl border border-slate-200 shadow-xl z-20 max-h-64 overflow-y-auto">
+                        {pickerSearchLoading ? (
+                          <div className="p-4 text-center text-slate-400 text-xs flex items-center justify-center gap-2">
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-600" />
+                            <span>Searching categories across catalog hierarchy...</span>
                           </div>
-                        ))}
+                        ) : pickerSearchResults.length === 0 ? (
+                          <div className="p-4 text-center text-slate-500 text-xs">
+                            <p className="font-semibold">No categories match "{pickerSearch}"</p>
+                            <p className="text-[11px] text-slate-400 mt-0.5">
+                              Try another keyword or browse the cascading columns below.
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="divide-y divide-slate-100">
+                            {pickerSearchResults.map((cat) => (
+                              <div
+                                key={cat.id}
+                                onClick={() => cat.is_leaf && handleSearchResultClick(cat)}
+                                className={`p-3 flex items-center justify-between text-xs transition-colors ${
+                                  cat.is_leaf
+                                    ? 'hover:bg-emerald-50/80 cursor-pointer'
+                                    : 'opacity-60 bg-slate-50/50 cursor-not-allowed'
+                                }`}
+                              >
+                                <div className="min-w-0 flex-1 pr-3">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-bold text-slate-900">{cat.name}</span>
+                                    {cat.is_leaf ? (
+                                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                                        Leaf Category
+                                      </span>
+                                    ) : (
+                                      <span className="text-[10px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
+                                        Subcategory
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-[11px] text-slate-500 font-mono mt-0.5 truncate">
+                                    {cat.path_string || cat.name}
+                                  </p>
+                                </div>
+                                {cat.is_leaf ? (
+                                  <button
+                                    type="button"
+                                    className="px-2.5 py-1 text-[11px] font-bold text-emerald-700 bg-emerald-100/80 hover:bg-emerald-200 rounded-lg shrink-0 transition-colors"
+                                  >
+                                    Select Leaf
+                                  </button>
+                                ) : (
+                                  <span className="text-[11px] text-slate-400 shrink-0">Has Subcategories</span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
-                </div>
 
-                {/* Description */}
-                <div className="space-y-1.5 pt-2">
-                  <label className="block text-xs font-bold text-slate-700">Detailed Product Description</label>
-                  <textarea
-                    rows={3}
-                    placeholder="Enter detailed description, ingredients, benefits..."
-                    value={productForm.description}
-                    onChange={(e) => setProductForm({ ...productForm, description: e.target.value })}
-                    className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800"
-                  />
-                </div>
-              </div>
+                  {/* Cascading Independent Scroll Columns */}
+                  <div className="bg-slate-50 rounded-2xl border border-slate-200 p-3">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      {/* Column 1: Root Departments */}
+                      <div className="bg-white rounded-xl border border-slate-200 flex flex-col h-72 shadow-2xs overflow-hidden">
+                        <div className="px-3.5 py-2 bg-slate-100/80 border-b border-slate-200 text-[11px] font-bold uppercase tracking-wider text-slate-600 flex items-center justify-between">
+                          <span>1. Department</span>
+                          {pickerColumnLoading[0] && <RefreshCw className="w-3 h-3 animate-spin text-emerald-600" />}
+                        </div>
+                        <div className="p-1.5 flex-1 overflow-y-auto divide-y divide-slate-50 text-xs">
+                          {pickerColumns[0]?.map((cat) => {
+                            const isSelected = pickerSelectedPath[0]?.id === cat.id;
+                            return (
+                              <button
+                                key={cat.id}
+                                type="button"
+                                onClick={() => handleColumnItemClick(cat, 0)}
+                                className={`w-full text-left px-3 py-2 rounded-lg flex items-center justify-between transition-all ${
+                                  isSelected
+                                    ? 'bg-emerald-50 text-emerald-950 font-bold border-l-4 border-emerald-600 shadow-2xs'
+                                    : 'text-slate-700 hover:bg-slate-100/80 font-medium'
+                                }`}
+                              >
+                                <span className="truncate pr-2">{cat.name}</span>
+                                {cat.has_children ? (
+                                  <ChevronRight className={`w-3.5 h-3.5 shrink-0 ${isSelected ? 'text-emerald-700' : 'text-slate-400'}`} />
+                                ) : (
+                                  <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Leaf category" />
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
 
-              {/* Modal Footer */}
-              <div className="px-6 py-4 border-t border-slate-200 bg-slate-50/50 flex items-center justify-between">
-                <button
-                  type="button"
-                  onClick={() => setShowProductModal(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900"
-                >
-                  Cancel
-                </button>
+                      {/* Column 2: Subcategories */}
+                      <div className="bg-white rounded-xl border border-slate-200 flex flex-col h-72 shadow-2xs overflow-hidden">
+                        <div className="px-3.5 py-2 bg-slate-100/80 border-b border-slate-200 text-[11px] font-bold uppercase tracking-wider text-slate-600 flex items-center justify-between">
+                          <span>2. Subcategory</span>
+                          {pickerColumnLoading[1] && <RefreshCw className="w-3 h-3 animate-spin text-emerald-600" />}
+                        </div>
+                        <div className="p-1.5 flex-1 overflow-y-auto divide-y divide-slate-50 text-xs">
+                          {!pickerColumns[1] || pickerColumns[1].length === 0 ? (
+                            <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center p-4">
+                              <p className="text-[11px]">Select a department on the left to view subcategories.</p>
+                            </div>
+                          ) : (
+                            pickerColumns[1].map((cat) => {
+                              const isSelected = pickerSelectedPath[1]?.id === cat.id;
+                              return (
+                                <button
+                                  key={cat.id}
+                                  type="button"
+                                  onClick={() => handleColumnItemClick(cat, 1)}
+                                  className={`w-full text-left px-3 py-2 rounded-lg flex items-center justify-between transition-all ${
+                                    isSelected
+                                      ? 'bg-emerald-50 text-emerald-950 font-bold border-l-4 border-emerald-600 shadow-2xs'
+                                      : 'text-slate-700 hover:bg-slate-100/80 font-medium'
+                                  }`}
+                                >
+                                  <span className="truncate pr-2">{cat.name}</span>
+                                  {cat.has_children ? (
+                                    <ChevronRight className={`w-3.5 h-3.5 shrink-0 ${isSelected ? 'text-emerald-700' : 'text-slate-400'}`} />
+                                  ) : (
+                                    <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Leaf category" />
+                                  )}
+                                </button>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
 
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => handleSaveProduct(false)}
-                    disabled={actionLoading}
-                    className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl transition-colors"
+                      {/* Column 3: Product Types / Specific Leaves */}
+                      <div className="bg-white rounded-xl border border-slate-200 flex flex-col h-72 shadow-2xs overflow-hidden">
+                        <div className="px-3.5 py-2 bg-slate-100/80 border-b border-slate-200 text-[11px] font-bold uppercase tracking-wider text-slate-600 flex items-center justify-between">
+                          <span>3. Product Type (Leaf)</span>
+                          {pickerColumnLoading[2] && <RefreshCw className="w-3 h-3 animate-spin text-emerald-600" />}
+                        </div>
+                        <div className="p-1.5 flex-1 overflow-y-auto divide-y divide-slate-50 text-xs">
+                          {!pickerColumns[2] || pickerColumns[2].length === 0 ? (
+                            <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center p-4">
+                              <p className="text-[11px]">
+                                {pickerSelectedLeaf
+                                  ? 'Leaf category confirmed in previous column.'
+                                  : 'Select a subcategory on the left to view product types.'}
+                              </p>
+                            </div>
+                          ) : (
+                            pickerColumns[2].map((cat) => {
+                              const isSelected = pickerSelectedPath[2]?.id === cat.id;
+                              return (
+                                <button
+                                  key={cat.id}
+                                  type="button"
+                                  onClick={() => handleColumnItemClick(cat, 2)}
+                                  className={`w-full text-left px-3 py-2 rounded-lg flex items-center justify-between transition-all ${
+                                    isSelected
+                                      ? 'bg-emerald-50 text-emerald-950 font-bold border-l-4 border-emerald-600 shadow-2xs'
+                                      : 'text-slate-700 hover:bg-slate-100/80 font-medium'
+                                  }`}
+                                >
+                                  <span className="truncate pr-2">{cat.name}</span>
+                                  {cat.has_children ? (
+                                    <ChevronRight className={`w-3.5 h-3.5 shrink-0 ${isSelected ? 'text-emerald-700' : 'text-slate-400'}`} />
+                                  ) : (
+                                    <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Leaf category" />
+                                  )}
+                                </button>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Selected Breadcrumb Preview Panel */}
+                  <div
+                    className={`p-4 rounded-xl border transition-all ${
+                      pickerSelectedLeaf
+                        ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950 shadow-2xs'
+                        : 'bg-slate-50 border-slate-200 text-slate-600'
+                    }`}
                   >
-                    Save as Draft
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleSaveProduct(true)}
-                    disabled={actionLoading}
-                    className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5"
-                  >
-                    <Send className="w-3.5 h-3.5" />
-                    <span>Submit for Review</span>
-                  </button>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                            Current Classification
+                          </span>
+                          {pickerSelectedLeaf ? (
+                            <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-300">
+                              ✓ Final Leaf Category Selected
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+                              Choose a final (leaf) category
+                            </span>
+                          )}
+                        </div>
+                        <p className="font-bold text-sm text-slate-900 mt-1">
+                          {pickerSelectedLeaf
+                            ? pickerSelectedLeaf.path_string || pickerSelectedLeaf.name
+                            : pickerSelectedPath.length > 0
+                            ? pickerSelectedPath.map((p) => p.name).join(' › ')
+                            : 'No category chosen yet'}
+                        </p>
+                        {pickerSelectedLeaf && (
+                          <p className="text-[11px] text-emerald-800 mt-1">
+                            You are cataloging under <strong>{pickerSelectedLeaf.name}</strong>. Clear packaging photos and accurate grocery specs ensure faster admin approval.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Helper Footnotes (Vendor Gating Notice) */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between text-[11px] text-slate-500 pt-1">
+                    <p>Can't find the category? Use Search Category above.</p>
+                    <p className="text-slate-400">
+                      Still can't find it? Ask your administrator to add it. (Vendors cannot create categories)
+                    </p>
+                  </div>
+
+                  {/* Step 1 Actions */}
+                  <div className="pt-3 border-t border-slate-200 flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={() => handleCloseProductModal()}
+                      className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900"
+                    >
+                      Discard & Close
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={!pickerSelectedLeaf}
+                      onClick={() => {
+                        if (pickerSelectedLeaf) {
+                          setProductForm((prev) => ({ ...prev, category: pickerSelectedLeaf.id }));
+                          setProductModalStep(2);
+                        }
+                      }}
+                      className={`px-6 py-2.5 text-xs font-bold rounded-xl shadow-xs transition-all flex items-center gap-1.5 ${
+                        pickerSelectedLeaf
+                          ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+                          : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                      }`}
+                    >
+                      <span>Continue to Product Details</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                /* ───────────────────────────────────────────────────────────── */
+                /* STEP 2: PRODUCT DETAILS FORM                                  */
+                /* ───────────────────────────────────────────────────────────── */
+                <div>
+                  <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
+                    {/* Selected Category Header Strip with "Change category" link */}
+                    <div className="p-3.5 bg-emerald-50/80 border border-emerald-200 rounded-xl flex items-center justify-between shadow-2xs">
+                      <div className="min-w-0 flex-1 pr-3">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">
+                          Selected Category
+                        </span>
+                        <p className="text-xs font-bold text-slate-900 truncate mt-0.5">
+                          {pickerSelectedLeaf?.path_string ||
+                            editingProduct?.category_path ||
+                            `Category #${productForm.category}`}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProductModalStep(1);
+                          loadPickerColumn(null, 0);
+                        }}
+                        className="px-3 py-1.5 text-xs font-bold text-emerald-800 bg-white hover:bg-emerald-100 border border-emerald-300 rounded-lg shadow-2xs transition-colors flex items-center gap-1 shrink-0"
+                      >
+                        <FileEdit className="w-3.5 h-3.5" />
+                        <span>Change category</span>
+                      </button>
+                    </div>
+
+                    {categoryWarning && (
+                      <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl text-xs font-medium flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                        <span>{categoryWarning}</span>
+                      </div>
+                    )}
+
+                    {/* Basic Details */}
+                    <div className="space-y-3">
+                      <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 border-b pb-1">
+                        1. General Information
+                      </h4>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="sm:col-span-2">
+                          <label className="block text-xs font-bold text-slate-700 mb-1">
+                            Product Title <span className="text-rose-500">*</span>
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="e.g. Fortune Sunlite Refined Sunflower Oil 1L"
+                            value={productForm.title}
+                            onChange={(e) => setProductForm({ ...productForm, title: e.target.value })}
+                            className={`w-full px-3.5 py-2 bg-slate-50 border rounded-xl text-xs text-slate-800 ${
+                              formErrors.title ? 'border-rose-500 ring-1 ring-rose-500/20' : 'border-slate-200'
+                            }`}
+                          />
+                          {formErrors.title && <p className="text-[10px] text-rose-600 mt-0.5">{formErrors.title}</p>}
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-bold text-slate-700 mb-1">
+                            SKU (Store Unique) <span className="text-rose-500">*</span>
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="e.g. FORT-SUN-1L"
+                            value={productForm.sku}
+                            onChange={(e) => setProductForm({ ...productForm, sku: e.target.value })}
+                            className={`w-full px-3.5 py-2 bg-slate-50 border rounded-xl text-xs text-slate-800 font-mono ${
+                              formErrors.sku ? 'border-rose-500 ring-1 ring-rose-500/20' : 'border-slate-200'
+                            }`}
+                          />
+                          {formErrors.sku && <p className="text-[10px] text-rose-600 mt-0.5">{formErrors.sku}</p>}
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-bold text-slate-700 mb-1">Brand Name</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. Fortune, Tata, Aashirvaad"
+                            value={productForm.brand}
+                            onChange={(e) => setProductForm({ ...productForm, brand: e.target.value })}
+                            className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-2">
+                          <label className="block text-xs font-bold text-slate-700 mb-1">Barcode / EAN (Optional)</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. 8901234567890"
+                            value={productForm.barcode}
+                            onChange={(e) => setProductForm({ ...productForm, barcode: e.target.value })}
+                            className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 font-mono"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Pricing & Taxes */}
+                    <div className="space-y-3 pt-2">
+                      <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 border-b pb-1">
+                        2. Pricing, Margin & Taxes
+                      </h4>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        <div>
+                          <label className="block text-xs font-bold text-slate-700 mb-1">
+                            MRP (₹) <span className="text-rose-500">*</span>
+                          </label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            placeholder="180.00"
+                            value={productForm.mrp}
+                            onChange={(e) => setProductForm({ ...productForm, mrp: e.target.value })}
+                            className={`w-full px-3.5 py-2 bg-slate-50 border rounded-xl text-xs text-slate-800 font-mono ${
+                              formErrors.mrp ? 'border-rose-500' : 'border-slate-200'
+                            }`}
+                          />
+                          {formErrors.mrp && <p className="text-[10px] text-rose-600 mt-0.5">{formErrors.mrp}</p>}
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-bold text-slate-700 mb-1">
+                            Selling Price (₹) <span className="text-rose-500">*</span>
+                          </label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            placeholder="165.00"
+                            value={productForm.selling_price}
+                            onChange={(e) => setProductForm({ ...productForm, selling_price: e.target.value })}
+                            className={`w-full px-3.5 py-2 bg-slate-50 border rounded-xl text-xs text-slate-800 font-mono ${
+                              formErrors.selling_price ? 'border-rose-500' : 'border-slate-200'
+                            }`}
+                          />
+                          {formErrors.selling_price && (
+                            <p className="text-[10px] text-rose-600 mt-0.5">{formErrors.selling_price}</p>
+                          )}
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-bold text-slate-700 mb-1">GST Tax Rate (%)</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            placeholder="5.00"
+                            value={productForm.tax_rate}
+                            onChange={(e) => setProductForm({ ...productForm, tax_rate: e.target.value })}
+                            className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 font-mono"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-bold text-slate-700 mb-1">HSN Code</label>
+                          <input
+                            type="text"
+                            placeholder="1512"
+                            value={productForm.hsn_code}
+                            onChange={(e) => setProductForm({ ...productForm, hsn_code: e.target.value })}
+                            className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 font-mono"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Packaging & Storage */}
+                    <div className="space-y-3 pt-2">
+                      <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 border-b pb-1">
+                        3. Packaging & Grocery Specs
+                      </h4>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        <div>
+                          <label className="block text-xs font-bold text-slate-700 mb-1">Unit</label>
+                          <select
+                            value={productForm.unit}
+                            onChange={(e) => setProductForm({ ...productForm, unit: e.target.value })}
+                            className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800"
+                          >
+                            <option value="piece">piece</option>
+                            <option value="pack">pack</option>
+                            <option value="g">g (Grams)</option>
+                            <option value="kg">kg (Kilograms)</option>
+                            <option value="ml">ml (Millilitres)</option>
+                            <option value="litre">litre (Litres)</option>
+                            <option value="box">box</option>
+                            <option value="bottle">bottle</option>
+                            <option value="can">can</option>
+                            <option value="bunch">bunch</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-bold text-slate-700 mb-1">Pack Size / Value</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. 1L, 500g, Pack of 3"
+                            value={productForm.pack_size}
+                            onChange={(e) => setProductForm({ ...productForm, pack_size: e.target.value })}
+                            className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-2">
+                          <label className="block text-xs font-bold text-slate-700 mb-1">Storage Instructions</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. Store in a cool and dry place away from heat"
+                            value={productForm.storage_info}
+                            onChange={(e) => setProductForm({ ...productForm, storage_info: e.target.value })}
+                            className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-4">
+                          <label className="block text-xs font-bold text-slate-700 mb-1">Expiry / Shelf Life Info</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. Best before 9 months from date of packaging"
+                            value={productForm.expiry_info}
+                            onChange={(e) => setProductForm({ ...productForm, expiry_info: e.target.value })}
+                            className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Product Media */}
+                    <div className="space-y-3 pt-2">
+                      <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 border-b pb-1">
+                        4. Product Image Media
+                      </h4>
+
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-3">
+                          <label className="cursor-pointer px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold border border-slate-200 transition-colors inline-flex items-center gap-1.5">
+                            <ImageIcon className="w-4 h-4 text-slate-500" />
+                            <span>Upload Photo File</span>
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={handleImageFileUpload}
+                              className="hidden"
+                            />
+                          </label>
+                          <span className="text-[11px] text-slate-400">or paste a direct web image URL below</span>
+                        </div>
+
+                        {/* Image URL input */}
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            placeholder="https://example.com/product-image.jpg"
+                            value={productForm.images[0] || ''}
+                            onChange={(e) => {
+                              const val = e.target.value.trim();
+                              setProductForm({ ...productForm, images: val ? [val] : [] });
+                            }}
+                            className="flex-1 px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800"
+                          />
+                        </div>
+                        {formErrors.images && <p className="text-[10px] text-rose-600">{formErrors.images}</p>}
+
+                        {/* Thumbnail preview */}
+                        {productForm.images.length > 0 && (
+                          <div className="flex items-center gap-2 pt-1">
+                            {productForm.images.map((img, idx) => (
+                              <div
+                                key={idx}
+                                className="relative w-16 h-16 rounded-xl border border-slate-200 overflow-hidden bg-slate-50"
+                              >
+                                <img src={img} alt="Product" className="w-full h-full object-cover" />
+                                <button
+                                  type="button"
+                                  onClick={() => setProductForm({ ...productForm, images: [] })}
+                                  className="absolute top-1 right-1 bg-slate-900/80 text-white rounded-full p-0.5"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Description */}
+                    <div className="space-y-1.5 pt-2">
+                      <label className="block text-xs font-bold text-slate-700">Detailed Product Description</label>
+                      <textarea
+                        rows={3}
+                        placeholder="Enter detailed description, ingredients, benefits..."
+                        value={productForm.description}
+                        onChange={(e) => setProductForm({ ...productForm, description: e.target.value })}
+                        className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Modal Footer */}
+                  <div className="px-6 py-4 border-t border-slate-200 bg-slate-50/50 flex items-center justify-between">
+                    {!editingProduct ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProductModalStep(1);
+                          loadPickerColumn(null, 0);
+                        }}
+                        className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 flex items-center gap-1"
+                      >
+                        <ChevronRight className="w-3.5 h-3.5 rotate-180" />
+                        <span>Back to Categories</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleCloseProductModal()}
+                        className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900"
+                      >
+                        Cancel
+                      </button>
+                    )}
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleSaveProduct(false)}
+                        disabled={actionLoading}
+                        className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl transition-colors"
+                      >
+                        Save as Draft
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSaveProduct(true)}
+                        disabled={actionLoading}
+                        className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5"
+                      >
+                        <Send className="w-3.5 h-3.5" />
+                        <span>Submit for Review</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}

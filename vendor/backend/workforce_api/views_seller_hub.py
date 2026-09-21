@@ -42,16 +42,23 @@ from workforce_api.models import (
     SellerOrder,
     SellerOrderItem,
     SellerOrderAuditLog,
+    SellerReturn,
+    SellerReturnItem,
+    SellerReturnAuditLog,
+    SellerClaim,
+    SellerClaimAuditLog,
 )
 from workforce_api.serializers import (
     SellerHubCategoryAdminSerializer,
     SellerHubCategoryTreeSerializer,
+    SellerCatalogCategoryItemSerializer,
     VendorCouponSerializer,
     SellerProductListSerializer,
     SellerProductDetailSerializer,
     SellerProductCreateUpdateSerializer,
     SellerProductImageSerializer,
     SellerProductAuditLogSerializer,
+    validate_product_category_is_leaf,
     SellerCatalogUploadBatchSerializer,
     SellerLeafCategorySerializer,
     SellerInventoryListSerializer,
@@ -65,8 +72,21 @@ from workforce_api.serializers import (
     SellerOrderAuditLogSerializer,
     SellerOrderStatusTransitionSerializer,
     SellerOrderItemPickSerializer,
+    SellerReturnListSerializer,
+    SellerReturnDetailSerializer,
+    SellerReturnReviewSerializer,
+    SellerReturnQualityCheckSerializer,
+    SellerReturnRestockSerializer,
+    SellerReturnIntakeSerializer,
+    SellerClaimListSerializer,
+    SellerClaimDetailSerializer,
+    SellerClaimCreateSerializer,
+    SellerClaimRespondSerializer,
+    SellerClaimAdminDecisionSerializer,
+    SellerClaimIntakeSerializer,
 )
 from companies.models import Company
+from workforce_api.services.seller_order_outbox import record_seller_order_status_event
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +132,23 @@ def _is_seller_or_grocery_supplier(user):
     return False
 
 
+def _is_admin_or_superadmin(user):
+    """
+    Check if user is a platform superadministrator or staff/admin user.
+    Vendors, grocery suppliers, technicians, and regular employees return False.
+    """
+    if not user or not user.is_authenticated:
+        return False
+    if getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False):
+        return True
+    if getattr(user, "is_staff", False):
+        return True
+    role = str(getattr(user, "role", "")).lower()
+    if role in ("admin", "superadmin", "platform_admin", "staff"):
+        return True
+    return False
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. SELLER HUB CATEGORIES MANAGEMENT (SellerHubCategory in workforce_seller_hub_category)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -119,17 +156,16 @@ def _is_seller_or_grocery_supplier(user):
 class AdminSellerHubCategoryListView(APIView):
     """
     GET  /api/workforce/seller-hub/categories/ – List Seller Hub categories with search, parent filtering & tree mode
-    POST /api/workforce/seller-hub/categories/ – Create a new Seller Hub category (Superadmin only)
+    POST /api/workforce/seller-hub/categories/ – Create a new Seller Hub category (Admin & Super Admin)
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
-        is_admin = is_admin_role(user)
+        is_admin_user = _is_admin_or_superadmin(user)
         is_seller = _is_seller_or_grocery_supplier(user)
 
-        if not (is_super or is_admin or is_seller):
+        if not (is_admin_user or is_seller):
             return Response(
                 {"error": "You do not have permission to view categories."},
                 status=status.HTTP_403_FORBIDDEN
@@ -184,11 +220,9 @@ class AdminSellerHubCategoryListView(APIView):
 
     def post(self, request):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
-
-        if not is_super:
+        if not _is_admin_or_superadmin(user):
             return Response(
-                {"error": "Only platform superadministrators can create global catalog categories."},
+                {"error": "Only platform administrators and superadministrators can create catalog categories."},
                 status=status.HTTP_403_FORBIDDEN
             )
 
@@ -221,6 +255,21 @@ class AdminSellerHubCategoryListView(APIView):
             data["parent"] = None
         else:
             data["parent"] = parent_val
+            # Guard: Parent category must not contain products (a category with products cannot gain children)
+            try:
+                parent_id_num = int(parent_val) if not hasattr(parent_val, "id") else parent_val.id
+                if SellerProduct.objects.filter(category_id=parent_id_num).exists():
+                    parent_obj = SellerHubCategory.objects.filter(id=parent_id_num).first()
+                    p_name = parent_obj.name if parent_obj else f"ID {parent_id_num}"
+                    return Response(
+                        {
+                            "error": f"Cannot create subcategory under '{p_name}' because it already contains products. Move or reassign products first.",
+                            "code": "CATEGORY_HAS_PRODUCTS",
+                        },
+                        status=status.HTTP_409_CONFLICT
+                    )
+            except (ValueError, TypeError):
+                pass
 
         serializer = SellerHubCategoryAdminSerializer(data=data)
         if serializer.is_valid():
@@ -261,10 +310,9 @@ class AdminSellerHubCategoryDetailView(APIView):
 
     def patch(self, request, pk):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
-        if not is_super:
+        if not _is_admin_or_superadmin(user):
             return Response(
-                {"error": "Only platform superadministrators can modify catalog categories."},
+                {"error": "Only platform administrators and superadministrators can modify catalog categories."},
                 status=status.HTTP_403_FORBIDDEN
             )
 
@@ -287,7 +335,59 @@ class AdminSellerHubCategoryDetailView(APIView):
             if parent_val in ("", "null", "none", None):
                 data["parent"] = None
             else:
+                try:
+                    parent_id_num = int(parent_val) if not hasattr(parent_val, "id") else parent_val.id
+                    if parent_id_num == cat.id:
+                        return Response(
+                            {"error": "A category cannot be its own parent category.", "code": "INVALID_PARENT"},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+
+                    # Cycle detection: Ensure cat is not an ancestor of parent_id_num
+                    curr = SellerHubCategory.objects.filter(id=parent_id_num).first()
+                    visited = {cat.id}
+                    while curr:
+                        if curr.id in visited:
+                            return Response(
+                                {
+                                    "error": f"Circular hierarchy detected: '{curr.name}' is a child or descendant of '{cat.name}'.",
+                                    "code": "CYCLIC_HIERARCHY",
+                                },
+                                status=status.HTTP_400_BAD_REQUEST
+                            )
+                        visited.add(curr.id)
+                        curr = curr.parent
+
+                    # Product collision guard: Parent category must not already have products
+                    if SellerProduct.objects.filter(category_id=parent_id_num).exists():
+                        parent_obj = SellerHubCategory.objects.filter(id=parent_id_num).first()
+                        p_name = parent_obj.name if parent_obj else f"ID {parent_id_num}"
+                        return Response(
+                            {
+                                "error": f"Cannot make '{p_name}' a parent category because it already contains products. Move or reassign products first.",
+                                "code": "CATEGORY_HAS_PRODUCTS",
+                            },
+                            status=status.HTTP_409_CONFLICT
+                        )
+                except (ValueError, TypeError):
+                    pass
                 data["parent"] = parent_val
+
+        # Reactivation guard: Cannot reactivate a child category if its parent currently has products
+        if "is_active" in data:
+            is_active_val = data.get("is_active")
+            if str(is_active_val).lower() in ("true", "1") and not cat.is_active:
+                target_parent_id = parent_id_num if ("parent" in data or "parent_id" in data) else cat.parent_id
+                if target_parent_id and SellerProduct.objects.filter(category_id=target_parent_id).exists():
+                    parent_obj = SellerHubCategory.objects.filter(id=target_parent_id).first()
+                    p_name = parent_obj.name if parent_obj else f"ID {target_parent_id}"
+                    return Response(
+                        {
+                            "error": f"Cannot reactivate category under '{p_name}' because '{p_name}' already contains products. Move or reassign products first.",
+                            "code": "CATEGORY_HAS_PRODUCTS",
+                        },
+                        status=status.HTTP_409_CONFLICT
+                    )
 
         serializer = SellerHubCategoryAdminSerializer(cat, data=data, partial=True)
         if serializer.is_valid():
@@ -306,10 +406,9 @@ class AdminSellerHubCategoryDetailView(APIView):
 
     def delete(self, request, pk):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
-        if not is_super:
+        if not _is_admin_or_superadmin(user):
             return Response(
-                {"error": "Only platform superadministrators can delete catalog categories."},
+                {"error": "Only platform administrators and superadministrators can delete catalog categories."},
                 status=status.HTTP_403_FORBIDDEN
             )
 
@@ -415,6 +514,138 @@ class AdminSellerHubCategoryTreeView(APIView):
 
         serializer = SellerHubCategoryTreeSerializer(roots, many=True, context={"request": request, "active_only": active_only})
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class SellerCatalogCategoryListView(APIView):
+    """
+    GET /api/workforce/seller-hub/catalog/categories/
+    Read-only endpoint for vendors & admins to browse active leaf/branch categories.
+    Supports:
+      - ?parent_id=<id|null> : Returns immediate active children under parent_id (or roots if null/empty)
+      - ?q=<text> : Substring search across all active categories, returning full breadcrumb path & is_leaf
+      - ?tree=true : Returns full hierarchical tree of active categories with active parent chains
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_admin = is_admin_role(user)
+        is_seller = _is_seller_or_grocery_supplier(user)
+
+        if not (is_super or is_admin or is_seller):
+            return Response(
+                {"error": "You do not have permission to view catalog categories."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # 1. Fetch all active categories in 1 single SQL query
+        all_active = list(SellerHubCategory.objects.filter(is_active=True).order_by("sort_order", "name"))
+        cat_map = {c.id: c for c in all_active}
+
+        # 2. Build active ancestor chain validation & parent->children graph in memory (0 queries)
+        valid_active_ids = set()
+        children_map = {}  # parent_id -> list of child_ids
+        for c in all_active:
+            children_map.setdefault(c.parent_id, []).append(c.id)
+
+        for c in all_active:
+            curr = c.parent_id
+            chain_valid = True
+            visited = {c.id}
+            while curr is not None:
+                if curr not in cat_map:
+                    chain_valid = False
+                    break
+                if curr in visited:
+                    chain_valid = False
+                    break
+                visited.add(curr)
+                curr = cat_map[curr].parent_id
+            if chain_valid:
+                valid_active_ids.add(c.id)
+
+        # Helper to compute breadcrumb path
+        def compute_path(cat_id):
+            path = []
+            curr_id = cat_id
+            visited = set()
+            while curr_id is not None and curr_id in cat_map and curr_id not in visited:
+                visited.add(curr_id)
+                cat = cat_map[curr_id]
+                path.append({
+                    "id": cat.id,
+                    "name": cat.name,
+                    "slug": cat.slug,
+                })
+                curr_id = cat.parent_id
+            path.reverse()
+            return path
+
+        # Helper to serialize category item
+        def serialize_item(cat):
+            active_child_ids = [cid for cid in children_map.get(cat.id, []) if cid in valid_active_ids]
+            has_children = len(active_child_ids) > 0
+            is_leaf = not has_children
+            path = compute_path(cat.id)
+            path_string = " > ".join(p["name"] for p in path)
+            return {
+                "id": cat.id,
+                "name": cat.name,
+                "slug": cat.slug,
+                "description": cat.description or "",
+                "icon": cat.icon or "",
+                "image": cat.image or "",
+                "parent_id": cat.parent_id,
+                "sort_order": cat.sort_order,
+                "is_active": cat.is_active,
+                "has_children": has_children,
+                "is_leaf": is_leaf,
+                "path": path,
+                "path_string": path_string,
+            }
+
+        # Check tree mode param
+        tree_param = request.query_params.get("tree")
+        if tree_param is not None and str(tree_param).lower() in ("true", "1"):
+            def build_tree_node(cat_id):
+                cat = cat_map[cat_id]
+                item = serialize_item(cat)
+                child_ids = [cid for cid in children_map.get(cat_id, []) if cid in valid_active_ids]
+                item["children"] = [build_tree_node(cid) for cid in child_ids]
+                return item
+
+            root_ids = [cid for cid in children_map.get(None, []) if cid in valid_active_ids]
+            tree_data = [build_tree_node(rid) for rid in root_ids]
+            return Response(tree_data, status=status.HTTP_200_OK)
+
+        # Check search param
+        q = request.query_params.get("q", "").strip()
+        if q:
+            q_lower = q.lower()
+            results = []
+            for c in all_active:
+                if c.id not in valid_active_ids:
+                    continue
+                if q_lower in c.name.lower() or q_lower in c.slug.lower() or (c.description and q_lower in c.description.lower()):
+                    results.append(serialize_item(c))
+            return Response(results, status=status.HTTP_200_OK)
+
+        # Check parent_id param
+        parent_id_param = request.query_params.get("parent_id")
+        if parent_id_param is not None:
+            if str(parent_id_param).lower() in ("null", "none", "", "0"):
+                target_parent = None
+            elif str(parent_id_param).isdigit():
+                target_parent = int(parent_id_param)
+            else:
+                return Response({"error": "Invalid parent_id parameter."}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            target_parent = None
+
+        child_ids = [cid for cid in children_map.get(target_parent, []) if cid in valid_active_ids]
+        items = [serialize_item(cat_map[cid]) for cid in child_ids]
+        return Response(items, status=status.HTTP_200_OK)
 
 
 # Backward-compatible view aliases for URL routing
@@ -1344,14 +1575,16 @@ class SellerProductBulkUploadView(APIView):
                 row_errors.append("Category slug or ID is required.")
             else:
                 cat_ident_clean = cat_identifier.strip().lower()
-                cat_obj = leaf_cats_by_slug.get(cat_ident_clean) or leaf_cats_by_id.get(cat_ident_clean)
+                cat_obj = SellerHubCategory.objects.filter(slug=cat_ident_clean).first()
+                if not cat_obj and cat_ident_clean.isdigit():
+                    cat_obj = SellerHubCategory.objects.filter(id=int(cat_ident_clean)).first()
+
                 if not cat_obj:
-                    # Check if it was a parent category
-                    parent_check = SellerHubCategory.objects.filter(slug=cat_ident_clean).first() or (SellerHubCategory.objects.filter(id=int(cat_ident_clean)).first() if cat_ident_clean.isdigit() else None)
-                    if parent_check:
-                        row_errors.append(f"Category '{parent_check.name}' is a parent category with subcategories. Products must be assigned to leaf categories only.")
-                    else:
-                        row_errors.append(f"Active leaf category '{cat_identifier}' not found.")
+                    row_errors.append(f"Category '{cat_identifier}' not found in catalog.")
+                else:
+                    is_valid, err_msg, _ = validate_product_category_is_leaf(cat_obj)
+                    if not is_valid:
+                        row_errors.append(err_msg)
 
             # Pricing validation
             mrp_val = None
@@ -1674,6 +1907,70 @@ class SellerHubMetricsView(APIView):
         cancelled_orders = order_qs.filter(status=SellerOrder.Status.CANCELLED).count()
         today_orders = order_qs.filter(created_at__date=today).count()
 
+        # Phase 5 Return QuerySet
+        return_qs = SellerReturn.objects.all()
+        if not is_super:
+            if company_id:
+                return_qs = return_qs.filter(company_id=company_id)
+            else:
+                return_qs = return_qs.none()
+
+        total_returns = return_qs.count()
+        pending_returns = return_qs.filter(
+            status__in=[
+                SellerReturn.Status.REQUESTED,
+                SellerReturn.Status.UNDER_SELLER_REVIEW,
+            ]
+        ).count()
+        under_inspection_returns = return_qs.filter(
+            status__in=[
+                SellerReturn.Status.APPROVED,
+                SellerReturn.Status.PICKUP_SCHEDULED,
+                SellerReturn.Status.RECEIVED,
+                SellerReturn.Status.QUALITY_CHECK,
+            ]
+        ).count()
+        resolved_returns = return_qs.filter(
+            status__in=[
+                SellerReturn.Status.RESTOCKED,
+                SellerReturn.Status.CLOSED,
+                SellerReturn.Status.DISCARDED,
+                SellerReturn.Status.REJECTED,
+            ]
+        ).count()
+
+        # Phase 6 Claim QuerySet
+        claim_qs = SellerClaim.objects.all()
+        if not is_super:
+            if company_id:
+                claim_qs = claim_qs.filter(company_id=company_id)
+            else:
+                claim_qs = claim_qs.none()
+
+        total_claims = claim_qs.count()
+        open_claims = claim_qs.filter(
+            status__in=[
+                SellerClaim.Status.OPEN,
+                SellerClaim.Status.UNDER_REVIEW,
+                SellerClaim.Status.SELLER_RESPONSE_REQUIRED,
+                SellerClaim.Status.ESCALATED,
+            ]
+        ).count()
+        claims_requiring_response = claim_qs.filter(
+            status=SellerClaim.Status.SELLER_RESPONSE_REQUIRED
+        ).count()
+        escalated_claims = claim_qs.filter(
+            status=SellerClaim.Status.ESCALATED
+        ).count()
+        resolved_claims = claim_qs.filter(
+            status__in=[
+                SellerClaim.Status.APPROVED,
+                SellerClaim.Status.REJECTED,
+                SellerClaim.Status.SETTLED,
+                SellerClaim.Status.CLOSED,
+            ]
+        ).count()
+
         return Response(
             {
                 "catalogs_awaiting_approval": awaiting_approval,
@@ -1699,6 +1996,17 @@ class SellerHubMetricsView(APIView):
                 "completed_orders_count": completed_orders,
                 "cancelled_orders_count": cancelled_orders,
                 "today_orders_count": today_orders,
+                # Phase 5 Return Metrics
+                "total_returns_count": total_returns,
+                "pending_returns_count": pending_returns,
+                "under_inspection_returns_count": under_inspection_returns,
+                "resolved_returns_count": resolved_returns,
+                # Phase 6 Claims Metrics
+                "total_claims_count": total_claims,
+                "open_claims_count": open_claims,
+                "claims_requiring_response_count": claims_requiring_response,
+                "escalated_claims_count": escalated_claims,
+                "resolved_claims_count": resolved_claims,
             },
             status=status.HTTP_200_OK
         )
@@ -2450,6 +2758,16 @@ class SellerOrderStatusTransitionView(APIView):
                 notes=cancellation_reason if target_status == SellerOrder.Status.CANCELLED else notes,
             )
 
+            # Record outbox status event within the same transaction
+            record_seller_order_status_event(
+                order=order,
+                previous_status=from_status,
+                new_status=target_status,
+                event_type="seller_order.cancelled" if target_status == SellerOrder.Status.CANCELLED else "seller_order.status_updated",
+                actor=user,
+                cancellation_source="SELLER" if target_status == SellerOrder.Status.CANCELLED else None,
+            )
+
         detail_serializer = SellerOrderDetailSerializer(order)
         return Response(
             {
@@ -2672,6 +2990,2072 @@ class SellerOrderPackingSlipView(APIView):
         }
 
         return Response(packing_slip_data, status=status.HTTP_200_OK)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 7. SELLER HUB RETURNS & REVERSE LOGISTICS VIEWS (Phase 5)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class SellerReturnListView(APIView):
+    """
+    GET /api/workforce/seller-hub/returns/ – List return cases for seller
+    Query filters: search, status, reason, date_from, date_to, ordering
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_admin = is_admin_role(user)
+        company_id = _resolve_user_company_id(user)
+
+        qs = SellerReturn.objects.select_related("company", "order").prefetch_related("items")
+
+        # Multi-Tenant Scoping: sellers only access their own returns
+        if not (is_super or (is_admin and not company_id)):
+            if not company_id:
+                return Response(
+                    {"error": "User is not associated with an approved merchant store."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            qs = qs.filter(company_id=company_id)
+        else:
+            target_company = request.query_params.get("company_id")
+            if target_company and str(target_company).isdigit():
+                qs = qs.filter(company_id=int(target_company))
+
+        # Search filter
+        search = request.query_params.get("search", "").strip()
+        if search:
+            qs = qs.filter(
+                models.Q(return_number__icontains=search) |
+                models.Q(source_return_id__icontains=search) |
+                models.Q(order__order_number__icontains=search) |
+                models.Q(customer_name__icontains=search) |
+                models.Q(customer_phone__icontains=search) |
+                models.Q(reason__icontains=search) |
+                models.Q(items__product_title__icontains=search)
+            ).distinct()
+
+        # Status filter
+        status_param = request.query_params.get("status", "").strip().upper()
+        if status_param and status_param != "ALL":
+            if status_param == "PENDING":
+                qs = qs.filter(status__in=[SellerReturn.Status.REQUESTED, SellerReturn.Status.UNDER_SELLER_REVIEW])
+            elif status_param == "IN_INSPECTION":
+                qs = qs.filter(status__in=[
+                    SellerReturn.Status.APPROVED,
+                    SellerReturn.Status.PICKUP_SCHEDULED,
+                    SellerReturn.Status.RECEIVED,
+                    SellerReturn.Status.QUALITY_CHECK,
+                ])
+            elif status_param == "RESOLVED":
+                qs = qs.filter(status__in=[
+                    SellerReturn.Status.RESTOCKED,
+                    SellerReturn.Status.CLOSED,
+                    SellerReturn.Status.DISCARDED,
+                    SellerReturn.Status.REJECTED,
+                ])
+            else:
+                qs = qs.filter(status=status_param)
+
+        # Reason filter
+        reason_param = request.query_params.get("reason", "").strip()
+        if reason_param:
+            qs = qs.filter(reason=reason_param)
+
+        # Date range filter
+        date_from = request.query_params.get("date_from", "").strip()
+        date_to = request.query_params.get("date_to", "").strip()
+        if date_from:
+            qs = qs.filter(created_at__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(created_at__date__lte=date_to)
+
+        # Ordering
+        ordering = request.query_params.get("ordering", "-created_at")
+        valid_orderings = [
+            "-created_at", "created_at",
+            "-updated_at", "updated_at",
+            "status", "-status",
+            "return_number", "-return_number",
+        ]
+        if ordering in valid_orderings:
+            qs = qs.order_by(ordering)
+        else:
+            qs = qs.order_by("-created_at")
+
+        serializer = SellerReturnListSerializer(qs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class SellerReturnDetailView(APIView):
+    """
+    GET /api/workforce/seller-hub/returns/<int:pk>/ – Get return case details, line items, and audit trail
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _get_return(self, user, pk):
+        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_admin = is_admin_role(user)
+        company_id = _resolve_user_company_id(user)
+
+        qs = SellerReturn.objects.select_related(
+            "company",
+            "order",
+            "quality_checked_by",
+        ).prefetch_related(
+            "items",
+            "items__product",
+            "items__order_item",
+            "audit_logs",
+            "audit_logs__actor",
+        )
+
+        if not (is_super or (is_admin and not company_id)):
+            if not company_id:
+                return None
+            qs = qs.filter(company_id=company_id)
+
+        return qs.filter(pk=pk).first()
+
+    def get(self, request, pk):
+        ret = self._get_return(request.user, pk)
+        if not ret:
+            return Response({"error": "Return case not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = SellerReturnDetailSerializer(ret)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class SellerReturnReviewView(APIView):
+    """
+    POST /api/workforce/seller-hub/returns/<int:pk>/review/ – Seller review decision (Approve / Reject / Escalate)
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+        company_id = _resolve_user_company_id(user)
+        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+
+        serializer = SellerReturnReviewSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        decision = serializer.validated_data["decision"]
+        seller_notes = serializer.validated_data.get("seller_notes", "").strip()
+        rejection_reason = serializer.validated_data.get("rejection_reason", "").strip()
+
+        with transaction.atomic():
+            ret_qs = SellerReturn.objects.select_for_update().filter(pk=pk)
+            if not is_super:
+                if not company_id:
+                    return Response({"error": "Merchant company not found."}, status=status.HTTP_403_FORBIDDEN)
+                ret_qs = ret_qs.filter(company_id=company_id)
+
+            ret = ret_qs.first()
+            if not ret:
+                return Response({"error": "Return case not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            valid_statuses = [SellerReturn.Status.REQUESTED, SellerReturn.Status.UNDER_SELLER_REVIEW]
+            if ret.status not in valid_statuses:
+                return Response(
+                    {"error": f"Cannot review return in state '{ret.status}'. Must be in REQUESTED or UNDER_SELLER_REVIEW."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            from_status = ret.status
+            now = timezone.now()
+
+            if decision == "approve":
+                to_status = SellerReturn.Status.APPROVED
+                ret.status = to_status
+                ret.seller_decision = "APPROVED"
+                ret.reviewed_at = now
+                if seller_notes:
+                    ret.seller_notes = seller_notes
+                action_text = "APPROVED"
+                notes_text = f"Return approved by seller: {seller_notes}" if seller_notes else "Return approved by seller."
+            elif decision == "reject":
+                to_status = SellerReturn.Status.REJECTED
+                ret.status = to_status
+                ret.seller_decision = "REJECTED"
+                ret.rejection_reason = rejection_reason
+                ret.reviewed_at = now
+                if seller_notes:
+                    ret.seller_notes = seller_notes
+                action_text = "REJECTED"
+                notes_text = f"Return rejected by seller: {rejection_reason}"
+            else: # escalate
+                to_status = SellerReturn.Status.ESCALATED_TO_ADMIN
+                ret.status = to_status
+                ret.seller_decision = "ESCALATED_TO_ADMIN"
+                if seller_notes:
+                    ret.seller_notes = seller_notes
+                action_text = "ESCALATED_TO_ADMIN"
+                notes_text = f"Return escalated to platform admin: {seller_notes}" if seller_notes else "Return escalated to platform admin."
+
+            ret.save()
+
+            SellerReturnAuditLog.objects.create(
+                return_case=ret,
+                action=action_text,
+                from_status=from_status,
+                to_status=to_status,
+                actor=user,
+                notes=notes_text,
+            )
+
+        return Response(
+            {
+                "message": f"Return #{ret.return_number} review decision recorded as {decision.upper()}.",
+                "return": SellerReturnDetailSerializer(ret).data,
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class SellerReturnSchedulePickupView(APIView):
+    """
+    POST /api/workforce/seller-hub/returns/<int:pk>/schedule-pickup/ – Schedule return item pickup / courier
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+        company_id = _resolve_user_company_id(user)
+        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+
+        pickup_ref = str(request.data.get("pickup_ref", "")).strip()
+        notes = str(request.data.get("notes", "")).strip()
+
+        with transaction.atomic():
+            ret_qs = SellerReturn.objects.select_for_update().filter(pk=pk)
+            if not is_super:
+                if not company_id:
+                    return Response({"error": "Merchant company not found."}, status=status.HTTP_403_FORBIDDEN)
+                ret_qs = ret_qs.filter(company_id=company_id)
+
+            ret = ret_qs.first()
+            if not ret:
+                return Response({"error": "Return case not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            if ret.status != SellerReturn.Status.APPROVED:
+                return Response(
+                    {"error": f"Cannot schedule pickup for return in state '{ret.status}'. Must be APPROVED."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            from_status = ret.status
+            to_status = SellerReturn.Status.PICKUP_SCHEDULED
+            ret.status = to_status
+            if pickup_ref:
+                ret.pickup_ref = pickup_ref
+            ret.save()
+
+            SellerReturnAuditLog.objects.create(
+                return_case=ret,
+                action="PICKUP_SCHEDULED",
+                from_status=from_status,
+                to_status=to_status,
+                actor=user,
+                notes=f"Pickup scheduled. Ref: {pickup_ref or 'N/A'}. {notes}".strip(),
+            )
+
+        return Response(
+            {
+                "message": f"Pickup scheduled for Return #{ret.return_number}.",
+                "return": SellerReturnDetailSerializer(ret).data,
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class SellerReturnReceiveView(APIView):
+    """
+    POST /api/workforce/seller-hub/returns/<int:pk>/receive/ – Acknowledge receipt of returned parcel at seller store
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+        company_id = _resolve_user_company_id(user)
+        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+
+        notes = str(request.data.get("notes", "")).strip()
+
+        with transaction.atomic():
+            ret_qs = SellerReturn.objects.select_for_update().filter(pk=pk)
+            if not is_super:
+                if not company_id:
+                    return Response({"error": "Merchant company not found."}, status=status.HTTP_403_FORBIDDEN)
+                ret_qs = ret_qs.filter(company_id=company_id)
+
+            ret = ret_qs.first()
+            if not ret:
+                return Response({"error": "Return case not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            valid_statuses = [SellerReturn.Status.APPROVED, SellerReturn.Status.PICKUP_SCHEDULED]
+            if ret.status not in valid_statuses:
+                return Response(
+                    {"error": f"Cannot mark received for return in state '{ret.status}'. Must be APPROVED or PICKUP_SCHEDULED."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            from_status = ret.status
+            to_status = SellerReturn.Status.RECEIVED
+            ret.status = to_status
+            ret.received_at = timezone.now()
+            ret.save()
+
+            SellerReturnAuditLog.objects.create(
+                return_case=ret,
+                action="RECEIVED",
+                from_status=from_status,
+                to_status=to_status,
+                actor=user,
+                notes=f"Return package received at store: {notes}" if notes else "Return package received at store.",
+            )
+
+        return Response(
+            {
+                "message": f"Return #{ret.return_number} marked as received at store.",
+                "return": SellerReturnDetailSerializer(ret).data,
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class SellerReturnQualityCheckView(APIView):
+    """
+    POST /api/workforce/seller-hub/returns/<int:pk>/quality-check/ – Perform physical product quality check
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+        company_id = _resolve_user_company_id(user)
+        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+
+        serializer = SellerReturnQualityCheckSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        qc_status = serializer.validated_data["quality_check_status"]
+        qc_notes = serializer.validated_data.get("quality_check_notes", "").strip()
+        items_qc = serializer.validated_data.get("items_qc", [])
+
+        with transaction.atomic():
+            ret_qs = SellerReturn.objects.select_for_update().filter(pk=pk)
+            if not is_super:
+                if not company_id:
+                    return Response({"error": "Merchant company not found."}, status=status.HTTP_403_FORBIDDEN)
+                ret_qs = ret_qs.filter(company_id=company_id)
+
+            ret = ret_qs.first()
+            if not ret:
+                return Response({"error": "Return case not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            valid_statuses = [SellerReturn.Status.RECEIVED, SellerReturn.Status.QUALITY_CHECK]
+            if ret.status not in valid_statuses:
+                return Response(
+                    {"error": f"Cannot perform quality check on return in state '{ret.status}'. Must be RECEIVED or QUALITY_CHECK."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            from_status = ret.status
+            to_status = SellerReturn.Status.QUALITY_CHECK
+            ret.status = to_status
+            ret.quality_check_status = qc_status
+            ret.quality_check_notes = qc_notes
+            ret.quality_checked_by = user
+            ret.inspected_at = timezone.now()
+            ret.save()
+
+            # Process individual item QC results if provided
+            for it_data in items_qc:
+                item_id = it_data.get("item_id")
+                if not item_id:
+                    continue
+                item_obj = ret.items.filter(pk=item_id).first()
+                if item_obj:
+                    if "item_condition" in it_data:
+                        item_obj.item_condition = it_data["item_condition"]
+                    if "qc_result" in it_data:
+                        item_obj.qc_result = it_data["qc_result"]
+                    if "qc_notes" in it_data:
+                        item_obj.qc_notes = str(it_data["qc_notes"]).strip()
+                    item_obj.save()
+
+            SellerReturnAuditLog.objects.create(
+                return_case=ret,
+                action="QUALITY_CHECKED",
+                from_status=from_status,
+                to_status=to_status,
+                actor=user,
+                notes=f"Quality check completed with status '{qc_status}': {qc_notes}".strip(),
+            )
+
+        return Response(
+            {
+                "message": f"Quality inspection recorded for Return #{ret.return_number}.",
+                "return": SellerReturnDetailSerializer(ret).data,
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class SellerReturnRestockView(APIView):
+    """
+    POST /api/workforce/seller-hub/returns/<int:pk>/restock/ – Restock verified goods into live inventory ledger
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+        company_id = _resolve_user_company_id(user)
+        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+
+        serializer = SellerReturnRestockSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        restock_decision = serializer.validated_data["restock_decision"]
+        restock_notes = serializer.validated_data.get("restock_notes", "").strip()
+        items_breakdown = serializer.validated_data.get("items_breakdown", [])
+
+        with transaction.atomic():
+            ret_qs = SellerReturn.objects.select_for_update().filter(pk=pk)
+            if not is_super:
+                if not company_id:
+                    return Response({"error": "Merchant company not found."}, status=status.HTTP_403_FORBIDDEN)
+                ret_qs = ret_qs.filter(company_id=company_id)
+
+            ret = ret_qs.first()
+            if not ret:
+                return Response({"error": "Return case not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            # Idempotency check: if already processed for restocking, reject duplicate execution
+            if ret.status in [SellerReturn.Status.RESTOCKED, SellerReturn.Status.DISCARDED, SellerReturn.Status.CLOSED] or ret.restocked_at is not None:
+                return Response(
+                    {"error": f"Return #{ret.return_number} has already been processed for restocking (Status: '{ret.status}'). Duplicate restock operations are blocked."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            valid_statuses = [SellerReturn.Status.QUALITY_CHECK, SellerReturn.Status.RECEIVED]
+            if ret.status not in valid_statuses:
+                return Response(
+                    {"error": f"Cannot restock return in state '{ret.status}'. Must be QUALITY_CHECK or RECEIVED."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            from_status = ret.status
+            total_restocked_units = Decimal("0.000")
+            total_scrapped_units = Decimal("0.000")
+
+            # Map breakdown by item_id
+            breakdown_map = {b.get("item_id"): b for b in items_breakdown if b.get("item_id")}
+
+            for item in ret.items.select_for_update().all():
+                b_info = breakdown_map.get(item.id)
+
+                if b_info:
+                    try:
+                        restock_qty = Decimal(str(b_info.get("restocked_quantity", "0.000")))
+                        scrap_qty = Decimal(str(b_info.get("scrapped_quantity", "0.000")))
+                    except (InvalidOperation, ValueError, TypeError):
+                        restock_qty = Decimal("0.000")
+                        scrap_qty = Decimal("0.000")
+                elif restock_decision == "FULL_RESTOCK":
+                    restock_qty = item.returned_quantity
+                    scrap_qty = Decimal("0.000")
+                elif restock_decision == "SCRAP_DISPOSE":
+                    restock_qty = Decimal("0.000")
+                    scrap_qty = item.returned_quantity
+                else: # PARTIAL default
+                    restock_qty = item.returned_quantity
+                    scrap_qty = Decimal("0.000")
+
+                # Ensure non-negative and capped to returned_quantity
+                restock_qty = max(Decimal("0.000"), min(restock_qty, item.returned_quantity))
+                scrap_qty = max(Decimal("0.000"), min(scrap_qty, item.returned_quantity - restock_qty))
+
+                item.restocked_quantity = restock_qty
+                item.scrapped_quantity = scrap_qty
+                item.save(update_fields=["restocked_quantity", "scrapped_quantity"])
+
+                total_restocked_units += restock_qty
+                total_scrapped_units += scrap_qty
+
+                order_ref = ret.order.order_number if ret.order else "N/A"
+                compound_ref = f"RET:{ret.return_number}|ORD:{order_ref}"
+
+                # Execute inventory balance update for restocked units
+                if restock_qty > Decimal("0.000") and item.product:
+                    inv = SellerInventory.objects.select_for_update().filter(
+                        company=ret.company,
+                        product=item.product,
+                    ).first()
+
+                    if inv:
+                        bal_before = inv.on_hand_qty
+                        bal_after = bal_before + restock_qty
+                        inv.on_hand_qty = bal_after
+                        inv.save(update_fields=["on_hand_qty", "updated_at"])
+
+                        # If batch exists, increment batch quantity as well
+                        batch_obj = None
+                        if item.order_item and item.order_item.batch:
+                            batch_obj = item.order_item.batch
+                            batch_obj.current_quantity = batch_obj.current_quantity + restock_qty
+                            batch_obj.save(update_fields=["current_quantity", "updated_at"])
+
+                        # Create dedicated immutable RETURN_RESTOCK inventory movement record
+                        SellerInventoryMovement.objects.create(
+                            inventory=inv,
+                            batch=batch_obj,
+                            movement_type=SellerInventoryMovement.MovementType.RETURN_RESTOCK,
+                            quantity_change=restock_qty,
+                            balance_before=bal_before,
+                            balance_after=bal_after,
+                            reason=f"Customer Return Restock #{ret.return_number} (Order #{order_ref}) | QC: {ret.quality_check_status} | Reason: {ret.reason} | Notes: {restock_notes or 'None'}",
+                            reference_id=compound_ref,
+                            actor=user,
+                        )
+
+                # Log scrapped units disposal movement if any (DAMAGE type)
+                if scrap_qty > Decimal("0.000") and item.product:
+                    inv = SellerInventory.objects.filter(
+                        company=ret.company,
+                        product=item.product,
+                    ).first()
+                    if inv:
+                        SellerInventoryMovement.objects.create(
+                            inventory=inv,
+                            batch=item.order_item.batch if item.order_item else None,
+                            movement_type=SellerInventoryMovement.MovementType.DAMAGE,
+                            quantity_change=Decimal("0.000"), # damaged units were already deducted on sale
+                            balance_before=inv.on_hand_qty,
+                            balance_after=inv.on_hand_qty,
+                            reason=f"Customer Return Damaged/Scrapped #{ret.return_number} (Order #{order_ref}) | Scrapped: {scrap_qty} units | QC: {ret.quality_check_status} | Reason: {ret.reason} | Notes: {restock_notes or 'None'}",
+                            reference_id=compound_ref,
+                            actor=user,
+                        )
+
+            # Finalize return status
+            if total_restocked_units > Decimal("0.000"):
+                to_status = SellerReturn.Status.RESTOCKED
+            else:
+                to_status = SellerReturn.Status.DISCARDED
+
+            ret.status = to_status
+            ret.restock_decision = restock_decision
+            ret.restock_notes = restock_notes
+            ret.restocked_at = timezone.now()
+            ret.save()
+
+            SellerReturnAuditLog.objects.create(
+                return_case=ret,
+                action="RESTOCKED" if to_status == SellerReturn.Status.RESTOCKED else "DISCARDED",
+                from_status=from_status,
+                to_status=to_status,
+                actor=user,
+                notes=f"Restock processed ({total_restocked_units} restocked, {total_scrapped_units} scrapped). Notes: {restock_notes}".strip(),
+            )
+
+        return Response(
+            {
+                "message": f"Return #{ret.return_number} restock completed ({total_restocked_units} items returned to stock).",
+                "return": SellerReturnDetailSerializer(ret).data,
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class SellerReturnCloseView(APIView):
+    """
+    POST /api/workforce/seller-hub/returns/<int:pk>/close/ – Mark return case as resolved and closed
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+        company_id = _resolve_user_company_id(user)
+        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+
+        notes = str(request.data.get("notes", "")).strip()
+
+        with transaction.atomic():
+            ret_qs = SellerReturn.objects.select_for_update().filter(pk=pk)
+            if not is_super:
+                if not company_id:
+                    return Response({"error": "Merchant company not found."}, status=status.HTTP_403_FORBIDDEN)
+                ret_qs = ret_qs.filter(company_id=company_id)
+
+            ret = ret_qs.first()
+            if not ret:
+                return Response({"error": "Return case not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            valid_statuses = [
+                SellerReturn.Status.RESTOCKED,
+                SellerReturn.Status.DISCARDED,
+                SellerReturn.Status.REJECTED,
+                SellerReturn.Status.QUALITY_CHECK,
+                SellerReturn.Status.CLOSED,
+            ]
+            if ret.status not in valid_statuses:
+                return Response(
+                    {"error": f"Cannot close return in state '{ret.status}'. Return must be restocked, discarded, or rejected first."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            from_status = ret.status
+            to_status = SellerReturn.Status.CLOSED
+            ret.status = to_status
+            ret.closed_at = timezone.now()
+            ret.save()
+
+            SellerReturnAuditLog.objects.create(
+                return_case=ret,
+                action="CLOSED",
+                from_status=from_status,
+                to_status=to_status,
+                actor=user,
+                notes=f"Return case closed: {notes}" if notes else "Return case successfully closed.",
+            )
+
+        return Response(
+            {
+                "message": f"Return #{ret.return_number} closed successfully.",
+                "return": SellerReturnDetailSerializer(ret).data,
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class SellerReturnIntakeView(APIView):
+    """
+    POST /api/workforce/seller-hub/returns/intake/ – Idempotent return intake contract for customer marketplace
+    Guarantees idempotency on source_return_id:
+    - If a return with the same source_return_id already exists, returns the existing SellerReturn record with created=False and HTTP 200.
+    - If new, atomically creates the SellerReturn and line item records with created=True and HTTP 201.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = SellerReturnIntakeSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        source_return_id = serializer.validated_data["source_return_id"].strip()
+        source_order_id = serializer.validated_data["source_order_id"].strip()
+        reason = serializer.validated_data.get("reason", "DAMAGED")
+        customer_notes = serializer.validated_data.get("customer_notes", "")
+        evidence_urls = serializer.validated_data.get("evidence_urls", [])
+        items_data = serializer.validated_data.get("items", [])
+
+        with transaction.atomic():
+            # Idempotency check: return existing record if already intaken
+            existing = SellerReturn.objects.filter(source_return_id=source_return_id).first()
+            if existing:
+                return Response(
+                    {
+                        "message": f"Return case with source reference '{source_return_id}' already exists.",
+                        "created": False,
+                        "return": SellerReturnDetailSerializer(existing).data,
+                    },
+                    status=status.HTTP_200_OK
+                )
+
+            # Find canonical SellerOrder
+            order = SellerOrder.objects.filter(source_order_id=source_order_id).first()
+            if not order:
+                return Response(
+                    {"error": f"Associated SellerOrder with source reference '{source_order_id}' not found."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            # Generate return reference
+            last_ret = SellerReturn.objects.filter(company=order.company).order_by("-id").first()
+            next_num = (last_ret.id + 1) if last_ret else 1
+            return_number = f"RET-{timezone.now().year}-{next_num:04d}"
+
+            ret = SellerReturn.objects.create(
+                order=order,
+                company=order.company,
+                source_return_id=source_return_id,
+                return_number=return_number,
+                customer_name=order.customer_name,
+                customer_phone=order.customer_phone,
+                customer_address=order.delivery_address,
+                reason=reason,
+                customer_notes=customer_notes,
+                evidence_urls=evidence_urls,
+                status=SellerReturn.Status.REQUESTED,
+            )
+
+            # Create line items
+            for it_data in items_data:
+                order_item_id = it_data.get("order_item_id")
+                sku = it_data.get("sku", "")
+                returned_qty_raw = it_data.get("returned_quantity", "1.000")
+
+                try:
+                    returned_qty = Decimal(str(returned_qty_raw))
+                except (InvalidOperation, ValueError, TypeError):
+                    returned_qty = Decimal("1.000")
+
+                order_item = None
+                product = None
+
+                if order_item_id:
+                    order_item = order.items.filter(pk=order_item_id).first()
+                if not order_item and sku:
+                    order_item = order.items.filter(sku=sku).first()
+
+                if order_item:
+                    product = order_item.product
+                    prod_title = order_item.product_title
+                    prod_sku = order_item.sku
+                    prod_unit = order_item.unit
+                    prod_pack = order_item.pack_size
+                    batch = order_item.batch
+                else:
+                    product = SellerProduct.objects.filter(company=order.company, sku=sku).first()
+                    prod_title = product.title if product else (it_data.get("product_title") or sku)
+                    prod_sku = sku
+                    prod_unit = product.unit if product else ""
+                    prod_pack = product.pack_size if product else ""
+                    batch = None
+
+                if product:
+                    SellerReturnItem.objects.create(
+                        return_case=ret,
+                        order_item=order_item,
+                        product=product,
+                        product_title=prod_title,
+                        sku=prod_sku,
+                        unit=prod_unit,
+                        pack_size=prod_pack,
+                        returned_quantity=returned_qty,
+                        batch=batch,
+                    )
+
+            # Initial Audit Log
+            SellerReturnAuditLog.objects.create(
+                return_case=ret,
+                action="REQUEST_INTAKE",
+                from_status="",
+                to_status=SellerReturn.Status.REQUESTED,
+                actor=request.user,
+                notes=f"Customer return intake received for Order #{order.order_number} (Source Ret ID: {source_return_id}).",
+            )
+
+        return Response(
+            {
+                "message": f"Return #{ret.return_number} intaken successfully.",
+                "created": True,
+                "return": SellerReturnDetailSerializer(ret).data,
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 8. SELLER HUB CLAIMS & DISPUTES MANAGEMENT VIEWS (Phase 6)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class SellerClaimListView(APIView):
+    """
+    GET /api/workforce/seller-hub/claims/ – List claims with status tabs, search & filters
+    POST /api/workforce/seller-hub/claims/ – Create an internal operational dispute / claim
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        company_id = _resolve_user_company_id(user)
+
+        qs = SellerClaim.objects.select_related("company", "order", "return_case").all()
+
+        if not is_super:
+            if company_id:
+                qs = qs.filter(company_id=company_id)
+            else:
+                return Response([], status=status.HTTP_200_OK)
+        else:
+            filter_company = request.query_params.get("company_id")
+            if filter_company:
+                qs = qs.filter(company_id=filter_company)
+
+        status_param = request.query_params.get("status", "ALL").upper()
+        if status_param == "OPEN":
+            qs = qs.filter(status=SellerClaim.Status.OPEN)
+        elif status_param == "NEEDS_RESPONSE":
+            qs = qs.filter(status=SellerClaim.Status.SELLER_RESPONSE_REQUIRED)
+        elif status_param == "UNDER_REVIEW":
+            qs = qs.filter(status=SellerClaim.Status.UNDER_REVIEW)
+        elif status_param == "ESCALATED":
+            qs = qs.filter(status=SellerClaim.Status.ESCALATED)
+        elif status_param == "APPROVED":
+            qs = qs.filter(status=SellerClaim.Status.APPROVED)
+        elif status_param == "REJECTED":
+            qs = qs.filter(status=SellerClaim.Status.REJECTED)
+        elif status_param == "SETTLED":
+            qs = qs.filter(status=SellerClaim.Status.SETTLED)
+        elif status_param == "CLOSED":
+            qs = qs.filter(status=SellerClaim.Status.CLOSED)
+
+        claim_type_param = request.query_params.get("claim_type")
+        if claim_type_param:
+            qs = qs.filter(claim_type=claim_type_param)
+
+        order_id = request.query_params.get("order_id")
+        if order_id:
+            qs = qs.filter(order_id=order_id)
+
+        return_id = request.query_params.get("return_id")
+        if return_id:
+            qs = qs.filter(return_case_id=return_id)
+
+        search = request.query_params.get("search", "").strip()
+        if search:
+            qs = qs.filter(
+                models.Q(claim_number__icontains=search)
+                | models.Q(source_claim_id__icontains=search)
+                | models.Q(order__order_number__icontains=search)
+                | models.Q(return_case__return_number__icontains=search)
+                | models.Q(customer_name__icontains=search)
+                | models.Q(description__icontains=search)
+            )
+
+        serializer = SellerClaimListSerializer(qs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        user = request.user
+        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        company_id = _resolve_user_company_id(user)
+
+        serializer = SellerClaimCreateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        order_id = data.get("order_id")
+        return_id = data.get("return_id")
+
+        order = None
+        if order_id:
+            order = SellerOrder.objects.filter(id=order_id).first()
+            if not order:
+                return Response({"error": f"Order #{order_id} not found."}, status=status.HTTP_404_NOT_FOUND)
+            if not is_super and company_id and order.company_id != company_id:
+                return Response({"error": "Unauthorized order access."}, status=status.HTTP_403_FORBIDDEN)
+
+        return_case = None
+        if return_id:
+            return_case = SellerReturn.objects.filter(id=return_id).first()
+            if not return_case:
+                return Response({"error": f"Return #{return_id} not found."}, status=status.HTTP_404_NOT_FOUND)
+            if not is_super and company_id and return_case.company_id != company_id:
+                return Response({"error": "Unauthorized return access."}, status=status.HTTP_403_FORBIDDEN)
+
+        # Resolve Company
+        target_company = None
+        if order:
+            target_company = order.company
+        elif return_case:
+            target_company = return_case.company
+        elif company_id:
+            target_company = Company.objects.filter(id=company_id).first()
+
+        if not target_company:
+            return Response({"error": "Target seller company could not be resolved."}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            # Generate sequential claim number
+            year = timezone.now().year
+            seq_count = SellerClaim.objects.filter(claim_number__startswith=f"CLM-{year}-").count() + 1
+            claim_number = f"CLM-{year}-{seq_count:04d}"
+            while SellerClaim.objects.filter(claim_number=claim_number).exists():
+                seq_count += 1
+                claim_number = f"CLM-{year}-{seq_count:04d}"
+
+            source_claim_id = f"INT-CLM-{uuid.uuid4().hex[:12].upper()}"
+
+            claim = SellerClaim.objects.create(
+                source_claim_id=source_claim_id,
+                claim_number=claim_number,
+                company=target_company,
+                order=order,
+                return_case=return_case,
+                claim_type=data["claim_type"],
+                description=data["description"],
+                claimed_amount=data.get("claimed_amount") or Decimal("0.00"),
+                evidence_urls=data.get("evidence_urls", []),
+                customer_name=data.get("customer_name") or (order.customer_name if order else ""),
+                customer_phone=data.get("customer_phone") or (order.customer_phone if order else ""),
+                status=SellerClaim.Status.OPEN,
+                created_by=user,
+            )
+
+            SellerClaimAuditLog.objects.create(
+                claim=claim,
+                from_status="",
+                to_status=SellerClaim.Status.OPEN,
+                action="CLAIM_CREATED",
+                actor=user,
+                notes=f"Internal dispute ticket #{claim_number} created for {target_company.company_name}.",
+            )
+
+        return Response(
+            {
+                "message": f"Claim #{claim.claim_number} created successfully.",
+                "claim": SellerClaimDetailSerializer(claim).data,
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+
+class SellerClaimDetailView(APIView):
+    """
+    GET /api/workforce/seller-hub/claims/<id>/ – View full claim details, evidence, & audit history
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        user = request.user
+        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        company_id = _resolve_user_company_id(user)
+
+        claim = SellerClaim.objects.select_related(
+            "company", "order", "return_case", "seller_responded_by", "admin_decided_by", "created_by"
+        ).prefetch_related("audit_logs").filter(pk=pk).first()
+
+        if not claim:
+            return Response({"error": "Claim not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not is_super and company_id and claim.company_id != company_id:
+            return Response({"error": "Claim not found or unauthorized."}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = SellerClaimDetailSerializer(claim)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class SellerClaimRespondView(APIView):
+    """
+    POST /api/workforce/seller-hub/claims/<id>/respond/ – Seller submits response & evidence
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        company_id = _resolve_user_company_id(user)
+
+        with transaction.atomic():
+            claim = SellerClaim.objects.select_for_update().filter(pk=pk).first()
+            if not claim:
+                return Response({"error": "Claim not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            if not is_super and company_id and claim.company_id != company_id:
+                return Response({"error": "Unauthorized claim access."}, status=status.HTTP_404_NOT_FOUND)
+
+            if claim.status in [SellerClaim.Status.CLOSED, SellerClaim.Status.SETTLED]:
+                return Response({"error": f"Cannot respond to a {claim.status} claim."}, status=status.HTTP_400_BAD_REQUEST)
+
+            serializer = SellerClaimRespondSerializer(data=request.data)
+            if not serializer.is_valid():
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+            response_text = serializer.validated_data["seller_response"]
+            new_evidence = serializer.validated_data.get("evidence_urls", [])
+
+            prev_status = claim.status
+            claim.seller_response = response_text
+            claim.seller_responded_at = timezone.now()
+            claim.seller_responded_by = user
+
+            # Append evidence
+            combined_evidence = list(claim.evidence_urls or [])
+            for url in new_evidence:
+                if url not in combined_evidence:
+                    combined_evidence.append(url)
+            claim.evidence_urls = combined_evidence
+
+            # Transition from SELLER_RESPONSE_REQUIRED to UNDER_REVIEW
+            if claim.status == SellerClaim.Status.SELLER_RESPONSE_REQUIRED:
+                claim.status = SellerClaim.Status.UNDER_REVIEW
+
+            claim.save()
+
+            SellerClaimAuditLog.objects.create(
+                claim=claim,
+                from_status=prev_status,
+                to_status=claim.status,
+                action="SELLER_RESPONSE_SUBMITTED",
+                actor=user,
+                notes=response_text,
+            )
+
+        return Response(
+            {
+                "message": "Response submitted successfully.",
+                "claim": SellerClaimDetailSerializer(claim).data,
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class SellerClaimEscalateView(APIView):
+    """
+    POST /api/workforce/seller-hub/claims/<id>/escalate/ – Escalate dispute to Platform Admin
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        company_id = _resolve_user_company_id(user)
+
+        with transaction.atomic():
+            claim = SellerClaim.objects.select_for_update().filter(pk=pk).first()
+            if not claim:
+                return Response({"error": "Claim not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            if not is_super and company_id and claim.company_id != company_id:
+                return Response({"error": "Unauthorized claim access."}, status=status.HTTP_404_NOT_FOUND)
+
+            if not claim.can_transition_to(SellerClaim.Status.ESCALATED):
+                return Response(
+                    {"error": f"Cannot escalate claim in status '{claim.status}'."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            notes = request.data.get("notes", "Escalated to Platform Admin for dispute arbitration.")
+            prev_status = claim.status
+            claim.status = SellerClaim.Status.ESCALATED
+            claim.save(update_fields=["status", "updated_at"])
+
+            SellerClaimAuditLog.objects.create(
+                claim=claim,
+                from_status=prev_status,
+                to_status=claim.status,
+                action="ESCALATED_TO_ADMIN",
+                actor=user,
+                notes=notes,
+            )
+
+        return Response(
+            {
+                "message": "Claim escalated to Platform Admin.",
+                "claim": SellerClaimDetailSerializer(claim).data,
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class SellerClaimAdminDecisionView(APIView):
+    """
+    POST /api/workforce/seller-hub/claims/<id>/admin-decision/ – Admin review decision with mandatory reason
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        if not is_super:
+            return Response(
+                {"error": "Only platform administrators can perform claim arbitration decisions."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        serializer = SellerClaimAdminDecisionSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        decision = serializer.validated_data["decision"]
+        reason = serializer.validated_data["reason"]
+
+        target_status_map = {
+            "REQUEST_SELLER_RESPONSE": SellerClaim.Status.SELLER_RESPONSE_REQUIRED,
+            "APPROVE": SellerClaim.Status.APPROVED,
+            "REJECT": SellerClaim.Status.REJECTED,
+            "SETTLE": SellerClaim.Status.SETTLED,
+            "CLOSE": SellerClaim.Status.CLOSED,
+        }
+        target_status = target_status_map.get(decision)
+
+        with transaction.atomic():
+            claim = SellerClaim.objects.select_for_update().filter(pk=pk).first()
+            if not claim:
+                return Response({"error": "Claim not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            if not claim.can_transition_to(target_status):
+                return Response(
+                    {"error": f"Invalid state transition from '{claim.status}' to '{target_status}'."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            prev_status = claim.status
+            claim.status = target_status
+            claim.admin_decision = decision
+            claim.admin_decision_reason = reason
+            claim.admin_decided_at = timezone.now()
+            claim.admin_decided_by = user
+
+            if decision in ["APPROVE", "REJECT", "SETTLE"]:
+                claim.resolved_at = timezone.now()
+            elif decision == "CLOSE":
+                claim.closed_at = timezone.now()
+
+            claim.save()
+
+            SellerClaimAuditLog.objects.create(
+                claim=claim,
+                from_status=prev_status,
+                to_status=claim.status,
+                action=f"ADMIN_{decision}",
+                actor=user,
+                notes=reason,
+            )
+
+        return Response(
+            {
+                "message": f"Admin decision '{decision}' applied successfully.",
+                "claim": SellerClaimDetailSerializer(claim).data,
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class SellerClaimCloseView(APIView):
+    """
+    POST /api/workforce/seller-hub/claims/<id>/close/ – Mark claim case as closed and archived
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        company_id = _resolve_user_company_id(user)
+
+        with transaction.atomic():
+            claim = SellerClaim.objects.select_for_update().filter(pk=pk).first()
+            if not claim:
+                return Response({"error": "Claim not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            if not is_super and company_id and claim.company_id != company_id:
+                return Response({"error": "Unauthorized claim access."}, status=status.HTTP_404_NOT_FOUND)
+
+            if not claim.can_transition_to(SellerClaim.Status.CLOSED):
+                return Response(
+                    {"error": f"Cannot close claim currently in '{claim.status}'."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            notes = request.data.get("notes", "Claim case resolved and closed.")
+            prev_status = claim.status
+            claim.status = SellerClaim.Status.CLOSED
+            claim.closed_at = timezone.now()
+            claim.save(update_fields=["status", "closed_at", "updated_at"])
+
+            SellerClaimAuditLog.objects.create(
+                claim=claim,
+                from_status=prev_status,
+                to_status=claim.status,
+                action="CLOSE_CLAIM",
+                actor=user,
+                notes=notes,
+            )
+
+        return Response(
+            {
+                "message": "Claim closed successfully.",
+                "claim": SellerClaimDetailSerializer(claim).data,
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class SellerClaimIntakeView(APIView):
+    """
+    POST /api/workforce/seller-hub/claims/intake/
+    Secure, idempotent customer claim intake API for later Sevo-customer integration.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = SellerClaimIntakeSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        source_claim_id = data["source_claim_id"].strip()
+
+        # Idempotency Check
+        existing_claim = SellerClaim.objects.filter(source_claim_id=source_claim_id).first()
+        if existing_claim:
+            return Response(
+                {
+                    "message": "Claim already intaken (idempotent response).",
+                    "created": False,
+                    "claim": SellerClaimDetailSerializer(existing_claim).data,
+                },
+                status=status.HTTP_200_OK
+            )
+
+        # Resolve order
+        order = None
+        source_order_id = data.get("source_order_id")
+        order_id = data.get("order_id")
+        if source_order_id:
+            order = SellerOrder.objects.filter(source_order_id=source_order_id).first()
+        elif order_id:
+            order = SellerOrder.objects.filter(id=order_id).first()
+
+        # Resolve return
+        return_case = None
+        source_return_id = data.get("source_return_id")
+        return_id = data.get("return_id")
+        if source_return_id:
+            return_case = SellerReturn.objects.filter(source_return_id=source_return_id).first()
+        elif return_id:
+            return_case = SellerReturn.objects.filter(id=return_id).first()
+
+        # Resolve company
+        company = None
+        if order:
+            company = order.company
+        elif return_case:
+            company = return_case.company
+        elif data.get("company_id"):
+            company = Company.objects.filter(id=data["company_id"]).first()
+
+        if not company:
+            return Response(
+                {"error": "Could not determine seller company for this claim."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        with transaction.atomic():
+            year = timezone.now().year
+            seq_count = SellerClaim.objects.filter(claim_number__startswith=f"CLM-{year}-").count() + 1
+            claim_number = f"CLM-{year}-{seq_count:04d}"
+            while SellerClaim.objects.filter(claim_number=claim_number).exists():
+                seq_count += 1
+                claim_number = f"CLM-{year}-{seq_count:04d}"
+
+            claim = SellerClaim.objects.create(
+                source_claim_id=source_claim_id,
+                claim_number=claim_number,
+                company=company,
+                order=order,
+                return_case=return_case,
+                claim_type=data.get("claim_type", SellerClaim.ClaimType.DAMAGED_ITEM),
+                description=data["description"],
+                claimed_amount=data.get("claimed_amount") or Decimal("0.00"),
+                evidence_urls=data.get("evidence_urls", []),
+                customer_name=data.get("customer_name") or (order.customer_name if order else ""),
+                customer_phone=data.get("customer_phone") or (order.customer_phone if order else ""),
+                status=SellerClaim.Status.OPEN,
+                created_by=request.user,
+            )
+
+            SellerClaimAuditLog.objects.create(
+                claim=claim,
+                from_status="",
+                to_status=SellerClaim.Status.OPEN,
+                action="CUSTOMER_CLAIM_INTAKE",
+                actor=request.user,
+                notes=f"Customer claim intake received (Source Claim ID: {source_claim_id}).",
+            )
+
+        return Response(
+            {
+                "message": f"Claim #{claim.claim_number} intaken successfully.",
+                "created": True,
+                "claim": SellerClaimDetailSerializer(claim).data,
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 9. SELLER HUB REPORTS, QUALITY CONTROLS & PERFORMANCE (Phase 7)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class SellerReportsSummaryView(APIView):
+    """
+    GET /api/workforce/seller-hub/reports/summary/
+    Comprehensive operational summary KPIs across orders, gross fulfilled value, catalog quality,
+    inventory health, return rates, and dispute frequency.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        company_id = _resolve_user_company_id(user)
+
+        # Scoping
+        order_qs = SellerOrder.objects.all()
+        prod_qs = SellerProduct.objects.all()
+        inv_qs = SellerInventory.objects.all()
+        ret_qs = SellerReturn.objects.all()
+        claim_qs = SellerClaim.objects.all()
+        batch_qs = SellerInventoryBatch.objects.all()
+
+        if not is_super:
+            if company_id:
+                order_qs = order_qs.filter(company_id=company_id)
+                prod_qs = prod_qs.filter(company_id=company_id)
+                inv_qs = inv_qs.filter(company_id=company_id)
+                ret_qs = ret_qs.filter(company_id=company_id)
+                claim_qs = claim_qs.filter(company_id=company_id)
+                batch_qs = batch_qs.filter(inventory__company_id=company_id)
+            else:
+                return Response(self._empty_summary(), status=status.HTTP_200_OK)
+        else:
+            filter_company = request.query_params.get("company_id")
+            if filter_company:
+                order_qs = order_qs.filter(company_id=filter_company)
+                prod_qs = prod_qs.filter(company_id=filter_company)
+                inv_qs = inv_qs.filter(company_id=filter_company)
+                ret_qs = ret_qs.filter(company_id=filter_company)
+                claim_qs = claim_qs.filter(company_id=filter_company)
+                batch_qs = batch_qs.filter(inventory__company_id=filter_company)
+
+        # Date Filtering
+        period = request.query_params.get("period", "30d").lower()
+        now = timezone.now()
+        start_date = None
+        if period == "7d":
+            start_date = now - timezone.timedelta(days=7)
+        elif period == "30d":
+            start_date = now - timezone.timedelta(days=30)
+        elif period == "90d":
+            start_date = now - timezone.timedelta(days=90)
+
+        if start_date:
+            order_qs_period = order_qs.filter(created_at__gte=start_date)
+            ret_qs_period = ret_qs.filter(created_at__gte=start_date)
+            claim_qs_period = claim_qs.filter(created_at__gte=start_date)
+        else:
+            order_qs_period = order_qs
+            ret_qs_period = ret_qs
+            claim_qs_period = claim_qs
+
+        # 1. Order & Fulfilment Performance
+        total_orders = order_qs_period.count()
+        delivered_orders = order_qs_period.filter(
+            status__in=[SellerOrder.Status.DELIVERED, SellerOrder.Status.HANDED_OVER]
+        ).count()
+        cancelled_orders = order_qs_period.filter(status=SellerOrder.Status.CANCELLED).count()
+        in_prep_orders = order_qs_period.filter(
+            status__in=[
+                SellerOrder.Status.ACCEPTED,
+                SellerOrder.Status.PICKING,
+                SellerOrder.Status.PACKED,
+                SellerOrder.Status.READY_FOR_PICKUP,
+            ]
+        ).count()
+        pending_orders = order_qs_period.filter(status=SellerOrder.Status.NEW).count()
+
+        fulfilled_value_agg = order_qs_period.filter(
+            status__in=[SellerOrder.Status.DELIVERED, SellerOrder.Status.HANDED_OVER]
+        ).aggregate(total=models.Sum("total_amount"))["total"] or Decimal("0.00")
+
+        active_order_base = total_orders - cancelled_orders
+        fulfilment_success_rate = (
+            round((delivered_orders / active_order_base) * 100, 1) if active_order_base > 0 else (100.0 if total_orders == 0 else 0.0)
+        )
+        cancellation_rate = (
+            round((cancelled_orders / total_orders) * 100, 1) if total_orders > 0 else 0.0
+        )
+
+        # 2. Catalog Quality & Compliance
+        total_products = prod_qs.count()
+        approved_products = prod_qs.filter(status=SellerProduct.Status.APPROVED).count()
+        draft_products = prod_qs.filter(status=SellerProduct.Status.DRAFT).count()
+        rejected_products = prod_qs.filter(status=SellerProduct.Status.REJECTED).count()
+        changes_requested_products = prod_qs.filter(status=SellerProduct.Status.CHANGES_REQUESTED).count()
+
+        catalog_quality_score = (
+            round((approved_products / total_products) * 100, 1) if total_products > 0 else 100.0
+        )
+
+        missing_images_count = prod_qs.filter(
+            status=SellerProduct.Status.APPROVED,
+            images__isnull=True,
+        ).distinct().count()
+
+        missing_description_count = prod_qs.filter(
+            models.Q(description__exact="") | models.Q(description__isnull=True)
+        ).count()
+
+        # 3. Inventory Health & Stock Velocity
+        total_inventory_skus = inv_qs.count()
+        in_stock_skus = inv_qs.filter(on_hand_qty__gt=models.F("low_stock_threshold")).count()
+        low_stock_skus = inv_qs.filter(
+            on_hand_qty__gt=Decimal("0.000"),
+            on_hand_qty__lte=models.F("low_stock_threshold")
+        ).count()
+        out_of_stock_skus = inv_qs.filter(on_hand_qty__lte=Decimal("0.000")).count()
+
+        inventory_health_index = (
+            round((in_stock_skus / total_inventory_skus) * 100, 1) if total_inventory_skus > 0 else 100.0
+        )
+
+        today = now.date()
+        thirty_days = today + timezone.timedelta(days=30)
+        expiring_soon_count = batch_qs.filter(
+            current_quantity__gt=Decimal("0.000"),
+            expiry_date__isnull=False,
+            expiry_date__lte=thirty_days,
+            expiry_date__gte=today,
+        ).values("inventory_id").distinct().count()
+
+        total_inv_val = Decimal("0.00")
+        for item in inv_qs.select_related("product"):
+            if item.product and item.on_hand_qty > 0:
+                price = getattr(item.product, "selling_price", Decimal("0.00")) or Decimal("0.00")
+                total_inv_val += item.on_hand_qty * price
+
+        # 4. Returns & QC Quality
+        total_returns = ret_qs_period.count()
+        return_rate = (
+            round((total_returns / delivered_orders) * 100, 1) if delivered_orders > 0 else 0.0
+        )
+        qc_passed_restocked = ret_qs_period.filter(status=SellerReturn.Status.RESTOCKED).count()
+        qc_failed_scrapped = ret_qs_period.filter(status=SellerReturn.Status.DISCARDED).count()
+
+        # 5. Claims & Dispute Metrics
+        total_claims = claim_qs_period.count()
+        open_claims = claim_qs_period.filter(
+            status__in=[
+                SellerClaim.Status.OPEN,
+                SellerClaim.Status.UNDER_REVIEW,
+                SellerClaim.Status.SELLER_RESPONSE_REQUIRED,
+                SellerClaim.Status.ESCALATED,
+            ]
+        ).count()
+        escalated_claims = claim_qs_period.filter(status=SellerClaim.Status.ESCALATED).count()
+        resolved_claims = claim_qs_period.filter(
+            status__in=[
+                SellerClaim.Status.APPROVED,
+                SellerClaim.Status.REJECTED,
+                SellerClaim.Status.SETTLED,
+                SellerClaim.Status.CLOSED,
+            ]
+        ).count()
+        dispute_rate = (
+            round((total_claims / total_orders) * 100, 1) if total_orders > 0 else 0.0
+        )
+        claimed_val_agg = claim_qs_period.aggregate(total=models.Sum("claimed_amount"))["total"] or Decimal("0.00")
+
+        pending_products = prod_qs.filter(
+            status__in=[SellerProduct.Status.SUBMITTED, SellerProduct.Status.UNDER_REVIEW]
+        ).count()
+        total_on_hand_qty = inv_qs.aggregate(total=models.Sum("on_hand_qty"))["total"] or Decimal("0.000")
+        claims_requiring_response = claim_qs_period.filter(
+            status=SellerClaim.Status.SELLER_RESPONSE_REQUIRED
+        ).count()
+
+        return Response(
+            {
+                "period": period,
+                # Fulfilment KPIs
+                "total_orders_count": total_orders,
+                "delivered_orders_count": delivered_orders,
+                "cancelled_orders_count": cancelled_orders,
+                "in_prep_orders_count": in_prep_orders,
+                "pending_orders_count": pending_orders,
+                "fulfilled_order_gross_value": str(round(fulfilled_value_agg, 2)),
+                "fulfilment_success_rate": fulfilment_success_rate,
+                "cancellation_rate": cancellation_rate,
+                # Catalog Quality
+                "total_products_count": total_products,
+                "approved_products_count": approved_products,
+                "pending_products_count": pending_products,
+                "draft_products_count": draft_products,
+                "rejected_products_count": rejected_products,
+                "changes_requested_products_count": changes_requested_products,
+                "catalog_quality_score": catalog_quality_score,
+                "missing_images_count": missing_images_count,
+                "missing_image_products_count": missing_images_count,
+                "missing_descriptions_count": missing_description_count,
+                "missing_description_products_count": missing_description_count,
+                # Inventory Health
+                "total_inventory_skus": total_inventory_skus,
+                "total_inventory_items_count": total_inventory_skus,
+                "in_stock_skus": in_stock_skus,
+                "low_stock_skus": low_stock_skus,
+                "low_stock_count": low_stock_skus,
+                "out_of_stock_skus": out_of_stock_skus,
+                "out_of_stock_count": out_of_stock_skus,
+                "total_on_hand_quantity": str(round(total_on_hand_qty, 3)),
+                "inventory_health_index": inventory_health_index,
+                "expiring_batches_count": expiring_soon_count,
+                "expiring_soon_batches_count": expiring_soon_count,
+                "inventory_valuation": str(round(total_inv_val, 2)),
+                "total_inventory_valuation": str(round(total_inv_val, 2)),
+                # Returns & QC
+                "total_returns_count": total_returns,
+                "pending_returns_count": ret_qs_period.filter(status__in=[SellerReturn.Status.REQUESTED, SellerReturn.Status.UNDER_SELLER_REVIEW, SellerReturn.Status.RECEIVED, SellerReturn.Status.QUALITY_CHECK]).count(),
+                "return_rate": return_rate,
+                "qc_passed_restocked_count": qc_passed_restocked,
+                "qc_failed_scrapped_count": qc_failed_scrapped,
+                # Claims
+                "total_claims_count": total_claims,
+                "open_claims_count": open_claims,
+                "claims_requiring_response_count": claims_requiring_response,
+                "escalated_claims_count": escalated_claims,
+                "resolved_claims_count": resolved_claims,
+                "dispute_rate": dispute_rate,
+                "total_claimed_amount": str(round(claimed_val_agg, 2)),
+            },
+            status=status.HTTP_200_OK
+        )
+
+    def _empty_summary(self):
+        return {
+            "period": "30d",
+            "total_orders_count": 0,
+            "delivered_orders_count": 0,
+            "cancelled_orders_count": 0,
+            "in_prep_orders_count": 0,
+            "pending_orders_count": 0,
+            "fulfilled_order_gross_value": "0.00",
+            "fulfilment_success_rate": 100.0,
+            "cancellation_rate": 0.0,
+            "total_products_count": 0,
+            "approved_products_count": 0,
+            "pending_products_count": 0,
+            "draft_products_count": 0,
+            "rejected_products_count": 0,
+            "changes_requested_products_count": 0,
+            "catalog_quality_score": 100.0,
+            "missing_images_count": 0,
+            "missing_image_products_count": 0,
+            "missing_descriptions_count": 0,
+            "missing_description_products_count": 0,
+            "total_inventory_skus": 0,
+            "total_inventory_items_count": 0,
+            "in_stock_skus": 0,
+            "low_stock_skus": 0,
+            "low_stock_count": 0,
+            "out_of_stock_skus": 0,
+            "out_of_stock_count": 0,
+            "total_on_hand_quantity": "0.000",
+            "inventory_health_index": 100.0,
+            "expiring_batches_count": 0,
+            "expiring_soon_batches_count": 0,
+            "inventory_valuation": "0.00",
+            "total_inventory_valuation": "0.00",
+            "total_returns_count": 0,
+            "pending_returns_count": 0,
+            "return_rate": 0.0,
+            "qc_passed_restocked_count": 0,
+            "qc_failed_scrapped_count": 0,
+            "total_claims_count": 0,
+            "open_claims_count": 0,
+            "claims_requiring_response_count": 0,
+            "escalated_claims_count": 0,
+            "resolved_claims_count": 0,
+            "dispute_rate": 0.0,
+            "total_claimed_amount": "0.00",
+        }
+
+
+class SellerReportsPerformanceView(APIView):
+    """
+    GET /api/workforce/seller-hub/reports/performance/
+    Periodic time-series breakdowns for order volumes, inventory movements, returns reasons, and claim types.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        company_id = _resolve_user_company_id(user)
+
+        order_qs = SellerOrder.objects.all()
+        movement_qs = SellerInventoryMovement.objects.all()
+        ret_qs = SellerReturn.objects.all()
+        claim_qs = SellerClaim.objects.all()
+
+        if not is_super:
+            if company_id:
+                order_qs = order_qs.filter(company_id=company_id)
+                movement_qs = movement_qs.filter(inventory__company_id=company_id)
+                ret_qs = ret_qs.filter(company_id=company_id)
+                claim_qs = claim_qs.filter(company_id=company_id)
+            else:
+                return Response(
+                    {"order_trends": [], "inventory_movements": [], "returns_by_reason": [], "claims_by_type": []},
+                    status=status.HTTP_200_OK
+                )
+        else:
+            filter_company = request.query_params.get("company_id")
+            if filter_company:
+                order_qs = order_qs.filter(company_id=filter_company)
+                movement_qs = movement_qs.filter(inventory__company_id=filter_company)
+                ret_qs = ret_qs.filter(company_id=filter_company)
+                claim_qs = claim_qs.filter(company_id=filter_company)
+
+        period = request.query_params.get("period", "30d").lower()
+        now = timezone.now()
+        days = 30
+        if period == "7d":
+            days = 7
+        elif period == "90d":
+            days = 90
+        elif period == "all":
+            days = 365
+
+        start_date = now - timezone.timedelta(days=days)
+        order_qs = order_qs.filter(created_at__gte=start_date)
+        movement_qs = movement_qs.filter(created_at__gte=start_date)
+        ret_qs = ret_qs.filter(created_at__gte=start_date)
+        claim_qs = claim_qs.filter(created_at__gte=start_date)
+
+        # 1. Order Trends (Daily/Weekly)
+        order_trends_map = {}
+        for d in range(min(days, 30)):
+            dt = (now - timezone.timedelta(days=d)).date()
+            dt_str = dt.isoformat()
+            order_trends_map[dt_str] = {
+                "date": dt_str,
+                "orders_count": 0,
+                "fulfilled_value": Decimal("0.00"),
+                "cancelled_count": 0,
+            }
+
+        for ord_obj in order_qs:
+            d_str = ord_obj.created_at.date().isoformat()
+            if d_str in order_trends_map:
+                order_trends_map[d_str]["orders_count"] += 1
+                if ord_obj.status in [SellerOrder.Status.DELIVERED, SellerOrder.Status.HANDED_OVER]:
+                    order_trends_map[d_str]["fulfilled_value"] += ord_obj.total_amount
+                elif ord_obj.status == SellerOrder.Status.CANCELLED:
+                    order_trends_map[d_str]["cancelled_count"] += 1
+
+        order_trends = sorted(
+            [
+                {
+                    "date": v["date"],
+                    "orders_count": v["orders_count"],
+                    "fulfilled_value": str(round(v["fulfilled_value"], 2)),
+                    "cancelled_count": v["cancelled_count"],
+                }
+                for v in order_trends_map.values()
+            ],
+            key=lambda x: x["date"]
+        )
+
+        # 2. Inventory Movements Breakdown
+        movement_types = [
+            ("STOCK_IN", "Stock Receipt"),
+            ("RETURN_RESTOCK", "Return Restocked"),
+            ("ORDER_RESERVED", "Order Reserved"),
+            ("ORDER_FULFILLED", "Order Fulfilled"),
+            ("DAMAGE", "Scrap / Damage"),
+            ("EXPIRED", "Expired Product"),
+            ("AUDIT_CORRECTION", "Audit Adjustment"),
+        ]
+        movement_breakdown = []
+        for mt_key, mt_label in movement_types:
+            mt_records = movement_qs.filter(movement_type=mt_key)
+            cnt = mt_records.count()
+            net_qty = mt_records.aggregate(total=models.Sum("quantity_change"))["total"] or Decimal("0.000")
+            movement_breakdown.append({
+                "movement_type": mt_key,
+                "movement_type_display": mt_label,
+                "count": cnt,
+                "net_quantity": str(round(net_qty, 3)),
+            })
+
+        # 3. Returns by Reason
+        returns_by_reason = []
+        for r_code, r_label in SellerReturn.Reason.choices:
+            cnt = ret_qs.filter(reason=r_code).count()
+            returns_by_reason.append({
+                "reason": r_code,
+                "reason_display": r_label,
+                "count": cnt,
+            })
+
+        # 4. Claims by Type
+        claims_by_type = []
+        for c_code, c_label in SellerClaim.ClaimType.choices:
+            c_records = claim_qs.filter(claim_type=c_code)
+            cnt = c_records.count()
+            val = c_records.aggregate(total=models.Sum("claimed_amount"))["total"] or Decimal("0.00")
+            claims_by_type.append({
+                "claim_type": c_code,
+                "claim_type_display": c_label,
+                "count": cnt,
+                "total_amount": str(round(val, 2)),
+            })
+
+        return Response(
+            {
+                "order_trends": order_trends,
+                "inventory_movements": movement_breakdown,
+                "returns_by_reason": returns_by_reason,
+                "claims_by_type": claims_by_type,
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class SellerReportsQualityAuditView(APIView):
+    """
+    GET /api/workforce/seller-hub/reports/quality-audit/
+    Actionable quality controls and compliance checklist highlighting operational risks.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        company_id = _resolve_user_company_id(user)
+
+        prod_qs = SellerProduct.objects.all()
+        inv_qs = SellerInventory.objects.all()
+        batch_qs = SellerInventoryBatch.objects.all()
+        order_qs = SellerOrder.objects.all()
+        ret_qs = SellerReturn.objects.all()
+        claim_qs = SellerClaim.objects.all()
+
+        if not is_super:
+            if company_id:
+                prod_qs = prod_qs.filter(company_id=company_id)
+                inv_qs = inv_qs.filter(company_id=company_id)
+                batch_qs = batch_qs.filter(inventory__company_id=company_id)
+                order_qs = order_qs.filter(company_id=company_id)
+                ret_qs = ret_qs.filter(company_id=company_id)
+                claim_qs = claim_qs.filter(company_id=company_id)
+            else:
+                return Response([], status=status.HTTP_200_OK)
+        else:
+            filter_company = request.query_params.get("company_id")
+            if filter_company:
+                prod_qs = prod_qs.filter(company_id=filter_company)
+                inv_qs = inv_qs.filter(company_id=filter_company)
+                batch_qs = batch_qs.filter(inventory__company_id=filter_company)
+                order_qs = order_qs.filter(company_id=filter_company)
+                ret_qs = ret_qs.filter(company_id=filter_company)
+                claim_qs = claim_qs.filter(company_id=filter_company)
+
+        checklist = []
+        now = timezone.now()
+        today = now.date()
+        thirty_days = today + timezone.timedelta(days=30)
+        twenty_four_hours_ago = now - timezone.timedelta(hours=24)
+        forty_eight_hours_ago = now - timezone.timedelta(hours=48)
+
+        # 1. Approved items with 0 stock
+        zero_stock_items = inv_qs.filter(
+            product__status=SellerProduct.Status.APPROVED,
+            on_hand_qty__lte=Decimal("0.000")
+        ).select_related("product")[:5]
+        for item in zero_stock_items:
+            checklist.append({
+                "audit_type": "OUT_OF_STOCK_APPROVED",
+                "severity": "HIGH",
+                "title": f"Approved Product Out of Stock: {item.product.title}",
+                "entity_ref": f"SKU: {item.product.sku}",
+                "description": "Product is listed as approved on catalog but has 0 on-hand inventory.",
+                "action_recommended": "Replenish inventory via Stock-In or pause product listing.",
+            })
+
+        # 2. Expiring Batches within 30 days
+        expiring_batches = batch_qs.filter(
+            current_quantity__gt=Decimal("0.000"),
+            expiry_date__isnull=False,
+            expiry_date__lte=thirty_days,
+            expiry_date__gte=today,
+        ).select_related("inventory__product")[:5]
+        for b in expiring_batches:
+            p_title = b.inventory.product.title if b.inventory and b.inventory.product else "Inventory Item"
+            checklist.append({
+                "audit_type": "BATCH_EXPIRING_SOON",
+                "severity": "MEDIUM",
+                "title": f"Batch Expiring Soon: {p_title}",
+                "entity_ref": f"Batch #{b.batch_number} (Exp: {b.expiry_date})",
+                "description": f"{b.current_quantity} unit(s) remaining in batch expiring within 30 days.",
+                "action_recommended": "Mark down price with a promotional store coupon or dispose before expiry.",
+            })
+
+        # 3. Missing Images on Approved Products
+        missing_img_prods = prod_qs.filter(
+            status=SellerProduct.Status.APPROVED,
+            images__isnull=True,
+        ).distinct()[:5]
+        for p in missing_img_prods:
+            checklist.append({
+                "audit_type": "MISSING_PRODUCT_IMAGE",
+                "severity": "MEDIUM",
+                "title": f"Missing Photographic Image: {p.title}",
+                "entity_ref": f"SKU: {p.sku}",
+                "description": "Active product has no high-resolution pack photo attached.",
+                "action_recommended": "Upload product pack image in Catalog Uploads.",
+            })
+
+        # 4. Stale In-Prep Orders (>24h)
+        stale_orders = order_qs.filter(
+            status__in=[SellerOrder.Status.ACCEPTED, SellerOrder.Status.PICKING],
+            created_at__lte=twenty_four_hours_ago
+        )[:5]
+        for ord_obj in stale_orders:
+            checklist.append({
+                "audit_type": "STALE_ORDER_FULFILMENT",
+                "severity": "HIGH",
+                "title": f"Delayed Order Fulfilment: Order #{ord_obj.order_number}",
+                "entity_ref": f"Ord #{ord_obj.order_number} ({ord_obj.status})",
+                "description": f"Order has been in '{ord_obj.status}' status for over 24 hours without packing completion.",
+                "action_recommended": "Complete item picking and pack parcel for courier pickup immediately.",
+            })
+
+        # 5. Claims Requiring Response
+        pending_resp_claims = claim_qs.filter(
+            status=SellerClaim.Status.SELLER_RESPONSE_REQUIRED
+        )[:5]
+        for clm in pending_resp_claims:
+            checklist.append({
+                "audit_type": "CLAIM_RESPONSE_REQUIRED",
+                "severity": "HIGH",
+                "title": f"Seller Statement Required: Claim #{clm.claim_number}",
+                "entity_ref": f"Claim #{clm.claim_number}",
+                "description": f"Dispute ticket requires merchant response: '{clm.description[:80]}...'",
+                "action_recommended": "Submit packing explanation and proof in Claims portal.",
+            })
+
+        # 6. Returns Pending Review (>48h)
+        pending_review_returns = ret_qs.filter(
+            status__in=[SellerReturn.Status.REQUESTED, SellerReturn.Status.UNDER_SELLER_REVIEW],
+            created_at__lte=forty_eight_hours_ago
+        )[:5]
+        for ret_obj in pending_review_returns:
+            checklist.append({
+                "audit_type": "RETURN_REVIEW_OVERDUE",
+                "severity": "MEDIUM",
+                "title": f"Return Review Overdue: Return #{ret_obj.return_number}",
+                "entity_ref": f"Return #{ret_obj.return_number}",
+                "description": "Customer return case has been awaiting merchant review decision for over 48 hours.",
+                "action_recommended": "Review photo evidence and approve return pickup or reject with reason.",
+            })
+
+        return Response({
+            "total_issues_count": len(checklist),
+            "missing_images_count": len([x for x in checklist if x["audit_type"] == "MISSING_PRODUCT_IMAGE"]),
+            "expiring_batches_count": len([x for x in checklist if x["audit_type"] == "BATCH_EXPIRING_SOON"]),
+            "claims_requiring_response_count": len([x for x in checklist if x["audit_type"] == "CLAIM_RESPONSE_REQUIRED"]),
+            "out_of_stock_approved_count": len([x for x in checklist if x["audit_type"] == "OUT_OF_STOCK_APPROVED"]),
+            "returns_pending_qc_count": len([x for x in checklist if x["audit_type"] in ("RETURN_REVIEW_OVERDUE", "RETURN_PENDING_QC")]),
+            "checklist": checklist,
+            "items": checklist,
+        }, status=status.HTTP_200_OK)
+
+
+class SellerReportsExportCSVView(APIView):
+    """
+    GET /api/workforce/seller-hub/reports/export-csv/?type=(orders|inventory|returns|claims|quality)
+    Generates real-time downloadable CSV reports.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        company_id = _resolve_user_company_id(user)
+
+        report_type = request.query_params.get("type") or request.query_params.get("report_type", "orders")
+        report_type = report_type.lower().strip()
+        now_str = timezone.now().strftime("%Y%m%d_%H%M%S")
+
+        response = HttpResponse(content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = f'attachment; filename="sevo_seller_{report_type}_report_{now_str}.csv"'
+
+        writer = csv.writer(response)
+
+        if report_type == "orders":
+            qs = SellerOrder.objects.all()
+            if not is_super and company_id:
+                qs = qs.filter(company_id=company_id)
+            elif is_super and (c_id := request.query_params.get("company_id")):
+                qs = qs.filter(company_id=c_id)
+
+            writer.writerow([
+                "Order Number",
+                "Source Order ID",
+                "Company",
+                "Customer Name",
+                "Customer Phone",
+                "Delivery Address",
+                "Fulfilment Type",
+                "Payment Method",
+                "Total Amount (INR)",
+                "Status",
+                "Created At",
+                "Delivered At",
+            ])
+            for ord_obj in qs.select_related("company"):
+                writer.writerow([
+                    ord_obj.order_number,
+                    ord_obj.source_order_id,
+                    getattr(ord_obj.company, "company_name", ""),
+                    ord_obj.customer_name,
+                    ord_obj.customer_phone,
+                    ord_obj.delivery_address,
+                    ord_obj.fulfillment_type,
+                    ord_obj.payment_method,
+                    str(ord_obj.total_amount),
+                    ord_obj.status,
+                    ord_obj.created_at.isoformat() if ord_obj.created_at else "",
+                    ord_obj.delivered_at.isoformat() if ord_obj.delivered_at else "",
+                ])
+
+        elif report_type == "inventory":
+            qs = SellerInventory.objects.all()
+            if not is_super and company_id:
+                qs = qs.filter(company_id=company_id)
+            elif is_super and (c_id := request.query_params.get("company_id")):
+                qs = qs.filter(company_id=c_id)
+
+            writer.writerow([
+                "SKU",
+                "Product Title",
+                "Company",
+                "Category",
+                "On Hand Qty",
+                "Reserved Qty",
+                "Low Stock Threshold",
+                "Selling Price (INR)",
+                "Total Valuation (INR)",
+                "Status",
+            ])
+            for inv in qs.select_related("product__category", "company"):
+                p = inv.product
+                price = getattr(p, "selling_price", Decimal("0.00")) if p else Decimal("0.00")
+                val = inv.on_hand_qty * price if inv.on_hand_qty > 0 else Decimal("0.00")
+                writer.writerow([
+                    p.sku if p else "",
+                    p.title if p else "",
+                    getattr(inv.company, "company_name", ""),
+                    p.category.name if p and p.category else "",
+                    str(inv.on_hand_qty),
+                    str(inv.reserved_qty),
+                    str(inv.low_stock_threshold),
+                    str(price),
+                    str(round(val, 2)),
+                    "IN_STOCK" if inv.on_hand_qty > inv.low_stock_threshold else ("LOW_STOCK" if inv.on_hand_qty > 0 else "OUT_OF_STOCK"),
+                ])
+
+        elif report_type == "returns":
+            qs = SellerReturn.objects.all()
+            if not is_super and company_id:
+                qs = qs.filter(company_id=company_id)
+            elif is_super and (c_id := request.query_params.get("company_id")):
+                qs = qs.filter(company_id=c_id)
+
+            writer.writerow([
+                "Return Number",
+                "Order Number",
+                "Company",
+                "Customer Name",
+                "Reason",
+                "QC Status",
+                "Restock Decision",
+                "Status",
+                "Created At",
+                "Closed At",
+            ])
+            for ret in qs.select_related("order", "company"):
+                writer.writerow([
+                    ret.return_number,
+                    ret.order.order_number if ret.order else "",
+                    getattr(ret.company, "company_name", ""),
+                    ret.customer_name,
+                    ret.reason,
+                    ret.quality_check_status,
+                    ret.restock_decision,
+                    ret.status,
+                    ret.created_at.isoformat() if ret.created_at else "",
+                    ret.closed_at.isoformat() if ret.closed_at else "",
+                ])
+
+        elif report_type == "claims":
+            qs = SellerClaim.objects.all()
+            if not is_super and company_id:
+                qs = qs.filter(company_id=company_id)
+            elif is_super and (c_id := request.query_params.get("company_id")):
+                qs = qs.filter(company_id=c_id)
+
+            writer.writerow([
+                "Claim Number",
+                "Order Number",
+                "Return Number",
+                "Company",
+                "Claim Type",
+                "Claimed Amount (INR)",
+                "Status",
+                "Seller Response",
+                "Admin Decision",
+                "Created At",
+                "Resolved At",
+            ])
+            for clm in qs.select_related("order", "return_case", "company"):
+                writer.writerow([
+                    clm.claim_number,
+                    clm.order.order_number if clm.order else "",
+                    clm.return_case.return_number if clm.return_case else "",
+                    getattr(clm.company, "company_name", ""),
+                    clm.claim_type,
+                    str(clm.claimed_amount),
+                    clm.status,
+                    clm.seller_response,
+                    clm.admin_decision,
+                    clm.created_at.isoformat() if clm.created_at else "",
+                    clm.resolved_at.isoformat() if clm.resolved_at else "",
+                ])
+
+        elif report_type == "quality":
+            writer.writerow([
+                "Audit Type",
+                "Severity",
+                "Title",
+                "Entity Reference",
+                "Description",
+                "Action Recommended",
+            ])
+            # Run quick audit
+            audit_view = SellerReportsQualityAuditView()
+            audit_resp = audit_view.get(request)
+            items = audit_resp.data.get("checklist", audit_resp.data) if isinstance(audit_resp.data, dict) else audit_resp.data
+            for item in items:
+                writer.writerow([
+                    item.get("audit_type", ""),
+                    item.get("severity", ""),
+                    item.get("title", ""),
+                    item.get("entity_ref", ""),
+                    item.get("description", ""),
+                    item.get("action_recommended", ""),
+                ])
+
+        else:
+            writer.writerow(["Invalid report type requested."])
+
+        return response
+
+
+
+
 
 
 

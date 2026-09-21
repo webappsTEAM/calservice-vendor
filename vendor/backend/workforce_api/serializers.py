@@ -1854,6 +1854,63 @@ class SellerHubCategoryTreeSerializer(serializers.ModelSerializer):
         return SellerHubCategoryTreeSerializer(qs, many=True, context=self.context).data
 
 
+class SellerCatalogCategoryItemSerializer(serializers.ModelSerializer):
+    has_children = serializers.SerializerMethodField()
+    is_leaf = serializers.SerializerMethodField()
+    path = serializers.SerializerMethodField()
+    path_string = serializers.SerializerMethodField()
+
+    class Meta:
+        from workforce_api.models import SellerHubCategory
+        model = SellerHubCategory
+        fields = [
+            "id",
+            "name",
+            "slug",
+            "description",
+            "icon",
+            "image",
+            "parent_id",
+            "sort_order",
+            "is_active",
+            "has_children",
+            "is_leaf",
+            "path",
+            "path_string",
+        ]
+
+    def get_has_children(self, obj):
+        if hasattr(obj, "_has_children"):
+            return obj._has_children
+        return obj.children.filter(is_active=True).exists()
+
+    def get_is_leaf(self, obj):
+        return not self.get_has_children(obj)
+
+    def get_path(self, obj):
+        if hasattr(obj, "_path"):
+            return obj._path
+        ancestors = []
+        curr = obj
+        visited = set()
+        while curr and curr.id not in visited:
+            visited.add(curr.id)
+            ancestors.append({
+                "id": curr.id,
+                "name": curr.name,
+                "slug": curr.slug,
+            })
+            curr = curr.parent
+        ancestors.reverse()
+        return ancestors
+
+    def get_path_string(self, obj):
+        if hasattr(obj, "_path_string"):
+            return obj._path_string
+        path_list = self.get_path(obj)
+        return " > ".join(a["name"] for a in path_list)
+
+
 class VendorCouponSerializer(serializers.ModelSerializer):
     company_name = serializers.CharField(source="company.company_name", read_only=True)
 
@@ -2288,6 +2345,64 @@ class SellerProductDetailSerializer(serializers.ModelSerializer):
         return name or getattr(obj.reviewed_by, "username", "Reviewer")
 
 
+def is_category_leaf(category):
+    """
+    Unified Leaf Rule: A category is a leaf if it has no ACTIVE child categories.
+    Categories with only inactive children are considered leaves.
+    """
+    if not category:
+        return True
+    if hasattr(category, "children"):
+        return not category.children.filter(is_active=True).exists()
+    return True
+
+
+def validate_product_category_is_leaf(category, current_category=None):
+    """
+    Shared validator for product category assignment across single create/update,
+    bulk/CSV uploads, and administrative updates.
+    
+    Rules:
+    - Must exist.
+    - Category itself must be active.
+    - Entire ancestor parent chain must be active.
+    - Category must be a leaf (no ACTIVE subcategories).
+    - If current_category is supplied and matches category, legacy products are
+      permitted to bypass validation when category is unchanged.
+      
+    Returns: (is_valid: bool, error_message: str or None, error_code: str or None)
+    """
+    if not category:
+        return False, "Seller Hub category is required.", "REQUIRED"
+
+    cat_id = getattr(category, "id", None)
+    curr_cat_id = getattr(current_category, "id", None) if current_category else None
+
+    # Legacy exemption when category is unchanged
+    if curr_cat_id is not None and cat_id is not None and curr_cat_id == cat_id:
+        return True, None, None
+
+    if not getattr(category, "is_active", True):
+        return False, f"Category '{getattr(category, 'name', '')}' is currently inactive.", "CATEGORY_INACTIVE"
+
+    # Ancestor chain check
+    curr = getattr(category, "parent", None)
+    visited = {category.id} if hasattr(category, "id") else set()
+    while curr:
+        if curr.id in visited:
+            break
+        if not getattr(curr, "is_active", True):
+            return False, f"Parent category '{curr.name}' is inactive. All parent categories must be active.", "CATEGORY_INACTIVE"
+        visited.add(curr.id)
+        curr = getattr(curr, "parent", None)
+
+    # Leaf check: category must not have ACTIVE child categories
+    if not is_category_leaf(category):
+        return False, f"Category '{category.name}' is a parent category with active subcategories. Products must only be assigned to leaf categories.", "CATEGORY_NOT_LEAF"
+
+    return True, None, None
+
+
 class SellerProductCreateUpdateSerializer(serializers.ModelSerializer):
     images = serializers.ListField(
         child=serializers.CharField(max_length=500),
@@ -2319,16 +2434,10 @@ class SellerProductCreateUpdateSerializer(serializers.ModelSerializer):
         ]
 
     def validate_category(self, value):
-        if not value:
-            raise serializers.ValidationError("Seller Hub category is required.")
-        if not value.is_active:
-            raise serializers.ValidationError(f"Category '{value.name}' is currently inactive.")
-        # Rule: A product must not be attached to a parent category that has child categories.
-        has_children = value.children.filter(is_active=True).exists() or value.children.exists()
-        if has_children:
-            raise serializers.ValidationError(
-                f"Category '{value.name}' is a parent category with subcategories. Products must only be assigned to leaf categories."
-            )
+        current_cat = self.instance.category if self.instance else None
+        is_valid, err_msg, err_code = validate_product_category_is_leaf(value, current_category=current_cat)
+        if not is_valid:
+            raise serializers.ValidationError(err_msg, code=err_code)
         return value
 
     def validate(self, data):
@@ -2667,13 +2776,20 @@ class SellerOrderListSerializer(serializers.ModelSerializer):
         ]
 
     def get_items_count(self, obj):
+        if hasattr(obj, "_prefetched_objects_cache") and "items" in obj._prefetched_objects_cache:
+            return len(obj._prefetched_objects_cache["items"])
         return obj.items.count()
 
     def get_items_summary(self, obj):
-        items = obj.items.all()[:3]
+        if hasattr(obj, "_prefetched_objects_cache") and "items" in obj._prefetched_objects_cache:
+            items = list(obj._prefetched_objects_cache["items"])[:3]
+            count = len(obj._prefetched_objects_cache["items"])
+        else:
+            items = list(obj.items.all()[:3])
+            count = obj.items.count()
         summary = [f"{item.product_title} (x{item.ordered_quantity})" for item in items]
-        if obj.items.count() > 3:
-            summary.append(f"+{obj.items.count() - 3} more")
+        if count > 3:
+            summary.append(f"+{count - 3} more")
         return ", ".join(summary)
 
 
@@ -2728,6 +2844,410 @@ class SellerOrderItemPickSerializer(serializers.Serializer):
     )
     batch_id = serializers.IntegerField(required=False, allow_null=True)
     notes = serializers.CharField(max_length=255, required=False, allow_blank=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 8. SELLER HUB RETURNS & REVERSE LOGISTICS SERIALIZERS (Phase 5)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class SellerReturnItemSerializer(serializers.ModelSerializer):
+    product_image = serializers.SerializerMethodField()
+    available_stock = serializers.SerializerMethodField()
+
+    class Meta:
+        from .models import SellerReturnItem
+        model = SellerReturnItem
+        fields = [
+            "id",
+            "return_case",
+            "order_item",
+            "product",
+            "product_title",
+            "sku",
+            "unit",
+            "pack_size",
+            "returned_quantity",
+            "restocked_quantity",
+            "scrapped_quantity",
+            "item_condition",
+            "qc_result",
+            "batch",
+            "notes",
+            "product_image",
+            "available_stock",
+        ]
+
+    def get_product_image(self, obj):
+        if not obj.product:
+            return None
+        img = obj.product.images.filter(is_primary=True).first() or obj.product.images.first()
+        return img.image_url if img else None
+
+    def get_available_stock(self, obj):
+        if not obj.product or not hasattr(obj.product, "inventory"):
+            return "0.000"
+        return str(obj.product.inventory.available_qty)
+
+
+class SellerReturnAuditLogSerializer(serializers.ModelSerializer):
+    actor_name = serializers.SerializerMethodField()
+
+    class Meta:
+        from .models import SellerReturnAuditLog
+        model = SellerReturnAuditLog
+        fields = [
+            "id",
+            "return_case",
+            "from_status",
+            "to_status",
+            "action",
+            "actor",
+            "actor_name",
+            "notes",
+            "created_at",
+        ]
+
+    def get_actor_name(self, obj):
+        if not obj.actor:
+            return "System"
+        name = f"{obj.actor.first_name} {obj.actor.last_name}".strip()
+        return name or obj.actor.username
+
+
+class SellerReturnListSerializer(serializers.ModelSerializer):
+    company_name = serializers.CharField(source="company.company_name", read_only=True)
+    order_number = serializers.CharField(source="order.order_number", read_only=True)
+    source_order_id = serializers.CharField(source="order.source_order_id", read_only=True)
+    items_count = serializers.SerializerMethodField()
+    items_summary = serializers.SerializerMethodField()
+
+    class Meta:
+        from .models import SellerReturn
+        model = SellerReturn
+        fields = [
+            "id",
+            "source_return_id",
+            "return_number",
+            "order",
+            "order_number",
+            "source_order_id",
+            "company",
+            "company_name",
+            "customer_name",
+            "customer_phone",
+            "customer_address",
+            "reason",
+            "status",
+            "seller_decision",
+            "quality_check_status",
+            "restock_decision",
+            "items_count",
+            "items_summary",
+            "created_at",
+            "reviewed_at",
+            "received_at",
+            "inspected_at",
+            "restocked_at",
+            "closed_at",
+            "updated_at",
+        ]
+
+    def get_items_count(self, obj):
+        return obj.items.count()
+
+    def get_items_summary(self, obj):
+        items = obj.items.all()[:3]
+        summary = [f"{item.product_title} (x{item.returned_quantity})" for item in items]
+        if obj.items.count() > 3:
+            summary.append(f"+{obj.items.count() - 3} more")
+        return ", ".join(summary)
+
+
+class SellerReturnDetailSerializer(SellerReturnListSerializer):
+    items = SellerReturnItemSerializer(many=True, read_only=True)
+    audit_logs = SellerReturnAuditLogSerializer(many=True, read_only=True)
+    quality_checked_by_name = serializers.SerializerMethodField()
+
+    class Meta(SellerReturnListSerializer.Meta):
+        fields = SellerReturnListSerializer.Meta.fields + [
+            "customer_notes",
+            "evidence_urls",
+            "seller_notes",
+            "rejection_reason",
+            "quality_check_notes",
+            "quality_checked_by",
+            "quality_checked_by_name",
+            "restock_notes",
+            "pickup_ref",
+            "admin_resolution_notes",
+            "items",
+            "audit_logs",
+        ]
+
+    def get_quality_checked_by_name(self, obj):
+        if not obj.quality_checked_by:
+            return None
+        name = f"{obj.quality_checked_by.first_name} {obj.quality_checked_by.last_name}".strip()
+        return name or obj.quality_checked_by.username
+
+
+class SellerReturnReviewSerializer(serializers.Serializer):
+    decision = serializers.ChoiceField(
+        choices=[
+            ("approve", "Approve Return"),
+            ("reject", "Reject Return"),
+            ("escalate", "Escalate to Platform Admin"),
+        ]
+    )
+    seller_notes = serializers.CharField(max_length=500, required=False, allow_blank=True)
+    rejection_reason = serializers.CharField(max_length=500, required=False, allow_blank=True)
+
+    def validate(self, data):
+        decision = data.get("decision")
+        if decision == "reject":
+            reason = (data.get("rejection_reason") or "").strip()
+            if not reason:
+                raise serializers.ValidationError(
+                    {"rejection_reason": "A rejection reason is mandatory when rejecting a return request."}
+                )
+        return data
+
+
+class SellerReturnQualityCheckSerializer(serializers.Serializer):
+    quality_check_status = serializers.ChoiceField(
+        choices=[
+            ("PASSED", "Passed (Fit for Restock)"),
+            ("FAILED", "Failed (Damaged / Unusable)"),
+            ("PARTIAL_PASS", "Partial Pass"),
+        ]
+    )
+    quality_check_notes = serializers.CharField(max_length=500, required=False, allow_blank=True)
+    # Item-level QC results
+    items_qc = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        help_text="List of items with item_id, item_condition, qc_result, and optional notes.",
+    )
+
+
+class SellerReturnRestockSerializer(serializers.Serializer):
+    restock_decision = serializers.ChoiceField(
+        choices=[
+            ("FULL_RESTOCK", "Full Restock"),
+            ("PARTIAL_RESTOCK", "Partial Restock"),
+            ("SCRAP_DISPOSE", "Scrap / Dispose All"),
+        ]
+    )
+    restock_notes = serializers.CharField(max_length=500, required=False, allow_blank=True)
+    # Per-item restocked vs scrapped breakdown
+    items_breakdown = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        help_text="List of items with item_id, restocked_quantity, scrapped_quantity.",
+    )
+
+
+class SellerReturnIntakeSerializer(serializers.Serializer):
+    source_return_id = serializers.CharField(max_length=100)
+    source_order_id = serializers.CharField(max_length=100)
+    reason = serializers.CharField(max_length=100, required=False, default="DAMAGED")
+    customer_notes = serializers.CharField(max_length=1000, required=False, allow_blank=True, default="")
+    evidence_urls = serializers.ListField(
+        child=serializers.CharField(max_length=500),
+        required=False,
+        default=list,
+    )
+    items = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        default=list,
+    )
+
+
+# ==============================================================================
+# PHASE 6: SELLER HUB CLAIMS SERIALIZERS
+# ==============================================================================
+
+class SellerClaimAuditLogSerializer(serializers.ModelSerializer):
+    actor_name = serializers.SerializerMethodField()
+
+    class Meta:
+        from .models import SellerClaimAuditLog
+        model = SellerClaimAuditLog
+        fields = [
+            "id",
+            "from_status",
+            "to_status",
+            "action",
+            "actor",
+            "actor_name",
+            "notes",
+            "created_at",
+        ]
+
+    def get_actor_name(self, obj):
+        if not obj.actor:
+            return "System / Integration"
+        name = f"{obj.actor.first_name} {obj.actor.last_name}".strip()
+        return name or obj.actor.username
+
+
+class SellerClaimListSerializer(serializers.ModelSerializer):
+    company_name = serializers.CharField(source="company.company_name", read_only=True)
+    order_number = serializers.CharField(source="order.order_number", read_only=True)
+    source_order_id = serializers.CharField(source="order.source_order_id", read_only=True)
+    return_number = serializers.CharField(source="return_case.return_number", read_only=True)
+    claim_type_display = serializers.CharField(source="get_claim_type_display", read_only=True)
+    needs_seller_response = serializers.SerializerMethodField()
+
+    class Meta:
+        from .models import SellerClaim
+        model = SellerClaim
+        fields = [
+            "id",
+            "source_claim_id",
+            "claim_number",
+            "company",
+            "company_name",
+            "order",
+            "order_number",
+            "source_order_id",
+            "return_case",
+            "return_number",
+            "claim_type",
+            "claim_type_display",
+            "description",
+            "claimed_amount",
+            "status",
+            "seller_response",
+            "seller_responded_at",
+            "admin_decision",
+            "admin_decided_at",
+            "needs_seller_response",
+            "created_at",
+            "resolved_at",
+            "closed_at",
+            "updated_at",
+        ]
+
+    def get_needs_seller_response(self, obj):
+        return obj.status == "SELLER_RESPONSE_REQUIRED"
+
+
+class SellerClaimDetailSerializer(SellerClaimListSerializer):
+    audit_logs = SellerClaimAuditLogSerializer(many=True, read_only=True)
+    seller_responded_by_name = serializers.SerializerMethodField()
+    admin_decided_by_name = serializers.SerializerMethodField()
+    created_by_name = serializers.SerializerMethodField()
+
+    class Meta(SellerClaimListSerializer.Meta):
+        fields = SellerClaimListSerializer.Meta.fields + [
+            "evidence_urls",
+            "customer_name",
+            "customer_phone",
+            "seller_responded_by",
+            "seller_responded_by_name",
+            "admin_decision_reason",
+            "admin_decided_by",
+            "admin_decided_by_name",
+            "created_by",
+            "created_by_name",
+            "audit_logs",
+        ]
+
+    def get_seller_responded_by_name(self, obj):
+        if not obj.seller_responded_by:
+            return None
+        name = f"{obj.seller_responded_by.first_name} {obj.seller_responded_by.last_name}".strip()
+        return name or obj.seller_responded_by.username
+
+    def get_admin_decided_by_name(self, obj):
+        if not obj.admin_decided_by:
+            return None
+        name = f"{obj.admin_decided_by.first_name} {obj.admin_decided_by.last_name}".strip()
+        return name or obj.admin_decided_by.username
+
+    def get_created_by_name(self, obj):
+        if not obj.created_by:
+            return "System / Customer Portal"
+        name = f"{obj.created_by.first_name} {obj.created_by.last_name}".strip()
+        return name or obj.created_by.username
+
+
+class SellerClaimCreateSerializer(serializers.Serializer):
+    order_id = serializers.IntegerField(required=False, allow_null=True)
+    return_id = serializers.IntegerField(required=False, allow_null=True)
+    claim_type = serializers.ChoiceField(
+        choices=[
+            ("DAMAGED_ITEM", "Damaged Item"),
+            ("MISSING_ITEM", "Missing / Undelivered Item"),
+            ("WRONG_ITEM", "Wrong Item Delivered"),
+            ("QUALITY_ISSUE", "Quality / Freshness Issue"),
+            ("DELIVERY_DAMAGE", "Damage During Delivery / In-Transit"),
+            ("SELLER_DISPUTE", "Seller Operational Dispute"),
+            ("SETTLEMENT_DISPUTE", "Settlement / Fee Dispute"),
+            ("OTHER", "Other Claim / Dispute"),
+        ]
+    )
+    description = serializers.CharField(max_length=2000)
+    claimed_amount = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal("0.00"))
+    evidence_urls = serializers.ListField(
+        child=serializers.CharField(max_length=500),
+        required=False,
+        default=list,
+    )
+    customer_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    customer_phone = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
+
+
+class SellerClaimRespondSerializer(serializers.Serializer):
+    seller_response = serializers.CharField(max_length=2000)
+    evidence_urls = serializers.ListField(
+        child=serializers.CharField(max_length=500),
+        required=False,
+        default=list,
+    )
+
+
+class SellerClaimAdminDecisionSerializer(serializers.Serializer):
+    decision = serializers.ChoiceField(
+        choices=[
+            ("REQUEST_SELLER_RESPONSE", "Request Seller Response"),
+            ("APPROVE", "Approve Claim"),
+            ("REJECT", "Reject Claim"),
+            ("SETTLE", "Settle Claim"),
+            ("CLOSE", "Close Claim"),
+        ]
+    )
+    reason = serializers.CharField(max_length=1000)
+
+    def validate_reason(self, value):
+        cleaned = value.strip()
+        if not cleaned:
+            raise serializers.ValidationError("A detailed rationale is mandatory for all admin decisions.")
+        return cleaned
+
+
+class SellerClaimIntakeSerializer(serializers.Serializer):
+    source_claim_id = serializers.CharField(max_length=128)
+    source_order_id = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True, default=None)
+    order_id = serializers.IntegerField(required=False, allow_null=True, default=None)
+    source_return_id = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True, default=None)
+    return_id = serializers.IntegerField(required=False, allow_null=True, default=None)
+    company_id = serializers.IntegerField(required=False, allow_null=True, default=None)
+    claim_type = serializers.CharField(max_length=40, required=False, default="DAMAGED_ITEM")
+    description = serializers.CharField(max_length=2000)
+    claimed_amount = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal("0.00"))
+    evidence_urls = serializers.ListField(
+        child=serializers.CharField(max_length=500),
+        required=False,
+        default=list,
+    )
+    customer_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    customer_phone = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
+
+
+
 
 
 

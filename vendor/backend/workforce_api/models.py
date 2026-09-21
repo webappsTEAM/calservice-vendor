@@ -4109,6 +4109,7 @@ class SellerInventoryMovement(models.Model):
         RESERVED = "RESERVED", "Order Stock Reserved"
         RESERVATION_RELEASED = "RESERVATION_RELEASED", "Reservation Released"
         ORDER_DEDUCTED = "ORDER_DEDUCTED", "Order Fulfilled / Stock Deducted"
+        RETURN_RESTOCK = "RETURN_RESTOCK", "Customer Return Restocked"
 
     inventory = models.ForeignKey(
         SellerInventory,
@@ -4405,6 +4406,567 @@ class SellerOrderAuditLog(models.Model):
 
     def __str__(self):
         return f"Order #{self.order.order_number} {self.from_status}->{self.to_status} ({self.action})"
+
+
+class SellerOrderStatusOutbox(models.Model):
+    """
+    Transactional outbox table capturing seller order status transitions.
+    Guarantees reliable, at-least-once, ordered webhook delivery to Customer app.
+    """
+    class DeliveryStatus(models.TextChoices):
+        PENDING = "PENDING", "Pending Delivery"
+        DELIVERED = "DELIVERED", "Delivered"
+        FAILED = "FAILED", "Permanently Failed"
+
+    event_id = models.CharField(
+        max_length=100,
+        unique=True,
+        db_index=True,
+        help_text="Globally unique event idempotency identifier (e.g. evt_...).",
+    )
+    source_order_id = models.CharField(
+        max_length=100,
+        db_index=True,
+        help_text="Canonical marketplace source order identifier.",
+    )
+    order = models.ForeignKey(
+        SellerOrder,
+        on_delete=models.CASCADE,
+        related_name="status_outbox_events",
+        db_index=True,
+    )
+    sequence = models.PositiveIntegerField(
+        help_text="Per-order monotonically increasing integer sequence number.",
+    )
+    previous_status = models.CharField(max_length=30, blank=True, default="")
+    new_status = models.CharField(max_length=30, db_index=True)
+    event_type = models.CharField(max_length=100, default="seller_order.status_updated")
+    payload = models.JSONField(default=dict, help_text="Sanitized webhook payload dispatched to customer backend.")
+    status = models.CharField(
+        max_length=30,
+        choices=DeliveryStatus.choices,
+        default=DeliveryStatus.PENDING,
+        db_index=True,
+    )
+    retry_count = models.PositiveIntegerField(default=0)
+    next_retry_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_error = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "workforce_seller_order_status_outbox"
+        ordering = ["sequence", "created_at"]
+        indexes = [
+            models.Index(fields=["status", "next_retry_at"], name="wf_so_outbox_st_rt_idx"),
+            models.Index(fields=["order", "sequence"], name="wf_so_outbox_ord_seq_idx"),
+            models.Index(fields=["source_order_id"], name="wf_so_outbox_src_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=["order", "sequence"], name="wf_so_outbox_ord_seq_uniq"),
+        ]
+
+    def __str__(self):
+        return f"OutboxEvent {self.event_id} (#{self.order.order_number} seq={self.sequence} {self.previous_status}->{self.new_status} [{self.status}])"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5. SELLER HUB RETURNS & REVERSE LOGISTICS (Phase 5)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class SellerReturn(models.Model):
+    """
+    Seller-side return case linked to SellerOrder and customer marketplace return request.
+    Enforces state machine:
+    REQUESTED -> UNDER_SELLER_REVIEW -> APPROVED -> PICKUP_SCHEDULED -> RECEIVED -> QUALITY_CHECK -> RESTOCKED -> CLOSED
+    (or REJECTED from review, DISCARDED from QC, or ESCALATED_TO_ADMIN).
+    """
+    class Status(models.TextChoices):
+        REQUESTED = "REQUESTED", "Return Requested"
+        UNDER_SELLER_REVIEW = "UNDER_SELLER_REVIEW", "Under Seller Review"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+        PICKUP_SCHEDULED = "PICKUP_SCHEDULED", "Pickup Scheduled"
+        RECEIVED = "RECEIVED", "Received at Warehouse"
+        QUALITY_CHECK = "QUALITY_CHECK", "Under Quality Inspection"
+        RESTOCKED = "RESTOCKED", "Restocked to Inventory"
+        DISCARDED = "DISCARDED", "Scrapped / Disposed"
+        ESCALATED_TO_ADMIN = "ESCALATED_TO_ADMIN", "Escalated to Platform Admin"
+        CLOSED = "CLOSED", "Case Closed"
+
+    class QualityCheckStatus(models.TextChoices):
+        PENDING = "PENDING", "Pending Inspection"
+        PASSED = "PASSED", "Passed (Fit for Restock)"
+        FAILED = "FAILED", "Failed (Damaged / Unusable)"
+        PARTIAL_PASS = "PARTIAL_PASS", "Partial Pass"
+
+    class Reason(models.TextChoices):
+        DAMAGED = "DAMAGED", "Damaged / Broken on Delivery"
+        DEFECTIVE = "DEFECTIVE", "Defective / Quality Issue"
+        EXPIRED = "EXPIRED", "Expired / Spoiled Product"
+        WRONG_ITEM = "WRONG_ITEM", "Incorrect Item Delivered"
+        NOT_AS_DESCRIBED = "NOT_AS_DESCRIBED", "Item Not as Described"
+        CUSTOMER_PREFERENCE = "CUSTOMER_PREFERENCE", "Customer Changed Mind / Unopened"
+        OTHER = "OTHER", "Other Reason"
+
+    source_return_id = models.CharField(
+        max_length=100,
+        unique=True,
+        db_index=True,
+        help_text="Immutable canonical marketplace return reference from Customer app.",
+    )
+    order = models.ForeignKey(
+        SellerOrder,
+        on_delete=models.CASCADE,
+        related_name="returns",
+        db_index=True,
+    )
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="seller_returns",
+        db_index=True,
+    )
+    return_number = models.CharField(
+        max_length=50,
+        db_index=True,
+        help_text="Human-readable merchant return reference (e.g. RET-2026-0001)",
+    )
+
+    # Customer & Reason snapshot (privacy minimized)
+    customer_name = models.CharField(max_length=200)
+    customer_phone = models.CharField(max_length=50, blank=True, default="")
+    customer_address = models.TextField(blank=True, default="")
+    reason = models.CharField(
+        max_length=50,
+        choices=Reason.choices,
+        default=Reason.DAMAGED,
+    )
+    customer_notes = models.TextField(blank=True, default="")
+    evidence_urls = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of photographic evidence URLs uploaded by customer.",
+    )
+
+    # State machine
+    status = models.CharField(
+        max_length=30,
+        choices=Status.choices,
+        default=Status.REQUESTED,
+        db_index=True,
+    )
+
+    # Review & Inspection
+    seller_decision = models.CharField(max_length=50, blank=True, default="")
+    seller_notes = models.TextField(blank=True, default="")
+    rejection_reason = models.TextField(blank=True, default="")
+
+    quality_check_status = models.CharField(
+        max_length=30,
+        choices=QualityCheckStatus.choices,
+        default=QualityCheckStatus.PENDING,
+    )
+    quality_check_notes = models.TextField(blank=True, default="")
+    quality_checked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="inspected_seller_returns",
+    )
+
+    restock_decision = models.CharField(max_length=50, blank=True, default="")
+    restock_notes = models.TextField(blank=True, default="")
+    pickup_ref = models.CharField(max_length=100, blank=True, default="")
+    admin_resolution_notes = models.TextField(blank=True, default="")
+
+    # Timestamps
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    received_at = models.DateTimeField(null=True, blank=True)
+    inspected_at = models.DateTimeField(null=True, blank=True)
+    restocked_at = models.DateTimeField(null=True, blank=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "workforce_seller_return"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["company", "status"], name="wf_seller_ret_comp_st_idx"),
+            models.Index(fields=["company", "created_at"], name="wf_seller_ret_comp_dt_idx"),
+            models.Index(fields=["source_return_id"], name="wf_seller_ret_src_idx"),
+            models.Index(fields=["order"], name="wf_seller_ret_ord_idx"),
+        ]
+
+    def __str__(self):
+        return f"Return #{self.return_number} ({self.status}) for Order #{self.order.order_number}"
+
+    ALLOWED_TRANSITIONS = {
+        Status.REQUESTED: [Status.UNDER_SELLER_REVIEW, Status.APPROVED, Status.REJECTED, Status.ESCALATED_TO_ADMIN],
+        Status.UNDER_SELLER_REVIEW: [Status.APPROVED, Status.REJECTED, Status.ESCALATED_TO_ADMIN],
+        Status.APPROVED: [Status.PICKUP_SCHEDULED, Status.RECEIVED, Status.ESCALATED_TO_ADMIN],
+        Status.PICKUP_SCHEDULED: [Status.RECEIVED, Status.ESCALATED_TO_ADMIN],
+        Status.RECEIVED: [Status.QUALITY_CHECK],
+        Status.QUALITY_CHECK: [Status.RESTOCKED, Status.DISCARDED, Status.CLOSED, Status.ESCALATED_TO_ADMIN],
+        Status.RESTOCKED: [Status.CLOSED],
+        Status.DISCARDED: [Status.CLOSED],
+        Status.REJECTED: [Status.CLOSED, Status.ESCALATED_TO_ADMIN],
+        Status.ESCALATED_TO_ADMIN: [Status.APPROVED, Status.REJECTED, Status.CLOSED],
+        Status.CLOSED: [],
+    }
+
+    def can_transition_to(self, target_status):
+        return target_status in self.ALLOWED_TRANSITIONS.get(self.status, [])
+
+
+class SellerReturnItem(models.Model):
+    """
+    Line items within a return case capturing returned, restocked, and scrapped quantities.
+    """
+    return_case = models.ForeignKey(
+        SellerReturn,
+        on_delete=models.CASCADE,
+        related_name="items",
+        db_index=True,
+    )
+    order_item = models.ForeignKey(
+        SellerOrderItem,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="return_items",
+    )
+    product = models.ForeignKey(
+        SellerProduct,
+        on_delete=models.PROTECT,
+        related_name="returned_items",
+    )
+    product_title = models.CharField(max_length=255)
+    sku = models.CharField(max_length=100)
+    unit = models.CharField(max_length=50, blank=True, default="")
+    pack_size = models.CharField(max_length=100, blank=True, default="")
+    returned_quantity = models.DecimalField(
+        max_digits=12,
+        decimal_places=3,
+        help_text="Quantity requested for return by customer (decimal-safe).",
+    )
+    restocked_quantity = models.DecimalField(
+        max_digits=12,
+        decimal_places=3,
+        default=Decimal("0.000"),
+        help_text="Quantity verified, intact, and added back to inventory balance.",
+    )
+    scrapped_quantity = models.DecimalField(
+        max_digits=12,
+        decimal_places=3,
+        default=Decimal("0.000"),
+        help_text="Quantity damaged/spoiled that was scrapped and not returned to inventory.",
+    )
+    item_condition = models.CharField(
+        max_length=50,
+        default="UNOPENED",
+        help_text="Condition upon inspection: UNOPENED, OPENED_INTACT, DAMAGED, EXPIRED, WRONG_ITEM",
+    )
+    qc_result = models.CharField(
+        max_length=30,
+        default="PENDING",
+        help_text="QC Inspection result: PENDING, PASSED, FAILED",
+    )
+    batch = models.ForeignKey(
+        SellerInventoryBatch,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="returned_order_items",
+    )
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        db_table = "workforce_seller_return_item"
+        ordering = ["id"]
+        indexes = [
+            models.Index(fields=["return_case", "product"], name="wf_seller_ret_it_prod_idx"),
+        ]
+
+    def __str__(self):
+        return f"ReturnItem: {self.product_title} x {self.returned_quantity} (Ret #{self.return_case.return_number})"
+
+
+class SellerReturnAuditLog(models.Model):
+    """
+    Immutable audit history of return state transitions, reviews, QC inspections, and restock actions.
+    """
+    return_case = models.ForeignKey(
+        SellerReturn,
+        on_delete=models.CASCADE,
+        related_name="audit_logs",
+        db_index=True,
+    )
+    from_status = models.CharField(max_length=30, blank=True, default="")
+    to_status = models.CharField(max_length=30)
+    action = models.CharField(max_length=100)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="seller_return_audit_logs",
+    )
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = "workforce_seller_return_audit_log"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["return_case", "created_at"], name="wf_seller_ret_log_dt_idx"),
+        ]
+
+    def __str__(self):
+        return f"Return #{self.return_case.return_number} {self.from_status}->{self.to_status} ({self.action})"
+
+
+class SellerClaim(models.Model):
+    """
+    Phase 6: Seller Hub Claims and Operational Disputes.
+    Tracks dispute filings, transit damage, missing/wrong items, seller statements, and admin decisions.
+    """
+    class Status(models.TextChoices):
+        OPEN = "OPEN", "Open"
+        UNDER_REVIEW = "UNDER_REVIEW", "Under Review"
+        SELLER_RESPONSE_REQUIRED = "SELLER_RESPONSE_REQUIRED", "Seller Response Required"
+        ESCALATED = "ESCALATED", "Escalated to Admin"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+        SETTLED = "SETTLED", "Settled"
+        CLOSED = "CLOSED", "Closed"
+
+    class ClaimType(models.TextChoices):
+        DAMAGED_ITEM = "DAMAGED_ITEM", "Damaged Item"
+        MISSING_ITEM = "MISSING_ITEM", "Missing / Undelivered Item"
+        WRONG_ITEM = "WRONG_ITEM", "Wrong Item Delivered"
+        QUALITY_ISSUE = "QUALITY_ISSUE", "Quality / Freshness Issue"
+        DELIVERY_DAMAGE = "DELIVERY_DAMAGE", "Damage During Delivery / In-Transit"
+        SELLER_DISPUTE = "SELLER_DISPUTE", "Seller Operational Dispute"
+        SETTLEMENT_DISPUTE = "SETTLEMENT_DISPUTE", "Settlement / Fee Dispute"
+        OTHER = "OTHER", "Other Claim / Dispute"
+
+    class AdminDecision(models.TextChoices):
+        PENDING = "PENDING", "Pending Decision"
+        REQUEST_SELLER_RESPONSE = "REQUEST_SELLER_RESPONSE", "Request Seller Response"
+        APPROVED = "APPROVED", "Claim Approved"
+        REJECTED = "REJECTED", "Claim Rejected"
+        SETTLED = "SETTLED", "Claim Settled"
+
+    source_claim_id = models.CharField(
+        max_length=128,
+        unique=True,
+        db_index=True,
+        help_text="Idempotency key and external claim reference from customer/storefront"
+    )
+    claim_number = models.CharField(
+        max_length=64,
+        unique=True,
+        db_index=True,
+        help_text="Unique operational claim reference (e.g. CLM-2026-0001)"
+    )
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="seller_claims",
+        db_index=True,
+    )
+    order = models.ForeignKey(
+        SellerOrder,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="claims",
+        db_index=True,
+    )
+    return_case = models.ForeignKey(
+        SellerReturn,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="claims",
+        db_index=True,
+    )
+    claim_type = models.CharField(
+        max_length=40,
+        choices=ClaimType.choices,
+        default=ClaimType.DAMAGED_ITEM,
+        db_index=True,
+    )
+    description = models.TextField(
+        help_text="Detailed description of the claim issue or dispute"
+    )
+    claimed_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        null=True,
+        blank=True,
+        help_text="Read-only claimed valuation (does not mutate payment or payouts)"
+    )
+    evidence_urls = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of URLs to uploaded photographic proof or document files"
+    )
+    customer_name = models.CharField(max_length=255, blank=True, default="")
+    customer_phone = models.CharField(max_length=32, blank=True, default="")
+
+    # Seller Response
+    seller_response = models.TextField(blank=True, default="")
+    seller_responded_at = models.DateTimeField(null=True, blank=True)
+    seller_responded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="responded_claims",
+    )
+
+    # Admin Arbitration & Decision
+    admin_decision = models.CharField(
+        max_length=40,
+        choices=AdminDecision.choices,
+        default=AdminDecision.PENDING,
+    )
+    admin_decision_reason = models.TextField(
+        blank=True,
+        default="",
+        help_text="Mandatory rationale for admin approval, rejection, or settlement"
+    )
+    admin_decided_at = models.DateTimeField(null=True, blank=True)
+    admin_decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="decided_claims",
+    )
+
+    # Lifecycle State
+    status = models.CharField(
+        max_length=40,
+        choices=Status.choices,
+        default=Status.OPEN,
+        db_index=True,
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_claims",
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+
+    ALLOWED_TRANSITIONS = {
+        Status.OPEN: [
+            Status.UNDER_REVIEW,
+            Status.SELLER_RESPONSE_REQUIRED,
+            Status.ESCALATED,
+            Status.APPROVED,
+            Status.REJECTED,
+            Status.CLOSED,
+        ],
+        Status.UNDER_REVIEW: [
+            Status.SELLER_RESPONSE_REQUIRED,
+            Status.ESCALATED,
+            Status.APPROVED,
+            Status.REJECTED,
+            Status.SETTLED,
+            Status.CLOSED,
+        ],
+        Status.SELLER_RESPONSE_REQUIRED: [
+            Status.UNDER_REVIEW,
+            Status.ESCALATED,
+            Status.APPROVED,
+            Status.REJECTED,
+            Status.CLOSED,
+        ],
+        Status.ESCALATED: [
+            Status.UNDER_REVIEW,
+            Status.APPROVED,
+            Status.REJECTED,
+            Status.SETTLED,
+            Status.CLOSED,
+        ],
+        Status.APPROVED: [
+            Status.SETTLED,
+            Status.CLOSED,
+        ],
+        Status.REJECTED: [
+            Status.ESCALATED,
+            Status.CLOSED,
+        ],
+        Status.SETTLED: [
+            Status.CLOSED,
+        ],
+        Status.CLOSED: [],
+    }
+
+    class Meta:
+        db_table = "workforce_seller_claim"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["company", "status"], name="wf_seller_claim_comp_st_idx"),
+            models.Index(fields=["company", "claim_type"], name="wf_seller_claim_comp_tp_idx"),
+            models.Index(fields=["source_claim_id"], name="wf_seller_claim_src_idx"),
+            models.Index(fields=["claim_number"], name="wf_seller_claim_num_idx"),
+        ]
+
+    def can_transition_to(self, target_status):
+        return target_status in self.ALLOWED_TRANSITIONS.get(self.status, [])
+
+    def __str__(self):
+        return f"Claim #{self.claim_number} ({self.get_claim_type_display()}) - {self.status}"
+
+
+class SellerClaimAuditLog(models.Model):
+    """
+    Immutable audit history of claim lifecycle, seller responses, escalations, and admin decisions.
+    """
+    claim = models.ForeignKey(
+        SellerClaim,
+        on_delete=models.CASCADE,
+        related_name="audit_logs",
+        db_index=True,
+    )
+    from_status = models.CharField(max_length=40, blank=True, default="")
+    to_status = models.CharField(max_length=40)
+    action = models.CharField(max_length=100)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="seller_claim_audit_logs",
+    )
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = "workforce_seller_claim_audit_log"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["claim", "created_at"], name="wf_seller_clm_log_dt_idx"),
+        ]
+
+    def __str__(self):
+        return f"Claim #{self.claim.claim_number} {self.from_status}->{self.to_status} ({self.action})"
+
+
 
 
 
