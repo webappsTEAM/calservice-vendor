@@ -46,6 +46,7 @@ export function AuthProvider({ children }) {
 
   const [user, setUser] = useState(cachedUser);
   const [employee, setEmployee] = useState(cachedEmp);
+  const [token, setToken] = useState(() => getAccessToken());
   const [isReady, setIsReady] = useState(() => Boolean(cachedUser && getAccessToken()));
   const inFlightRefreshRef = React.useRef(null);
 
@@ -56,8 +57,9 @@ export function AuthProvider({ children }) {
 
     inFlightRefreshRef.current = (async () => {
       try {
-        const token = getAccessToken();
-        if (!token) {
+        const activeToken = getAccessToken();
+        setToken(activeToken);
+        if (!activeToken) {
           localStorage.removeItem(CACHED_USER_KEY);
           localStorage.removeItem(CACHED_EMP_KEY);
           setUser(null);
@@ -162,6 +164,7 @@ export function AuthProvider({ children }) {
     const refresh = res.refresh_token;
     if (token) {
       setAuthTokens(token, refresh);
+      setToken(token);
     }
 
     if (res.user) {
@@ -218,6 +221,7 @@ export function AuthProvider({ children }) {
       const token = res.access_token || res.token;
       const refresh = res.refresh_token;
       setAuthTokens(token, refresh);
+      setToken(token);
     }
     await refreshProfile(true);
     return res;
@@ -232,6 +236,7 @@ export function AuthProvider({ children }) {
       const token = res.access_token || res.token;
       const refresh = res.refresh_token;
       setAuthTokens(token, refresh);
+      setToken(token);
     }
     await refreshProfile(true);
     return res;
@@ -239,6 +244,7 @@ export function AuthProvider({ children }) {
 
   const logout = useCallback(async () => {
     clearAuthTokens();
+    setToken(null);
     if (typeof BroadcastChannel !== 'undefined') {
       try {
         const channel = new BroadcastChannel('wf_tab_channel');
@@ -291,6 +297,7 @@ export function AuthProvider({ children }) {
 
       if (data.type === 'LOGOUT_SYNC') {
         clearAuthTokens();
+        setToken(null);
         setUser(null);
         setEmployee(null);
       }
@@ -304,6 +311,7 @@ export function AuthProvider({ children }) {
   // Handle unauthenticated event triggered from client.js on 401
   useEffect(() => {
     const handleUnauthorized = () => {
+      setToken(null);
       setUser(null);
       setEmployee(null);
     };
@@ -342,6 +350,7 @@ export function AuthProvider({ children }) {
     isReady,
     user,
     employee,
+    token: token || getAccessToken(),
     login,
     signup,
     providerSignup,
@@ -358,7 +367,7 @@ export function AuthProvider({ children }) {
     isTiedWorker: user?.isTiedWorker || false,
     isSoloWorker: user?.isSoloWorker || false,
     registrationStatus: user?.registrationStatus || 'not_started',
-  }), [isReady, user, employee, login, signup, providerSignup, logout, refreshProfile, togglePresence]);
+  }), [isReady, user, employee, token, login, signup, providerSignup, logout, refreshProfile, togglePresence]);
 
   return (
     <AuthContext.Provider value={value}>

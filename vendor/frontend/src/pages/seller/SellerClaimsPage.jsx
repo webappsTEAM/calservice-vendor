@@ -454,14 +454,9 @@ export function SellerClaimsPage() {
               <ShieldAlert className="w-5 h-5" />
             </span>
             <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-xl font-bold text-slate-900 tracking-tight">
-                  Claims & Dispute Management
-                </h1>
-                <span className="text-[10px] font-bold uppercase tracking-wider bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 rounded-full">
-                  Phase 6 Active
-                </span>
-              </div>
+              <h1 className="text-xl font-bold text-slate-900 tracking-tight">
+                Claims & Dispute Management
+              </h1>
               <p className="text-xs text-slate-500 mt-0.5">
                 Merchant protections, in-transit damage claims, delivery losses, and operational dispute arbitration
               </p>

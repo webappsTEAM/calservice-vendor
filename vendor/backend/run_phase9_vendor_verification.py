@@ -99,7 +99,10 @@ from workforce_api.services.seller_order_outbox import (
 User = get_user_model()
 factory = APIRequestFactory()
 
-TEST_SECRET = getattr(settings, "WORKFORCE_WEBHOOK_SECRET", "caldim_secure_webhook_token_2026")
+TEST_WEBHOOK_SECRET = "test-secret-not-real-phase9-key"
+settings.WORKFORCE_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET
+settings.WORKFORCE_API_KEY = TEST_WEBHOOK_SECRET
+TEST_SECRET = TEST_WEBHOOK_SECRET
 
 
 class InMemoryOutboxEvent:
@@ -221,7 +224,11 @@ def run_all_phase9_tests():
     # 0. Test Setup
     # ──────────────────────────────────────────────────────────────────────────
     print("\n--- 0. Setting up Test Environment & Fixtures ---")
+    # Configure unroutable TEST-NET base URL for outbox test delivery
+    settings.CUSTOMER_APP_BASE_URL = "http://198.51.100.1:8000"
+
     seller_user, _ = User.objects.get_or_create(
+
         username="phase9_merchant_user",
         defaults={"email": "merchant_p9@sevo.local", "role": "VENDOR", "is_staff": False}
     )
@@ -734,6 +741,13 @@ def run_all_phase9_tests():
     # ──────────────────────────────────────────────────────────────────────────
     print("\n--- 7. Testing Outbox Delivery Service & Retry Worker ---")
 
+    # Assert settings.CUSTOMER_APP_BASE_URL host is in TEST-NET range at the moment outbox sender is called
+    from urllib.parse import urlparse
+    parsed_cust_url = urlparse(getattr(settings, "CUSTOMER_APP_BASE_URL", ""))
+    cust_host = parsed_cust_url.hostname or ""
+    assert cust_host.startswith("198.51.100.") or cust_host.startswith("203.0.113.") or cust_host.startswith("192.0.2."), \
+        f"SECURITY GUARD: CUSTOMER_APP_BASE_URL host '{cust_host}' must be in TEST-NET unroutable range (RFC 5737)."
+
     test_outbox_evt = outbox_intake
     test_outbox_evt.status = SellerOrderStatusOutbox.DeliveryStatus.PENDING
     test_outbox_evt.retry_count = 0
@@ -784,10 +798,93 @@ def run_all_phase9_tests():
         assert test_outbox_fail.status == SellerOrderStatusOutbox.DeliveryStatus.FAILED
     print("  [OK] Outbox exceeding max retries transitions to FAILED.")
 
+    # 7.4 HTTP 404 Schedules Backoff Retry and Event Stays PENDING
+    test_outbox_404 = SellerOrderStatusOutbox.objects.create(
+        event_id=f"evt_404_test_{uuid.uuid4().hex[:8]}",
+        source_order_id="TEST-404-001",
+        order=created_order,
+        sequence=101,
+        previous_status="NEW",
+        new_status="ACCEPTED",
+        event_type="seller_order.status_updated",
+        payload={"test": "data_404"},
+        status=SellerOrderStatusOutbox.DeliveryStatus.PENDING,
+    )
+    mock_resp_404 = MagicMock(status_code=404, text="Page not found at /api/workforce-integration/webhook/")
+    with patch("requests.post", return_value=mock_resp_404):
+        del_404 = deliver_outbox_event(test_outbox_404)
+        assert del_404 is False
+        test_outbox_404.refresh_from_db()
+        assert test_outbox_404.status == SellerOrderStatusOutbox.DeliveryStatus.PENDING
+        assert test_outbox_404.retry_count == 1
+        assert test_outbox_404.next_retry_at is not None
+        assert "HTTP 404" in test_outbox_404.last_error
+    print("  [OK] Outbox HTTP 404 schedules backoff retry and stays PENDING.")
+
+    # 7.5 Repeated HTTP 404 Past Max Retries Transitions to FAILED
+    test_outbox_404.retry_count = 4
+    test_outbox_404.save()
+    with patch("requests.post", return_value=mock_resp_404):
+        del_404_max = deliver_outbox_event(test_outbox_404)
+        assert del_404_max is False
+        test_outbox_404.refresh_from_db()
+        assert test_outbox_404.status == SellerOrderStatusOutbox.DeliveryStatus.FAILED
+        assert "HTTP 404" in test_outbox_404.last_error
+    print("  [OK] Outbox repeated HTTP 404 past max retries transitions to FAILED.")
+
+    # 7.6 HTTP 400 and 422 Immediately Transition to FAILED Without Retrying
+    test_outbox_400 = SellerOrderStatusOutbox.objects.create(
+        event_id=f"evt_400_test_{uuid.uuid4().hex[:8]}",
+        source_order_id="TEST-400-001",
+        order=created_order,
+        sequence=102,
+        previous_status="NEW",
+        new_status="ACCEPTED",
+        event_type="seller_order.status_updated",
+        payload={"test": "data_400"},
+        status=SellerOrderStatusOutbox.DeliveryStatus.PENDING,
+    )
+    mock_resp_400 = MagicMock(status_code=400, text="Bad Request: Malformed Payload")
+    with patch("requests.post", return_value=mock_resp_400):
+        del_400 = deliver_outbox_event(test_outbox_400)
+        assert del_400 is False
+        test_outbox_400.refresh_from_db()
+        assert test_outbox_400.status == SellerOrderStatusOutbox.DeliveryStatus.FAILED
+        assert test_outbox_400.retry_count == 1
+        assert "HTTP 400" in test_outbox_400.last_error
+
+    test_outbox_422 = SellerOrderStatusOutbox.objects.create(
+        event_id=f"evt_422_test_{uuid.uuid4().hex[:8]}",
+        source_order_id="TEST-422-001",
+        order=created_order,
+        sequence=103,
+        previous_status="NEW",
+        new_status="ACCEPTED",
+        event_type="seller_order.status_updated",
+        payload={"test": "data_422"},
+        status=SellerOrderStatusOutbox.DeliveryStatus.PENDING,
+    )
+    mock_resp_422 = MagicMock(status_code=422, text="Unprocessable Entity")
+    with patch("requests.post", return_value=mock_resp_422):
+        del_422 = deliver_outbox_event(test_outbox_422)
+        assert del_422 is False
+        test_outbox_422.refresh_from_db()
+        assert test_outbox_422.status == SellerOrderStatusOutbox.DeliveryStatus.FAILED
+        assert test_outbox_422.retry_count == 1
+        assert "HTTP 422" in test_outbox_422.last_error
+    print("  [OK] Outbox HTTP 400 and 422 immediately transition to FAILED without retrying.")
+
     print("\n" + "=" * 80)
     print("ALL PHASE 9 VENDOR VERIFICATION TESTS PASSED SUCCESSFULLY!")
     print("=" * 80)
 
 
+def _guarded_real_post(*args, **kwargs):
+    raise AssertionError(f"SECURITY GUARD: Real outbound network request attempted: {args} {kwargs}")
+
+
 if __name__ == "__main__":
-    run_all_phase9_tests()
+    with patch("workforce_api.services.seller_order_outbox._trigger_background_dispatch"), \
+         patch("requests.post", side_effect=_guarded_real_post):
+        run_all_phase9_tests()
+

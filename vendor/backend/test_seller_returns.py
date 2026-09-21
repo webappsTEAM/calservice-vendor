@@ -21,17 +21,49 @@ Comprehensive automated test suite for Phase 5: Seller Hub Returns & Reverse Log
 12. Empty state verification when no real returns exist.
 """
 import os
-import django
+import sys
+import uuid
+import tempfile
+import unittest
 from decimal import Decimal
 
+if not os.environ.get("SEVO_E2E_SQLITE_PATH"):
+    temp_sqlite = os.path.join(tempfile.gettempdir(), f"sevo_returns_test_{uuid.uuid4().hex[:8]}.sqlite3")
+    os.environ["SEVO_E2E_SQLITE_PATH"] = temp_sqlite
+
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "workforce_core.settings")
+import django
 django.setup()
 
+from django.apps import apps
 from django.conf import settings
+from django.db import connection
+
+# Hard safety guard: ensure test execution is strictly against SQLite
+if connection.vendor != "sqlite":
+    raise RuntimeError(
+        f"SAFETY ABORT: test_seller_returns initialized against non-SQLite database (vendor={connection.vendor!r}). "
+        "Tests must ONLY execute against isolated temporary SQLite."
+    )
+
+created_table_count = 0
+with connection.schema_editor() as schema_editor:
+    for model in apps.get_models():
+        try:
+            schema_editor.create_model(model)
+            created_table_count += 1
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "already exists" in err_msg or "duplicate table" in err_msg:
+                continue
+            raise RuntimeError(f"Failed to create schema for model {model.__name__}: {e}") from e
+print(f"SQLite Schema Initialized: {created_table_count} tables created.")
+print(f"Engine: {connection.settings_dict['ENGINE']}, Database: {connection.settings_dict['NAME']}")
+
 if "testserver" not in settings.ALLOWED_HOSTS and "*" not in settings.ALLOWED_HOSTS:
     settings.ALLOWED_HOSTS = list(settings.ALLOWED_HOSTS) + ["testserver", "localhost", "127.0.0.1"]
 
-from django.test import TestCase
+from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 from rest_framework import status
@@ -52,50 +84,73 @@ from workforce_api.models import (
 
 User = get_user_model()
 
+TEST_WEBHOOK_SECRET = "test-secret-not-real-seller-returns"
+settings.WORKFORCE_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET
+settings.WORKFORCE_API_KEY = TEST_WEBHOOK_SECRET
 
-class SellerReturnsTestCase(TestCase):
+
+def _guarded_real_post(*args, **kwargs):
+    raise AssertionError(f"SECURITY GUARD: Real outbound network request attempted: {args} {kwargs}")
+
+
+class SellerReturnsTestCase(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls._patcher = patch("workforce_api.services.seller_order_outbox._trigger_background_dispatch")
+        cls._patcher.start()
+        cls._post_patcher = patch("requests.post", side_effect=_guarded_real_post)
+        cls._post_patcher.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._post_patcher.stop()
+        cls._patcher.stop()
+        super().tearDownClass()
+
     def setUp(self):
         self.client = APIClient()
+        self.uid = uuid.uuid4().hex[:6]
 
         # 1. Create Sellers and Companies
         self.company_a = Company.objects.create(
-            company_name="Organic Farms Hub",
-            slug="organic-farms-hub",
+            company_name=f"Organic Farms Hub {self.uid}",
+            slug=f"organic-farms-hub-{self.uid}",
             is_active=True,
         )
         self.company_b = Company.objects.create(
-            company_name="Daily Fresh Grocers",
-            slug="daily-fresh-grocers",
+            company_name=f"Daily Fresh Grocers {self.uid}",
+            slug=f"daily-fresh-grocers-{self.uid}",
             is_active=True,
         )
 
         # 2. Create Users
         self.seller_user_a = User.objects.create_user(
-            username="seller_a@test.com",
-            email="seller_a@test.com",
+            username=f"seller_a_{self.uid}@test.com",
+            email=f"seller_a_{self.uid}@test.com",
             password="password123",
             company=self.company_a,
             first_name="Alice",
             last_name="Seller",
         )
         self.seller_user_b = User.objects.create_user(
-            username="seller_b@test.com",
-            email="seller_b@test.com",
+            username=f"seller_b_{self.uid}@test.com",
+            email=f"seller_b_{self.uid}@test.com",
             password="password123",
             company=self.company_b,
             first_name="Bob",
             last_name="Vendor",
         )
         self.admin_user = User.objects.create_superuser(
-            username="admin@sevo.com",
-            email="admin@sevo.com",
+            username=f"admin_{self.uid}@sevo.com",
+            email=f"admin_{self.uid}@sevo.com",
             password="password123",
         )
 
         # 3. Create Categories and Products
         self.category = SellerHubCategory.objects.create(
-            name="Organic Cooking Oils",
-            slug="organic-cooking-oils",
+            name=f"Organic Cooking Oils {self.uid}",
+            slug=f"organic-cooking-oils-{self.uid}",
             is_active=True,
         )
 
@@ -104,7 +159,7 @@ class SellerReturnsTestCase(TestCase):
             created_by=self.seller_user_a,
             category=self.category,
             title="Cold Pressed Groundnut Oil 1L",
-            sku="CPO-GN-1L",
+            sku=f"CPO-GN-1L-{self.uid}",
             mrp=Decimal("250.00"),
             selling_price=Decimal("220.00"),
             tax_rate=Decimal("5.00"),
@@ -121,7 +176,7 @@ class SellerReturnsTestCase(TestCase):
         )
         self.batch_a = SellerInventoryBatch.objects.create(
             inventory=self.inv_a,
-            batch_number="BATCH-GN-2026-A",
+            batch_number=f"BATCH-GN-2026-{self.uid}",
             initial_quantity=Decimal("50.000"),
             current_quantity=Decimal("50.000"),
         )
@@ -129,15 +184,12 @@ class SellerReturnsTestCase(TestCase):
         # 5. Create Source Seller Order
         self.order_a = SellerOrder.objects.create(
             company=self.company_a,
-            order_number="ORD-2026-0001",
-            source_order_id="CUST-ORD-889911",
+            order_number=f"ORD-2026-{self.uid}",
+            source_order_id=f"CUST-ORD-{self.uid}",
             customer_name="John Customer",
             customer_phone="9876543210",
-            customer_email="john@test.com",
             delivery_address="123 Main St, Tech City",
             status=SellerOrder.Status.DELIVERED,
-            subtotal=Decimal("440.00"),
-            tax_amount=Decimal("22.00"),
             total_amount=Decimal("462.00"),
             payment_status="PAID",
         )
@@ -159,8 +211,8 @@ class SellerReturnsTestCase(TestCase):
         self.return_a = SellerReturn.objects.create(
             order=self.order_a,
             company=self.company_a,
-            source_return_id="RET-CUST-99001",
-            return_number="RET-2026-0001",
+            source_return_id=f"RET-CUST-{self.uid}",
+            return_number=f"RET-2026-{self.uid}",
             customer_name="John Customer",
             customer_phone="9876543210",
             customer_address="123 Main St, Tech City",
@@ -170,7 +222,7 @@ class SellerReturnsTestCase(TestCase):
             evidence_urls=["https://storage.sevo.com/returns/evidence_1.jpg"],
         )
         self.return_item_a = SellerReturnItem.objects.create(
-            seller_return=self.return_a,
+            return_case=self.return_a,
             order_item=self.order_item_a,
             product=self.product_a,
             sku=self.product_a.sku,
@@ -191,8 +243,8 @@ class SellerReturnsTestCase(TestCase):
         response = self.client.get("/api/workforce/seller-hub/returns/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["return_number"], "RET-2026-0001")
-        self.assertEqual(response.data[0]["order_number"], "ORD-2026-0001")
+        self.assertEqual(response.data[0]["return_number"], self.return_a.return_number)
+        self.assertEqual(response.data[0]["order_number"], self.order_a.order_number)
 
         # Search by customer name
         search_res = self.client.get("/api/workforce/seller-hub/returns/?search=John")
@@ -207,9 +259,9 @@ class SellerReturnsTestCase(TestCase):
         self.client.force_authenticate(user=self.seller_user_a)
         response = self.client.get(f"/api/workforce/seller-hub/returns/{self.return_a.id}/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["return_number"], "RET-2026-0001")
+        self.assertEqual(response.data["return_number"], self.return_a.return_number)
         self.assertEqual(len(response.data["items"]), 1)
-        self.assertEqual(response.data["items"][0]["sku"], "CPO-GN-1L")
+        self.assertEqual(response.data["items"][0]["sku"], self.product_a.sku)
         self.assertEqual(response.data["evidence_urls"], ["https://storage.sevo.com/returns/evidence_1.jpg"])
 
     def test_04_seller_review_approve_transition(self):
@@ -223,11 +275,11 @@ class SellerReturnsTestCase(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.return_a.refresh_from_db()
         self.assertEqual(self.return_a.status, SellerReturn.Status.APPROVED)
-        self.assertEqual(self.return_a.seller_decision, SellerReturn.SellerDecision.APPROVED)
+        self.assertEqual(self.return_a.seller_decision, "APPROVED")
         self.assertIsNotNone(self.return_a.reviewed_at)
 
         # Check Audit Log
-        audit = SellerReturnAuditLog.objects.filter(seller_return=self.return_a).last()
+        audit = SellerReturnAuditLog.objects.filter(return_case=self.return_a).last()
         self.assertEqual(audit.action, "APPROVED")
         self.assertEqual(audit.actor, self.seller_user_a)
 
@@ -343,11 +395,11 @@ class SellerReturnsTestCase(TestCase):
         self.assertEqual(self.inv_a.on_hand_qty, initial_on_hand + Decimal("1.000"))
         self.assertEqual(self.batch_a.current_quantity, initial_batch_qty + Decimal("1.000"))
 
-        # Check Immutable STOCK_IN Movement
+        # Check Immutable RETURN_RESTOCK Movement
         movement = SellerInventoryMovement.objects.filter(
             inventory=self.inv_a,
-            movement_type=SellerInventoryMovement.MovementType.STOCK_IN,
-            reference_id=self.return_a.return_number,
+            movement_type=SellerInventoryMovement.MovementType.RETURN_RESTOCK,
+            reference_id__contains=self.return_a.return_number,
         ).first()
         self.assertIsNotNone(movement)
         self.assertEqual(movement.quantity_change, Decimal("1.000"))
@@ -387,7 +439,7 @@ class SellerReturnsTestCase(TestCase):
         movement = SellerInventoryMovement.objects.filter(
             inventory=self.inv_a,
             movement_type=SellerInventoryMovement.MovementType.DAMAGE,
-            reference_id=self.return_a.return_number,
+            reference_id__contains=self.return_a.return_number,
         ).first()
         self.assertIsNotNone(movement)
 
@@ -432,3 +484,7 @@ class SellerReturnsTestCase(TestCase):
         res2 = self.client.get("/api/workforce/seller-hub/metrics/")
         self.assertEqual(res2.data["pending_returns_count"], 0)
         self.assertEqual(res2.data["under_inspection_returns_count"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

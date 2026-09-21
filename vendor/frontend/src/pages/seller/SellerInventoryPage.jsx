@@ -67,6 +67,7 @@ export function SellerInventoryPage() {
 
   // Uninitialized approved products list
   const [approvedProducts, setApprovedProducts] = useState([]);
+  const [approvedCount, setApprovedCount] = useState(null);
   const [initLoading, setInitLoading] = useState(false);
 
   // Form Submitting
@@ -144,7 +145,30 @@ export function SellerInventoryPage() {
       }
 
       const data = await res.json();
-      setInventoryItems(Array.isArray(data) ? data : []);
+      const items = Array.isArray(data) ? data : [];
+      setInventoryItems(items);
+
+      // Check count of approved products when inventory is empty
+      if (items.length === 0 && !searchQuery.trim() && !selectedCategory && activeTab === 'ALL') {
+        try {
+          const appRes = await fetch('/api/workforce/seller-hub/products/?status=APPROVED', {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (appRes.ok) {
+            const appData = await appRes.json();
+            const list = Array.isArray(appData)
+              ? appData
+              : Array.isArray(appData?.results)
+              ? appData.results
+              : [];
+            setApprovedCount(list.length);
+          } else {
+            setApprovedCount(0);
+          }
+        } catch (ignored) {
+          setApprovedCount(0);
+        }
+      }
     } catch (err) {
       setError(err.message || 'Error fetching store inventory.');
     } finally {
@@ -174,9 +198,14 @@ export function SellerInventoryPage() {
       });
       if (res.ok) {
         const data = await res.json();
+        const list = Array.isArray(data)
+          ? data
+          : Array.isArray(data?.results)
+          ? data.results
+          : [];
         // Exclude products that already have inventory
         const existingProdIds = new Set(inventoryItems.map((i) => i.product));
-        const uninitialized = (Array.isArray(data) ? data : []).filter(
+        const uninitialized = list.filter(
           (p) => !existingProdIds.has(p.id)
         );
         setApprovedProducts(uninitialized);
@@ -727,25 +756,63 @@ export function SellerInventoryPage() {
                 <div className="w-12 h-12 bg-emerald-50 rounded-2xl text-emerald-600 flex items-center justify-center mx-auto border border-emerald-100">
                   <Package className="w-6 h-6" />
                 </div>
-                <h3 className="font-bold text-slate-900 text-sm">No Inventory Records Found</h3>
-                <p className="text-xs text-slate-500 max-w-md mx-auto">
-                  {searchQuery || selectedCategory || activeTab !== 'ALL'
-                    ? 'No products match your current search/filter criteria.'
-                    : 'Your store has no active stock records yet. Initialize stock for your approved catalog products to start tracking inventory.'}
-                </p>
-                <div className="pt-2">
-                  <button
-                    onClick={() => {
-                      fetchApprovedProductsForInit();
-                      setInitModalOpen(true);
-                    }}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-xs transition-all"
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span>Initialize Stock</span>
-                  </button>
-                </div>
+                {searchQuery || selectedCategory || activeTab !== 'ALL' ? (
+                  <>
+                    <h3 className="font-bold text-slate-900 text-sm">No Matching Inventory Found</h3>
+                    <p className="text-xs text-slate-500 max-w-md mx-auto">
+                      No inventory records match your current filter or search criteria.
+                    </p>
+                  </>
+                ) : approvedCount === null ? (
+                  <>
+                    <div className="flex items-center justify-center gap-2 text-slate-500 py-3">
+                      <RefreshCw className="w-4 h-4 animate-spin text-emerald-600" />
+                      <span className="text-xs font-semibold">Checking catalog status...</span>
+                    </div>
+                  </>
+                ) : approvedCount === 0 ? (
+                  <>
+                    <h3 className="font-bold text-slate-900 text-sm">No Approved Products in Inventory</h3>
+                    <p className="text-xs text-slate-500 max-w-md mx-auto">
+                      Products appear here after admin approval. Upload your products and submit them for review in Catalog Uploads.
+                    </p>
+                    <div className="pt-2 flex items-center justify-center gap-2">
+                      <Link
+                        to="/workforce/seller-hub/catalog-uploads"
+                        className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl shadow-xs transition-all"
+                      >
+                        <span>Go to Catalog Uploads</span>
+                      </Link>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <h3 className="font-bold text-slate-900 text-sm">No Stock Initialized Yet</h3>
+                    <p className="text-xs text-slate-500 max-w-md mx-auto">
+                      You have approved catalog products ready. Initialize opening stock to start managing and tracking inventory.
+                    </p>
+                    <div className="pt-2 flex items-center justify-center gap-2">
+                      <button
+                        onClick={() => {
+                          fetchApprovedProductsForInit();
+                          setInitModalOpen(true);
+                        }}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-xs transition-all"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>Initialize Stock</span>
+                      </button>
+                      <Link
+                        to="/workforce/seller-hub/catalog-uploads"
+                        className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl shadow-xs transition-all"
+                      >
+                        <span>Catalog Uploads</span>
+                      </Link>
+                    </div>
+                  </>
+                )}
               </div>
+
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse text-xs">

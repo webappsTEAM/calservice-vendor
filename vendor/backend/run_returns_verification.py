@@ -24,15 +24,44 @@ Comprehensive End-to-End Test Suite for Phase 5 (Seller Hub Returns Correction: 
 """
 import os
 import sys
-import django
+import uuid
+import tempfile
 from decimal import Decimal
 
+_sqlite_temp = tempfile.NamedTemporaryFile(suffix="_returns_verif.sqlite3", delete=False)
+_sqlite_temp.close()
+os.environ["SEVO_E2E_SQLITE_PATH"] = _sqlite_temp.name
+
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "workforce_core.settings")
+import django
 django.setup()
 
+from django.apps import apps
 from django.conf import settings
+from django.db import connection
+
+# Hard safety guard: ensure test execution is strictly against SQLite
+if connection.vendor != "sqlite":
+    raise RuntimeError(
+        f"SAFETY ABORT: run_returns_verification initialized against non-SQLite database (vendor={connection.vendor!r}). "
+        "Tests must ONLY execute against isolated temporary SQLite."
+    )
+
+created_table_count = 0
+with connection.schema_editor() as schema_editor:
+    for model in apps.get_models():
+        try:
+            schema_editor.create_model(model)
+            created_table_count += 1
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "already exists" in err_msg or "duplicate table" in err_msg:
+                continue
+            raise RuntimeError(f"Failed to create schema for model {model.__name__}: {e}") from e
+
 settings.ALLOWED_HOSTS = ["*"]
 
+from unittest.mock import patch
 from django.db import transaction
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
@@ -55,6 +84,14 @@ from workforce_api.models import (
 User = get_user_model()
 client = APIClient()
 
+TEST_WEBHOOK_SECRET = "test-secret-not-real-run-returns"
+settings.WORKFORCE_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET
+settings.WORKFORCE_API_KEY = TEST_WEBHOOK_SECRET
+
+
+def _guarded_real_post(*args, **kwargs):
+    raise AssertionError(f"SECURITY GUARD: Real outbound network request attempted in run_returns_verification: {args} {kwargs}")
+
 print("=" * 80)
 print("SEVO-VENDOR PHASE 5: RETURN-RESTOCK AUDIT ACCURACY VERIFICATION")
 print("=" * 80)
@@ -71,39 +108,46 @@ def assert_true(expr, msg):
         print(f"  [FAIL] {msg}")
         failed += 1
 
+patch_dispatch = patch("workforce_api.services.seller_order_outbox._trigger_background_dispatch")
+patch_dispatch.start()
+patch_post = patch("requests.post", side_effect=_guarded_real_post)
+patch_post.start()
+
+uid = uuid.uuid4().hex[:6]
+
 try:
     with transaction.atomic():
         # 1. Setup Test Companies and Users
         company_a, _ = Company.objects.get_or_create(
-            slug="test-returns-company-a",
+            slug=f"test-returns-company-a-{uid}",
             defaults={"company_name": "Test Returns Seller A", "is_active": True}
         )
         company_b, _ = Company.objects.get_or_create(
-            slug="test-returns-company-b",
+            slug=f"test-returns-company-b-{uid}",
             defaults={"company_name": "Test Returns Seller B", "is_active": True}
         )
 
         user_a, _ = User.objects.get_or_create(
-            username="seller_returns_a@test.com",
-            defaults={"email": "seller_returns_a@test.com", "company": company_a, "first_name": "Alice"}
+            username=f"seller_returns_a_{uid}@test.com",
+            defaults={"email": f"seller_returns_a_{uid}@test.com", "company": company_a, "first_name": "Alice"}
         )
         user_a.company = company_a
         user_a.save()
 
         user_b, _ = User.objects.get_or_create(
-            username="seller_returns_b@test.com",
-            defaults={"email": "seller_returns_b@test.com", "company": company_b, "first_name": "Bob"}
+            username=f"seller_returns_b_{uid}@test.com",
+            defaults={"email": f"seller_returns_b_{uid}@test.com", "company": company_b, "first_name": "Bob"}
         )
         user_b.company = company_b
         user_b.save()
 
         # 2. Category & Product
         category, _ = SellerHubCategory.objects.get_or_create(
-            slug="returns-test-category",
+            slug=f"returns-test-category-{uid}",
             defaults={"name": "Returns Test Category", "is_active": True}
         )
         product_a, _ = SellerProduct.objects.get_or_create(
-            sku="RET-PROD-001",
+            sku=f"RET-PROD-001-{uid}",
             company=company_a,
             defaults={
                 "title": "Organic Almond Milk 1L",
@@ -219,7 +263,7 @@ try:
         res_detail = client.get(f"/api/workforce/seller-hub/returns/{return_a.id}/")
         assert_true(res_detail.status_code == status.HTTP_200_OK, "Detail view returns HTTP 200")
         assert_true(len(res_detail.data["items"]) == 1, "Detail includes line items list")
-        assert_true(res_detail.data["items"][0]["sku"] == "RET-PROD-001", "Line item contains correct product SKU")
+        assert_true(res_detail.data["items"][0]["sku"] == product_a.sku, "Line item contains correct product SKU")
         assert_true(res_detail.data["evidence_urls"] == ["https://storage.sevo.com/returns/sample_evidence.jpg"],
                     "Submitted photo evidence URLs are preserved")
 
@@ -481,6 +525,9 @@ except Exception as e:
         import traceback
         traceback.print_exc()
         failed += 1
+
+    patch_post.stop()
+    patch_dispatch.stop()
 
 print("\n" + "=" * 80)
 print(f"VERIFICATION SUMMARY: {passed} PASSED, {failed} FAILED")

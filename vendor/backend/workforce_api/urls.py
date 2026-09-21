@@ -212,6 +212,12 @@ from workforce_api.views_seller_hub import (
     SellerProductBulkUploadView,
     SellerProductBatchListView,
     SellerProductImageUploadView,
+    AdminSellerApprovalListView,
+    AdminSellerProductApprovalListView,
+    AdminProductApprovalDetailView,
+    AdminProductApproveView,
+    AdminProductRejectView,
+    AdminProductBulkApproveView,
     SellerHubMetricsView,
     SellerInventoryListView,
     SellerInventoryDetailView,
@@ -604,6 +610,13 @@ urlpatterns = [
     path("seller-hub/products/<int:pk>/", SellerProductDetailView.as_view(), name="seller-hub-products-detail"),
     path("seller-hub/products/<int:pk>/submit/", SellerProductSubmitView.as_view(), name="seller-hub-products-submit"),
     path("seller-hub/products/<int:pk>/review/", SellerProductReviewDecisionView.as_view(), name="seller-hub-products-review"),
+    # Phase 11: Admin Categories Approval Workflow
+    path("admin/seller-hub/approval/sellers/", AdminSellerApprovalListView.as_view(), name="admin-seller-approval-sellers"),
+    path("admin/seller-hub/approval/sellers/<int:seller_id>/products/", AdminSellerProductApprovalListView.as_view(), name="admin-seller-approval-products"),
+    path("admin/seller-hub/approval/products/bulk-approve/", AdminProductBulkApproveView.as_view(), name="admin-product-bulk-approve"),
+    path("admin/seller-hub/approval/products/<int:pk>/", AdminProductApprovalDetailView.as_view(), name="admin-product-approval-detail"),
+    path("admin/seller-hub/approval/products/<int:pk>/approve/", AdminProductApproveView.as_view(), name="admin-product-approve"),
+    path("admin/seller-hub/approval/products/<int:pk>/reject/", AdminProductRejectView.as_view(), name="admin-product-reject"),
     path("seller-hub/metrics/", SellerHubMetricsView.as_view(), name="seller-hub-metrics"),
 
     # Phase 3: Seller Hub Inventory Management

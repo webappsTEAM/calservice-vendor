@@ -157,15 +157,9 @@ export function SellerDashboardPage() {
                   Seller Hub Foundation & Catalog Engine
                 </h3>
                 <p className="text-xs text-slate-600 mt-1 max-w-2xl leading-relaxed">
-                  Phase 1 active: Catalog Categories and Store Coupons are powered by real database records. Order routing, stock inventory sync, returns, claims, and catalog feeds are structured and ready for Phase 2.
+                  Catalog categories and store coupons are powered by live records. Orders, inventory sync, returns, claims and catalog feeds are managed from this hub.
                 </p>
               </div>
-            </div>
-
-            <div className="flex items-center gap-2 shrink-0">
-              <span className="text-xs font-bold text-emerald-800 bg-emerald-100/80 px-3 py-1.5 rounded-lg border border-emerald-300">
-                Phase 1 Active
-              </span>
             </div>
           </div>
 
@@ -281,9 +275,6 @@ export function SellerDashboardPage() {
                 <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
                   Store Operational Pipelines
                 </h2>
-                <span className="text-[10px] font-semibold text-slate-400">
-                  (Phase 2 Fulfillment Engine)
-                </span>
               </div>
             </div>
 

@@ -1,20 +1,57 @@
 import os
 import sys
+import uuid
+import tempfile
 import django
+
+_sqlite_temp = tempfile.NamedTemporaryFile(suffix="_reports_verif.sqlite3", delete=False)
+_sqlite_temp.close()
+os.environ["SEVO_E2E_SQLITE_PATH"] = _sqlite_temp.name
 
 # Setup Django environment
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "workforce_core.settings")
 django.setup()
 
+from django.apps import apps
 from django.conf import settings
+from django.db import connection
+
+# Hard safety guard: ensure test execution is strictly against SQLite
+if connection.vendor != "sqlite":
+    raise RuntimeError(
+        f"SAFETY ABORT: run_reports_verification initialized against non-SQLite database (vendor={connection.vendor!r}). "
+        "Tests must ONLY execute against isolated temporary SQLite."
+    )
+
+created_table_count = 0
+with connection.schema_editor() as schema_editor:
+    for model in apps.get_models():
+        try:
+            schema_editor.create_model(model)
+            created_table_count += 1
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "already exists" in err_msg or "duplicate table" in err_msg:
+                continue
+            raise RuntimeError(f"Failed to create schema for model {model.__name__}: {e}") from e
+
 settings.ALLOWED_HOSTS = ["*"]
 
+from unittest.mock import patch
 from decimal import Decimal
 from datetime import date, timedelta
 from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
 from django.contrib.auth import get_user_model
+
+TEST_WEBHOOK_SECRET = "test-secret-not-real-run-reports"
+settings.WORKFORCE_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET
+settings.WORKFORCE_API_KEY = TEST_WEBHOOK_SECRET
+
+
+def _guarded_real_post(*args, **kwargs):
+    raise AssertionError(f"SECURITY GUARD: Real outbound network request attempted in run_reports_verification: {args} {kwargs}")
 
 from companies.models import Company
 from workforce_api.models import (
@@ -45,20 +82,27 @@ def run_tests():
 
     factory = APIRequestFactory()
 
+    patch_dispatch = patch("workforce_api.services.seller_order_outbox._trigger_background_dispatch")
+    patch_dispatch.start()
+    patch_post = patch("requests.post", side_effect=_guarded_real_post)
+    patch_post.start()
+
+    uid = uuid.uuid4().hex[:6]
+
     # 1. Setup Companies and Users
     comp_a, _ = Company.objects.get_or_create(
-        slug="reports-company-a",
+        slug=f"reports-company-a-{uid}",
         defaults={"company_name": "Reports Test Seller A", "business_type": "grocery_supplier", "is_active": True}
     )
     comp_b, _ = Company.objects.get_or_create(
-        slug="reports-company-b",
+        slug=f"reports-company-b-{uid}",
         defaults={"company_name": "Reports Test Seller B", "business_type": "grocery_supplier", "is_active": True}
     )
 
     user_a, _ = User.objects.get_or_create(
-        username="reports_seller_a@test.com",
+        username=f"reports_seller_a_{uid}@test.com",
         defaults={
-            "email": "reports_seller_a@test.com",
+            "email": f"reports_seller_a_{uid}@test.com",
             "company": comp_a,
             "role": "seller",
             "is_staff": False,
@@ -70,9 +114,9 @@ def run_tests():
         user_a.save()
 
     user_b, _ = User.objects.get_or_create(
-        username="reports_seller_b@test.com",
+        username=f"reports_seller_b_{uid}@test.com",
         defaults={
-            "email": "reports_seller_b@test.com",
+            "email": f"reports_seller_b_{uid}@test.com",
             "company": comp_b,
             "role": "seller",
             "is_staff": False,
@@ -84,9 +128,9 @@ def run_tests():
         user_b.save()
 
     admin_user, _ = User.objects.get_or_create(
-        username="reports_superadmin@test.com",
+        username=f"reports_superadmin_{uid}@test.com",
         defaults={
-            "email": "reports_superadmin@test.com",
+            "email": f"reports_superadmin_{uid}@test.com",
             "role": "admin",
             "is_staff": True,
             "is_superuser": True,
@@ -353,6 +397,9 @@ def run_tests():
     admin_summary = resp.data
     assert admin_summary["total_products_count"] == 3
     print("[PASS] Platform Superadmin successfully scoped reports to Seller A.")
+
+    patch_post.stop()
+    patch_dispatch.stop()
 
     print("\n" + "=" * 70)
     print(">>> ALL PHASE 7 REPORTS, QUALITY & PERFORMANCE CHECKS PASSED <<<")

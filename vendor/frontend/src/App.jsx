@@ -76,6 +76,7 @@ import AdminPromotionsPage from './pages/admin/AdminPromotionsPage.jsx';
 import AdminGroceryOrdersPage from './pages/admin/AdminGroceryOrdersPage.jsx';
 import AdminGrocerySettlementsPage from './pages/admin/AdminGrocerySettlementsPage.jsx';
 import { AdminSellerCategoriesPage } from './pages/admin/AdminSellerCategoriesPage.jsx';
+import { AdminCategoriesApprovalPage } from './pages/admin/AdminCategoriesApprovalPage.jsx';
 import { AdminSellerCouponsPage } from './pages/admin/AdminSellerCouponsPage.jsx';
 import { SellerDashboardPage } from './pages/seller/SellerDashboardPage.jsx';
 import { SellerOrdersPage } from './pages/seller/SellerOrdersPage.jsx';
@@ -733,13 +734,13 @@ export function App() {
             element={<Navigate to="/workforce/seller-hub/catalog-uploads" replace />}
           />
 
-          {/* 7. Categories (Admin / Super Admin Only) */}
+          {/* 7. Categories (Platform Superadmin / Platform Admin Only) */}
           <Route
             path="/workforce/admin/seller-hub/categories"
             element={
-              <AdminRoute>
+              <PlatformAdminRoute>
                 <AdminSellerCategoriesPage />
-              </AdminRoute>
+              </PlatformAdminRoute>
             }
           />
           <Route
@@ -749,6 +750,32 @@ export function App() {
           <Route
             path="/workforce/seller-hub/categories"
             element={<Navigate to="/workforce/admin/seller-hub/categories" replace />}
+          />
+
+          {/* 7b. Categories Approval (Platform Superadmin / Platform Admin Only - Phase 11) */}
+          <Route
+            path="/workforce/admin/seller-hub/categories-approval"
+            element={
+              <PlatformAdminRoute>
+                <AdminCategoriesApprovalPage />
+              </PlatformAdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/admin/seller-hub/categories-approval/:sellerId"
+            element={
+              <PlatformAdminRoute>
+                <AdminCategoriesApprovalPage />
+              </PlatformAdminRoute>
+            }
+          />
+          <Route
+            path="/workforce/seller-hub/categories-approval"
+            element={<Navigate to="/workforce/seller/dashboard" replace />}
+          />
+          <Route
+            path="/workforce/seller/categories-approval"
+            element={<Navigate to="/workforce/seller/dashboard" replace />}
           />
 
           {/* 8. Coupons */}

@@ -127,6 +127,26 @@ export function AdminSellerCategoriesPage() {
     return { childrenMap: cMap, categoryMap: catMap, rootCategories: roots };
   }, [allCategories]);
 
+  // Helper to determine if category's ancestor chain is active
+  const isAncestorChainActive = useCallback(
+    (cat) => {
+      let currParentId = cat.parent_id;
+      const visited = new Set();
+      while (currParentId !== null && currParentId !== undefined) {
+        if (visited.has(currParentId)) break;
+        visited.add(currParentId);
+        const parentCat = categoryMap.get(currParentId);
+        if (!parentCat) break;
+        if (!parentCat.is_active) {
+          return { active: false, inactiveParentName: parentCat.name };
+        }
+        currParentId = parentCat.parent_id;
+      }
+      return { active: true, inactiveParentName: null };
+    },
+    [categoryMap]
+  );
+
   // Sorting helper for category arrays
   const sortCategories = useCallback(
     (items) => {
@@ -775,12 +795,12 @@ export function AdminSellerCategoriesPage() {
                             </span>
                           </td>
 
-                          {/* Linked data (Services & Inventory items) */}
+                          {/* Linked data (Products & Subcategories) */}
                           <td className="py-3.5 px-4 text-slate-600">
                             <div className="flex flex-col gap-0.5 text-[11px]">
-                              <span>{cat.services_count || 0} services</span>
+                              <span>{cat.products_count || 0} products</span>
                               <span className="text-slate-400 font-mono">
-                                {cat.inventory_items_count || 0} items
+                                {cat.children_count ?? cat.subcategories_count ?? cat.childCount ?? 0} subcategories
                               </span>
                             </div>
                           </td>
@@ -792,29 +812,42 @@ export function AdminSellerCategoriesPage() {
 
                           {/* Status & Active Toggle */}
                           <td className="py-3.5 px-4 text-center">
-                            <button
-                              type="button"
-                              onClick={(e) => handleToggleActive(cat, e)}
-                              disabled={!isSuperAdmin}
-                              className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold transition-all ${
-                                cat.is_active
-                                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
-                                  : 'bg-slate-100 text-slate-500 border border-slate-200 hover:bg-slate-200'
-                              } ${!isSuperAdmin ? 'cursor-default opacity-80' : 'cursor-pointer'}`}
-                              title={isSuperAdmin ? 'Click to toggle active/inactive' : ''}
-                            >
-                              {cat.is_active ? (
-                                <>
-                                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                                  <span>Active</span>
-                                </>
-                              ) : (
-                                <>
-                                  <XCircle className="w-3 h-3 text-slate-400" />
-                                  <span>Inactive</span>
-                                </>
+                            <div className="flex flex-col items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={(e) => handleToggleActive(cat, e)}
+                                disabled={!isSuperAdmin}
+                                className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold transition-all ${
+                                  cat.is_active
+                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
+                                    : 'bg-slate-100 text-slate-500 border border-slate-200 hover:bg-slate-200'
+                                } ${!isSuperAdmin ? 'cursor-default opacity-80' : 'cursor-pointer'}`}
+                                title={isSuperAdmin ? 'Click to toggle active/inactive' : ''}
+                              >
+                                {cat.is_active ? (
+                                  <>
+                                    <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                    <span>Active</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <XCircle className="w-3 h-3 text-slate-400" />
+                                    <span>Inactive</span>
+                                  </>
+                                )}
+                              </button>
+                              {cat.is_active && !isAncestorChainActive(cat).active && (
+                                <span
+                                  className="text-[10px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200 font-medium"
+                                  title={`Hidden from sellers: parent '${isAncestorChainActive(cat).inactiveParentName}' is inactive`}
+                                >
+                                  Hidden: Parent Inactive
+                                </span>
                               )}
-                            </button>
+                              {!cat.is_active && (
+                                <span className="text-[10px] text-slate-400">Hidden from sellers</span>
+                              )}
+                            </div>
                           </td>
 
                           {/* Actions: + Subcategory, Edit, Delete */}
@@ -1077,8 +1110,8 @@ export function AdminSellerCategoriesPage() {
               <strong className="text-slate-900 font-semibold">"{deleteTarget.name}"</strong>?
             </p>
 
-            {(deleteTarget.children_count > 0 ||
-              deleteTarget.services_count > 0 ||
+            {((deleteTarget.children_count ?? deleteTarget.subcategories_count ?? deleteTarget.childCount ?? 0) > 0 ||
+              deleteTarget.products_count > 0 ||
               deleteTarget.inventory_items_count > 0) && (
               <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-xs space-y-1">
                 <p className="font-bold flex items-center gap-1.5">
@@ -1087,19 +1120,17 @@ export function AdminSellerCategoriesPage() {
                 </p>
                 <p className="text-[11px] text-amber-700">
                   This category contains{' '}
-                  {deleteTarget.children_count > 0 && (
+                  {(deleteTarget.children_count ?? deleteTarget.subcategories_count ?? deleteTarget.childCount ?? 0) > 0 && (
                     <span>
-                      <strong>{deleteTarget.children_count} subcategories</strong>,{' '}
+                      <strong>
+                        {deleteTarget.children_count ?? deleteTarget.subcategories_count ?? deleteTarget.childCount ?? 0} subcategories
+                      </strong>
+                      {deleteTarget.products_count > 0 ? ', ' : ''}
                     </span>
                   )}
-                  {deleteTarget.services_count > 0 && (
+                  {deleteTarget.products_count > 0 && (
                     <span>
-                      <strong>{deleteTarget.services_count} services</strong>,{' '}
-                    </span>
-                  )}
-                  {deleteTarget.inventory_items_count > 0 && (
-                    <span>
-                      <strong>{deleteTarget.inventory_items_count} items</strong>
+                      <strong>{deleteTarget.products_count} product(s)</strong>
                     </span>
                   )}
                   . You must reassign or remove them before deleting.

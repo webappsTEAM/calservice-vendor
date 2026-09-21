@@ -1655,6 +1655,7 @@ class CatalogCategoryTreeSerializer(serializers.ModelSerializer):
 
 class SellerHubCategoryAdminSerializer(serializers.ModelSerializer):
     services_count = serializers.SerializerMethodField()
+    products_count = serializers.SerializerMethodField()
     inventory_items_count = serializers.SerializerMethodField()
     children_count = serializers.SerializerMethodField()
     subcategories_count = serializers.SerializerMethodField()
@@ -1685,6 +1686,7 @@ class SellerHubCategoryAdminSerializer(serializers.ModelSerializer):
             "level",
             "depth",
             "ancestors",
+            "products_count",
             "services_count",
             "inventory_items_count",
             "created_at",
@@ -1699,6 +1701,7 @@ class SellerHubCategoryAdminSerializer(serializers.ModelSerializer):
             "level",
             "depth",
             "ancestors",
+            "products_count",
             "services_count",
             "inventory_items_count",
             "created_at",
@@ -1707,6 +1710,12 @@ class SellerHubCategoryAdminSerializer(serializers.ModelSerializer):
 
     def get_services_count(self, obj):
         return 0
+
+    def get_products_count(self, obj):
+        try:
+            return obj.products.count()
+        except Exception:
+            return 0
 
     def get_inventory_items_count(self, obj):
         try:
@@ -2201,17 +2210,25 @@ class SellerLeafCategorySerializer(serializers.Serializer):
     name = serializers.CharField()
     slug = serializers.CharField()
     path = serializers.CharField()
+    path_string = serializers.SerializerMethodField()
     parent_name = serializers.CharField(allow_null=True)
+
+    def get_path_string(self, obj):
+        if isinstance(obj, dict):
+            return obj.get("path_string") or obj.get("path", "")
+        return getattr(obj, "path_string", getattr(obj, "path", ""))
 
 
 class SellerProductListSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source="category.name", read_only=True)
     category_slug = serializers.CharField(source="category.slug", read_only=True)
     category_path = serializers.SerializerMethodField()
+    path_string = serializers.SerializerMethodField()
     company_name = serializers.CharField(source="company.company_name", read_only=True)
     primary_image = serializers.SerializerMethodField()
     images_count = serializers.SerializerMethodField()
     reviewed_by_name = serializers.SerializerMethodField()
+    rejection_reason = serializers.CharField(source="admin_review_note", read_only=True)
 
     class Meta:
         from .models import SellerProduct
@@ -2224,6 +2241,7 @@ class SellerProductListSerializer(serializers.ModelSerializer):
             "category_name",
             "category_slug",
             "category_path",
+            "path_string",
             "title",
             "description",
             "brand",
@@ -2239,6 +2257,7 @@ class SellerProductListSerializer(serializers.ModelSerializer):
             "expiry_info",
             "status",
             "admin_review_note",
+            "rejection_reason",
             "primary_image",
             "images_count",
             "reviewed_by_name",
@@ -2258,6 +2277,9 @@ class SellerProductListSerializer(serializers.ModelSerializer):
             path.insert(0, curr.name)
             curr = curr.parent
         return " > ".join(path)
+
+    def get_path_string(self, obj):
+        return self.get_category_path(obj)
 
     def get_primary_image(self, obj):
         images_list = getattr(obj, "_prefetched_images", None)
@@ -2288,8 +2310,10 @@ class SellerProductDetailSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source="category.name", read_only=True)
     category_slug = serializers.CharField(source="category.slug", read_only=True)
     category_path = serializers.SerializerMethodField()
+    path_string = serializers.SerializerMethodField()
     company_name = serializers.CharField(source="company.company_name", read_only=True)
     reviewed_by_name = serializers.SerializerMethodField()
+    rejection_reason = serializers.CharField(source="admin_review_note", read_only=True)
 
     class Meta:
         from .models import SellerProduct
@@ -2302,6 +2326,7 @@ class SellerProductDetailSerializer(serializers.ModelSerializer):
             "category_name",
             "category_slug",
             "category_path",
+            "path_string",
             "title",
             "description",
             "brand",
@@ -2317,6 +2342,7 @@ class SellerProductDetailSerializer(serializers.ModelSerializer):
             "expiry_info",
             "status",
             "admin_review_note",
+            "rejection_reason",
             "reviewed_by_name",
             "submitted_at",
             "reviewed_at",
@@ -2337,6 +2363,9 @@ class SellerProductDetailSerializer(serializers.ModelSerializer):
             path.insert(0, curr.name)
             curr = curr.parent
         return " > ".join(path)
+
+    def get_path_string(self, obj):
+        return self.get_category_path(obj)
 
     def get_reviewed_by_name(self, obj):
         if not obj.reviewed_by:
@@ -2479,6 +2508,20 @@ class SellerProductCreateUpdateSerializer(serializers.ModelSerializer):
                 )
 
         return data
+
+
+class AdminSellerApprovalListSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    seller_id = serializers.IntegerField(source="id", read_only=True)
+    name = serializers.CharField(source="company_name")
+    company_name = serializers.CharField()
+    slug = serializers.CharField()
+    business_type = serializers.CharField()
+    pending_count = serializers.IntegerField(default=0)
+    approved_count = serializers.IntegerField(default=0)
+    rejected_count = serializers.IntegerField(default=0)
+    total_count = serializers.IntegerField(default=0)
+    latest_submitted_at = serializers.DateTimeField(allow_null=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

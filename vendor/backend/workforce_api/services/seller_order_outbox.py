@@ -6,6 +6,7 @@ Ensures reliable, ordered, at-least-once status notification delivery
 from Vendor/Seller Hub to the Sevo-Customer marketplace backend.
 """
 
+import os
 import uuid
 import logging
 import threading
@@ -157,6 +158,9 @@ def _trigger_background_dispatch(event_pk):
     """
     Launches a daemon thread to attempt immediate outbox delivery after commit.
     """
+    if os.environ.get("SEVO_E2E_SQLITE_PATH"):
+        return
+
     def _run():
         try:
             event_obj = SellerOrderStatusOutbox.objects.filter(pk=event_pk).first()
@@ -175,7 +179,12 @@ def deliver_outbox_event(event_obj):
     Reuses WORKFORCE_WEBHOOK_SECRET authentication contract.
     Updates delivery status, retry backoff timestamp, and error logs safely.
     """
-    url = f"{settings.CUSTOMER_APP_BASE_URL}/api/workforce-integration/webhook/"
+    base_url = getattr(settings, "CUSTOMER_APP_BASE_URL", None) or os.environ.get("CUSTOMER_APP_BASE_URL")
+    if not base_url:
+        logger.error("CUSTOMER_APP_BASE_URL is unset; defaulting to fallback http://127.0.0.1:8000")
+        base_url = "http://127.0.0.1:8000"
+
+    url = f"{base_url.rstrip('/')}/api/workforce-integration/webhook/"
     body = {
         "event": event_obj.event_type,
         "event_id": event_obj.event_id,
@@ -211,7 +220,7 @@ def deliver_outbox_event(event_obj):
             return True
         else:
             err_msg = f"HTTP {response.status_code}: {response.text[:300]}"
-            _record_delivery_failure(event_obj, err_msg, now, unrecoverable=(response.status_code in (400, 404, 422)))
+            _record_delivery_failure(event_obj, err_msg, now, unrecoverable=(response.status_code in (400, 422)))
             return False
 
     except Exception as exc:

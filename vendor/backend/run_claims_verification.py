@@ -18,17 +18,46 @@ Tests:
 """
 import os
 import sys
-import django
+import uuid
+import tempfile
 from decimal import Decimal
+
+if not os.environ.get("SEVO_E2E_SQLITE_PATH"):
+    temp_sqlite = os.path.join(tempfile.gettempdir(), f"sevo_run_claims_test_{uuid.uuid4().hex[:8]}.sqlite3")
+    os.environ["SEVO_E2E_SQLITE_PATH"] = temp_sqlite
 
 # Setup Django Environment
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "workforce_core.settings")
+import django
 django.setup()
 
+from django.apps import apps
 from django.conf import settings
+from django.db import connection
+
+# Hard safety guard: ensure test execution is strictly against SQLite
+if connection.vendor != "sqlite":
+    raise RuntimeError(
+        f"SAFETY ABORT: run_claims_verification initialized against non-SQLite database (vendor={connection.vendor!r}). "
+        "Tests must ONLY execute against isolated temporary SQLite."
+    )
+
+created_table_count = 0
+with connection.schema_editor() as schema_editor:
+    for model in apps.get_models():
+        try:
+            schema_editor.create_model(model)
+            created_table_count += 1
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "already exists" in err_msg or "duplicate table" in err_msg:
+                continue
+            raise RuntimeError(f"Failed to create schema for model {model.__name__}: {e}") from e
+
 settings.ALLOWED_HOSTS = ["*"]
 
+from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -47,6 +76,14 @@ from workforce_api.models import (
 )
 
 User = get_user_model()
+
+TEST_WEBHOOK_SECRET = "test-secret-not-real-run-claims"
+settings.WORKFORCE_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET
+settings.WORKFORCE_API_KEY = TEST_WEBHOOK_SECRET
+
+
+def _guarded_real_post(*args, **kwargs):
+    raise AssertionError(f"SECURITY GUARD: Real outbound network request attempted in run_claims_verification: {args} {kwargs}")
 
 
 def run_verification():
@@ -67,12 +104,18 @@ def run_verification():
             print(f"  [FAIL] {message}")
             fail_count += 1
 
+    patch_dispatch = patch("workforce_api.services.seller_order_outbox._trigger_background_dispatch")
+    patch_dispatch.start()
+    patch_post = patch("requests.post", side_effect=_guarded_real_post)
+    patch_post.start()
+
+    uid = uuid.uuid4().hex[:6]
     # Setup Test Data
     # Superadmin
     admin_user, _ = User.objects.get_or_create(
-        username="claims_superadmin@test.com",
+        username=f"claims_superadmin_{uid}@test.com",
         defaults={
-            "email": "claims_admin@test.com",
+            "email": f"claims_admin_{uid}@test.com",
             "is_superuser": True,
             "is_staff": True,
             "role": "platform_admin",
@@ -86,13 +129,13 @@ def run_verification():
 
     # Company A (Seller A)
     comp_a, _ = Company.objects.get_or_create(
-        slug="claims-company-a",
+        slug=f"claims-company-a-{uid}",
         defaults={"company_name": "Super Fresh Farms", "is_active": True}
     )
     seller_a, _ = User.objects.get_or_create(
-        username="claims_seller_a@test.com",
+        username=f"claims_seller_a_{uid}@test.com",
         defaults={
-            "email": "seller_a_claims@test.com",
+            "email": f"seller_a_claims_{uid}@test.com",
             "company": comp_a,
             "role": "vendor_admin",
             "first_name": "Alice",
@@ -104,13 +147,13 @@ def run_verification():
 
     # Company B (Seller B)
     comp_b, _ = Company.objects.get_or_create(
-        slug="claims-company-b",
+        slug=f"claims-company-b-{uid}",
         defaults={"company_name": "Urban Grocery Depot", "is_active": True}
     )
     seller_b, _ = User.objects.get_or_create(
-        username="claims_seller_b@test.com",
+        username=f"claims_seller_b_{uid}@test.com",
         defaults={
-            "email": "seller_b_claims@test.com",
+            "email": f"seller_b_claims_{uid}@test.com",
             "company": comp_b,
             "role": "vendor_admin",
             "first_name": "Bob",
@@ -126,14 +169,14 @@ def run_verification():
     from workforce_api.models import SellerHubCategory
 
     category_a, _ = SellerHubCategory.objects.get_or_create(
-        slug="claims-test-cat",
+        slug=f"claims-test-cat-{uid}",
         defaults={"name": "Claims Test Category", "is_active": True}
     )
 
     # Setup Product, Inventory, and Order for Seller A
     product_a, _ = SellerProduct.objects.get_or_create(
         company=comp_a,
-        sku="CLM-TEST-SKU-01",
+        sku=f"CLM-TEST-SKU-01-{uid}",
         defaults={
             "title": "Fresh Organic Avocados (Box of 6)",
             "category": category_a,
@@ -154,9 +197,9 @@ def run_verification():
 
     order_a, _ = SellerOrder.objects.get_or_create(
         company=comp_a,
-        source_order_id="CLM-TEST-ORD-01",
+        source_order_id=f"CLM-TEST-ORD-{uid}",
         defaults={
-            "order_number": "ORD-CLM-001",
+            "order_number": f"ORD-CLM-{uid}",
             "customer_name": "Deepak Patel",
             "customer_phone": "+91 9876543210",
             "delivery_address": "Plot 42, Green Valley, Chennai",
@@ -168,9 +211,9 @@ def run_verification():
     return_a, _ = SellerReturn.objects.get_or_create(
         company=comp_a,
         order=order_a,
-        source_return_id="CLM-TEST-RET-01",
+        source_return_id=f"CLM-TEST-RET-{uid}",
         defaults={
-            "return_number": "RET-CLM-001",
+            "return_number": f"RET-CLM-{uid}",
             "customer_name": "Deepak Patel",
             "reason": SellerReturn.Reason.DAMAGED,
             "status": SellerReturn.Status.UNDER_SELLER_REVIEW,
@@ -224,8 +267,8 @@ def run_verification():
     # --------------------------------------------------------------------------
     res_detail = client.get(f"/api/workforce/seller-hub/claims/{claim_1_id}/")
     assert_true(res_detail.status_code == status.HTTP_200_OK, "Detail view returns HTTP 200")
-    assert_true(res_detail.data.get("order_number") == "ORD-CLM-001", "Linked order number matches")
-    assert_true(res_detail.data.get("return_number") == "RET-CLM-001", "Linked return number matches")
+    assert_true(res_detail.data.get("order_number") == order_a.order_number, "Linked order number matches")
+    assert_true(res_detail.data.get("return_number") == return_a.return_number, "Linked return number matches")
     assert_true(len(res_detail.data.get("evidence_urls", [])) == 1, "Evidence URL preserved")
     assert_true(len(res_detail.data.get("audit_logs", [])) >= 1, "Initial audit log recorded")
 
@@ -333,13 +376,13 @@ def run_verification():
     # --------------------------------------------------------------------------
     print("\n--- TEST 10: SOURCE CLAIM ID IDEMPOTENT INTAKE CONTRACT ---")
     # --------------------------------------------------------------------------
-    source_clm_id = "EXT-SEVO-CUST-CLM-998877"
+    source_clm_id = f"EXT-SEVO-CUST-CLM-{uid}"
     client.force_authenticate(user=admin_user)
 
     # First intake call creates record
     res_intake_1 = client.post("/api/workforce/seller-hub/claims/intake/", {
         "source_claim_id": source_clm_id,
-        "source_order_id": "CLM-TEST-ORD-01",
+        "source_order_id": order_a.source_order_id,
         "claim_type": "MISSING_ITEM",
         "description": "Customer says 1 avocado was missing from pack.",
         "claimed_amount": "30.00",
@@ -352,7 +395,7 @@ def run_verification():
     # Second intake call with identical source_claim_id returns existing
     res_intake_2 = client.post("/api/workforce/seller-hub/claims/intake/", {
         "source_claim_id": source_clm_id,
-        "source_order_id": "CLM-TEST-ORD-01",
+        "source_order_id": order_a.source_order_id,
         "claim_type": "MISSING_ITEM",
         "description": "Customer says 1 avocado was missing from pack.",
     }, format="json")
@@ -396,6 +439,9 @@ def run_verification():
     assert_true(res_met.data.get("total_claims_count") == 2, f"total_claims_count is 2 (got {res_met.data.get('total_claims_count')})")
     assert_true(res_met.data.get("open_claims_count") == 1, f"open_claims_count is 1 (got {res_met.data.get('open_claims_count')})")
     assert_true(res_met.data.get("resolved_claims_count") == 1, f"resolved_claims_count is 1 (got {res_met.data.get('resolved_claims_count')})")
+
+    patch_post.stop()
+    patch_dispatch.stop()
 
     print("\n" + "=" * 80)
     print(f"VERIFICATION SUMMARY: {pass_count} PASSED, {fail_count} FAILED")

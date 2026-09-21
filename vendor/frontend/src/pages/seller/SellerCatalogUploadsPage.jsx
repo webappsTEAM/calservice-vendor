@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Sidebar } from '../../components/common/Sidebar.jsx';
 import { useAuth } from '../../context/AuthProvider.jsx';
@@ -34,14 +34,16 @@ import {
   AlertTriangle,
   FileCheck,
   ChevronRight,
+  RotateCcw,
 } from 'lucide-react';
+
 
 const STATUS_CONFIG = {
   ALL: { label: 'All Products', bg: 'bg-slate-100', text: 'text-slate-700', border: 'border-slate-200' },
   DRAFT: { label: 'Draft', bg: 'bg-slate-100', text: 'text-slate-600', border: 'border-slate-300', icon: FileEdit },
-  SUBMITTED: { label: 'Submitted', bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200', icon: Send },
-  UNDER_REVIEW: { label: 'Under Review', bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200', icon: Clock },
-  CHANGES_REQUESTED: { label: 'Changes Requested', bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200', icon: AlertTriangle },
+  SUBMITTED: { label: 'Awaiting approval', bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200', icon: Send },
+  UNDER_REVIEW: { label: 'Under review', bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200', icon: Clock },
+  CHANGES_REQUESTED: { label: 'Changes requested', bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200', icon: AlertTriangle },
   APPROVED: { label: 'Approved', bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200', icon: CheckCircle2 },
   REJECTED: { label: 'Rejected', bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-200', icon: XCircle },
   PAUSED: { label: 'Paused', bg: 'bg-zinc-100', text: 'text-zinc-600', border: 'border-zinc-300', icon: PauseCircle },
@@ -193,13 +195,16 @@ export function SellerCatalogUploadsPage() {
   const [pickerSelectedLeaf, setPickerSelectedLeaf] = useState(null); // The final selected leaf category
   const [pickerCache, setPickerCache] = useState({}); // { [parentId || 'root']: Array<Category> }
   const [pickerColumnLoading, setPickerColumnLoading] = useState({}); // { [colIndex]: boolean }
+  const [pickerErrors, setPickerErrors] = useState({}); // { [colIndex]: string | null }
   const [categoryWarning, setCategoryWarning] = useState(null);
   const pickerSearchTimerRef = useRef(null);
+  const pickerSelectedPathRef = useRef(pickerSelectedPath);
+  pickerSelectedPathRef.current = pickerSelectedPath;
 
   // Load a column for parentId (or 'root' if null)
-  const loadPickerColumn = async (parentId = null, colIndex = 0) => {
+  const loadPickerColumn = async (parentId = null, colIndex = 0, forceRefresh = false) => {
     const cacheKey = parentId ? String(parentId) : 'root';
-    if (pickerCache[cacheKey]) {
+    if (!forceRefresh && pickerCache[cacheKey]) {
       setPickerColumns((prev) => {
         const next = prev.slice(0, colIndex);
         next[colIndex] = pickerCache[cacheKey];
@@ -209,6 +214,7 @@ export function SellerCatalogUploadsPage() {
     }
 
     setPickerColumnLoading((prev) => ({ ...prev, [colIndex]: true }));
+    setPickerErrors((prev) => ({ ...prev, [colIndex]: null }));
     try {
       const url = parentId
         ? `/api/workforce/seller-hub/catalog/categories/?parent_id=${parentId}`
@@ -217,7 +223,8 @@ export function SellerCatalogUploadsPage() {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
-        const items = await res.json();
+        const raw = await res.json();
+        const items = Array.isArray(raw) ? raw : (raw?.results || []);
         setPickerCache((prev) => ({ ...prev, [cacheKey]: items }));
         setPickerColumns((prev) => {
           const next = prev.slice(0, colIndex);
@@ -225,13 +232,83 @@ export function SellerCatalogUploadsPage() {
           return next;
         });
         return items;
+      } else {
+        const errText = `Failed to load categories (HTTP ${res.status})`;
+        setPickerErrors((prev) => ({ ...prev, [colIndex]: errText }));
       }
     } catch (e) {
       console.error('Error fetching category column', e);
+      setPickerErrors((prev) => ({ ...prev, [colIndex]: e.message || 'Network connection failed' }));
     } finally {
       setPickerColumnLoading((prev) => ({ ...prev, [colIndex]: false }));
     }
     return [];
+  };
+
+  const lastFocusRefetchTimeRef = useRef(0);
+
+  // In-place background refresh of root categories without resetting drill-down
+  const refetchRootColumnInPlace = useCallback(async () => {
+    try {
+      const res = await fetch('/api/workforce/seller-hub/catalog/categories/?parent_id=null', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const raw = await res.json();
+        const freshRoots = Array.isArray(raw) ? raw : (raw?.results || []);
+        setPickerCache((prev) => ({ ...prev, root: freshRoots }));
+        setPickerColumns((prev) => {
+          const next = [...prev];
+          next[0] = freshRoots;
+          return next;
+        });
+
+        // Check if previously selected root still exists and is not deactivated
+        const currentPath = pickerSelectedPathRef.current;
+        if (currentPath && currentPath.length > 0) {
+          const selectedRoot = currentPath[0];
+          const foundRoot = (freshRoots || []).find((r) => r.id === selectedRoot.id);
+          const isGone = !foundRoot || foundRoot.is_active === false;
+          if (isGone) {
+            setPickerSelectedLeaf(null);
+            setPickerSelectedPath([]);
+            setPickerColumns((prevCols) => [prevCols[0] || freshRoots]);
+            setCategoryWarning('The previously selected root category is no longer active.');
+          }
+        }
+      }
+    } catch (e) {
+      console.error('In-place root category refetch error', e);
+    }
+  }, [token]);
+
+  // Refetch root categories in-place when tab regains focus while modal is open
+  useEffect(() => {
+    if (!showProductModal || productModalStep !== 1) return;
+
+    const handleTabFocus = () => {
+      const now = Date.now();
+      if (now - lastFocusRefetchTimeRef.current < 2000) return; // Deduplicate within 2s
+      lastFocusRefetchTimeRef.current = now;
+
+      if (document.visibilityState === 'visible' && !pickerSearch.trim()) {
+        refetchRootColumnInPlace();
+      }
+    };
+
+    window.addEventListener('focus', handleTabFocus);
+    document.addEventListener('visibilitychange', handleTabFocus);
+    return () => {
+      window.removeEventListener('focus', handleTabFocus);
+      document.removeEventListener('visibilitychange', handleTabFocus);
+    };
+  }, [showProductModal, productModalStep, pickerSearch, refetchRootColumnInPlace]);
+
+  const handleRefreshPicker = () => {
+    setPickerCache({});
+    setPickerSelectedPath([]);
+    setPickerSelectedLeaf(null);
+    loadPickerColumn(null, 0, true);
   };
 
   // Handle category search input
@@ -333,6 +410,9 @@ export function SellerCatalogUploadsPage() {
       setEditingProduct(null);
       setPickerSelectedLeaf(null);
       setPickerSelectedPath([]);
+      setPickerCache({});
+      setPickerColumns([]);
+      setPickerErrors({});
       setProductForm({
         title: '',
         brand: '',
@@ -351,11 +431,19 @@ export function SellerCatalogUploadsPage() {
         images: [],
         status: 'DRAFT',
       });
-      // Opens on step 1 for add product
+      // Opens on step 1 for add product and fetches fresh root categories
       setProductModalStep(1);
-      loadPickerColumn(null, 0);
+      loadPickerColumn(null, 0, true);
     }
     setShowProductModal(true);
+  };
+
+  const handleCloseProductModal = () => {
+    setShowProductModal(false);
+    setEditingProduct(null);
+    setPickerSelectedLeaf(null);
+    setPickerSelectedPath([]);
+    setCategoryWarning(null);
   };
 
   // Image upload handler
@@ -631,12 +719,7 @@ export function SellerCatalogUploadsPage() {
               <UploadCloud className="w-5 h-5" />
             </span>
             <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-xl font-bold text-slate-900 tracking-tight">Catalog Uploads & Products</h1>
-                <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full">
-                  Phase 2 Active
-                </span>
-              </div>
+              <h1 className="text-xl font-bold text-slate-900 tracking-tight">Catalog Uploads & Products</h1>
               <p className="text-xs text-slate-500 mt-0.5">
                 Single item creator, bulk CSV/Excel feeds, leaf category tagging, and admin verification workflow
               </p>
@@ -833,6 +916,19 @@ export function SellerCatalogUploadsPage() {
           {/* ════════════════════════════════════════════════════════════════════ */}
           {activeTab === 'catalog' && (
             <div className="space-y-4">
+              {/* Notice: Only approved products appear in Inventory */}
+              <div className="p-3.5 bg-blue-50/80 border border-blue-200 rounded-xl flex items-center justify-between text-xs text-blue-900 shadow-2xs">
+                <div className="flex items-center gap-2.5">
+                  <Info className="w-4 h-4 text-blue-600 shrink-0" />
+                  <span>
+                    <strong>Catalog Approval Notice:</strong> Only approved products appear in Inventory. Submitted products require admin review before opening stock can be managed.
+                  </span>
+                </div>
+                <Link to="/workforce/seller-hub/inventory" className="text-blue-700 hover:text-blue-900 font-bold shrink-0 ml-2">
+                  Inventory &rarr;
+                </Link>
+              </div>
+
               {/* Search & Status Filters Bar */}
               <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs flex flex-col md:flex-row items-center justify-between gap-3">
                 {/* Search input */}
@@ -877,9 +973,9 @@ export function SellerCatalogUploadsPage() {
                   >
                     <option value="ALL">All Statuses</option>
                     <option value="DRAFT">Draft</option>
-                    <option value="SUBMITTED">Submitted</option>
-                    <option value="UNDER_REVIEW">Under Review</option>
-                    <option value="CHANGES_REQUESTED">Changes Requested</option>
+                    <option value="SUBMITTED">Awaiting approval</option>
+                    <option value="UNDER_REVIEW">Under review</option>
+                    <option value="CHANGES_REQUESTED">Changes requested</option>
                     <option value="APPROVED">Approved</option>
                     <option value="REJECTED">Rejected</option>
                     <option value="PAUSED">Paused</option>
@@ -1026,12 +1122,15 @@ export function SellerCatalogUploadsPage() {
                                   </span>
 
                                   {/* Review feedback alert for rejected/changes requested */}
-                                  {p.admin_review_note && (
+                                  {(p.rejection_reason || p.admin_review_note) && ['REJECTED', 'CHANGES_REQUESTED'].includes(p.status) && (
                                     <div
-                                      className="text-[10px] text-slate-600 bg-slate-50 border border-slate-200 p-1.5 rounded-lg max-w-xs line-clamp-2"
-                                      title={p.admin_review_note}
+                                      className="text-[10px] text-rose-700 bg-rose-50 border border-rose-200 p-1.5 rounded-lg max-w-xs line-clamp-2"
+                                      title={p.rejection_reason || p.admin_review_note}
                                     >
-                                      <span className="font-bold text-slate-800">Review Note:</span> {p.admin_review_note}
+                                      <span className="font-bold text-rose-900">
+                                        {p.status === 'REJECTED' ? 'Rejection Reason:' : 'Changes Needed:'}
+                                      </span>{' '}
+                                      {p.rejection_reason || p.admin_review_note}
                                     </div>
                                   )}
                                 </div>
@@ -1049,8 +1148,20 @@ export function SellerCatalogUploadsPage() {
                                     <History className="w-3.5 h-3.5" />
                                   </button>
 
-                                  {/* Submit for Review (if Draft or Changes Requested) */}
-                                  {['DRAFT', 'CHANGES_REQUESTED', 'PAUSED'].includes(p.status) && (
+                                  {/* Edit & Resubmit Action for Rejected / Changes Requested */}
+                                  {['REJECTED', 'CHANGES_REQUESTED'].includes(p.status) && (
+                                    <button
+                                      onClick={() => handleOpenProductModal(p)}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold bg-amber-50 text-amber-800 hover:bg-amber-100 border border-amber-300 rounded-lg transition-colors"
+                                      title="Edit details and resubmit for approval"
+                                    >
+                                      <RotateCcw className="w-3 h-3 text-amber-600" />
+                                      <span>Edit & Resubmit</span>
+                                    </button>
+                                  )}
+
+                                  {/* Submit for Review (if Draft or Paused) */}
+                                  {['DRAFT', 'PAUSED'].includes(p.status) && (
                                     <button
                                       onClick={() => handleSubmitProduct(p.id)}
                                       className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors"
@@ -1380,91 +1491,104 @@ export function SellerCatalogUploadsPage() {
               {/* ───────────────────────────────────────────────────────────── */}
               {productModalStep === 1 ? (
                 <div className="p-6 space-y-4">
-                  {/* Top Search Category Input */}
-                  <div className="relative">
-                    <div className="relative flex items-center">
-                      <Search className="w-4 h-4 text-slate-400 absolute left-3.5 pointer-events-none" />
-                      <input
-                        type="text"
-                        placeholder="Search Category (Try Milk, Rice, Oil, Vegetables, Biscuits and more...)"
-                        value={pickerSearch}
-                        onChange={(e) => handlePickerSearchChange(e.target.value)}
-                        className="w-full pl-10 pr-10 py-2.5 bg-slate-50 hover:bg-slate-100/80 focus:bg-white border border-slate-200 focus:border-emerald-500 rounded-xl text-xs text-slate-800 transition-colors shadow-2xs"
-                      />
-                      {pickerSearch && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setPickerSearch('');
-                            setPickerSearchResults([]);
-                          }}
-                          className="absolute right-3 text-slate-400 hover:text-slate-600"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
+                  {/* Top Search Category Input with Refresh Button */}
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <div className="relative flex items-center">
+                        <Search className="w-4 h-4 text-slate-400 absolute left-3.5 pointer-events-none" />
+                        <input
+                          type="text"
+                          placeholder="Search Category (Try Milk, Rice, Oil, Vegetables, Biscuits and more...)"
+                          value={pickerSearch}
+                          onChange={(e) => handlePickerSearchChange(e.target.value)}
+                          className="w-full pl-10 pr-10 py-2.5 bg-slate-50 hover:bg-slate-100/80 focus:bg-white border border-slate-200 focus:border-emerald-500 rounded-xl text-xs text-slate-800 transition-colors shadow-2xs"
+                        />
+                        {pickerSearch && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPickerSearch('');
+                              setPickerSearchResults([]);
+                            }}
+                            className="absolute right-3 text-slate-400 hover:text-slate-600"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Search Results Dropdown Overlay */}
+                      {pickerSearch.trim().length >= 2 && (
+                        <div className="absolute top-full left-0 right-0 mt-1.5 bg-white rounded-xl border border-slate-200 shadow-xl z-20 max-h-64 overflow-y-auto">
+                          {pickerSearchLoading ? (
+                            <div className="p-4 text-center text-slate-400 text-xs flex items-center justify-center gap-2">
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-600" />
+                              <span>Searching categories across catalog hierarchy...</span>
+                            </div>
+                          ) : pickerSearchResults.length === 0 ? (
+                            <div className="p-4 text-center text-slate-500 text-xs">
+                              <p className="font-semibold">No categories match "{pickerSearch}"</p>
+                              <p className="text-[11px] text-slate-400 mt-0.5">
+                                Try another keyword or browse the cascading columns below.
+                              </p>
+                            </div>
+                          ) : (
+                            <div className="divide-y divide-slate-100">
+                              {pickerSearchResults.map((cat) => (
+                                <div
+                                  key={cat.id}
+                                  onClick={() => cat.is_leaf && handleSearchResultClick(cat)}
+                                  className={`p-3 flex items-center justify-between text-xs transition-colors ${
+                                    cat.is_leaf
+                                      ? 'hover:bg-emerald-50/80 cursor-pointer'
+                                      : 'opacity-60 bg-slate-50/50 cursor-not-allowed'
+                                  }`}
+                                >
+                                  <div className="min-w-0 flex-1 pr-3">
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-bold text-slate-900">{cat.name}</span>
+                                      {cat.is_leaf ? (
+                                        <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                                          Leaf Category
+                                        </span>
+                                      ) : (
+                                        <span className="text-[10px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
+                                          Subcategory
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-[11px] text-slate-500 font-mono mt-0.5 truncate">
+                                      {cat.path_string || cat.name}
+                                    </p>
+                                  </div>
+                                  {cat.is_leaf ? (
+                                    <button
+                                      type="button"
+                                      className="px-2.5 py-1 text-[11px] font-bold text-emerald-700 bg-emerald-100/80 hover:bg-emerald-200 rounded-lg shrink-0 transition-colors"
+                                    >
+                                      Select Leaf
+                                    </button>
+                                  ) : (
+                                    <span className="text-[11px] text-slate-400 shrink-0">Has Subcategories</span>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
 
-                    {/* Search Results Dropdown Overlay */}
-                    {pickerSearch.trim().length >= 2 && (
-                      <div className="absolute top-full left-0 right-0 mt-1.5 bg-white rounded-xl border border-slate-200 shadow-xl z-20 max-h-64 overflow-y-auto">
-                        {pickerSearchLoading ? (
-                          <div className="p-4 text-center text-slate-400 text-xs flex items-center justify-center gap-2">
-                            <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-600" />
-                            <span>Searching categories across catalog hierarchy...</span>
-                          </div>
-                        ) : pickerSearchResults.length === 0 ? (
-                          <div className="p-4 text-center text-slate-500 text-xs">
-                            <p className="font-semibold">No categories match "{pickerSearch}"</p>
-                            <p className="text-[11px] text-slate-400 mt-0.5">
-                              Try another keyword or browse the cascading columns below.
-                            </p>
-                          </div>
-                        ) : (
-                          <div className="divide-y divide-slate-100">
-                            {pickerSearchResults.map((cat) => (
-                              <div
-                                key={cat.id}
-                                onClick={() => cat.is_leaf && handleSearchResultClick(cat)}
-                                className={`p-3 flex items-center justify-between text-xs transition-colors ${
-                                  cat.is_leaf
-                                    ? 'hover:bg-emerald-50/80 cursor-pointer'
-                                    : 'opacity-60 bg-slate-50/50 cursor-not-allowed'
-                                }`}
-                              >
-                                <div className="min-w-0 flex-1 pr-3">
-                                  <div className="flex items-center gap-2">
-                                    <span className="font-bold text-slate-900">{cat.name}</span>
-                                    {cat.is_leaf ? (
-                                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                                        Leaf Category
-                                      </span>
-                                    ) : (
-                                      <span className="text-[10px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
-                                        Subcategory
-                                      </span>
-                                    )}
-                                  </div>
-                                  <p className="text-[11px] text-slate-500 font-mono mt-0.5 truncate">
-                                    {cat.path_string || cat.name}
-                                  </p>
-                                </div>
-                                {cat.is_leaf ? (
-                                  <button
-                                    type="button"
-                                    className="px-2.5 py-1 text-[11px] font-bold text-emerald-700 bg-emerald-100/80 hover:bg-emerald-200 rounded-lg shrink-0 transition-colors"
-                                  >
-                                    Select Leaf
-                                  </button>
-                                ) : (
-                                  <span className="text-[11px] text-slate-400 shrink-0">Has Subcategories</span>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
+                    <button
+                      type="button"
+                      onClick={handleRefreshPicker}
+                      disabled={pickerColumnLoading[0]}
+                      className="inline-flex items-center gap-1.5 px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold shrink-0 transition-colors shadow-2xs disabled:opacity-50"
+                      title="Refresh all catalog categories from server"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${pickerColumnLoading[0] ? 'animate-spin text-emerald-600' : 'text-slate-500'}`} />
+                      <span>Refresh</span>
+                    </button>
                   </div>
 
                   {/* Cascading Independent Scroll Columns */}
@@ -1477,28 +1601,61 @@ export function SellerCatalogUploadsPage() {
                           {pickerColumnLoading[0] && <RefreshCw className="w-3 h-3 animate-spin text-emerald-600" />}
                         </div>
                         <div className="p-1.5 flex-1 overflow-y-auto divide-y divide-slate-50 text-xs">
-                          {pickerColumns[0]?.map((cat) => {
-                            const isSelected = pickerSelectedPath[0]?.id === cat.id;
-                            return (
+                          {pickerColumnLoading[0] ? (
+                            <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center p-4 gap-2">
+                              <RefreshCw className="w-5 h-5 animate-spin text-emerald-600" />
+                              <p className="text-[11px]">Loading categories...</p>
+                            </div>
+                          ) : pickerErrors[0] ? (
+                            <div className="h-full flex flex-col items-center justify-center text-rose-600 text-center p-4 gap-2">
+                              <AlertCircle className="w-5 h-5 text-rose-500" />
+                              <p className="text-[11px] font-medium">{pickerErrors[0]}</p>
                               <button
-                                key={cat.id}
                                 type="button"
-                                onClick={() => handleColumnItemClick(cat, 0)}
-                                className={`w-full text-left px-3 py-2 rounded-lg flex items-center justify-between transition-all ${
-                                  isSelected
-                                    ? 'bg-emerald-50 text-emerald-950 font-bold border-l-4 border-emerald-600 shadow-2xs'
-                                    : 'text-slate-700 hover:bg-slate-100/80 font-medium'
-                                }`}
+                                onClick={handleRefreshPicker}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg text-[11px] font-semibold border border-rose-200"
                               >
-                                <span className="truncate pr-2">{cat.name}</span>
-                                {cat.has_children ? (
-                                  <ChevronRight className={`w-3.5 h-3.5 shrink-0 ${isSelected ? 'text-emerald-700' : 'text-slate-400'}`} />
-                                ) : (
-                                  <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Leaf category" />
-                                )}
+                                <RefreshCw className="w-3 h-3" />
+                                <span>Refresh categories</span>
                               </button>
-                            );
-                          })}
+                            </div>
+                          ) : !pickerColumns[0] || pickerColumns[0].length === 0 ? (
+                            <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center p-4 gap-2">
+                              <Layers className="w-6 h-6 text-slate-300" />
+                              <p className="text-[11px]">No active categories found.</p>
+                              <button
+                                type="button"
+                                onClick={handleRefreshPicker}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[11px] font-semibold border border-slate-200"
+                              >
+                                <RefreshCw className="w-3 h-3" />
+                                <span>Refresh categories</span>
+                              </button>
+                            </div>
+                          ) : (
+                            pickerColumns[0].map((cat) => {
+                              const isSelected = pickerSelectedPath[0]?.id === cat.id;
+                              return (
+                                <button
+                                  key={cat.id}
+                                  type="button"
+                                  onClick={() => handleColumnItemClick(cat, 0)}
+                                  className={`w-full text-left px-3 py-2 rounded-lg flex items-center justify-between transition-all ${
+                                    isSelected
+                                      ? 'bg-emerald-50 text-emerald-950 font-bold border-l-4 border-emerald-600 shadow-2xs'
+                                      : 'text-slate-700 hover:bg-slate-100/80 font-medium'
+                                  }`}
+                                >
+                                  <span className="truncate pr-2">{cat.name}</span>
+                                  {cat.has_children ? (
+                                    <ChevronRight className={`w-3.5 h-3.5 shrink-0 ${isSelected ? 'text-emerald-700' : 'text-slate-400'}`} />
+                                  ) : (
+                                    <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Leaf category" />
+                                  )}
+                                </button>
+                              );
+                            })
+                          )}
                         </div>
                       </div>
 
@@ -1509,9 +1666,42 @@ export function SellerCatalogUploadsPage() {
                           {pickerColumnLoading[1] && <RefreshCw className="w-3 h-3 animate-spin text-emerald-600" />}
                         </div>
                         <div className="p-1.5 flex-1 overflow-y-auto divide-y divide-slate-50 text-xs">
-                          {!pickerColumns[1] || pickerColumns[1].length === 0 ? (
+                          {pickerColumnLoading[1] ? (
+                            <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center p-4 gap-2">
+                              <RefreshCw className="w-5 h-5 animate-spin text-emerald-600" />
+                              <p className="text-[11px]">Loading subcategories...</p>
+                            </div>
+                          ) : pickerErrors[1] ? (
+                            <div className="h-full flex flex-col items-center justify-center text-rose-600 text-center p-4 gap-2">
+                              <AlertCircle className="w-5 h-5 text-rose-500" />
+                              <p className="text-[11px] font-medium">{pickerErrors[1]}</p>
+                              {pickerSelectedPath[0] && (
+                                <button
+                                  type="button"
+                                  onClick={() => loadPickerColumn(pickerSelectedPath[0].id, 1, true)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg text-[11px] font-semibold border border-rose-200"
+                                >
+                                  <RefreshCw className="w-3 h-3" />
+                                  <span>Refresh categories</span>
+                                </button>
+                              )}
+                            </div>
+                          ) : !pickerSelectedPath[0] ? (
                             <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center p-4">
                               <p className="text-[11px]">Select a department on the left to view subcategories.</p>
+                            </div>
+                          ) : !pickerColumns[1] || pickerColumns[1].length === 0 ? (
+                            <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center p-4 gap-2">
+                              <Layers className="w-6 h-6 text-slate-300" />
+                              <p className="text-[11px]">No sub-categories</p>
+                              <button
+                                type="button"
+                                onClick={() => loadPickerColumn(pickerSelectedPath[0].id, 1, true)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[11px] font-semibold border border-slate-200"
+                              >
+                                <RefreshCw className="w-3 h-3" />
+                                <span>Refresh categories</span>
+                              </button>
                             </div>
                           ) : (
                             pickerColumns[1].map((cat) => {
@@ -1547,13 +1737,46 @@ export function SellerCatalogUploadsPage() {
                           {pickerColumnLoading[2] && <RefreshCw className="w-3 h-3 animate-spin text-emerald-600" />}
                         </div>
                         <div className="p-1.5 flex-1 overflow-y-auto divide-y divide-slate-50 text-xs">
-                          {!pickerColumns[2] || pickerColumns[2].length === 0 ? (
+                          {pickerColumnLoading[2] ? (
+                            <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center p-4 gap-2">
+                              <RefreshCw className="w-5 h-5 animate-spin text-emerald-600" />
+                              <p className="text-[11px]">Loading product types...</p>
+                            </div>
+                          ) : pickerErrors[2] ? (
+                            <div className="h-full flex flex-col items-center justify-center text-rose-600 text-center p-4 gap-2">
+                              <AlertCircle className="w-5 h-5 text-rose-500" />
+                              <p className="text-[11px] font-medium">{pickerErrors[2]}</p>
+                              {pickerSelectedPath[1] && (
+                                <button
+                                  type="button"
+                                  onClick={() => loadPickerColumn(pickerSelectedPath[1].id, 2, true)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg text-[11px] font-semibold border border-rose-200"
+                                >
+                                  <RefreshCw className="w-3 h-3" />
+                                  <span>Refresh categories</span>
+                                </button>
+                              )}
+                            </div>
+                          ) : !pickerSelectedPath[1] ? (
                             <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center p-4">
                               <p className="text-[11px]">
                                 {pickerSelectedLeaf
                                   ? 'Leaf category confirmed in previous column.'
                                   : 'Select a subcategory on the left to view product types.'}
                               </p>
+                            </div>
+                          ) : !pickerColumns[2] || pickerColumns[2].length === 0 ? (
+                            <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center p-4 gap-2">
+                              <Layers className="w-6 h-6 text-slate-300" />
+                              <p className="text-[11px]">No sub-categories</p>
+                              <button
+                                type="button"
+                                onClick={() => loadPickerColumn(pickerSelectedPath[1].id, 2, true)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[11px] font-semibold border border-slate-200"
+                              >
+                                <RefreshCw className="w-3 h-3" />
+                                <span>Refresh categories</span>
+                              </button>
                             </div>
                           ) : (
                             pickerColumns[2].map((cat) => {

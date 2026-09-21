@@ -44,6 +44,7 @@ django.setup()
 from django.apps import apps
 from django.conf import settings
 from django.db import connection, reset_queries
+from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APIRequestFactory, force_authenticate
 from rest_framework import status
 
@@ -71,6 +72,7 @@ from workforce_api.views_seller_hub import (
     SellerCatalogCategoryListView,
     AdminSellerHubCategoryListView,
     AdminSellerHubCategoryDetailView,
+    AdminCatalogCategoryActiveListView,
     SellerProductListView,
     SellerProductDetailView,
     SellerProductBulkUploadView,
@@ -83,7 +85,10 @@ from workforce_api.views_marketplace_integration import (
 User = get_user_model()
 factory = APIRequestFactory()
 
-TEST_SECRET = getattr(settings, "WORKFORCE_WEBHOOK_SECRET", "caldim_secure_webhook_token_2026")
+TEST_WEBHOOK_SECRET = "test-secret-not-real-phase10a-key"
+settings.WORKFORCE_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET
+settings.WORKFORCE_API_KEY = TEST_WEBHOOK_SECRET
+TEST_SECRET = TEST_WEBHOOK_SECRET
 
 
 def run_tests():
@@ -112,12 +117,19 @@ def run_tests():
     superadmin.is_staff = True
     superadmin.save()
 
+    platform_company, _ = Company.objects.get_or_create(
+        id=1,
+        defaults={"company_name": "Caldim Platform", "business_type": "platform", "is_active": True}
+    )
+
     staff_admin, _ = User.objects.get_or_create(
         username="phase10_staffadmin",
-        defaults={"email": "phase10_staffadmin@test.com", "is_superuser": False, "is_staff": True}
+        defaults={"email": "phase10_staffadmin@test.com", "is_superuser": False, "is_staff": True, "company": platform_company, "role": "admin"}
     )
     staff_admin.is_superuser = False
     staff_admin.is_staff = True
+    staff_admin.company = platform_company
+    staff_admin.role = "admin"
     staff_admin.save()
 
     vendor_company, _ = Company.objects.get_or_create(
@@ -707,6 +719,199 @@ def run_tests():
     assert_test(detail_keys == expected_product_keys,
                 "Marketplace product detail matches exact expected payload schema",
                 f"Missing: {expected_product_keys - detail_keys}, Extra: {detail_keys - expected_product_keys}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 13. AdminCatalogCategoryActiveListView Performance & Correctness
+    # ─────────────────────────────────────────────────────────────────────────
+    print("\n--- 13. AdminCatalogCategoryActiveListView Performance & Correctness ---")
+
+    # 1. Build test tree in SQLite
+    # 60 roots each with 2 children
+    p13_prefix = f"p13_{uuid.uuid4().hex[:6]}"
+
+    p13_roots = []
+    p13_leaves = []
+
+    for i in range(1, 61):
+        r = SellerHubCategory.objects.create(
+            name=f"TreeRoot{i:02d}_{p13_prefix}",
+            slug=f"tree-root-{i:02d}-{p13_prefix}",
+            sort_order=i,
+            is_active=True,
+        )
+        c1 = SellerHubCategory.objects.create(
+            name=f"TreeChild{i:02d}_1_{p13_prefix}",
+            slug=f"tree-child-{i:02d}-1-{p13_prefix}",
+            parent=r,
+            sort_order=1,
+            is_active=True,
+        )
+        c2 = SellerHubCategory.objects.create(
+            name=f"TreeChild{i:02d}_2_{p13_prefix}",
+            slug=f"tree-child-{i:02d}-2-{p13_prefix}",
+            parent=r,
+            sort_order=2,
+            is_active=True,
+        )
+        p13_roots.append(r)
+        p13_leaves.extend([c1, c2])
+
+    # One inactive root with an active child (must be excluded)
+    inact_root_p13 = SellerHubCategory.objects.create(
+        name=f"InactiveRoot_{p13_prefix}",
+        slug=f"inact-root-{p13_prefix}",
+        sort_order=900,
+        is_active=False,
+    )
+    act_child_inact_p13 = SellerHubCategory.objects.create(
+        name=f"ActiveChildOfInactive_{p13_prefix}",
+        slug=f"act-child-of-inact-{p13_prefix}",
+        parent=inact_root_p13,
+        sort_order=1,
+        is_active=True,
+    )
+
+    # One inactive leaf (excluded) under an active root with an active sibling
+    inact_leaf_parent_p13 = SellerHubCategory.objects.create(
+        name=f"ActiveParentOfInactLeaf_{p13_prefix}",
+        slug=f"act-parent-of-inact-leaf-{p13_prefix}",
+        sort_order=901,
+        is_active=True,
+    )
+    act_sibling_p13 = SellerHubCategory.objects.create(
+        name=f"ActiveSiblingLeaf_{p13_prefix}",
+        slug=f"act-sibling-leaf-{p13_prefix}",
+        parent=inact_leaf_parent_p13,
+        sort_order=1,
+        is_active=True,
+    )
+    inact_leaf_p13 = SellerHubCategory.objects.create(
+        name=f"InactiveChildLeaf_{p13_prefix}",
+        slug=f"inact-child-leaf-{p13_prefix}",
+        parent=inact_leaf_parent_p13,
+        sort_order=2,
+        is_active=False,
+    )
+
+    # One 3-level branch
+    branch_l1_p13 = SellerHubCategory.objects.create(
+        name=f"BranchL1_{p13_prefix}",
+        slug=f"branch-l1-{p13_prefix}",
+        sort_order=902,
+        is_active=True,
+    )
+    branch_l2_p13 = SellerHubCategory.objects.create(
+        name=f"BranchL2_{p13_prefix}",
+        slug=f"branch-l2-{p13_prefix}",
+        parent=branch_l1_p13,
+        sort_order=1,
+        is_active=True,
+    )
+    branch_l3_p13 = SellerHubCategory.objects.create(
+        name=f"BranchL3_{p13_prefix}",
+        slug=f"branch-l3-{p13_prefix}",
+        parent=branch_l2_p13,
+        sort_order=1,
+        is_active=True,
+    )
+
+    # Build independently expected category list from all categories in DB:
+    # An active category is valid iff all its ancestors are active.
+    # A category is a leaf iff it has no active children whose ancestor chain is active.
+    all_cats_db = {c.id: c for c in SellerHubCategory.objects.all()}
+
+    def is_valid_active(cat_id):
+        visited = set()
+        curr = cat_id
+        while curr is not None:
+            if curr in visited:
+                return False
+            visited.add(curr)
+            c = all_cats_db.get(curr)
+            if not c or not c.is_active:
+                return False
+            curr = c.parent_id
+        return True
+
+    valid_active_cats = [c for c in all_cats_db.values() if is_valid_active(c.id)]
+    valid_ids_set = {c.id for c in valid_active_cats}
+
+    def has_active_kid(cat_id):
+        return any(c.parent_id == cat_id and c.id in valid_ids_set for c in valid_active_cats)
+
+    def get_path(cat):
+        names = [cat.name]
+        curr = cat.parent_id
+        visited = {cat.id}
+        while curr is not None and curr in all_cats_db and curr not in visited:
+            visited.add(curr)
+            names.insert(0, all_cats_db[curr].name)
+            curr = all_cats_db[curr].parent_id
+        return " > ".join(names)
+
+    expected_all_list = []
+    for c in valid_active_cats:
+        is_leaf_val = not has_active_kid(c.id)
+        parent_obj = all_cats_db.get(c.parent_id)
+        expected_all_list.append({
+            "id": c.id,
+            "name": c.name,
+            "slug": c.slug,
+            "path": get_path(c),
+            "parent_name": parent_obj.name if parent_obj else None,
+            "icon": c.icon,
+            "is_leaf": is_leaf_val,
+        })
+    expected_all_list.sort(key=lambda x: x["path"])
+    expected_leaf_only_list = [item for item in expected_all_list if item["is_leaf"]]
+
+    active_view = AdminCatalogCategoryActiveListView.as_view()
+
+    # 2. Test as authenticated seller
+    # GET /seller-hub/categories/active/
+    req_act_seller = factory.get("/api/workforce/seller-hub/categories/active/")
+    force_authenticate(req_act_seller, user=vendor_user)
+    with CaptureQueriesContext(connection) as ctx_seller_all:
+        res_act_seller = active_view(req_act_seller)
+
+    assert_test(res_act_seller.status_code == 200, "Seller GET /categories/active/ returns 200 OK")
+    assert_test(res_act_seller.data == expected_all_list, "Seller GET /categories/active/ matches expected JSON data")
+    seller_all_qcount = len(ctx_seller_all.captured_queries)
+    assert_test(seller_all_qcount <= 4, f"Seller GET /categories/active/ query count <= 4 (observed: {seller_all_qcount})")
+
+    # GET /seller-hub/categories/active/?leaf_only=true
+    req_leaf_seller = factory.get("/api/workforce/seller-hub/categories/active/?leaf_only=true")
+    force_authenticate(req_leaf_seller, user=vendor_user)
+    with CaptureQueriesContext(connection) as ctx_seller_leaf:
+        res_leaf_seller = active_view(req_leaf_seller)
+
+    assert_test(res_leaf_seller.status_code == 200, "Seller GET /categories/active/?leaf_only=true returns 200 OK")
+    assert_test(res_leaf_seller.data == expected_leaf_only_list, "Seller GET /categories/active/?leaf_only=true matches expected leaf JSON data")
+    seller_leaf_qcount = len(ctx_seller_leaf.captured_queries)
+    assert_test(seller_leaf_qcount <= 4, f"Seller GET /categories/active/?leaf_only=true query count <= 4 (observed: {seller_leaf_qcount})")
+
+    # 3. Test as platform admin
+    # GET /seller-hub/categories/active/
+    req_act_admin = factory.get("/api/workforce/seller-hub/categories/active/")
+    force_authenticate(req_act_admin, user=superadmin)
+    with CaptureQueriesContext(connection) as ctx_admin_all:
+        res_act_admin = active_view(req_act_admin)
+
+    assert_test(res_act_admin.status_code == 200, "Platform Admin GET /categories/active/ returns 200 OK")
+    assert_test(res_act_admin.data == expected_all_list, "Platform Admin GET /categories/active/ matches expected JSON data")
+    admin_all_qcount = len(ctx_admin_all.captured_queries)
+    assert_test(admin_all_qcount <= 4, f"Platform Admin GET /categories/active/ query count <= 4 (observed: {admin_all_qcount})")
+
+    # GET /seller-hub/categories/active/?leaf_only=true
+    req_leaf_admin = factory.get("/api/workforce/seller-hub/categories/active/?leaf_only=true")
+    force_authenticate(req_leaf_admin, user=superadmin)
+    with CaptureQueriesContext(connection) as ctx_admin_leaf:
+        res_leaf_admin = active_view(req_leaf_admin)
+
+    assert_test(res_leaf_admin.status_code == 200, "Platform Admin GET /categories/active/?leaf_only=true returns 200 OK")
+    assert_test(res_leaf_admin.data == expected_leaf_only_list, "Platform Admin GET /categories/active/?leaf_only=true matches expected leaf JSON data")
+    admin_leaf_qcount = len(ctx_admin_leaf.captured_queries)
+    assert_test(admin_leaf_qcount <= 4, f"Platform Admin GET /categories/active/?leaf_only=true query count <= 4 (observed: {admin_leaf_qcount})")
 
     print("\n" + "=" * 80)
     print(f"VERIFICATION SUMMARY: {passed_count} PASSED, {failed_count} FAILED")

@@ -60,6 +60,13 @@ def run_tests():
     print("STARTING SELLER HUB CATEGORY DATABASE SEPARATION VERIFICATION")
     print("=" * 80)
 
+    # Hard safety guard: ensure test execution is strictly against SQLite
+    if connection.vendor != "sqlite":
+        raise RuntimeError(
+            f"SAFETY ABORT: test_seller_hub_category_separation attempted cleanup on non-SQLite database (vendor={connection.vendor!r}). "
+            "Tests must ONLY execute against isolated temporary SQLite."
+        )
+
     client = APIClient()
 
     # Setup Superadmin User

@@ -3879,6 +3879,14 @@ class SellerProduct(models.Model):
             models.Index(fields=["status", "updated_at"], name="wf_seller_prod_st_upd_idx"),
         ]
 
+    @property
+    def rejection_reason(self):
+        return self.admin_review_note or ""
+
+    @rejection_reason.setter
+    def rejection_reason(self, value):
+        self.admin_review_note = value or ""
+
     def __str__(self):
         return f"{self.title} ({self.sku}) - {self.company.company_name}"
 

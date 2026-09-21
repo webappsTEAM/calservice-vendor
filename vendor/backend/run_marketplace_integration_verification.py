@@ -15,18 +15,56 @@ Tests:
 
 import os
 import sys
+import tempfile
 import django
 from decimal import Decimal
 import uuid
+
+_sqlite_temp = tempfile.NamedTemporaryFile(suffix="_marketplace_verif.sqlite3", delete=False)
+_sqlite_temp.close()
+os.environ["SEVO_E2E_SQLITE_PATH"] = _sqlite_temp.name
 
 # Set up Django environment
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "workforce_core.settings")
 django.setup()
 
+from django.apps import apps
 from django.conf import settings
+from django.db import connection
+
+# Hard safety guard: ensure test execution is strictly against SQLite
+if connection.vendor != "sqlite":
+    raise RuntimeError(
+        f"SAFETY ABORT: run_marketplace_integration_verification initialized against non-SQLite database (vendor={connection.vendor!r}). "
+        "Tests must ONLY execute against isolated temporary SQLite."
+    )
+
+created_table_count = 0
+with connection.schema_editor() as schema_editor:
+    for model in apps.get_models():
+        try:
+            schema_editor.create_model(model)
+            created_table_count += 1
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "already exists" in err_msg or "duplicate table" in err_msg:
+                continue
+            raise RuntimeError(f"Failed to create schema for model {model.__name__}: {e}") from e
+
+settings.ALLOWED_HOSTS = ["*"]
+
+from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIRequestFactory
 from rest_framework import status
+
+TEST_WEBHOOK_SECRET = "test-secret-not-real-run-marketplace"
+settings.WORKFORCE_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET
+settings.WORKFORCE_API_KEY = TEST_WEBHOOK_SECRET
+
+
+def _guarded_real_post(*args, **kwargs):
+    raise AssertionError(f"SECURITY GUARD: Real outbound network request attempted in run_marketplace_integration_verification: {args} {kwargs}")
 
 from companies.models import Company
 from workforce_api.models import (
@@ -57,15 +95,22 @@ def run_tests():
     print("STARTING PHASE 8A: CUSTOMER MARKETPLACE INTEGRATION VERIFICATION")
     print("=" * 80)
 
+    patch_dispatch = patch("workforce_api.services.seller_order_outbox._trigger_background_dispatch")
+    patch_dispatch.start()
+    patch_post = patch("requests.post", side_effect=_guarded_real_post)
+    patch_post.start()
+
+    uid = uuid.uuid4().hex[:6]
+
     # 1. Setup Test Data
     print("\n--- 1. Setting up Test Data ---")
     admin_user, _ = User.objects.get_or_create(
-        username="mkt_test_admin",
-        defaults={"email": "mkt_admin@sevo.local", "role": "ADMIN", "is_staff": True}
+        username=f"mkt_test_admin_{uid}",
+        defaults={"email": f"mkt_admin_{uid}@sevo.local", "role": "ADMIN", "is_staff": True}
     )
 
     company_active, _ = Company.objects.get_or_create(
-        slug="fresh-greens-store",
+        slug=f"fresh-greens-store-{uid}",
         defaults={
             "company_name": "Fresh Greens Store",
             "is_active": True,
@@ -76,7 +121,7 @@ def run_tests():
     company_active.save()
 
     company_inactive, _ = Company.objects.get_or_create(
-        slug="inactive-store",
+        slug=f"inactive-store-{uid}",
         defaults={
             "company_name": "Inactive Store",
             "is_active": False,
@@ -93,7 +138,7 @@ def run_tests():
     #  -> Inactive Branch: Seasonal Fruits (Inactive)
     #      -> Child under inactive: Mangoes (Active flag, but parent inactive)
     root_cat, _ = SellerHubCategory.objects.get_or_create(
-        slug="mkt-groceries",
+        slug=f"mkt-groceries-{uid}",
         defaults={"name": "Groceries", "is_active": True, "sort_order": 1}
     )
     root_cat.is_active = True
@@ -101,7 +146,7 @@ def run_tests():
     root_cat.save()
 
     child_cat, _ = SellerHubCategory.objects.get_or_create(
-        slug="mkt-dairy-eggs",
+        slug=f"mkt-dairy-eggs-{uid}",
         defaults={"name": "Dairy & Eggs", "is_active": True, "parent": root_cat, "sort_order": 1}
     )
     child_cat.is_active = True
@@ -109,7 +154,7 @@ def run_tests():
     child_cat.save()
 
     grandchild_cat, _ = SellerHubCategory.objects.get_or_create(
-        slug="mkt-farm-milk",
+        slug=f"mkt-farm-milk-{uid}",
         defaults={"name": "Farm Fresh Milk", "is_active": True, "parent": child_cat, "sort_order": 1}
     )
     grandchild_cat.is_active = True
@@ -117,7 +162,7 @@ def run_tests():
     grandchild_cat.save()
 
     inactive_root, _ = SellerHubCategory.objects.get_or_create(
-        slug="mkt-seasonal-fruits",
+        slug=f"mkt-seasonal-fruits-{uid}",
         defaults={"name": "Seasonal Fruits", "is_active": False, "sort_order": 2}
     )
     inactive_root.is_active = False
@@ -125,7 +170,7 @@ def run_tests():
     inactive_root.save()
 
     mangoes_cat, _ = SellerHubCategory.objects.get_or_create(
-        slug="mkt-mangoes",
+        slug=f"mkt-mangoes-{uid}",
         defaults={"name": "Mangoes", "is_active": True, "parent": inactive_root, "sort_order": 1}
     )
     mangoes_cat.is_active = True
@@ -295,8 +340,7 @@ def run_tests():
     print("  [OK] Test data created successfully.")
 
     # Configure Integration Secret
-    integration_secret = getattr(settings, "WORKFORCE_WEBHOOK_SECRET", None) or getattr(settings, "WORKFORCE_API_KEY", "sevo-workforce-secret-2026")
-    headers = {"HTTP_X_SEVO_INTEGRATION_SECRET": integration_secret}
+    headers = {"HTTP_X_WORKFORCE_WEBHOOK_SECRET": TEST_WEBHOOK_SECRET}
 
     # =========================================================================
     # 2. Test Integration Authentication (Security Fail-Closed)
@@ -311,7 +355,7 @@ def run_tests():
     print("  [OK] Unauthenticated request correctly rejected with 401/403.")
 
     # Invalid Secret Header
-    req_bad_auth = factory.get("/api/workforce/marketplace/products/", HTTP_X_SEVO_INTEGRATION_SECRET="invalid_token_12345")
+    req_bad_auth = factory.get("/api/workforce/marketplace/products/", HTTP_X_WORKFORCE_WEBHOOK_SECRET="invalid_token_12345")
     res_bad_auth = list_view(req_bad_auth)
     assert res_bad_auth.status_code in [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN], f"Expected 401/403, got {res_bad_auth.status_code}"
     print("  [OK] Invalid secret header correctly rejected.")
@@ -697,6 +741,9 @@ def run_tests():
     res_cancel_404 = cancel_view(req_cancel_404, source_order_id="NON-EXISTENT-ID-999")
     assert res_cancel_404.status_code == status.HTTP_404_NOT_FOUND
     print("  [OK] Cancelling non-existent source order returns 404.")
+
+    patch_post.stop()
+    patch_dispatch.stop()
 
     print("\n" + "=" * 80)
     print("ALL PHASE 8A VERIFICATION TESTS PASSED SUCCESSFULLY!")

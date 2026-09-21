@@ -61,7 +61,13 @@ from django.db import connection, reset_queries
 from rest_framework.test import APIRequestFactory, force_authenticate
 from rest_framework import status
 
-# Ensure test shared secret is configured
+# Hard safety guard: ensure test execution is strictly against SQLite
+if connection.vendor != "sqlite":
+    raise RuntimeError(
+        f"SAFETY ABORT: test_phase10b_category_feed initialized against non-SQLite database (vendor={connection.vendor!r}). "
+        "Tests must ONLY execute against isolated temporary SQLite."
+    )
+
 settings.WORKFORCE_WEBHOOK_SECRET = "test_valid_phase10b_secret_key_12345"
 settings.WORKFORCE_API_KEY = "test_valid_phase10b_api_key_67890"
 
@@ -104,6 +110,12 @@ def setup_test_data():
     Sets up a clean test dataset with companies, multi-level category hierarchy,
     and products with various approval, stock, and status states.
     """
+    if connection.vendor != "sqlite":
+        raise RuntimeError(
+            f"SAFETY ABORT: test_phase10b_category_feed attempted cleanup on non-SQLite database (vendor={connection.vendor!r}). "
+            "Tests must ONLY execute against isolated temporary SQLite."
+        )
+
     SellerProductImage.objects.all().delete()
     SellerInventory.objects.all().delete()
     SellerProduct.objects.all().delete()
@@ -415,7 +427,7 @@ def run_all_tests():
     from rest_framework_simplejwt.tokens import AccessToken
     from workforce_api.views_seller_hub import AdminSellerHubCategoryListView
 
-    admin_user = User.objects.create(username="jwt_admin_test_user", is_staff=True, is_active=True)
+    admin_user = User.objects.create(username="jwt_admin_test_user", is_staff=True, is_superuser=True, is_active=True)
     valid_jwt = str(AccessToken.for_user(admin_user))
     user_view = AdminSellerHubCategoryListView.as_view()
 

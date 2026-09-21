@@ -16,14 +16,37 @@ Comprehensive test suite for Phase 4: Seller Hub Orders and Fulfilment:
 12. Dashboard metrics accuracy from real DB records.
 """
 import os
+import sys
 import uuid
-import django
+import tempfile
 from decimal import Decimal
 
+if not os.environ.get("SEVO_E2E_SQLITE_PATH"):
+    temp_sqlite = os.path.join(tempfile.gettempdir(), f"sevo_orders_test_{uuid.uuid4().hex[:8]}.sqlite3")
+    os.environ["SEVO_E2E_SQLITE_PATH"] = temp_sqlite
+
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "workforce_core.settings")
+import django
 django.setup()
 
+from django.apps import apps
 from django.conf import settings
+from django.db import connection
+
+created_table_count = 0
+with connection.schema_editor() as schema_editor:
+    for model in apps.get_models():
+        try:
+            schema_editor.create_model(model)
+            created_table_count += 1
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "already exists" in err_msg or "duplicate table" in err_msg:
+                continue
+            raise RuntimeError(f"Failed to create schema for model {model.__name__}: {e}") from e
+print(f"SQLite Schema Initialized: {created_table_count} tables created.")
+print(f"Engine: {connection.settings_dict['ENGINE']}, Database: {connection.settings_dict['NAME']}")
+
 if "testserver" not in settings.ALLOWED_HOSTS and "*" not in settings.ALLOWED_HOSTS:
     settings.ALLOWED_HOSTS = list(settings.ALLOWED_HOSTS) + ["testserver", "localhost", "127.0.0.1"]
 
@@ -44,10 +67,34 @@ from workforce_api.models import (
     SellerOrderAuditLog,
 )
 
+from unittest.mock import patch
+
 User = get_user_model()
+
+TEST_WEBHOOK_SECRET = "test-secret-not-real-seller-orders"
+settings.WORKFORCE_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET
+settings.WORKFORCE_API_KEY = TEST_WEBHOOK_SECRET
+
+
+def _guarded_real_post(*args, **kwargs):
+    raise AssertionError(f"SECURITY GUARD: Real outbound network request attempted in test_seller_orders: {args} {kwargs}")
 
 
 class SellerOrdersTestCase(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls._patcher = patch("workforce_api.services.seller_order_outbox._trigger_background_dispatch")
+        cls._patcher.start()
+        cls._post_patcher = patch("requests.post", side_effect=_guarded_real_post)
+        cls._post_patcher.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._post_patcher.stop()
+        cls._patcher.stop()
+        super().tearDownClass()
+
     def setUp(self):
         self.client = APIClient()
         self.uid = uuid.uuid4().hex[:6]

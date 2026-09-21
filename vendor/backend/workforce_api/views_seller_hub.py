@@ -28,6 +28,7 @@ from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 from accounts.permissions import is_admin_role
+from accounts.platform import is_platform_admin_user
 from workforce_api.models import (
     SellerHubCategory,
     VendorCoupon,
@@ -132,21 +133,9 @@ def _is_seller_or_grocery_supplier(user):
     return False
 
 
-def _is_admin_or_superadmin(user):
-    """
-    Check if user is a platform superadministrator or staff/admin user.
-    Vendors, grocery suppliers, technicians, and regular employees return False.
-    """
-    if not user or not user.is_authenticated:
-        return False
-    if getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False):
-        return True
-    if getattr(user, "is_staff", False):
-        return True
-    role = str(getattr(user, "role", "")).lower()
-    if role in ("admin", "superadmin", "platform_admin", "staff"):
-        return True
-    return False
+is_platform_reviewer = is_platform_admin_user
+_is_admin_or_superadmin = is_platform_admin_user
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -428,7 +417,19 @@ class AdminSellerHubCategoryDetailView(APIView):
                 status=status.HTTP_409_CONFLICT
             )
 
-        # Safe Deletion Validation 2: Check linked InventoryItems
+        # Safe Deletion Validation 2: Check linked SellerProduct catalog items
+        products_count = cat.products.count()
+        if products_count > 0:
+            return Response(
+                {
+                    "error": f"Cannot delete category '{cat.name}' because it is linked to {products_count} product(s). Please delete, move, or reassign products first, or deactivate the category instead.",
+                    "code": "CATEGORY_HAS_PRODUCTS",
+                    "products_count": products_count,
+                },
+                status=status.HTTP_409_CONFLICT
+            )
+
+        # Safe Deletion Validation 3: Check linked InventoryItems
         inventory_count = InventoryItem.objects.filter(catalogue_category_id=pk).count()
 
         if inventory_count > 0:
@@ -442,7 +443,25 @@ class AdminSellerHubCategoryDetailView(APIView):
             )
 
         cat_name = cat.name
-        cat.delete()
+        try:
+            cat.delete()
+        except (models.ProtectedError, models.RestrictedError) as e:
+            return Response(
+                {
+                    "error": f"Cannot delete category '{cat_name}' because operational records are referencing it.",
+                    "code": "CATEGORY_RESTRICTED",
+                },
+                status=status.HTTP_409_CONFLICT
+            )
+        except Exception as e:
+            return Response(
+                {
+                    "error": f"Failed to delete category '{cat_name}': {str(e)}",
+                    "code": "DELETE_FAILED",
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         return Response(
             {"message": f"Category '{cat_name}' was deleted successfully."},
             status=status.HTTP_200_OK
@@ -496,7 +515,7 @@ class AdminSellerHubCategoryTreeView(APIView):
 
     def get(self, request):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
         is_admin = is_admin_role(user)
         is_seller = _is_seller_or_grocery_supplier(user)
 
@@ -529,7 +548,7 @@ class SellerCatalogCategoryListView(APIView):
 
     def get(self, request):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
         is_admin = is_admin_role(user)
         is_seller = _is_seller_or_grocery_supplier(user)
 
@@ -669,7 +688,7 @@ class AdminSellerCouponListView(APIView):
 
     def get(self, request):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         if not is_super and not is_admin_role(user) and not _is_seller_or_grocery_supplier(user):
@@ -724,7 +743,7 @@ class AdminSellerCouponListView(APIView):
 
     def post(self, request):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         if not is_super and not is_admin_role(user) and not _is_seller_or_grocery_supplier(user):
@@ -806,7 +825,7 @@ class AdminSellerCouponDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def _get_coupon(self, user, pk):
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         if is_super:
@@ -879,42 +898,63 @@ class AdminCatalogCategoryActiveListView(APIView):
     def get(self, request):
         leaf_only = request.query_params.get("leaf_only", "").lower() in ("1", "true", "yes")
 
-        # Fetch active categories
-        active_cats = SellerHubCategory.objects.filter(is_active=True).select_related("parent").prefetch_related("children")
-        
-        categories_list = []
-        for cat in active_cats:
-            # Check ancestor chain: all ancestors must be active
-            ancestor = cat.parent
-            all_ancestors_active = True
-            while ancestor:
-                if not ancestor.is_active:
-                    all_ancestors_active = False
+        # 1. Fetch all active categories in a single SQL query
+        all_active = list(SellerHubCategory.objects.filter(is_active=True))
+        cat_map = {c.id: c for c in all_active}
+
+        # 2. Build active ancestor chain validation in memory
+        valid_active_ids = set()
+        for c in all_active:
+            curr = c.parent_id
+            chain_valid = True
+            visited = {c.id}
+            while curr is not None:
+                if curr not in cat_map:
+                    chain_valid = False
                     break
-                ancestor = ancestor.parent
-            
-            if not all_ancestors_active:
+                if curr in visited:
+                    chain_valid = False
+                    break
+                visited.add(curr)
+                curr = cat_map[curr].parent_id
+            if chain_valid:
+                valid_active_ids.add(c.id)
+
+        # 3. Identify parent IDs that have at least one valid active child
+        parents_with_active_children = {
+            c.parent_id for c in all_active
+            if c.parent_id is not None and c.id in valid_active_ids
+        }
+
+        # 4. Build response items
+        categories_list = []
+        for cat in all_active:
+            if cat.id not in valid_active_ids:
                 continue
 
-            has_active_children = cat.children.filter(is_active=True).exists()
-            is_leaf = not has_active_children
+            is_leaf = cat.id not in parents_with_active_children
 
             if leaf_only and not is_leaf:
                 continue
 
             # Build ancestor lineage path
             path = [cat.name]
-            curr = cat.parent
-            while curr:
-                path.insert(0, curr.name)
-                curr = curr.parent
+            curr_id = cat.parent_id
+            visited = {cat.id}
+            while curr_id is not None and curr_id in cat_map and curr_id not in visited:
+                visited.add(curr_id)
+                path.insert(0, cat_map[curr_id].name)
+                curr_id = cat_map[curr_id].parent_id
+
+            parent_obj = cat_map.get(cat.parent_id)
+            parent_name = parent_obj.name if parent_obj else None
 
             categories_list.append({
                 "id": cat.id,
                 "name": cat.name,
                 "slug": cat.slug,
                 "path": " > ".join(path),
-                "parent_name": cat.parent.name if cat.parent else None,
+                "parent_name": parent_name,
                 "icon": cat.icon,
                 "is_leaf": is_leaf,
             })
@@ -952,14 +992,13 @@ class SellerProductListView(APIView):
 
     def get(self, request):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
-        is_admin = is_admin_role(user)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         queryset = SellerProduct.objects.select_related("category", "category__parent", "company", "reviewed_by", "created_by").prefetch_related("images")
 
         # Tenant Scoping: Sellers only see their company's products
-        if not (is_super or (is_admin and not company_id)):
+        if not is_super:
             if not company_id:
                 return Response(
                     {"error": "User is not associated with an approved merchant company."},
@@ -1083,12 +1122,11 @@ class SellerProductDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def _get_product(self, user, pk):
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
-        is_admin = is_admin_role(user)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         qs = SellerProduct.objects.select_related("category", "category__parent", "company", "reviewed_by", "created_by").prefetch_related("images", "audit_logs", "audit_logs__actor")
-        if is_super or (is_admin and not company_id):
+        if is_super:
             return qs.filter(pk=pk).first()
         if company_id:
             return qs.filter(pk=pk, company_id=company_id).first()
@@ -1107,13 +1145,14 @@ class SellerProductDetailView(APIView):
             return Response({"error": "Product not found or access denied."}, status=status.HTTP_404_NOT_FOUND)
 
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
 
         data = request.data.copy()
         images_data = data.pop("images", None)
 
         old_status = product.status
         old_title = product.title
+        old_description = product.description
         old_price = product.selling_price
         old_mrp = product.mrp
         old_category_id = product.category_id
@@ -1160,37 +1199,59 @@ class SellerProductDetailView(APIView):
                             sort_order=idx,
                         )
 
-            # Detect meaningful edits on APPROVED product
-            meaningful_change = False
+            # Detect edits that require re-approval on an APPROVED product
+            # Rule: edits to title, description, selling_price, images, or category trigger re-approval (SUBMITTED)
+            reapproval_required = False
             notes_list = []
             if old_title != updated_product.title:
-                meaningful_change = True
+                reapproval_required = True
                 notes_list.append(f"Title changed from '{old_title}' to '{updated_product.title}'")
+            if (old_description or '') != (updated_product.description or ''):
+                reapproval_required = True
+                notes_list.append("Description updated")
             if old_price != updated_product.selling_price:
-                meaningful_change = True
+                reapproval_required = True
                 notes_list.append(f"Selling price changed from ₹{old_price} to ₹{updated_product.selling_price}")
-            if old_mrp != updated_product.mrp:
-                meaningful_change = True
-                notes_list.append(f"MRP changed from ₹{old_mrp} to ₹{updated_product.mrp}")
             if old_category_id != updated_product.category_id:
-                meaningful_change = True
+                reapproval_required = True
                 notes_list.append(f"Category changed to '{updated_product.category.name}'")
+            if images_data is not None:
+                reapproval_required = True
+                notes_list.append("Product images updated")
+
+            if old_mrp != updated_product.mrp:
+                notes_list.append(f"MRP changed from ₹{old_mrp} to ₹{updated_product.mrp}")
 
             # Check if resubmission or status change
-            if old_status == SellerProduct.Status.APPROVED and meaningful_change and not is_super:
+            if old_status == SellerProduct.Status.APPROVED and reapproval_required and not is_super:
                 updated_product.status = SellerProduct.Status.SUBMITTED
+                updated_product.admin_review_note = ""
                 updated_product.submitted_at = timezone.now()
-                updated_product.save(update_fields=["status", "submitted_at", "updated_at"])
-                
+                updated_product.save(update_fields=["status", "admin_review_note", "submitted_at", "updated_at"])
+
                 SellerProductAuditLog.objects.create(
                     product=updated_product,
                     action="RESUBMITTED",
                     from_status=old_status,
                     to_status=SellerProduct.Status.SUBMITTED,
                     actor=user,
-                    notes=f"Approved product modified. Moved back to review queue. Changes: {', '.join(notes_list)}",
+                    notes=f"Approved product core fields modified. Moved back to review queue. Changes: {', '.join(notes_list)}",
                 )
-            elif meaningful_change or old_status != updated_product.status:
+            elif old_status in (SellerProduct.Status.REJECTED, SellerProduct.Status.CHANGES_REQUESTED) and not is_super:
+                updated_product.status = SellerProduct.Status.SUBMITTED
+                updated_product.admin_review_note = ""
+                updated_product.submitted_at = timezone.now()
+                updated_product.save(update_fields=["status", "admin_review_note", "submitted_at", "updated_at"])
+
+                SellerProductAuditLog.objects.create(
+                    product=updated_product,
+                    action="RESUBMITTED",
+                    from_status=old_status,
+                    to_status=SellerProduct.Status.SUBMITTED,
+                    actor=user,
+                    notes=f"Product edited and resubmitted for review by {user.username}. Changes: {', '.join(notes_list) if notes_list else 'Product details updated.'}",
+                )
+            elif notes_list or old_status != updated_product.status:
                 SellerProductAuditLog.objects.create(
                     product=updated_product,
                     action="EDITED",
@@ -1199,6 +1260,7 @@ class SellerProductDetailView(APIView):
                     actor=user,
                     notes=f"Product updated by {user.username}. {', '.join(notes_list) if notes_list else ''}".strip(),
                 )
+
 
         return Response(
             {
@@ -1232,14 +1294,14 @@ class SellerProductDetailView(APIView):
 
 class SellerProductSubmitView(APIView):
     """
-    POST /api/workforce/seller-hub/products/<int:pk>/submit/ – Submit a Draft / Changes Requested product for Admin review
+    POST /api/workforce/seller-hub/products/<int:pk>/submit/ – Submit a Draft / Rejected / Changes Requested product for Admin review
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
         user = request.user
         company_id = _resolve_user_company_id(user)
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
 
         qs = SellerProduct.objects.select_related("category").prefetch_related("images")
         if is_super:
@@ -1260,15 +1322,10 @@ class SellerProductSubmitView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        if not product.category.is_active:
+        is_valid, err_msg, err_code = validate_product_category_is_leaf(product.category)
+        if not is_valid:
             return Response(
-                {"error": f"Category '{product.category.name}' is inactive. Please reassign to an active leaf category."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        if product.category.children.filter(is_active=True).exists():
-            return Response(
-                {"error": f"Category '{product.category.name}' is a parent category. Please select a specific leaf subcategory."},
+                {"error": err_msg, "code": err_code},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -1287,8 +1344,9 @@ class SellerProductSubmitView(APIView):
 
         from_st = product.status
         product.status = SellerProduct.Status.SUBMITTED
+        product.admin_review_note = ""
         product.submitted_at = timezone.now()
-        product.save(update_fields=["status", "submitted_at", "updated_at"])
+        product.save(update_fields=["status", "admin_review_note", "submitted_at", "updated_at"])
 
         SellerProductAuditLog.objects.create(
             product=product,
@@ -1313,7 +1371,7 @@ class SellerProductReviewDecisionView(APIView):
     POST /api/workforce/seller-hub/products/<int:pk>/review/ – Admin/Superadmin Catalog Review Decision
     Actions:
       - 'approve'
-      - 'reject' (mandatory note)
+      - 'reject' (mandatory note, min 5 chars)
       - 'request_changes' (mandatory note)
       - 'pause' (mandatory note)
     """
@@ -1321,10 +1379,7 @@ class SellerProductReviewDecisionView(APIView):
 
     def post(self, request, pk):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
-        is_admin = is_admin_role(user)
-
-        if not (is_super or is_admin):
+        if not _is_admin_or_superadmin(user):
             return Response(
                 {"error": "Only platform administrators can perform catalog review decisions."},
                 status=status.HTTP_403_FORBIDDEN
@@ -1335,7 +1390,7 @@ class SellerProductReviewDecisionView(APIView):
             return Response({"error": "Product not found."}, status=status.HTTP_404_NOT_FOUND)
 
         action = str(request.data.get("action", "")).strip().lower()
-        note = str(request.data.get("note", "")).strip()
+        note = str(request.data.get("note", "") or request.data.get("reason", "")).strip()
 
         valid_actions = {
             "approve": SellerProduct.Status.APPROVED,
@@ -1350,8 +1405,25 @@ class SellerProductReviewDecisionView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Mandatory reason note for reject, request_changes, and pause
-        if action in ("reject", "request_changes", "pause") and not note:
+        if action == "approve":
+            if product.status == SellerProduct.Status.APPROVED:
+                return Response(
+                    {"message": f"Product '{product.title}' is already approved.", "status": "APPROVED", "product": SellerProductDetailSerializer(product).data},
+                    status=status.HTTP_200_OK
+                )
+            is_valid, err_msg, err_code = validate_product_category_is_leaf(product.category)
+            if not is_valid:
+                return Response(
+                    {"error": f"Cannot approve product: {err_msg}", "code": "CATEGORY_NOT_ELIGIBLE"},
+                    status=status.HTTP_409_CONFLICT
+                )
+        elif action == "reject":
+            if not note or len(note) < 5:
+                return Response(
+                    {"error": "A valid rejection reason with at least 5 characters is required.", "field": "reason"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        elif action in ("request_changes", "pause") and not note:
             return Response(
                 {"error": f"A mandatory feedback reason/note is required when performing '{action}'.", "field": "note"},
                 status=status.HTTP_400_BAD_REQUEST
@@ -1362,7 +1434,7 @@ class SellerProductReviewDecisionView(APIView):
 
         with transaction.atomic():
             product.status = target_status
-            product.admin_review_note = note
+            product.admin_review_note = note if action != "approve" else ""
             product.reviewed_by = user
             product.reviewed_at = timezone.now()
             product.save(update_fields=["status", "admin_review_note", "reviewed_by", "reviewed_at", "updated_at"])
@@ -1389,6 +1461,471 @@ class SellerProductReviewDecisionView(APIView):
             },
             status=status.HTTP_200_OK
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 11: ADMIN CATEGORIES APPROVAL WORKFLOW VIEWS (Seller List -> Products)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AdminSellerApprovalListView(APIView):
+    """
+    GET /api/workforce/admin/seller-hub/approval/sellers/
+    List sellers who have submitted products with aggregated pending/approved/rejected counts.
+    Admin & Super Admin only.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if not _is_admin_or_superadmin(user):
+            return Response(
+                {"error": "Only platform administrators can access categories approval."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        queryset = Company.objects.filter(
+            models.Q(business_type__in=["grocery_supplier", "hybrid"]) |
+            models.Q(seller_products__isnull=False)
+        ).distinct()
+
+        queryset = queryset.annotate(
+            pending_count=models.Count(
+                "seller_products",
+                filter=models.Q(
+                    seller_products__status__in=[
+                        SellerProduct.Status.SUBMITTED,
+                        SellerProduct.Status.UNDER_REVIEW,
+                        SellerProduct.Status.CHANGES_REQUESTED,
+                    ]
+                ),
+                distinct=True,
+            ),
+            approved_count=models.Count(
+                "seller_products",
+                filter=models.Q(seller_products__status=SellerProduct.Status.APPROVED),
+                distinct=True,
+            ),
+            rejected_count=models.Count(
+                "seller_products",
+                filter=models.Q(seller_products__status=SellerProduct.Status.REJECTED),
+                distinct=True,
+            ),
+            total_count=models.Count("seller_products", distinct=True),
+            latest_submitted_at=models.Max("seller_products__submitted_at"),
+        )
+
+        search = request.query_params.get("search", "").strip()
+        if search:
+            queryset = queryset.filter(
+                models.Q(company_name__icontains=search) |
+                models.Q(slug__icontains=search)
+            )
+
+        has_pending = str(request.query_params.get("has_pending", "")).strip().lower()
+        if has_pending in ("true", "1"):
+            queryset = queryset.filter(pending_count__gt=0)
+
+        ordering = request.query_params.get("ordering", "-pending_count")
+        valid_orderings = {
+            "-pending_count": ["-pending_count", "-latest_submitted_at", "company_name"],
+            "pending_count": ["pending_count", "-latest_submitted_at", "company_name"],
+            "-latest_submitted_at": ["-latest_submitted_at", "-pending_count"],
+            "company_name": ["company_name"],
+            "-company_name": ["-company_name"],
+        }
+        order_fields = valid_orderings.get(ordering, ["-pending_count", "-latest_submitted_at", "company_name"])
+        queryset = queryset.order_by(*order_fields)
+
+        total_count = queryset.count()
+
+        # Pagination
+        try:
+            page = max(1, int(request.query_params.get("page", 1)))
+        except (ValueError, TypeError):
+            page = 1
+        try:
+            page_size = min(100, max(1, int(request.query_params.get("page_size", 20))))
+        except (ValueError, TypeError):
+            page_size = 20
+
+        offset = (page - 1) * page_size
+        paged_queryset = queryset[offset:offset + page_size]
+
+        from workforce_api.serializers import AdminSellerApprovalListSerializer
+        serializer = AdminSellerApprovalListSerializer(paged_queryset, many=True)
+
+        return Response(
+            {
+                "count": total_count,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": (total_count + page_size - 1) // page_size if total_count > 0 else 1,
+                "results": serializer.data,
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class AdminSellerProductApprovalListView(APIView):
+    """
+    GET /api/workforce/admin/seller-hub/approval/sellers/<int:seller_id>/products/
+    Returns products submitted by a specific seller for catalog category review.
+    Supports status filters (default: PENDING), category filter (with descendant tree inclusion), search, pagination.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, seller_id):
+        user = request.user
+        if not _is_admin_or_superadmin(user):
+            return Response(
+                {"error": "Only platform administrators can access categories approval."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        company = Company.objects.filter(pk=seller_id).first()
+        if not company:
+            return Response({"error": "Seller company not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Header metrics for this seller
+        all_company_products = SellerProduct.objects.filter(company=company)
+        pending_count = all_company_products.filter(
+            status__in=[
+                SellerProduct.Status.SUBMITTED,
+                SellerProduct.Status.UNDER_REVIEW,
+                SellerProduct.Status.CHANGES_REQUESTED,
+            ]
+        ).count()
+        approved_count = all_company_products.filter(status=SellerProduct.Status.APPROVED).count()
+        rejected_count = all_company_products.filter(status=SellerProduct.Status.REJECTED).count()
+        total_count = all_company_products.count()
+
+        queryset = all_company_products.select_related(
+            "category",
+            "category__parent",
+            "company",
+            "reviewed_by",
+        ).prefetch_related("images")
+
+        # Status filter
+        status_param = request.query_params.get("status", "").strip().upper()
+        if not status_param or status_param == "PENDING" or status_param == "SUBMITTED":
+            queryset = queryset.filter(
+                status__in=[
+                    SellerProduct.Status.SUBMITTED,
+                    SellerProduct.Status.UNDER_REVIEW,
+                    SellerProduct.Status.CHANGES_REQUESTED,
+                ]
+            )
+        elif status_param != "ALL":
+            queryset = queryset.filter(status=status_param)
+
+        # Category filter (including descendant categories)
+        cat_id_param = request.query_params.get("category_id")
+        if cat_id_param and str(cat_id_param).isdigit():
+            target_cat_id = int(cat_id_param)
+            # Find all descendant category IDs
+            descendant_ids = {target_cat_id}
+            cats_to_check = [target_cat_id]
+            while cats_to_check:
+                curr_id = cats_to_check.pop(0)
+                child_ids = list(SellerHubCategory.objects.filter(parent_id=curr_id).values_list("id", flat=True))
+                for c_id in child_ids:
+                    if c_id not in descendant_ids:
+                        descendant_ids.add(c_id)
+                        cats_to_check.append(c_id)
+            queryset = queryset.filter(category_id__in=descendant_ids)
+
+        # Search filter
+        search = request.query_params.get("search", "").strip()
+        if search:
+            queryset = queryset.filter(
+                models.Q(title__icontains=search) |
+                models.Q(sku__icontains=search) |
+                models.Q(brand__icontains=search)
+            )
+
+        queryset = queryset.order_by("-submitted_at", "-updated_at", "-id")
+
+        filtered_count = queryset.count()
+
+        # Pagination
+        try:
+            page = max(1, int(request.query_params.get("page", 1)))
+        except (ValueError, TypeError):
+            page = 1
+        try:
+            page_size = min(100, max(1, int(request.query_params.get("page_size", 20))))
+        except (ValueError, TypeError):
+            page_size = 20
+
+        offset = (page - 1) * page_size
+        paged_queryset = queryset[offset:offset + page_size]
+
+        serializer = SellerProductListSerializer(paged_queryset, many=True)
+
+        return Response(
+            {
+                "seller": {
+                    "id": company.id,
+                    "name": company.company_name,
+                    "company_name": company.company_name,
+                    "slug": company.slug,
+                    "pending_count": pending_count,
+                    "approved_count": approved_count,
+                    "rejected_count": rejected_count,
+                    "total_count": total_count,
+                },
+                "count": filtered_count,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": (filtered_count + page_size - 1) // page_size if filtered_count > 0 else 1,
+                "results": serializer.data,
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class AdminProductApprovalDetailView(APIView):
+    """
+    GET /api/workforce/admin/seller-hub/approval/products/<int:pk>/
+    Returns full product detail for review (all fields, images, category breadcrumbs, audit history).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        user = request.user
+        if not _is_admin_or_superadmin(user):
+            return Response(
+                {"error": "Only platform administrators can access categories approval."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        product = SellerProduct.objects.select_related(
+            "category",
+            "category__parent",
+            "company",
+            "reviewed_by",
+            "created_by",
+        ).prefetch_related(
+            "images",
+            "audit_logs",
+            "audit_logs__actor",
+        ).filter(pk=pk).first()
+
+        if not product:
+            return Response({"error": "Product not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(SellerProductDetailSerializer(product).data, status=status.HTTP_200_OK)
+
+
+class AdminProductApproveView(APIView):
+    """
+    POST /api/workforce/admin/seller-hub/approval/products/<int:pk>/approve/
+    Approves a single product for catalog publication and inventory inwarding.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+        if not _is_admin_or_superadmin(user):
+            return Response(
+                {"error": "Only platform administrators can approve products."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        product = SellerProduct.objects.select_related("company", "category").prefetch_related("images").filter(pk=pk).first()
+        if not product:
+            return Response({"error": "Product not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if product.status == SellerProduct.Status.APPROVED:
+            return Response(
+                {
+                    "error": f"Product '{product.title}' is already approved.",
+                    "code": "ALREADY_APPROVED",
+                    "status": "APPROVED",
+                },
+                status=status.HTTP_409_CONFLICT
+            )
+
+        if product.status in (SellerProduct.Status.PAUSED, SellerProduct.Status.DRAFT):
+            return Response(
+                {
+                    "error": f"Cannot approve a product in '{product.status}' status.",
+                    "code": "INVALID_STATE",
+                    "status": product.status,
+                },
+                status=status.HTTP_409_CONFLICT
+            )
+
+        is_valid, err_msg, err_code = validate_product_category_is_leaf(product.category)
+        if not is_valid:
+            return Response(
+                {"error": f"Cannot approve product: {err_msg}", "code": "CATEGORY_NOT_ELIGIBLE"},
+                status=status.HTTP_409_CONFLICT
+            )
+
+        from_st = product.status
+        with transaction.atomic():
+            product.status = SellerProduct.Status.APPROVED
+            product.admin_review_note = ""
+            product.reviewed_by = user
+            product.reviewed_at = timezone.now()
+            product.save(update_fields=["status", "admin_review_note", "reviewed_by", "reviewed_at", "updated_at"])
+
+            SellerProductAuditLog.objects.create(
+                product=product,
+                action="APPROVED",
+                from_status=from_st,
+                to_status=SellerProduct.Status.APPROVED,
+                actor=user,
+                notes=f"Product approved for catalog by {user.username}.",
+            )
+
+        return Response(
+            {
+                "message": f"Product '{product.title}' has been approved.",
+                "status": "APPROVED",
+                "product": SellerProductDetailSerializer(product).data,
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class AdminProductRejectView(APIView):
+    """
+    POST /api/workforce/admin/seller-hub/approval/products/<int:pk>/reject/
+    Rejects a single product with mandatory reason (minimum 5 characters).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+        if not _is_admin_or_superadmin(user):
+            return Response(
+                {"error": "Only platform administrators can reject products."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        product = SellerProduct.objects.select_related("company", "category").prefetch_related("images").filter(pk=pk).first()
+        if not product:
+            return Response({"error": "Product not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if product.status == SellerProduct.Status.DRAFT:
+            return Response(
+                {
+                    "error": "Cannot reject a draft product.",
+                    "code": "INVALID_STATE",
+                    "status": "DRAFT",
+                },
+                status=status.HTTP_409_CONFLICT
+            )
+
+        reason = str(request.data.get("reason", "") or request.data.get("note", "")).strip()
+        if not reason or len(reason) < 5:
+            return Response(
+                {"error": "A valid rejection reason with at least 5 characters is required.", "field": "reason"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        from_st = product.status
+        with transaction.atomic():
+            product.status = SellerProduct.Status.REJECTED
+            product.admin_review_note = reason
+            product.reviewed_by = user
+            product.reviewed_at = timezone.now()
+            product.save(update_fields=["status", "admin_review_note", "reviewed_by", "reviewed_at", "updated_at"])
+
+            SellerProductAuditLog.objects.create(
+                product=product,
+                action="REJECTED",
+                from_status=from_st,
+                to_status=SellerProduct.Status.REJECTED,
+                actor=user,
+                notes=reason,
+            )
+
+        return Response(
+            {
+                "message": f"Product '{product.title}' has been rejected.",
+                "status": "REJECTED",
+                "rejection_reason": reason,
+                "product": SellerProductDetailSerializer(product).data,
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class AdminProductBulkApproveView(APIView):
+    """
+    POST /api/workforce/admin/seller-hub/approval/products/bulk-approve/
+    Bulk approves selected products with per-ID validation and results.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if not _is_admin_or_superadmin(user):
+            return Response(
+                {"error": "Only platform administrators can approve products."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        product_ids = request.data.get("product_ids", [])
+        if not product_ids or not isinstance(product_ids, list):
+            return Response(
+                {"error": "A non-empty list of product_ids is required.", "field": "product_ids"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        results = []
+        for pid in product_ids:
+            try:
+                prod_pk = int(pid)
+            except (ValueError, TypeError):
+                results.append({"id": pid, "product_id": pid, "success": False, "error": "Invalid product ID format.", "code": "INVALID_ID"})
+                continue
+
+            product = SellerProduct.objects.select_related("company", "category").filter(pk=prod_pk).first()
+            if not product:
+                results.append({"id": prod_pk, "product_id": prod_pk, "success": False, "error": "Product not found.", "code": "NOT_FOUND"})
+                continue
+
+            if product.status == SellerProduct.Status.APPROVED:
+                results.append({"id": prod_pk, "product_id": prod_pk, "success": True, "status": "APPROVED", "message": "Already approved."})
+                continue
+
+            is_valid, err_msg, err_code = validate_product_category_is_leaf(product.category)
+            if not is_valid:
+                results.append({"id": prod_pk, "product_id": prod_pk, "success": False, "error": err_msg, "code": "CATEGORY_NOT_ELIGIBLE"})
+                continue
+
+            with transaction.atomic():
+                from_st = product.status
+                product.status = SellerProduct.Status.APPROVED
+                product.admin_review_note = ""
+                product.reviewed_by = user
+                product.reviewed_at = timezone.now()
+                product.save(update_fields=["status", "admin_review_note", "reviewed_by", "reviewed_at", "updated_at"])
+
+                SellerProductAuditLog.objects.create(
+                    product=product,
+                    action="APPROVED",
+                    from_status=from_st,
+                    to_status=SellerProduct.Status.APPROVED,
+                    actor=user,
+                    notes=f"Bulk approved by admin {user.username}.",
+                )
+
+            results.append({"id": prod_pk, "product_id": prod_pk, "success": True, "status": "APPROVED"})
+
+        return Response(
+            {
+                "message": f"Processed {len(results)} product(s).",
+                "results": results,
+            },
+            status=status.HTTP_200_OK
+        )
+
 
 
 class SellerProductTemplateDownloadView(APIView):
@@ -1762,7 +2299,7 @@ class SellerProductBatchListView(APIView):
 
     def get(self, request):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         qs = SellerCatalogUploadBatch.objects.select_related("company", "uploaded_by")
@@ -1817,7 +2354,7 @@ class SellerHubMetricsView(APIView):
 
     def get(self, request):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         # Products QuerySet
@@ -2025,8 +2562,7 @@ class SellerInventoryListView(APIView):
 
     def get(self, request):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
-        is_admin = is_admin_role(user)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         queryset = SellerInventory.objects.select_related(
@@ -2034,10 +2570,13 @@ class SellerInventoryListView(APIView):
             "product",
             "product__category",
             "product__category__parent",
-        ).prefetch_related("product__images", "batches")
+        ).prefetch_related("product__images", "batches").filter(
+            product__status=SellerProduct.Status.APPROVED,
+            product__category__is_active=True,
+        )
 
         # Tenant Scoping: Sellers only see their company's inventory
-        if not (is_super or (is_admin and not company_id)):
+        if not is_super:
             if not company_id:
                 return Response(
                     {"error": "User is not associated with an approved merchant store."},
@@ -2123,8 +2662,7 @@ class SellerInventoryDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def _get_inventory(self, user, pk):
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
-        is_admin = is_admin_role(user)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         qs = SellerInventory.objects.select_related(
@@ -2134,7 +2672,7 @@ class SellerInventoryDetailView(APIView):
             "product__category__parent",
         ).prefetch_related("product__images", "batches", "movements", "movements__actor", "movements__batch")
 
-        if not (is_super or (is_admin and not company_id)):
+        if not is_super:
             if not company_id:
                 return None
             qs = qs.filter(company_id=company_id)
@@ -2199,7 +2737,7 @@ class SellerInventoryInitializeView(APIView):
     def post(self, request):
         user = request.user
         company_id = _resolve_user_company_id(user)
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
 
         product_id = request.data.get("product_id")
         if not product_id or not str(product_id).isdigit():
@@ -2216,10 +2754,14 @@ class SellerInventoryInitializeView(APIView):
             return Response({"error": "Product not found or does not belong to your store."}, status=status.HTTP_404_NOT_FOUND)
 
         # Rule: Only approved products can have inventory initialized
-        if product.status != SellerProduct.Status.APPROVED and not is_super:
+        if product.status != SellerProduct.Status.APPROVED:
             return Response(
-                {"error": f"Cannot initialize stock for product with status '{product.status}'. Product must be APPROVED."},
-                status=status.HTTP_400_BAD_REQUEST
+                {
+                    "error": f"Cannot initialize stock for product '{product.title}' with status '{product.status}'. Products must be APPROVED before stock can be added.",
+                    "code": "PRODUCT_NOT_APPROVED",
+                    "product_status": product.status,
+                },
+                status=status.HTTP_409_CONFLICT
             )
 
         if hasattr(product, "inventory") and product.inventory is not None:
@@ -2322,7 +2864,7 @@ class SellerInventoryAdjustView(APIView):
     def post(self, request, pk):
         user = request.user
         company_id = _resolve_user_company_id(user)
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
 
         serializer = SellerInventoryAdjustSerializer(data=request.data)
         if not serializer.is_valid():
@@ -2350,10 +2892,14 @@ class SellerInventoryAdjustView(APIView):
                 return Response({"error": "Inventory record not found."}, status=status.HTTP_404_NOT_FOUND)
 
             # Rule: Only approved products can have active stock movements
-            if inv.product.status != SellerProduct.Status.APPROVED and not is_super:
+            if inv.product.status != SellerProduct.Status.APPROVED:
                 return Response(
-                    {"error": f"Cannot adjust stock for product with status '{inv.product.status}'. Product must be APPROVED."},
-                    status=status.HTTP_400_BAD_REQUEST
+                    {
+                        "error": f"Cannot adjust stock for product '{inv.product.title}' with status '{inv.product.status}'. Products must be APPROVED before stock can be added or adjusted.",
+                        "code": "PRODUCT_NOT_APPROVED",
+                        "product_status": inv.product.status,
+                    },
+                    status=status.HTTP_409_CONFLICT
                 )
 
             balance_before = inv.on_hand_qty
@@ -2467,7 +3013,7 @@ class SellerInventoryMovementListView(APIView):
     def get(self, request, pk):
         user = request.user
         company_id = _resolve_user_company_id(user)
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
 
         inv_qs = SellerInventory.objects.filter(pk=pk)
         if not is_super:
@@ -2508,7 +3054,7 @@ class SellerInventoryBatchListView(APIView):
     def get(self, request, pk):
         user = request.user
         company_id = _resolve_user_company_id(user)
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
 
         inv_qs = SellerInventory.objects.filter(pk=pk)
         if not is_super:
@@ -2542,7 +3088,7 @@ class SellerOrderListView(APIView):
     def get(self, request):
         user = request.user
         company_id = _resolve_user_company_id(user)
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
 
         queryset = SellerOrder.objects.select_related("company").prefetch_related("items", "items__product")
 
@@ -2638,7 +3184,7 @@ class SellerOrderDetailView(APIView):
     def get(self, request, pk):
         user = request.user
         company_id = _resolve_user_company_id(user)
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
 
         order_qs = SellerOrder.objects.filter(pk=pk).select_related("company").prefetch_related("items", "items__product", "audit_logs", "audit_logs__actor")
         if not is_super:
@@ -2664,7 +3210,7 @@ class SellerOrderStatusTransitionView(APIView):
     def post(self, request, pk):
         user = request.user
         company_id = _resolve_user_company_id(user)
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
 
         serializer = SellerOrderStatusTransitionSerializer(data=request.data)
         if not serializer.is_valid():
@@ -2866,7 +3412,7 @@ class SellerOrderItemPickView(APIView):
     def post(self, request, pk):
         user = request.user
         company_id = _resolve_user_company_id(user)
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
 
         serializer = SellerOrderItemPickSerializer(data=request.data)
         if not serializer.is_valid():
@@ -2935,7 +3481,7 @@ class SellerOrderPackingSlipView(APIView):
     def get(self, request, pk):
         user = request.user
         company_id = _resolve_user_company_id(user)
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
 
         order_qs = SellerOrder.objects.filter(pk=pk).select_related("company").prefetch_related("items", "items__product")
         if not is_super:
@@ -3005,14 +3551,13 @@ class SellerReturnListView(APIView):
 
     def get(self, request):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
-        is_admin = is_admin_role(user)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         qs = SellerReturn.objects.select_related("company", "order").prefetch_related("items")
 
         # Multi-Tenant Scoping: sellers only access their own returns
-        if not (is_super or (is_admin and not company_id)):
+        if not is_super:
             if not company_id:
                 return Response(
                     {"error": "User is not associated with an approved merchant store."},
@@ -3096,8 +3641,7 @@ class SellerReturnDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def _get_return(self, user, pk):
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
-        is_admin = is_admin_role(user)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         qs = SellerReturn.objects.select_related(
@@ -3112,7 +3656,7 @@ class SellerReturnDetailView(APIView):
             "audit_logs__actor",
         )
 
-        if not (is_super or (is_admin and not company_id)):
+        if not is_super:
             if not company_id:
                 return None
             qs = qs.filter(company_id=company_id)
@@ -3137,7 +3681,7 @@ class SellerReturnReviewView(APIView):
     def post(self, request, pk):
         user = request.user
         company_id = _resolve_user_company_id(user)
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
 
         serializer = SellerReturnReviewSerializer(data=request.data)
         if not serializer.is_valid():
@@ -3225,7 +3769,7 @@ class SellerReturnSchedulePickupView(APIView):
     def post(self, request, pk):
         user = request.user
         company_id = _resolve_user_company_id(user)
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
 
         pickup_ref = str(request.data.get("pickup_ref", "")).strip()
         notes = str(request.data.get("notes", "")).strip()
@@ -3281,7 +3825,7 @@ class SellerReturnReceiveView(APIView):
     def post(self, request, pk):
         user = request.user
         company_id = _resolve_user_company_id(user)
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
 
         notes = str(request.data.get("notes", "")).strip()
 
@@ -3336,7 +3880,7 @@ class SellerReturnQualityCheckView(APIView):
     def post(self, request, pk):
         user = request.user
         company_id = _resolve_user_company_id(user)
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
 
         serializer = SellerReturnQualityCheckSerializer(data=request.data)
         if not serializer.is_valid():
@@ -3415,7 +3959,7 @@ class SellerReturnRestockView(APIView):
     def post(self, request, pk):
         user = request.user
         company_id = _resolve_user_company_id(user)
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
 
         serializer = SellerReturnRestockSerializer(data=request.data)
         if not serializer.is_valid():
@@ -3582,7 +4126,7 @@ class SellerReturnCloseView(APIView):
     def post(self, request, pk):
         user = request.user
         company_id = _resolve_user_company_id(user)
-        is_super = getattr(user, "is_superuser", False) or getattr(user, "is_platform_admin", False)
+        is_super = is_platform_reviewer(user)
 
         notes = str(request.data.get("notes", "")).strip()
 
@@ -3775,7 +4319,7 @@ class SellerClaimListView(APIView):
 
     def get(self, request):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         qs = SellerClaim.objects.select_related("company", "order", "return_case").all()
@@ -3836,7 +4380,7 @@ class SellerClaimListView(APIView):
 
     def post(self, request):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         serializer = SellerClaimCreateSerializer(data=request.data)
@@ -3852,7 +4396,7 @@ class SellerClaimListView(APIView):
             order = SellerOrder.objects.filter(id=order_id).first()
             if not order:
                 return Response({"error": f"Order #{order_id} not found."}, status=status.HTTP_404_NOT_FOUND)
-            if not is_super and company_id and order.company_id != company_id:
+            if not is_super and (not company_id or order.company_id != company_id):
                 return Response({"error": "Unauthorized order access."}, status=status.HTTP_403_FORBIDDEN)
 
         return_case = None
@@ -3860,7 +4404,7 @@ class SellerClaimListView(APIView):
             return_case = SellerReturn.objects.filter(id=return_id).first()
             if not return_case:
                 return Response({"error": f"Return #{return_id} not found."}, status=status.HTTP_404_NOT_FOUND)
-            if not is_super and company_id and return_case.company_id != company_id:
+            if not is_super and (not company_id or return_case.company_id != company_id):
                 return Response({"error": "Unauthorized return access."}, status=status.HTTP_403_FORBIDDEN)
 
         # Resolve Company
@@ -3928,7 +4472,7 @@ class SellerClaimDetailView(APIView):
 
     def get(self, request, pk):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         claim = SellerClaim.objects.select_related(
@@ -3938,7 +4482,7 @@ class SellerClaimDetailView(APIView):
         if not claim:
             return Response({"error": "Claim not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if not is_super and company_id and claim.company_id != company_id:
+        if not is_super and (not company_id or claim.company_id != company_id):
             return Response({"error": "Claim not found or unauthorized."}, status=status.HTTP_404_NOT_FOUND)
 
         serializer = SellerClaimDetailSerializer(claim)
@@ -3953,7 +4497,7 @@ class SellerClaimRespondView(APIView):
 
     def post(self, request, pk):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         with transaction.atomic():
@@ -3961,7 +4505,7 @@ class SellerClaimRespondView(APIView):
             if not claim:
                 return Response({"error": "Claim not found."}, status=status.HTTP_404_NOT_FOUND)
 
-            if not is_super and company_id and claim.company_id != company_id:
+            if not is_super and (not company_id or claim.company_id != company_id):
                 return Response({"error": "Unauthorized claim access."}, status=status.HTTP_404_NOT_FOUND)
 
             if claim.status in [SellerClaim.Status.CLOSED, SellerClaim.Status.SETTLED]:
@@ -4018,7 +4562,7 @@ class SellerClaimEscalateView(APIView):
 
     def post(self, request, pk):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         with transaction.atomic():
@@ -4026,7 +4570,7 @@ class SellerClaimEscalateView(APIView):
             if not claim:
                 return Response({"error": "Claim not found."}, status=status.HTTP_404_NOT_FOUND)
 
-            if not is_super and company_id and claim.company_id != company_id:
+            if not is_super and (not company_id or claim.company_id != company_id):
                 return Response({"error": "Unauthorized claim access."}, status=status.HTTP_404_NOT_FOUND)
 
             if not claim.can_transition_to(SellerClaim.Status.ESCALATED):
@@ -4066,7 +4610,7 @@ class SellerClaimAdminDecisionView(APIView):
 
     def post(self, request, pk):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        is_super = is_platform_reviewer(user)
         if not is_super:
             return Response(
                 {"error": "Only platform administrators can perform claim arbitration decisions."},
@@ -4140,7 +4684,7 @@ class SellerClaimCloseView(APIView):
 
     def post(self, request, pk):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         with transaction.atomic():
@@ -4148,7 +4692,7 @@ class SellerClaimCloseView(APIView):
             if not claim:
                 return Response({"error": "Claim not found."}, status=status.HTTP_404_NOT_FOUND)
 
-            if not is_super and company_id and claim.company_id != company_id:
+            if not is_super and (not company_id or claim.company_id != company_id):
                 return Response({"error": "Unauthorized claim access."}, status=status.HTTP_404_NOT_FOUND)
 
             if not claim.can_transition_to(SellerClaim.Status.CLOSED):
@@ -4298,7 +4842,7 @@ class SellerReportsSummaryView(APIView):
 
     def get(self, request):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         # Scoping
@@ -4580,7 +5124,7 @@ class SellerReportsPerformanceView(APIView):
 
     def get(self, request):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         order_qs = SellerOrder.objects.all()
@@ -4722,7 +5266,7 @@ class SellerReportsQualityAuditView(APIView):
 
     def get(self, request):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         prod_qs = SellerProduct.objects.all()
@@ -4872,7 +5416,7 @@ class SellerReportsExportCSVView(APIView):
 
     def get(self, request):
         user = request.user
-        is_super = getattr(user, "is_superuser", False) or is_admin_role(user)
+        is_super = is_platform_reviewer(user)
         company_id = _resolve_user_company_id(user)
 
         report_type = request.query_params.get("type") or request.query_params.get("report_type", "orders")
@@ -4886,8 +5430,11 @@ class SellerReportsExportCSVView(APIView):
 
         if report_type == "orders":
             qs = SellerOrder.objects.all()
-            if not is_super and company_id:
-                qs = qs.filter(company_id=company_id)
+            if not is_super:
+                if company_id:
+                    qs = qs.filter(company_id=company_id)
+                else:
+                    qs = qs.none()
             elif is_super and (c_id := request.query_params.get("company_id")):
                 qs = qs.filter(company_id=c_id)
 
@@ -4923,8 +5470,11 @@ class SellerReportsExportCSVView(APIView):
 
         elif report_type == "inventory":
             qs = SellerInventory.objects.all()
-            if not is_super and company_id:
-                qs = qs.filter(company_id=company_id)
+            if not is_super:
+                if company_id:
+                    qs = qs.filter(company_id=company_id)
+                else:
+                    qs = qs.none()
             elif is_super and (c_id := request.query_params.get("company_id")):
                 qs = qs.filter(company_id=c_id)
 
@@ -4959,8 +5509,11 @@ class SellerReportsExportCSVView(APIView):
 
         elif report_type == "returns":
             qs = SellerReturn.objects.all()
-            if not is_super and company_id:
-                qs = qs.filter(company_id=company_id)
+            if not is_super:
+                if company_id:
+                    qs = qs.filter(company_id=company_id)
+                else:
+                    qs = qs.none()
             elif is_super and (c_id := request.query_params.get("company_id")):
                 qs = qs.filter(company_id=c_id)
 
@@ -4992,8 +5545,11 @@ class SellerReportsExportCSVView(APIView):
 
         elif report_type == "claims":
             qs = SellerClaim.objects.all()
-            if not is_super and company_id:
-                qs = qs.filter(company_id=company_id)
+            if not is_super:
+                if company_id:
+                    qs = qs.filter(company_id=company_id)
+                else:
+                    qs = qs.none()
             elif is_super and (c_id := request.query_params.get("company_id")):
                 qs = qs.filter(company_id=c_id)
 

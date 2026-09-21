@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .authentication import set_auth_cookies
+from .platform import is_platform_admin_user
 from employees.models import Employee
 
 logger = logging.getLogger(__name__)
@@ -196,12 +197,7 @@ class LoginView(APIView):
                 identifier, lookup_type, matched_user_id, matched_user_active, password_check, db_status, response_code, response_code_name
             )
 
-            is_platform_admin = bool(
-                getattr(user, "is_superuser", False)
-                or (getattr(user, "is_staff", False) and getattr(user, "company_id", None) == 1)
-                or str(getattr(user, "role", "")).lower() in ("superadmin", "platform_admin")
-                or (str(getattr(user, "role", "")).lower() in ("admin", "manager") and getattr(user, "company_id", None) == 1)
-            )
+            is_platform_admin = is_platform_admin_user(user)
             is_vendor_admin = bool(
                 not is_platform_admin
                 and (user_role in ["admin", "manager"] or getattr(user, "is_staff", False))
@@ -434,12 +430,7 @@ class MeView(APIView):
             if emp and user_role not in ["admin", "manager"]:
                 user_role = "employee"
 
-            is_platform_admin = bool(
-                getattr(user, "is_superuser", False)
-                or (getattr(user, "is_staff", False) and getattr(user, "company_id", None) == 1)
-                or str(getattr(user, "role", "")).lower() in ("superadmin", "platform_admin")
-                or (str(getattr(user, "role", "")).lower() in ("admin", "manager") and getattr(user, "company_id", None) == 1)
-            )
+            is_platform_admin = is_platform_admin_user(user)
             is_vendor_admin = bool(
                 not is_platform_admin
                 and (user_role in ["admin", "manager"] or getattr(user, "is_staff", False))
