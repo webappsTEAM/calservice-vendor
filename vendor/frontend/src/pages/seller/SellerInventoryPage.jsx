@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import { Sidebar } from '../../components/common/Sidebar.jsx';
 import { useAuth } from '../../context/AuthProvider.jsx';
 import {
   Package,

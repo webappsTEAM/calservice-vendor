@@ -17,12 +17,13 @@ import uuid
 import logging
 from decimal import Decimal, InvalidOperation
 from django.db import models, transaction
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.utils.text import slugify
 from django.http import HttpResponse
 from django.conf import settings
 from django.core.files.storage import default_storage
-from rest_framework import permissions, status
+from rest_framework import permissions, status, serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
@@ -193,19 +194,152 @@ class AdminSellerHubCategoryListView(APIView):
         # Check if full tree requested
         tree_param = request.query_params.get("tree")
         if tree_param is not None and str(tree_param).lower() in ("true", "1"):
-            roots = queryset.filter(parent__isnull=True).order_by("sort_order", "id")
-            serializer = SellerHubCategoryTreeSerializer(roots, many=True, context={"request": request})
-            return Response(serializer.data, status=status.HTTP_200_OK)
+            tree_data = build_seller_hub_category_tree(active_only=False)
+            return Response(tree_data, status=status.HTTP_200_OK)
 
+        # 1. Fetch all categories in ONE query
+        all_cats = list(SellerHubCategory.objects.all())
+
+        # 2. Query products count in ONE query
+        try:
+            prod_counts_qs = (
+                SellerProduct.objects.values("category_id")
+                .annotate(item_count=models.Count("id"))
+            )
+            prod_counts = {
+                row["category_id"]: row["item_count"]
+                for row in prod_counts_qs
+                if row["category_id"] is not None
+            }
+        except Exception:
+            prod_counts = {}
+
+        # 3. Query inventory items count in ONE query
+        try:
+            inv_counts_qs = (
+                InventoryItem.objects.values("catalogue_category_id")
+                .annotate(item_count=models.Count("id"))
+            )
+            inv_counts = {
+                row["catalogue_category_id"]: row["item_count"]
+                for row in inv_counts_qs
+                if row["catalogue_category_id"] is not None
+            }
+        except Exception:
+            inv_counts = {}
+
+        cat_map = {c.id: c for c in all_cats}
+
+        # Compute total children counts in memory
+        children_count_map = {}
+        for c in all_cats:
+            if c.parent_id is not None:
+                children_count_map[c.parent_id] = children_count_map.get(c.parent_id, 0) + 1
+
+        # Apply filtering in memory
+        target_cats = all_cats
+
+        # Search filter
+        search = request.query_params.get("search", "").strip().lower()
+        if search:
+            target_cats = [
+                c for c in target_cats
+                if (search in (c.name or "").lower() or
+                    search in (c.slug or "").lower() or
+                    search in (c.description or "").lower())
+            ]
+
+        # is_active filter
+        is_active_param = request.query_params.get("is_active")
+        if is_active_param is not None and is_active_param != "":
+            if str(is_active_param).lower() in ("true", "1"):
+                target_cats = [c for c in target_cats if c.is_active is True]
+            elif str(is_active_param).lower() in ("false", "0"):
+                target_cats = [c for c in target_cats if c.is_active is False]
+
+        # parent_id / root filter
+        parent_id_param = request.query_params.get("parent_id")
+        root_param = request.query_params.get("root")
+
+        if root_param is not None and str(root_param).lower() in ("true", "1"):
+            target_cats = [c for c in target_cats if c.parent_id is None]
+        elif parent_id_param is not None:
+            if str(parent_id_param).lower() in ("null", "none", ""):
+                target_cats = [c for c in target_cats if c.parent_id is None]
+            elif str(parent_id_param).isdigit():
+                pid = int(parent_id_param)
+                target_cats = [c for c in target_cats if c.parent_id == pid]
+
+        # Ordering
         ordering = request.query_params.get("ordering", "sort_order")
-        valid_orderings = ["sort_order", "-sort_order", "name", "-name", "id", "-id"]
-        if ordering in valid_orderings:
-            queryset = queryset.order_by(ordering, "id")
-        else:
-            queryset = queryset.order_by("sort_order", "id")
+        if ordering == "-sort_order":
+            target_cats.sort(key=lambda c: (-c.sort_order, c.id))
+        elif ordering == "name":
+            target_cats.sort(key=lambda c: (c.name or "", c.id))
+        elif ordering == "-name":
+            target_cats.sort(key=lambda c: (c.name or "", -c.id), reverse=True)
+        elif ordering == "id":
+            target_cats.sort(key=lambda c: c.id)
+        elif ordering == "-id":
+            target_cats.sort(key=lambda c: -c.id)
+        else:  # "sort_order" or default
+            target_cats.sort(key=lambda c: (c.sort_order, c.id))
 
-        serializer = SellerHubCategoryAdminSerializer(queryset, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        iso_format = serializers.DateTimeField().to_representation
+
+        def serialize_admin_cat(cat):
+            parent = cat_map.get(cat.parent_id) if cat.parent_id else None
+            parent_details = {
+                "id": parent.id,
+                "name": parent.name,
+                "slug": parent.slug,
+                "is_active": getattr(parent, "is_active", True),
+            } if parent else None
+
+            ancestors_list = []
+            curr = parent
+            visited = {cat.id}
+            while curr and curr.id not in visited:
+                ancestors_list.append({
+                    "id": curr.id,
+                    "name": curr.name,
+                    "slug": curr.slug,
+                    "is_active": getattr(curr, "is_active", True),
+                })
+                visited.add(curr.id)
+                curr = cat_map.get(curr.parent_id) if curr.parent_id else None
+            ancestors_list.reverse()
+
+            depth = len(ancestors_list)
+            ch_count = children_count_map.get(cat.id, 0)
+
+            return {
+                "id": cat.id,
+                "name": cat.name,
+                "slug": cat.slug,
+                "description": cat.description or "",
+                "icon": cat.icon or "Store",
+                "image": cat.image or "",
+                "is_active": cat.is_active,
+                "sort_order": cat.sort_order,
+                "parent": cat.parent_id,
+                "parent_id": cat.parent_id,
+                "parent_name": parent.name if parent else None,
+                "parent_details": parent_details,
+                "children_count": ch_count,
+                "subcategories_count": ch_count,
+                "level": depth,
+                "depth": depth,
+                "ancestors": ancestors_list,
+                "products_count": prod_counts.get(cat.id, 0),
+                "services_count": 0,
+                "inventory_items_count": inv_counts.get(cat.id, 0),
+                "created_at": iso_format(cat.created_at) if cat.created_at else None,
+                "updated_at": iso_format(cat.updated_at) if cat.updated_at else None,
+            }
+
+        data = [serialize_admin_cat(c) for c in target_cats]
+        return Response(data, status=status.HTTP_200_OK)
 
     def post(self, request):
         user = request.user
@@ -506,6 +640,81 @@ class AdminSellerHubCategoryActiveListView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
+def build_seller_hub_category_tree(active_only=False):
+    """
+    Constructs the category hierarchy tree in memory in at most 2 queries:
+    1 query for SellerHubCategory records
+    1 query for InventoryItem counts per category
+    """
+    all_cats = list(SellerHubCategory.objects.all().order_by("sort_order", "id"))
+
+    # Query inventory counts across all categories in ONE query
+    try:
+        inv_counts_qs = (
+            InventoryItem.objects.values("catalogue_category_id")
+            .annotate(item_count=models.Count("id"))
+        )
+        inv_counts = {
+            row["catalogue_category_id"]: row["item_count"]
+            for row in inv_counts_qs
+            if row["catalogue_category_id"] is not None
+        }
+    except Exception:
+        inv_counts = {}
+
+    cat_by_id = {c.id: c for c in all_cats}
+
+    # Map all children for total children_count calculation (matches legacy behavior)
+    total_children_count = {}
+    for c in all_cats:
+        if c.parent_id is not None:
+            total_children_count[c.parent_id] = total_children_count.get(c.parent_id, 0) + 1
+
+    # Map children list based on active_only
+    children_map = {}
+    for c in all_cats:
+        if active_only and not c.is_active:
+            continue
+        if c.parent_id is not None:
+            children_map.setdefault(c.parent_id, []).append(c)
+
+    # Calculate depth/level in memory
+    def get_depth(c):
+        depth = 0
+        curr = c.parent_id
+        visited = {c.id}
+        while curr and curr in cat_by_id and curr not in visited:
+            depth += 1
+            visited.add(curr)
+            curr = cat_by_id[curr].parent_id
+        return depth
+
+    def build_node(c):
+        return {
+            "id": c.id,
+            "name": c.name,
+            "slug": c.slug,
+            "description": c.description,
+            "icon": c.icon,
+            "image": c.image,
+            "is_active": c.is_active,
+            "sort_order": c.sort_order,
+            "parent_id": c.parent_id,
+            "level": get_depth(c),
+            "children_count": total_children_count.get(c.id, 0),
+            "services_count": 0,
+            "inventory_items_count": inv_counts.get(c.id, 0),
+            "children": [build_node(child) for child in children_map.get(c.id, [])],
+        }
+
+    if active_only:
+        roots = [c for c in all_cats if c.parent_id is None and c.is_active]
+    else:
+        roots = [c for c in all_cats if c.parent_id is None]
+
+    return [build_node(r) for r in roots]
+
+
 class AdminSellerHubCategoryTreeView(APIView):
     """
     GET /api/workforce/seller-hub/categories/tree/
@@ -525,14 +734,12 @@ class AdminSellerHubCategoryTreeView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        active_only = request.query_params.get("active_only", "").lower() in ("true", "1")
-        roots = SellerHubCategory.objects.filter(parent__isnull=True)
-        if active_only:
-            roots = roots.filter(is_active=True)
-        roots = roots.order_by("sort_order", "id")
-
-        serializer = SellerHubCategoryTreeSerializer(roots, many=True, context={"request": request, "active_only": active_only})
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        active_only = (
+            request.query_params.get("active_only", "").lower() in ("true", "1")
+            or request.query_params.get("is_active", "").lower() in ("true", "1")
+        )
+        tree_data = build_seller_hub_category_tree(active_only=active_only)
+        return Response(tree_data, status=status.HTTP_200_OK)
 
 
 class SellerCatalogCategoryListView(APIView):
@@ -970,13 +1177,12 @@ class AdminCatalogCategoryTreeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        queryset = SellerHubCategory.objects.all()
-        is_active_param = request.query_params.get("is_active")
-        if is_active_param is not None and str(is_active_param).lower() in ("true", "1"):
-            queryset = queryset.filter(is_active=True)
-        roots = queryset.filter(parent__isnull=True).order_by("sort_order", "id")
-        serializer = SellerHubCategoryTreeSerializer(roots, many=True, context={"request": request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        active_only = (
+            request.query_params.get("is_active", "").lower() in ("true", "1")
+            or request.query_params.get("active_only", "").lower() in ("true", "1")
+        )
+        tree_data = build_seller_hub_category_tree(active_only=active_only)
+        return Response(tree_data, status=status.HTTP_200_OK)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2365,13 +2571,15 @@ class SellerHubMetricsView(APIView):
             else:
                 prod_qs = prod_qs.none()
 
-        awaiting_approval = prod_qs.filter(status__in=[SellerProduct.Status.SUBMITTED, SellerProduct.Status.UNDER_REVIEW]).count()
-        approved_count = prod_qs.filter(status=SellerProduct.Status.APPROVED).count()
-        draft_count = prod_qs.filter(status=SellerProduct.Status.DRAFT).count()
-        changes_requested = prod_qs.filter(status=SellerProduct.Status.CHANGES_REQUESTED).count()
-        rejected_count = prod_qs.filter(status=SellerProduct.Status.REJECTED).count()
-        paused_count = prod_qs.filter(status=SellerProduct.Status.PAUSED).count()
-        total_products = prod_qs.count()
+        prod_agg = prod_qs.aggregate(
+            awaiting_approval=models.Count("id", filter=models.Q(status__in=[SellerProduct.Status.SUBMITTED, SellerProduct.Status.UNDER_REVIEW])),
+            approved_count=models.Count("id", filter=models.Q(status=SellerProduct.Status.APPROVED)),
+            draft_count=models.Count("id", filter=models.Q(status=SellerProduct.Status.DRAFT)),
+            changes_requested=models.Count("id", filter=models.Q(status=SellerProduct.Status.CHANGES_REQUESTED)),
+            rejected_count=models.Count("id", filter=models.Q(status=SellerProduct.Status.REJECTED)),
+            paused_count=models.Count("id", filter=models.Q(status=SellerProduct.Status.PAUSED)),
+            total_products=models.Count("id"),
+        )
 
         # Active categories count
         categories_count = SellerHubCategory.objects.filter(is_active=True).count()
@@ -2390,13 +2598,40 @@ class SellerHubMetricsView(APIView):
             else:
                 inv_qs = inv_qs.none()
 
-        total_inventory_products = inv_qs.count()
-        low_stock_items = inv_qs.filter(
-            on_hand_qty__gt=Decimal("0.000"),
-            on_hand_qty__lte=models.F("low_stock_threshold")
-        ).count()
-        out_of_stock_items = inv_qs.filter(on_hand_qty__lte=Decimal("0.000")).count()
-        in_stock_items = inv_qs.filter(on_hand_qty__gt=models.F("low_stock_threshold")).count()
+        total_val_expr = models.ExpressionWrapper(
+            models.F("on_hand_qty") * models.F("product__selling_price"),
+            output_field=models.DecimalField(max_digits=18, decimal_places=2)
+        )
+
+        inv_agg = inv_qs.aggregate(
+            total_inventory_products=models.Count("id"),
+            low_stock_items=models.Count(
+                "id",
+                filter=models.Q(
+                    on_hand_qty__gt=Decimal("0.000"),
+                    on_hand_qty__lte=models.F("low_stock_threshold")
+                )
+            ),
+            out_of_stock_items=models.Count(
+                "id",
+                filter=models.Q(on_hand_qty__lte=Decimal("0.000"))
+            ),
+            in_stock_items=models.Count(
+                "id",
+                filter=models.Q(on_hand_qty__gt=models.F("low_stock_threshold"))
+            ),
+            total_inv_value=Coalesce(
+                models.Sum(
+                    total_val_expr,
+                    filter=models.Q(
+                        product__isnull=False,
+                        on_hand_qty__gt=0,
+                        product__selling_price__isnull=False
+                    )
+                ),
+                Decimal("0.00")
+            ),
+        )
 
         # Expiring Soon Batches (within next 30 days)
         today = timezone.now().date()
@@ -2410,13 +2645,6 @@ class SellerHubMetricsView(APIView):
         )
         expiring_soon_count = expiring_batches_qs.values("inventory_id").distinct().count()
 
-        # Total Inventory Value (on_hand_qty * selling_price)
-        total_inv_value = Decimal("0.00")
-        for item in inv_qs.select_related("product"):
-            if item.product and item.on_hand_qty > 0:
-                price = getattr(item.product, "selling_price", Decimal("0.00")) or Decimal("0.00")
-                total_inv_value += item.on_hand_qty * price
-
         # Phase 4 Order QuerySet
         order_qs = SellerOrder.objects.all()
         if not is_super:
@@ -2425,24 +2653,22 @@ class SellerHubMetricsView(APIView):
             else:
                 order_qs = order_qs.none()
 
-        total_orders = order_qs.count()
-        pending_orders = order_qs.filter(status=SellerOrder.Status.NEW).count()
-        in_prep_orders = order_qs.filter(
-            status__in=[
+        order_agg = order_qs.aggregate(
+            total_orders=models.Count("id"),
+            pending_orders=models.Count("id", filter=models.Q(status=SellerOrder.Status.NEW)),
+            in_prep_orders=models.Count("id", filter=models.Q(status__in=[
                 SellerOrder.Status.ACCEPTED,
                 SellerOrder.Status.PICKING,
                 SellerOrder.Status.PACKED,
                 SellerOrder.Status.READY_FOR_PICKUP,
-            ]
-        ).count()
-        completed_orders = order_qs.filter(
-            status__in=[
+            ])),
+            completed_orders=models.Count("id", filter=models.Q(status__in=[
                 SellerOrder.Status.HANDED_OVER,
                 SellerOrder.Status.DELIVERED,
-            ]
-        ).count()
-        cancelled_orders = order_qs.filter(status=SellerOrder.Status.CANCELLED).count()
-        today_orders = order_qs.filter(created_at__date=today).count()
+            ])),
+            cancelled_orders=models.Count("id", filter=models.Q(status=SellerOrder.Status.CANCELLED)),
+            today_orders=models.Count("id", filter=models.Q(created_at__date=today)),
+        )
 
         # Phase 5 Return QuerySet
         return_qs = SellerReturn.objects.all()
@@ -2452,29 +2678,25 @@ class SellerHubMetricsView(APIView):
             else:
                 return_qs = return_qs.none()
 
-        total_returns = return_qs.count()
-        pending_returns = return_qs.filter(
-            status__in=[
+        return_agg = return_qs.aggregate(
+            total_returns=models.Count("id"),
+            pending_returns=models.Count("id", filter=models.Q(status__in=[
                 SellerReturn.Status.REQUESTED,
                 SellerReturn.Status.UNDER_SELLER_REVIEW,
-            ]
-        ).count()
-        under_inspection_returns = return_qs.filter(
-            status__in=[
+            ])),
+            under_inspection_returns=models.Count("id", filter=models.Q(status__in=[
                 SellerReturn.Status.APPROVED,
                 SellerReturn.Status.PICKUP_SCHEDULED,
                 SellerReturn.Status.RECEIVED,
                 SellerReturn.Status.QUALITY_CHECK,
-            ]
-        ).count()
-        resolved_returns = return_qs.filter(
-            status__in=[
+            ])),
+            resolved_returns=models.Count("id", filter=models.Q(status__in=[
                 SellerReturn.Status.RESTOCKED,
                 SellerReturn.Status.CLOSED,
                 SellerReturn.Status.DISCARDED,
                 SellerReturn.Status.REJECTED,
-            ]
-        ).count()
+            ])),
+        )
 
         # Phase 6 Claim QuerySet
         claim_qs = SellerClaim.objects.all()
@@ -2484,66 +2706,62 @@ class SellerHubMetricsView(APIView):
             else:
                 claim_qs = claim_qs.none()
 
-        total_claims = claim_qs.count()
-        open_claims = claim_qs.filter(
-            status__in=[
+        claim_agg = claim_qs.aggregate(
+            total_claims=models.Count("id"),
+            open_claims=models.Count("id", filter=models.Q(status__in=[
                 SellerClaim.Status.OPEN,
                 SellerClaim.Status.UNDER_REVIEW,
                 SellerClaim.Status.SELLER_RESPONSE_REQUIRED,
                 SellerClaim.Status.ESCALATED,
-            ]
-        ).count()
-        claims_requiring_response = claim_qs.filter(
-            status=SellerClaim.Status.SELLER_RESPONSE_REQUIRED
-        ).count()
-        escalated_claims = claim_qs.filter(
-            status=SellerClaim.Status.ESCALATED
-        ).count()
-        resolved_claims = claim_qs.filter(
-            status__in=[
+            ])),
+            claims_requiring_response=models.Count("id", filter=models.Q(status=SellerClaim.Status.SELLER_RESPONSE_REQUIRED)),
+            escalated_claims=models.Count("id", filter=models.Q(status=SellerClaim.Status.ESCALATED)),
+            resolved_claims=models.Count("id", filter=models.Q(status__in=[
                 SellerClaim.Status.APPROVED,
                 SellerClaim.Status.REJECTED,
                 SellerClaim.Status.SETTLED,
                 SellerClaim.Status.CLOSED,
-            ]
-        ).count()
+            ])),
+        )
+
+        total_inv_val = inv_agg["total_inv_value"] or Decimal("0.00")
 
         return Response(
             {
-                "catalogs_awaiting_approval": awaiting_approval,
-                "approved_products": approved_count,
-                "draft_products": draft_count,
-                "changes_requested": changes_requested,
-                "rejected_products": rejected_count,
-                "paused_products": paused_count,
-                "total_products": total_products,
+                "catalogs_awaiting_approval": prod_agg["awaiting_approval"],
+                "approved_products": prod_agg["approved_count"],
+                "draft_products": prod_agg["draft_count"],
+                "changes_requested": prod_agg["changes_requested"],
+                "rejected_products": prod_agg["rejected_count"],
+                "paused_products": prod_agg["paused_count"],
+                "total_products": prod_agg["total_products"],
                 "active_categories": categories_count,
                 "active_coupons": active_coupons,
                 # Phase 3 Inventory Metrics
-                "total_inventory_products": total_inventory_products,
-                "low_stock_items_count": low_stock_items,
-                "out_of_stock_items_count": out_of_stock_items,
-                "in_stock_items_count": in_stock_items,
+                "total_inventory_products": inv_agg["total_inventory_products"],
+                "low_stock_items_count": inv_agg["low_stock_items"],
+                "out_of_stock_items_count": inv_agg["out_of_stock_items"],
+                "in_stock_items_count": inv_agg["in_stock_items"],
                 "expiring_soon_items_count": expiring_soon_count,
-                "total_inventory_value": str(round(total_inv_value, 2)),
+                "total_inventory_value": str(round(Decimal(str(total_inv_val)), 2)),
                 # Phase 4 Order & Fulfilment Metrics
-                "total_orders_count": total_orders,
-                "pending_orders_count": pending_orders,
-                "in_prep_orders_count": in_prep_orders,
-                "completed_orders_count": completed_orders,
-                "cancelled_orders_count": cancelled_orders,
-                "today_orders_count": today_orders,
+                "total_orders_count": order_agg["total_orders"],
+                "pending_orders_count": order_agg["pending_orders"],
+                "in_prep_orders_count": order_agg["in_prep_orders"],
+                "completed_orders_count": order_agg["completed_orders"],
+                "cancelled_orders_count": order_agg["cancelled_orders"],
+                "today_orders_count": order_agg["today_orders"],
                 # Phase 5 Return Metrics
-                "total_returns_count": total_returns,
-                "pending_returns_count": pending_returns,
-                "under_inspection_returns_count": under_inspection_returns,
-                "resolved_returns_count": resolved_returns,
+                "total_returns_count": return_agg["total_returns"],
+                "pending_returns_count": return_agg["pending_returns"],
+                "under_inspection_returns_count": return_agg["under_inspection_returns"],
+                "resolved_returns_count": return_agg["resolved_returns"],
                 # Phase 6 Claims Metrics
-                "total_claims_count": total_claims,
-                "open_claims_count": open_claims,
-                "claims_requiring_response_count": claims_requiring_response,
-                "escalated_claims_count": escalated_claims,
-                "resolved_claims_count": resolved_claims,
+                "total_claims_count": claim_agg["total_claims"],
+                "open_claims_count": claim_agg["open_claims"],
+                "claims_requiring_response_count": claim_agg["claims_requiring_response"],
+                "escalated_claims_count": claim_agg["escalated_claims"],
+                "resolved_claims_count": claim_agg["resolved_claims"],
             },
             status=status.HTTP_200_OK
         )
