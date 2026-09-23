@@ -2783,6 +2783,12 @@ class SellerOrderListSerializer(serializers.ModelSerializer):
     company_name = serializers.CharField(source="company.company_name", read_only=True)
     items_count = serializers.SerializerMethodField()
     items_summary = serializers.SerializerMethodField()
+    handling_technician_id = serializers.IntegerField(source="handling_technician.id", read_only=True)
+    handling_technician_name = serializers.SerializerMethodField()
+    handling_technician_phone = serializers.SerializerMethodField()
+    dispatch_job_id = serializers.IntegerField(source="dispatch_job.id", read_only=True)
+    handover_otp_pending = serializers.SerializerMethodField()
+    delivery_otp_pending = serializers.SerializerMethodField()
 
     class Meta:
         from .models import SellerOrder
@@ -2803,6 +2809,13 @@ class SellerOrderListSerializer(serializers.ModelSerializer):
             "total_amount",
             "currency",
             "status",
+            "dispatch_job_id",
+            "handling_technician_id",
+            "handling_technician_name",
+            "handling_technician_phone",
+            "handover_otp_pending",
+            "delivery_otp_pending",
+            "inventory_deducted",
             "items_count",
             "items_summary",
             "seller_notes",
@@ -2811,12 +2824,34 @@ class SellerOrderListSerializer(serializers.ModelSerializer):
             "picking_at",
             "packed_at",
             "ready_at",
+            "assigned_at",
             "handed_over_at",
             "delivered_at",
             "cancelled_at",
             "created_at",
             "updated_at",
         ]
+
+    def get_handling_technician_name(self, obj):
+        if not obj.handling_technician:
+            return None
+        tech = obj.handling_technician
+        if getattr(tech, "user", None):
+            return tech.user.get_full_name() or tech.user.username
+        return getattr(tech, "name", f"Rider #{tech.id}")
+
+    def get_handling_technician_phone(self, obj):
+        if not obj.handling_technician:
+            return None
+        tech = obj.handling_technician
+        user = getattr(tech, "user", None)
+        return getattr(user, "mobile_number", "") or getattr(user, "phone", "") or getattr(tech, "phone", "") or getattr(user, "username", "")
+
+    def get_handover_otp_pending(self, obj):
+        return bool(obj.handover_otp_hash and obj.handover_otp_used_at is None)
+
+    def get_delivery_otp_pending(self, obj):
+        return bool(obj.delivery_otp_hash and obj.delivery_otp_used_at is None)
 
     def get_items_count(self, obj):
         if hasattr(obj, "_prefetched_objects_cache") and "items" in obj._prefetched_objects_cache:
@@ -2839,13 +2874,34 @@ class SellerOrderListSerializer(serializers.ModelSerializer):
 class SellerOrderDetailSerializer(SellerOrderListSerializer):
     items = SellerOrderItemSerializer(many=True, read_only=True)
     audit_logs = SellerOrderAuditLogSerializer(many=True, read_only=True)
+    pickup_otp = serializers.SerializerMethodField()
 
     class Meta(SellerOrderListSerializer.Meta):
         fields = SellerOrderListSerializer.Meta.fields + [
             "items",
             "audit_logs",
             "handover_ref",
+            "pickup_otp",
         ]
+
+    def get_pickup_otp(self, obj):
+        # Surface recent pickup OTP notification text if merchant is viewing
+        request = self.context.get("request")
+        if not request or not request.user.is_authenticated:
+            return None
+        # Only show to merchant belonging to order company or admin
+        from .models import WorkforceNotification
+        if obj.handover_otp_hash and obj.handover_otp_used_at is None:
+            notif = WorkforceNotification.objects.filter(
+                notification_type="ORDER_PICKUP_OTP",
+                related_object_id=str(obj.id),
+            ).order_by("-created_at").first()
+            if notif and "Pickup Handover OTP is " in notif.message:
+                try:
+                    return notif.message.split("Pickup Handover OTP is ")[1].split(".")[0].strip()
+                except Exception:
+                    pass
+        return None
 
 
 class SellerOrderStatusTransitionSerializer(serializers.Serializer):

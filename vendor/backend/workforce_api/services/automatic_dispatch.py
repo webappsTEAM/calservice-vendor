@@ -105,6 +105,7 @@ MAX_OFFER_WINDOW_MINUTES = 15
 RAPID_DISPATCH_SERVICE_CATEGORIES = {
     "goods_transport_truck",
     "goods_transport_two_wheeler",
+    "two_wheeler_delivery",
 }
 # The ladder, indexed by how many offers this job has already burned.
 # Widens as the job gets harder to place, rather than hammering the same
@@ -156,6 +157,7 @@ DISPATCHABLE_STATUSES = ["draft", "new_request", "confirmed", "unassigned", "ass
 LOGISTICS_SERVICE_CATEGORIES = {
     "goods_transport_truck",
     "goods_transport_two_wheeler",
+    "two_wheeler_delivery",
     "packers_movers",
     # HS-E-06: was missing here -- Customer/backend/service_requests/
     # services/__init__.py's LOGISTICS_STOP_CATEGORIES (the multi-stop
@@ -190,19 +192,20 @@ EXPLICIT_SERVICE_ALIASES = {
     "bathroom cleaning": {"bathroom cleaning", "cleaning", "deep cleaning"},
     "full house cleaning": {"full house cleaning", "cleaning", "deep cleaning", "house cleaning"},
     "sofa cleaning": {"sofa cleaning", "cleaning", "couch cleaning"},
-    "two wheeler": {"two wheeler", "bike", "scooter", "motorcycle", "bike repair", "two wheeler repair"},
+    "two wheeler": {"two wheeler", "bike", "scooter", "motorcycle", "bike repair", "two wheeler repair", "two_wheeler_delivery", "goods_transport_two_wheeler"},
+    "two_wheeler_delivery": {"two_wheeler_delivery", "two wheeler", "goods_transport_two_wheeler", "goods_transport", "delivery", "logistics"},
     "truck": {"truck", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation"},
     "packer & mover": {"packer & mover", "packers & movers", "truck", "shifting", "relocation", "packers_movers"},
     "packers & movers": {"packer & mover", "packers & movers", "truck", "shifting", "relocation", "packers_movers"},
     "packers_movers": {"packer & mover", "packers & movers", "truck", "shifting", "relocation", "packers_movers"},
     "shifting": {"packer & mover", "packers & movers", "truck", "shifting", "relocation", "packers_movers"},
     "relocation": {"packer & mover", "packers & movers", "truck", "shifting", "relocation", "packers_movers"},
-    "goods transport": {"goods_transport", "goods & transport", "goods and transport", "goods transport", "truck", "two wheeler", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation", "goods_transport_truck", "goods_transport_two_wheeler"},
-    "goods & transport": {"goods_transport", "goods & transport", "goods and transport", "goods transport", "truck", "two wheeler", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation", "goods_transport_truck", "goods_transport_two_wheeler"},
-    "goods and transport": {"goods_transport", "goods & transport", "goods and transport", "goods transport", "truck", "two wheeler", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation", "goods_transport_truck", "goods_transport_two_wheeler"},
-    "goods_transport": {"goods_transport", "goods & transport", "goods and transport", "goods transport", "truck", "two wheeler", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation", "goods_transport_truck", "goods_transport_two_wheeler"},
+    "goods transport": {"goods_transport", "goods & transport", "goods and transport", "goods transport", "truck", "two wheeler", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation", "goods_transport_truck", "goods_transport_two_wheeler", "two_wheeler_delivery"},
+    "goods & transport": {"goods_transport", "goods & transport", "goods and transport", "goods transport", "truck", "two wheeler", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation", "goods_transport_truck", "goods_transport_two_wheeler", "two_wheeler_delivery"},
+    "goods and transport": {"goods_transport", "goods & transport", "goods and transport", "goods transport", "truck", "two wheeler", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation", "goods_transport_truck", "goods_transport_two_wheeler", "two_wheeler_delivery"},
+    "goods_transport": {"goods_transport", "goods & transport", "goods and transport", "goods transport", "truck", "two wheeler", "packer & mover", "packers & movers", "logistics", "shifting", "packers_movers", "relocation", "goods_transport_truck", "goods_transport_two_wheeler", "two_wheeler_delivery"},
     "goods_transport_truck": {"goods_transport_truck", "truck", "mini truck", "goods & transport", "goods and transport", "goods transport", "logistics", "packer & mover", "packers & movers"},
-    "goods_transport_two_wheeler": {"goods_transport_two_wheeler", "two wheeler", "bike", "scooter", "goods & transport", "goods and transport", "goods transport", "logistics"},
+    "goods_transport_two_wheeler": {"goods_transport_two_wheeler", "two_wheeler_delivery", "two wheeler", "bike", "scooter", "goods & transport", "goods and transport", "goods transport", "logistics"},
 }
 
 
@@ -211,7 +214,7 @@ def normalize_service_category(cat: str) -> str:
     raw = str(cat or "").strip().lower().replace("-", "_").replace(" ", "_")
     if raw in ("truck", "mini_truck", "goods_transport_truck"):
         return "goods_transport_truck"
-    if raw in ("two_wheeler", "2_wheeler", "goods_transport_two_wheeler"):
+    if raw in ("two_wheeler", "2_wheeler", "two_wheeler_delivery", "goods_transport_two_wheeler"):
         return "goods_transport_two_wheeler"
     if raw in ("packers_movers", "packer_mover", "packers_and_movers", "shifting"):
         return "packers_movers"

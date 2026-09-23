@@ -30,10 +30,13 @@ import {
   ChevronRight,
   Truck,
   TrendingDown,
-  Tag,
   Store,
   Check,
+  Scan,
+  Barcode as BarcodeIcon,
 } from 'lucide-react';
+import { BarcodeScannerModal } from '../../components/common/BarcodeScannerModal.jsx';
+import { BarcodeRenderer } from '../../components/common/BarcodeRenderer.jsx';
 
 export function SellerInventoryPage() {
   const { user, token } = useAuth();
@@ -50,6 +53,7 @@ export function SellerInventoryPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
   const [categories, setCategories] = useState([]);
+  const [showInventoryScanner, setShowInventoryScanner] = useState(false);
 
   // Selected Item for Detail / Drawer
   const [selectedItem, setSelectedItem] = useState(null);
@@ -670,7 +674,7 @@ export function SellerInventoryPage() {
 
           {/* ── SEARCH & FILTER CONTROLS ───────────────────────────────────── */}
           <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 mt-4">
-            {/* Search Input */}
+            {/* Search Input with Scan to Search */}
             <div className="relative flex-1">
               <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
               <input
@@ -678,16 +682,29 @@ export function SellerInventoryPage() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search by Product Title, SKU, Brand, Barcode..."
-                className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 focus:bg-white focus:border-emerald-500 rounded-xl text-xs outline-none transition-all"
+                className="w-full pl-9 pr-24 py-2 bg-slate-50 border border-slate-200 focus:bg-white focus:border-emerald-500 rounded-xl text-xs outline-none transition-all shadow-2xs"
               />
-              {searchQuery && (
+              <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="text-slate-400 hover:text-slate-600 p-1 rounded-md"
+                    title="Clear search"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
                 <button
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  type="button"
+                  onClick={() => setShowInventoryScanner(true)}
+                  className="inline-flex items-center gap-1 text-[11px] font-bold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-2 py-1 rounded-lg transition-colors shadow-2xs cursor-pointer"
+                  title="Scan barcode with camera to filter instantly"
                 >
-                  <X className="w-3.5 h-3.5" />
+                  <Scan className="w-3 h-3 text-emerald-600" />
+                  <span>Scan</span>
                 </button>
-              )}
+              </div>
             </div>
 
             {/* Category Dropdown */}
@@ -864,6 +881,12 @@ export function SellerInventoryPage() {
                                   {item.product_brand && <span>• {item.product_brand}</span>}
                                   <span>• {item.product_pack_size} {item.product_unit}</span>
                                 </div>
+                                {item.product_barcode && (
+                                  <div className="flex items-center gap-1 mt-1 text-[10px] font-mono text-emerald-700 bg-emerald-50 border border-emerald-200/80 px-1.5 py-0.5 rounded max-w-fit" title={`Barcode: ${item.product_barcode}`}>
+                                    <BarcodeIcon className="w-3 h-3 text-emerald-600 shrink-0" />
+                                    <span>{item.product_barcode}</span>
+                                  </div>
+                                )}
                               </div>
                             </div>
                           </td>
@@ -1545,6 +1568,21 @@ export function SellerInventoryPage() {
                     <p className="text-xs text-slate-400 font-mono mt-0.5">
                       SKU: {selectedItem.product_sku} • {selectedItem.product_category_name}
                     </p>
+                    {selectedItem.product_barcode && (
+                      <div className="mt-2.5 bg-slate-800/90 border border-slate-700/80 p-2.5 rounded-xl flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 text-xs text-slate-300">
+                          <BarcodeIcon className="w-3.5 h-3.5 text-emerald-400" />
+                          <span className="font-bold text-[11px]">Barcode:</span>
+                        </div>
+                        <BarcodeRenderer
+                          value={selectedItem.product_barcode}
+                          height={30}
+                          width={1.2}
+                          fontSize={9}
+                          showCopyButton={true}
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
                 <button
@@ -1739,6 +1777,19 @@ export function SellerInventoryPage() {
             </div>
           </div>
         )}
+
+        {/* ── BARCODE SCANNER MODAL (SCAN-TO-SEARCH) ────────────────────────── */}
+        <BarcodeScannerModal
+          isOpen={showInventoryScanner}
+          onClose={() => setShowInventoryScanner(false)}
+          onScan={(scannedBarcode) => {
+            setSearchQuery(scannedBarcode);
+            setSuccessMsg(`Filtered inventory by barcode: ${scannedBarcode}`);
+            setTimeout(() => setSuccessMsg(''), 4000);
+          }}
+          title="Scan to Search Store Stock"
+          description="Point your camera at a physical product barcode to jump directly to its stock record"
+        />
       </main>
     </div>
   );

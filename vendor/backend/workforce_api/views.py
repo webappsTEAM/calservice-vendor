@@ -4423,6 +4423,37 @@ class WorkforceJobAcceptOfferView(APIView):
                 related_object_id=job_obj.id,
             )
 
+            # Reconcile linked marketplace SellerOrder if this is a delivery dispatch job
+            from workforce_api.models import SellerOrder, SellerOrderAuditLog
+            from workforce_api.services.seller_order_outbox import record_seller_order_status_event
+
+            linked_orders = SellerOrder.objects.select_for_update().filter(dispatch_job=job_obj)
+            for s_ord in linked_orders:
+                s_ord.handling_technician = emp_obj
+                s_ord.assigned_at = now
+                if s_ord.status in [SellerOrder.Status.READY_FOR_PICKUP, SellerOrder.Status.PACKED]:
+                    from_st = s_ord.status
+                    s_ord.status = SellerOrder.Status.ASSIGNED
+                    s_ord.save(update_fields=["handling_technician", "assigned_at", "status", "updated_at"])
+                    emp_display = (emp_obj.user.get_full_name() or emp_obj.user.username) if getattr(emp_obj, "user", None) else str(emp_obj.id)
+                    SellerOrderAuditLog.objects.create(
+                        order=s_ord,
+                        from_status=from_st,
+                        to_status=SellerOrder.Status.ASSIGNED,
+                        action="Rider Assigned",
+                        actor=request.user,
+                        notes=f"Assigned to delivery partner {emp_display}.",
+                    )
+                    record_seller_order_status_event(
+                        order=s_ord,
+                        previous_status=from_st,
+                        new_status=SellerOrder.Status.ASSIGNED,
+                        event_type="seller_order.status_updated",
+                        actor=request.user,
+                    )
+                else:
+                    s_ord.save(update_fields=["handling_technician", "assigned_at", "updated_at"])
+
             return Response({
                 "message": f"Job #{job_obj.id} accepted successfully.",
                 "job_id": job_obj.id,
@@ -4655,6 +4686,36 @@ class WorkforceJobCancelAssignmentView(APIView):
                     "reason": reason_code,
                 }
             )
+
+            # Reset linked marketplace SellerOrder if this was a delivery dispatch job
+            from workforce_api.models import SellerOrder, SellerOrderAuditLog
+            from workforce_api.services.seller_order_outbox import record_seller_order_status_event
+
+            linked_orders = SellerOrder.objects.select_for_update().filter(dispatch_job=job_obj)
+            for s_ord in linked_orders:
+                s_ord.handling_technician = None
+                s_ord.assigned_at = None
+                if s_ord.status == SellerOrder.Status.ASSIGNED:
+                    from_st = s_ord.status
+                    s_ord.status = SellerOrder.Status.READY_FOR_PICKUP
+                    s_ord.save(update_fields=["handling_technician", "assigned_at", "status", "updated_at"])
+                    SellerOrderAuditLog.objects.create(
+                        order=s_ord,
+                        from_status=from_st,
+                        to_status=SellerOrder.Status.READY_FOR_PICKUP,
+                        action="Rider Assignment Cancelled",
+                        actor=request.user,
+                        notes=f"Rider {emp_obj.name or emp_obj.id} cancelled: [{reason_code}] {reason_text}",
+                    )
+                    record_seller_order_status_event(
+                        order=s_ord,
+                        previous_status=from_st,
+                        new_status=SellerOrder.Status.READY_FOR_PICKUP,
+                        event_type="seller_order.status_updated",
+                        actor=request.user,
+                    )
+                else:
+                    s_ord.save(update_fields=["handling_technician", "assigned_at", "updated_at"])
 
             # Trigger automatic redispatch excluding the cancelling technician
             success, msg = run_automatic_dispatch(job_obj, excluded_employee_ids=[emp_obj.id])

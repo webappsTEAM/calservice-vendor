@@ -42,6 +42,8 @@ def build_sanitized_order_payload(order, previous_status, new_status, actor=None
         timestamps["packed_at"] = order.packed_at.isoformat()
     if order.ready_at:
         timestamps["ready_at"] = order.ready_at.isoformat()
+    if order.assigned_at:
+        timestamps["assigned_at"] = order.assigned_at.isoformat()
     if order.handed_over_at:
         timestamps["handed_over_at"] = order.handed_over_at.isoformat()
     if order.delivered_at:
@@ -60,6 +62,16 @@ def build_sanitized_order_payload(order, previous_status, new_status, actor=None
         else:
             cancelled_by_role = "INTEGRATION"
 
+    rider_info = None
+    if order.handling_technician:
+        tech = order.handling_technician
+        user = getattr(tech, "user", None)
+        rider_info = {
+            "id": tech.id,
+            "name": (user.get_full_name() or user.username) if user else getattr(tech, "name", f"Rider #{tech.id}"),
+            "phone": getattr(user, "mobile_number", "") or getattr(user, "phone", "") or getattr(tech, "phone", "") if user else getattr(tech, "phone", ""),
+        }
+
     return {
         "source_order_id": order.source_order_id,
         "vendor_order_number": order.order_number,
@@ -71,6 +83,8 @@ def build_sanitized_order_payload(order, previous_status, new_status, actor=None
         "fulfillment_type": order.fulfillment_type,
         "delivery_slot": order.delivery_slot or "",
         "handover_ref": order.handover_ref or "",
+        "dispatch_job_id": order.dispatch_job_id,
+        "rider": rider_info,
         "cancellation_reason": order.cancellation_reason if new_status == SellerOrder.Status.CANCELLED else None,
         "cancelled_by": cancelled_by_role,
         "timestamps": timestamps,

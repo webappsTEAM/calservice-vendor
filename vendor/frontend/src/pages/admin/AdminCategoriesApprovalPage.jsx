@@ -28,7 +28,11 @@ import {
   ChevronDown,
   History,
   Info,
+  Scan,
+  Barcode as BarcodeIcon,
 } from 'lucide-react';
+import { BarcodeScannerModal } from '../../components/common/BarcodeScannerModal.jsx';
+import { BarcodeRenderer } from '../../components/common/BarcodeRenderer.jsx';
 
 export function AdminCategoriesApprovalPage() {
   const { user, token } = useAuth();
@@ -57,6 +61,7 @@ export function AdminCategoriesApprovalPage() {
   const [productPage, setProductPage] = useState(1);
   const [productTotalPages, setProductTotalPages] = useState(1);
   const [productTotalCount, setProductTotalCount] = useState(0);
+  const [showAdminScanner, setShowAdminScanner] = useState(false);
 
   // Selection & Bulk Actions
   const [selectedProductIds, setSelectedProductIds] = useState(new Set());
@@ -513,8 +518,8 @@ export function AdminCategoriesApprovalPage() {
                   <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-2.5 pointer-events-none" />
                 </div>
 
-                {/* Search Box */}
-                <div className="relative min-w-[220px]">
+                {/* Search Box with Barcode Scanner */}
+                <div className="relative min-w-[240px]">
                   <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
                   <input
                     type="text"
@@ -523,9 +528,33 @@ export function AdminCategoriesApprovalPage() {
                       setProductSearch(e.target.value);
                       setProductPage(1);
                     }}
-                    placeholder="Search Title, SKU, Brand..."
-                    className="w-full pl-9 pr-3 py-2 text-xs rounded-lg border border-slate-300 bg-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    placeholder="Search Title, SKU, Barcode..."
+                    className="w-full pl-9 pr-20 py-2 text-xs rounded-lg border border-slate-300 bg-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-2xs"
                   />
+                  <div className="absolute right-1.5 top-1.5 flex items-center gap-1">
+                    {productSearch && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProductSearch('');
+                          setProductPage(1);
+                        }}
+                        className="text-slate-400 hover:text-slate-600 p-1"
+                        title="Clear search"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setShowAdminScanner(true)}
+                      className="inline-flex items-center gap-0.5 text-[10px] font-bold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-1.5 py-1 rounded transition-colors shadow-2xs cursor-pointer"
+                      title="Scan barcode to find product"
+                    >
+                      <Scan className="w-3 h-3 text-emerald-600" />
+                      <span>Scan</span>
+                    </button>
+                  </div>
                 </div>
 
                 {/* Bulk Actions Button */}
@@ -822,9 +851,22 @@ export function AdminCategoriesApprovalPage() {
                               {detailProduct.pack_size} {detailProduct.unit}
                             </span>
                           </div>
-                          <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-100">
-                            <span className="text-slate-400 block text-[10px]">Barcode</span>
-                            <span className="font-semibold text-slate-800">{detailProduct.barcode || '—'}</span>
+                          <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-100 col-span-2 flex items-center justify-between">
+                            <div>
+                              <span className="text-slate-400 block text-[10px]">Scannable Barcode / EAN</span>
+                              <span className="font-semibold text-slate-800 font-mono text-xs">
+                                {detailProduct.barcode || '—'}
+                              </span>
+                            </div>
+                            {detailProduct.barcode && (
+                              <BarcodeRenderer
+                                value={detailProduct.barcode}
+                                height={32}
+                                width={1.2}
+                                fontSize={9}
+                                showCopyButton={true}
+                              />
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1034,6 +1076,18 @@ export function AdminCategoriesApprovalPage() {
               </div>
             </div>
           )}
+
+          {/* Admin Barcode Scanner Modal */}
+          <BarcodeScannerModal
+            isOpen={showAdminScanner}
+            onClose={() => setShowAdminScanner(false)}
+            onScan={(scannedBarcode) => {
+              setProductSearch(scannedBarcode);
+              setProductPage(1);
+            }}
+            title="Scan Barcode to Verify Product"
+            description="Point camera at product barcode to locate submission"
+          />
         </main>
       </div>
     );

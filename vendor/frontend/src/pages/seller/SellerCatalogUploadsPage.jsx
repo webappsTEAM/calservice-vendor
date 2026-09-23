@@ -35,7 +35,11 @@ import {
   FileCheck,
   ChevronRight,
   RotateCcw,
+  Scan,
+  Barcode as BarcodeIcon,
 } from 'lucide-react';
+import { BarcodeScannerModal } from '../../components/common/BarcodeScannerModal.jsx';
+import { BarcodeRenderer } from '../../components/common/BarcodeRenderer.jsx';
 
 
 const STATUS_CONFIG = {
@@ -80,6 +84,7 @@ export function SellerCatalogUploadsPage() {
 
   // Modals state
   const [showProductModal, setShowProductModal] = useState(false);
+  const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
   const [productForm, setProductForm] = useState({
     title: '',
@@ -1067,6 +1072,12 @@ export function SellerCatalogUploadsPage() {
                                       </span>
                                       {p.brand && <span>• {p.brand}</span>}
                                     </div>
+                                    {p.barcode && (
+                                      <div className="flex items-center gap-1 mt-1 text-[10px] font-mono text-emerald-700 bg-emerald-50 border border-emerald-200/80 px-1.5 py-0.5 rounded max-w-fit" title={`Barcode: ${p.barcode}`}>
+                                        <BarcodeIcon className="w-3 h-3 text-emerald-600 shrink-0" />
+                                        <span>{p.barcode}</span>
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
                               </td>
@@ -1973,15 +1984,61 @@ export function SellerCatalogUploadsPage() {
                           />
                         </div>
 
-                        <div className="sm:col-span-2">
-                          <label className="block text-xs font-bold text-slate-700 mb-1">Barcode / EAN (Optional)</label>
-                          <input
-                            type="text"
-                            placeholder="e.g. 8901234567890"
-                            value={productForm.barcode}
-                            onChange={(e) => setProductForm({ ...productForm, barcode: e.target.value })}
-                            className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 font-mono"
-                          />
+                        <div className="sm:col-span-2 space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <label className="block text-xs font-bold text-slate-700">
+                              Barcode / EAN (Optional)
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => setShowBarcodeScanner(true)}
+                              className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2.5 py-1 rounded-lg transition-colors shadow-2xs cursor-pointer"
+                              title="Scan barcode with camera or simulated input"
+                            >
+                              <Scan className="w-3.5 h-3.5 text-emerald-600" />
+                              <span>Scan with Camera</span>
+                            </button>
+                          </div>
+                          <div className="relative">
+                            <input
+                              type="text"
+                              placeholder="e.g. 8901234567890 (or click Scan with Camera)"
+                              value={productForm.barcode}
+                              onChange={(e) => setProductForm({ ...productForm, barcode: e.target.value })}
+                              className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 font-mono pr-16"
+                            />
+                            {productForm.barcode && (
+                              <button
+                                type="button"
+                                onClick={() => setProductForm({ ...productForm, barcode: '' })}
+                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Live Scannable Barcode Visual Preview */}
+                          {productForm.barcode && (
+                            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 mt-1.5 animate-in fade-in duration-150">
+                              <div className="flex items-center gap-2">
+                                <span className="p-1.5 bg-emerald-100 text-emerald-800 rounded-lg">
+                                  <BarcodeIcon className="w-4 h-4 text-emerald-700 shrink-0" />
+                                </span>
+                                <div>
+                                  <span className="text-[11px] font-bold text-slate-800">Scannable Visual Barcode</span>
+                                  <p className="text-[10px] text-slate-400">Verifies scannability for retail packaging and Phase O shipping labels</p>
+                                </div>
+                              </div>
+                              <BarcodeRenderer
+                                value={productForm.barcode}
+                                height={36}
+                                width={1.4}
+                                fontSize={10}
+                                showCopyButton={false}
+                              />
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -2363,6 +2420,21 @@ export function SellerCatalogUploadsPage() {
                     <p className="text-[11px] text-slate-600">
                       Category: <span className="font-semibold">{detailedProduct.category_path}</span>
                     </p>
+                    {detailedProduct.barcode && (
+                      <div className="pt-2 flex items-center justify-between bg-white p-2.5 rounded-xl border border-slate-200">
+                        <div className="flex items-center gap-2">
+                          <BarcodeIcon className="w-4 h-4 text-emerald-600" />
+                          <span className="text-xs font-bold text-slate-800">Scannable Barcode:</span>
+                        </div>
+                        <BarcodeRenderer
+                          value={detailedProduct.barcode}
+                          height={36}
+                          width={1.3}
+                          fontSize={10}
+                          showCopyButton={true}
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -2405,6 +2477,19 @@ export function SellerCatalogUploadsPage() {
             </div>
           </div>
         )}
+
+        {/* Barcode Camera / Test Scanner Modal */}
+        <BarcodeScannerModal
+          isOpen={showBarcodeScanner}
+          onClose={() => setShowBarcodeScanner(false)}
+          onScan={(scannedBarcode) => {
+            setProductForm((prev) => ({ ...prev, barcode: scannedBarcode }));
+            setSuccessMessage(`Scanned barcode: ${scannedBarcode}`);
+            setTimeout(() => setSuccessMessage(null), 3500);
+          }}
+          title="Scan Product Barcode"
+          description="Point your camera at the packaging barcode to auto-fill into product details"
+        />
       </main>
     </div>
   );

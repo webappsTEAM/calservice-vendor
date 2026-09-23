@@ -1653,6 +1653,13 @@ export async function apiDeleteSellerHubCoupon(id) {
   });
 }
 
+export async function apiSellerOrderAdminOverride(orderId, action, reason) {
+  return await apiRequest(`/workforce/seller-hub/orders/${orderId}/admin-override/`, {
+    method: 'POST',
+    json: { action, reason },
+  });
+}
+
 // Named object export for convenient namespace usage
 export const workforceService = {
   getGroceryOrders: apiGetGroceryOrders,
@@ -1678,5 +1685,6 @@ export const workforceService = {
   createSellerHubCoupon: apiCreateSellerHubCoupon,
   updateSellerHubCoupon: apiUpdateSellerHubCoupon,
   deleteSellerHubCoupon: apiDeleteSellerHubCoupon,
+  sellerOrderAdminOverride: apiSellerOrderAdminOverride,
 };
 

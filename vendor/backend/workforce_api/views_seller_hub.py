@@ -28,8 +28,15 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
+import secrets
+from datetime import timedelta
+from django.contrib.auth import get_user_model
+from django.contrib.auth.hashers import make_password, check_password
+from rest_framework.throttling import ScopedRateThrottle
+
 from accounts.permissions import is_admin_role
 from accounts.platform import is_platform_admin_user
+from workforce_api.permissions import IsApprovedTechnician
 from workforce_api.models import (
     SellerHubCategory,
     VendorCoupon,
@@ -49,6 +56,8 @@ from workforce_api.models import (
     SellerReturnAuditLog,
     SellerClaim,
     SellerClaimAuditLog,
+    WorkforceNotification,
+    WorkforceEventLog,
 )
 from workforce_api.serializers import (
     SellerHubCategoryAdminSerializer,
@@ -2661,6 +2670,7 @@ class SellerHubMetricsView(APIView):
                 SellerOrder.Status.PICKING,
                 SellerOrder.Status.PACKED,
                 SellerOrder.Status.READY_FOR_PICKUP,
+                SellerOrder.Status.ASSIGNED,
             ])),
             completed_orders=models.Count("id", filter=models.Q(status__in=[
                 SellerOrder.Status.HANDED_OVER,
@@ -3329,6 +3339,7 @@ class SellerOrderListView(APIView):
                         SellerOrder.Status.PICKING,
                         SellerOrder.Status.PACKED,
                         SellerOrder.Status.READY_FOR_PICKUP,
+                        SellerOrder.Status.ASSIGNED,
                     ]
                 )
             elif status_filter == "COMPLETED":
@@ -3439,6 +3450,17 @@ class SellerOrderStatusTransitionView(APIView):
         cancellation_reason = serializer.validated_data.get("cancellation_reason", "").strip()
         handover_ref = serializer.validated_data.get("handover_ref", "").strip()
 
+        # Block manual handover/deliver for non-superusers (enforce 2-step OTP checkpoint flow)
+        if action in ("handover", "deliver") and not getattr(user, "is_superuser", False):
+            return Response(
+                {
+                    "error": "Manual handover and delivery actions are disabled. Orders must be verified by the assigned 2-wheeler rider using Pickup and Delivery OTP verification checkpoints.",
+                    "code": "MANUAL_HANDOVER_DISABLED",
+                    "action": action,
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         # Action to Target Status Mapping
         ACTION_TARGET_STATUS = {
             "accept": SellerOrder.Status.ACCEPTED,
@@ -3489,6 +3511,38 @@ class SellerOrderStatusTransitionView(APIView):
                 order.packed_at = now
             elif target_status == SellerOrder.Status.READY_FOR_PICKUP:
                 order.ready_at = now
+                # Automatically create dispatchable ServiceRequest and run dispatch engine
+                if not order.dispatch_job:
+                    from service_requests.models import ServiceRequest
+                    from workforce_api.services.automatic_dispatch import dispatch_job
+
+                    pickup_addr = order.company.address or getattr(order.company, "company_name", "Merchant Store")
+                    sr = ServiceRequest.objects.create(
+                        company=order.company,
+                        service_category="two_wheeler_delivery",
+                        job_type="DELIVERY",
+                        request_kind=ServiceRequest.RequestKind.DIRECT,
+                        customer_name=order.customer_name,
+                        phone=order.customer_phone,
+                        address=pickup_addr,
+                        latitude=getattr(order.company, "latitude", None) if hasattr(order.company, "latitude") else None,
+                        longitude=getattr(order.company, "longitude", None) if hasattr(order.company, "longitude") else None,
+                        drop_address=order.delivery_address,
+                        drop_contact_name=order.customer_name,
+                        preferred_date=now.date(),
+                        preferred_time="Immediate",
+                        issue_title=f"Marketplace Order Delivery #{order.order_number}",
+                        description=f"Delivery of Order #{order.order_number} to {order.customer_name}. Total: ₹{order.total_amount}",
+                        total_amount=order.total_amount,
+                        status="new_request",
+                    )
+                    order.dispatch_job = sr
+                    # Dispatch to eligible 2-wheeler riders (Gate 3/4 verified)
+                    dispatch_job(sr)
+                elif order.dispatch_job and order.dispatch_job.status in ["unassigned", "redispatching", "new_request"]:
+                    from workforce_api.services.automatic_dispatch import dispatch_job
+                    dispatch_job(order.dispatch_job)
+
             elif target_status == SellerOrder.Status.HANDED_OVER:
                 order.handed_over_at = now
                 if handover_ref:
@@ -3543,8 +3597,10 @@ class SellerOrderStatusTransitionView(APIView):
 
     def _deduct_inventory_for_order(self, order, user, reason):
         """
-        Deducts physical on-hand stock and releases the active reservation for fulfilled order items.
+        Deducts physical on-hand stock and releases the active reservation for fulfilled order items exactly once.
         """
+        if order.inventory_deducted:
+            return
         for item in order.items.select_related("product"):
             if not item.product:
                 continue
@@ -3584,6 +3640,8 @@ class SellerOrderStatusTransitionView(APIView):
                 reference_id=order.source_order_id or order.order_number,
                 actor=user,
             )
+        order.inventory_deducted = True
+        order.save(update_fields=["inventory_deducted"])
 
     def _release_inventory_reservations(self, order, user, reason):
         """
@@ -3601,24 +3659,562 @@ class SellerOrderStatusTransitionView(APIView):
                 continue
 
             qty_to_release = item.ordered_quantity
-            bal_before = inv.on_hand_qty
-            reserved_after = max(Decimal("0.000"), inv.reserved_qty - qty_to_release)
-
-            inv.reserved_qty = reserved_after
+            inv.reserved_qty = max(Decimal("0.000"), inv.reserved_qty - qty_to_release)
             inv.save(update_fields=["reserved_qty", "updated_at"])
 
-            # Record RESERVATION_RELEASED movement
-            SellerInventoryMovement.objects.create(
-                inventory=inv,
-                batch=item.batch,
-                movement_type=SellerInventoryMovement.MovementType.RESERVATION_RELEASED,
-                quantity_change=Decimal("0.000"),
-                balance_before=bal_before,
-                balance_after=bal_before,
-                reason=f"Order #{order.order_number} cancelled: {reason}",
-                reference_id=order.source_order_id or order.order_number,
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RIDER DISPATCH & 2-STEP OTP VERIFICATION CHECKPOINTS (Phase P)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _send_workforce_notification(recipient, title, message, notification_type, company=None, related_object_id=""):
+    """Internal helper to dispatch workforce notifications."""
+    if not recipient:
+        return None
+    notif = WorkforceNotification.objects.create(
+        recipient=recipient,
+        company=company or getattr(recipient, "company", None),
+        title=title,
+        message=message,
+        notification_type=notification_type,
+        related_object_id=str(related_object_id or ""),
+    )
+    WorkforceEventLog.objects.create(
+        event_type=f"NOTIFICATION_{notification_type}",
+        user=recipient,
+        payload={"notification_id": notif.id, "title": title, "message": message},
+    )
+    return notif
+
+
+class SellerOrderRiderArrivePickupView(APIView):
+    """
+    POST /api/workforce/seller-hub/orders/<int:pk>/arrive-pickup/
+    Rider marks arrival at merchant store. Generates 6-digit secure Pickup OTP for merchant.
+    """
+    permission_classes = [IsApprovedTechnician]
+
+    def post(self, request, pk):
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp:
+            return Response({"error": "Employee profile not found.", "code": "PROFILE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        with transaction.atomic():
+            order = SellerOrder.objects.select_for_update().filter(pk=pk).first()
+            if not order:
+                return Response({"error": "Order not found.", "code": "ORDER_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+            if not is_admin_role(request.user) and not getattr(request.user, "is_superuser", False):
+                if order.handling_technician != emp and (order.dispatch_job and order.dispatch_job.assigned_employee != emp):
+                    return Response({"error": "Unauthorized: You are not the assigned rider for this order.", "code": "FORBIDDEN_RIDER"}, status=status.HTTP_403_FORBIDDEN)
+
+            if order.status not in [SellerOrder.Status.READY_FOR_PICKUP, SellerOrder.Status.ASSIGNED]:
+                return Response(
+                    {"error": f"Cannot mark arrival for order in status '{order.status}'. Expected 'READY_FOR_PICKUP' or 'ASSIGNED'."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            now = timezone.now()
+            # Generate cryptographically secure 6-digit OTP
+            otp_raw = f"{secrets.randbelow(900000) + 100000}"
+            order.handover_otp_hash = make_password(otp_raw)
+            order.handover_otp_expires_at = now + timedelta(minutes=15)
+            order.handover_otp_attempts = 0
+            order.handover_otp_used_at = None
+            order.save(update_fields=["handover_otp_hash", "handover_otp_expires_at", "handover_otp_attempts", "handover_otp_used_at", "updated_at"])
+
+            # Update dispatch job leg
+            if order.dispatch_job:
+                from service_requests.models import ServiceRequest
+                order.dispatch_job.logistics_leg = ServiceRequest.LogisticsLeg.ARRIVED_PICKUP
+                order.dispatch_job.status = "arrived"
+                order.dispatch_job.save(update_fields=["logistics_leg", "status"])
+
+            # Send Notification to Seller Merchant User(s)
+            company_users = get_user_model().objects.filter(
+                models.Q(company_id=order.company_id) | models.Q(employee_profile__company_id=order.company_id)
+            ).distinct()
+
+            rider_name = (emp.user.get_full_name() or emp.user.username) if getattr(emp, "user", None) else str(emp.id)
+            for c_user in company_users:
+                _send_workforce_notification(
+                    recipient=c_user,
+                    title="Rider Arrived for Pickup",
+                    message=f"Rider {rider_name} has arrived for Order #{order.order_number}. Your Pickup Handover OTP is {otp_raw}. Share this OTP with the rider.",
+                    notification_type="ORDER_PICKUP_OTP",
+                    company=order.company,
+                    related_object_id=str(order.id),
+                )
+
+            # Record audit log
+            SellerOrderAuditLog.objects.create(
+                order=order,
+                from_status=order.status,
+                to_status=order.status,
+                action="Rider Arrived for Pickup (OTP Generated)",
+                actor=request.user,
+                notes=f"Rider {rider_name} arrived at store. 6-digit handover OTP issued.",
+            )
+
+            return Response({
+                "message": f"Arrived at pickup location. Pickup OTP generated for merchant for Order #{order.order_number}.",
+                "order_id": order.id,
+                "order_number": order.order_number,
+                "status": "ARRIVED_AT_PICKUP",
+            }, status=status.HTTP_200_OK)
+
+
+class SellerOrderRiderVerifyPickupOTPView(APIView):
+    """
+    POST /api/workforce/seller-hub/orders/<int:pk>/verify-pickup-otp/
+    Rider submits seller's 6-digit Pickup OTP.
+    Transitions order to HANDED_OVER and executes single idempotent stock deduction.
+    """
+    permission_classes = [IsApprovedTechnician]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "workforce_otp"
+
+    def post(self, request, pk):
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp and not is_admin_role(request.user) and not getattr(request.user, "is_superuser", False):
+            return Response({"error": "Employee profile not found.", "code": "PROFILE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        with transaction.atomic():
+            order = SellerOrder.objects.select_for_update().filter(pk=pk).first()
+            if not order:
+                return Response({"error": "Order not found.", "code": "ORDER_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+            if not is_admin_role(request.user) and not getattr(request.user, "is_superuser", False):
+                if order.handling_technician != emp and (order.dispatch_job and order.dispatch_job.assigned_employee != emp):
+                    return Response({"error": "Unauthorized: You are not assigned to this order.", "code": "FORBIDDEN_RIDER"}, status=status.HTTP_403_FORBIDDEN)
+
+            if order.status == SellerOrder.Status.HANDED_OVER:
+                return Response({
+                    "message": "Order has already been handed over to rider.",
+                    "status": "HANDED_OVER",
+                    "order_id": order.id,
+                }, status=status.HTTP_200_OK)
+
+            if order.status not in [SellerOrder.Status.READY_FOR_PICKUP, SellerOrder.Status.ASSIGNED]:
+                return Response(
+                    {"error": f"Cannot verify pickup OTP for order in status '{order.status}'."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            if order.handover_otp_used_at is not None:
+                return Response({"error": "Pickup OTP has already been used.", "code": "OTP_ALREADY_USED"}, status=status.HTTP_400_BAD_REQUEST)
+
+            now = timezone.now()
+
+            # Check 5-attempt lockout threshold
+            if order.handover_otp_attempts >= 5:
+                return Response({
+                    "error": "Maximum OTP verification attempts (5) exceeded. Rider must mark arrival again to request a fresh OTP from merchant.",
+                    "code": "OTP_ATTEMPTS_EXCEEDED",
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            submitted_otp = str(request.data.get("otp", "")).strip()
+            if not submitted_otp or len(submitted_otp) != 6 or not submitted_otp.isdigit():
+                return Response({"error": "Invalid OTP format. Must be a 6-digit number."}, status=status.HTTP_400_BAD_REQUEST)
+
+            is_match = bool(order.handover_otp_hash and check_password(submitted_otp, order.handover_otp_hash))
+
+            if not is_match:
+                if order.handover_otp_expires_at and now > order.handover_otp_expires_at:
+                    return Response({"error": "Pickup OTP has expired (15 minute validity). Please generate a fresh OTP.", "code": "OTP_EXPIRED"}, status=status.HTTP_400_BAD_REQUEST)
+
+                order.handover_otp_attempts += 1
+                order.save(update_fields=["handover_otp_attempts", "updated_at"])
+                remaining = max(0, 5 - order.handover_otp_attempts)
+                return Response({
+                    "error": f"Invalid Pickup OTP. {remaining} attempt(s) remaining.",
+                    "attempts_remaining": remaining,
+                    "code": "INVALID_OTP",
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Successful OTP verification
+            from_st = order.status
+            order.status = SellerOrder.Status.HANDED_OVER
+            order.handed_over_at = now
+            order.handover_otp_used_at = now
+
+            # Deduct inventory physical on-hand stock exactly once
+            transition_view = SellerOrderStatusTransitionView()
+            transition_view._deduct_inventory_for_order(order, request.user, f"Handover verification via OTP for Order #{order.order_number}")
+
+            order.save()
+
+            # Advance dispatch job
+            if order.dispatch_job:
+                from service_requests.models import ServiceRequest
+                order.dispatch_job.status = "in_progress"
+                order.dispatch_job.logistics_leg = ServiceRequest.LogisticsLeg.EN_ROUTE_DROP
+                order.dispatch_job.save(update_fields=["status", "logistics_leg"])
+
+            # Create immutable audit log
+            SellerOrderAuditLog.objects.create(
+                order=order,
+                from_status=from_st,
+                to_status=SellerOrder.Status.HANDED_OVER,
+                action="Handover Confirmed via OTP",
+                actor=request.user,
+                notes=f"Pickup verified by rider {getattr(emp, 'name', '') or request.user.username}.",
+            )
+
+            # Record outbox status event
+            record_seller_order_status_event(
+                order=order,
+                previous_status=from_st,
+                new_status=SellerOrder.Status.HANDED_OVER,
+                event_type="seller_order.status_updated",
+                actor=request.user,
+            )
+
+            return Response({
+                "message": f"Pickup verified successfully. Order #{order.order_number} is now Handed Over and Out for Delivery.",
+                "order_id": order.id,
+                "status": "HANDED_OVER",
+                "inventory_deducted": order.inventory_deducted,
+            }, status=status.HTTP_200_OK)
+
+
+class SellerOrderRiderArriveDeliveryView(APIView):
+    """
+    POST /api/workforce/seller-hub/orders/<int:pk>/arrive-delivery/
+    Rider marks arrival at customer drop-off address.
+    Generates 6-digit secure Delivery OTP and sends to customer.
+    """
+    permission_classes = [IsApprovedTechnician]
+
+    def post(self, request, pk):
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp and not is_admin_role(request.user) and not getattr(request.user, "is_superuser", False):
+            return Response({"error": "Employee profile not found.", "code": "PROFILE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        with transaction.atomic():
+            order = SellerOrder.objects.select_for_update().filter(pk=pk).first()
+            if not order:
+                return Response({"error": "Order not found.", "code": "ORDER_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+            if not is_admin_role(request.user) and not getattr(request.user, "is_superuser", False):
+                if order.handling_technician != emp and (order.dispatch_job and order.dispatch_job.assigned_employee != emp):
+                    return Response({"error": "Unauthorized: You are not assigned to this order.", "code": "FORBIDDEN_RIDER"}, status=status.HTTP_403_FORBIDDEN)
+
+            if order.status != SellerOrder.Status.HANDED_OVER:
+                return Response(
+                    {"error": f"Cannot mark arrival at customer for order in status '{order.status}'. Expected 'HANDED_OVER'."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            now = timezone.now()
+            # Generate cryptographically secure 6-digit OTP
+            otp_raw = f"{secrets.randbelow(900000) + 100000}"
+            order.delivery_otp_hash = make_password(otp_raw)
+            order.delivery_otp_expires_at = now + timedelta(minutes=15)
+            order.delivery_otp_attempts = 0
+            order.delivery_otp_used_at = None
+            order.save(update_fields=["delivery_otp_hash", "delivery_otp_expires_at", "delivery_otp_attempts", "delivery_otp_used_at", "updated_at"])
+
+            # Update dispatch job leg
+            if order.dispatch_job:
+                from service_requests.models import ServiceRequest
+                order.dispatch_job.logistics_leg = ServiceRequest.LogisticsLeg.ARRIVED_DROP
+                order.dispatch_job.save(update_fields=["logistics_leg"])
+
+            # Notify Customer
+            recipient = None
+            if order.dispatch_job and order.dispatch_job.customer:
+                recipient = order.dispatch_job.customer
+            elif order.customer_phone:
+                recipient = get_user_model().objects.filter(username=order.customer_phone).first()
+
+            rider_name = getattr(emp, "name", "") or "Delivery Partner"
+            if recipient:
+                _send_workforce_notification(
+                    recipient=recipient,
+                    title="Delivery Confirmation Code",
+                    message=f"Your delivery confirmation OTP for Order #{order.order_number} is {otp_raw}. Share this OTP with {rider_name} upon receiving your package.",
+                    notification_type="ORDER_DELIVERY_OTP",
+                    company=order.company,
+                    related_object_id=str(order.id),
+                )
+
+            # Record audit log
+            SellerOrderAuditLog.objects.create(
+                order=order,
+                from_status=order.status,
+                to_status=order.status,
+                action="Rider Arrived at Customer (Delivery OTP Generated)",
+                actor=request.user,
+                notes=f"Rider arrived at customer location. Delivery confirmation OTP dispatched.",
+            )
+
+            return Response({
+                "message": f"Arrived at customer location. Delivery confirmation OTP sent to customer for Order #{order.order_number}.",
+                "order_id": order.id,
+                "order_number": order.order_number,
+                "status": "ARRIVED_AT_CUSTOMER",
+            }, status=status.HTTP_200_OK)
+
+
+class SellerOrderRiderVerifyDeliveryOTPView(APIView):
+    """
+    POST /api/workforce/seller-hub/orders/<int:pk>/verify-delivery-otp/
+    Rider submits customer's 6-digit Delivery OTP.
+    Transitions order to DELIVERED, completes dispatch job, and frees rider.
+    """
+    permission_classes = [IsApprovedTechnician]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "workforce_otp"
+
+    def post(self, request, pk):
+        emp = getattr(request.user, "employee_profile", None)
+        if not emp and not is_admin_role(request.user) and not getattr(request.user, "is_superuser", False):
+            return Response({"error": "Employee profile not found.", "code": "PROFILE_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        with transaction.atomic():
+            order = SellerOrder.objects.select_for_update().filter(pk=pk).first()
+            if not order:
+                return Response({"error": "Order not found.", "code": "ORDER_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+            if not is_admin_role(request.user) and not getattr(request.user, "is_superuser", False):
+                if order.handling_technician != emp and (order.dispatch_job and order.dispatch_job.assigned_employee != emp):
+                    return Response({"error": "Unauthorized: You are not assigned to this order.", "code": "FORBIDDEN_RIDER"}, status=status.HTTP_403_FORBIDDEN)
+
+            if order.status == SellerOrder.Status.DELIVERED:
+                return Response({
+                    "message": "Order is already marked DELIVERED.",
+                    "status": "DELIVERED",
+                    "order_id": order.id,
+                }, status=status.HTTP_200_OK)
+
+            if order.status != SellerOrder.Status.HANDED_OVER:
+                return Response(
+                    {"error": f"Cannot verify delivery OTP for order in status '{order.status}'. Expected 'HANDED_OVER'."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            if order.delivery_otp_used_at is not None:
+                return Response({"error": "Delivery OTP has already been used.", "code": "OTP_ALREADY_USED"}, status=status.HTTP_400_BAD_REQUEST)
+
+            now = timezone.now()
+
+            # Check 5-attempt lockout threshold
+            if order.delivery_otp_attempts >= 5:
+                return Response({
+                    "error": "Maximum OTP verification attempts (5) exceeded. Rider must mark arrival again to generate a fresh OTP.",
+                    "code": "OTP_ATTEMPTS_EXCEEDED",
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            submitted_otp = str(request.data.get("otp", "")).strip()
+            if not submitted_otp or len(submitted_otp) != 6 or not submitted_otp.isdigit():
+                return Response({"error": "Invalid OTP format. Must be a 6-digit number."}, status=status.HTTP_400_BAD_REQUEST)
+
+            is_match = bool(order.delivery_otp_hash and check_password(submitted_otp, order.delivery_otp_hash))
+
+            if not is_match:
+                if order.delivery_otp_expires_at and now > order.delivery_otp_expires_at:
+                    return Response({"error": "Delivery OTP has expired (15 minute validity).", "code": "OTP_EXPIRED"}, status=status.HTTP_400_BAD_REQUEST)
+
+                order.delivery_otp_attempts += 1
+                order.save(update_fields=["delivery_otp_attempts", "updated_at"])
+                remaining = max(0, 5 - order.delivery_otp_attempts)
+                return Response({
+                    "error": f"Invalid Delivery OTP. {remaining} attempt(s) remaining.",
+                    "attempts_remaining": remaining,
+                    "code": "INVALID_OTP",
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Successful OTP verification
+            from_st = order.status
+            order.status = SellerOrder.Status.DELIVERED
+            order.delivered_at = now
+            order.delivery_otp_used_at = now
+
+            # Ensure inventory deducted if somehow missed
+            if not order.inventory_deducted:
+                transition_view = SellerOrderStatusTransitionView()
+                transition_view._deduct_inventory_for_order(order, request.user, f"Delivery completion for Order #{order.order_number}")
+
+            order.save()
+
+            # Complete dispatch job
+            if order.dispatch_job:
+                from service_requests.models import ServiceRequest
+                from service_requests.state_machine import apply_transition
+                order.dispatch_job.logistics_leg = ServiceRequest.LogisticsLeg.DELIVERED
+                try:
+                    apply_transition(order.dispatch_job, "completed", actor=request.user)
+                except Exception:
+                    order.dispatch_job.status = "completed"
+                    order.dispatch_job.save(update_fields=["status", "logistics_leg"])
+
+            # Reconcile / release rider workload availability
+            if emp:
+                from workforce_api.services.workload import reconcile_employee_availability
+                reconcile_employee_availability(emp)
+
+            # Create immutable audit log
+            SellerOrderAuditLog.objects.create(
+                order=order,
+                from_status=from_st,
+                to_status=SellerOrder.Status.DELIVERED,
+                action="Delivery Confirmed via OTP",
+                actor=request.user,
+                notes=f"Delivery confirmed by customer OTP verification.",
+            )
+
+            # Record outbox status event
+            record_seller_order_status_event(
+                order=order,
+                previous_status=from_st,
+                new_status=SellerOrder.Status.DELIVERED,
+                event_type="seller_order.status_updated",
+                actor=request.user,
+            )
+
+            return Response({
+                "message": f"Delivery OTP verified. Order #{order.order_number} marked DELIVERED successfully.",
+                "order_id": order.id,
+                "status": "DELIVERED",
+            }, status=status.HTTP_200_OK)
+
+
+class SellerOrderAdminOverrideView(APIView):
+    """
+    POST /api/workforce/seller-hub/orders/<int:pk>/admin-override/
+    Platform Admin / Superuser override for stuck orders (rider phone died, OTP unreachable, no network).
+    Enforces superuser / platform reviewer check and mandatory justification reason.
+    Transitions order to HANDED_OVER or DELIVERED without OTP, deducts inventory once,
+    updates dispatch job leg, and records distinct audit log entry.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+        if not is_platform_reviewer(user) and not getattr(user, "is_superuser", False):
+            return Response(
+                {
+                    "error": "Admin override requires platform reviewer or superuser privileges.",
+                    "code": "FORBIDDEN_NOT_ADMIN",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        action = str(request.data.get("action", "")).strip().lower()
+        reason = str(request.data.get("reason", "")).strip()
+
+        if not reason:
+            return Response(
+                {
+                    "error": "A mandatory justification reason is required for admin override.",
+                    "code": "REASON_REQUIRED",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        ACTION_MAP = {
+            "admin_override_handover": SellerOrder.Status.HANDED_OVER,
+            "handover": SellerOrder.Status.HANDED_OVER,
+            "admin_override_deliver": SellerOrder.Status.DELIVERED,
+            "deliver": SellerOrder.Status.DELIVERED,
+        }
+
+        target_status = ACTION_MAP.get(action)
+        if not target_status:
+            return Response(
+                {
+                    "error": f"Invalid admin override action '{action}'. Must be 'admin_override_handover' or 'admin_override_deliver'.",
+                    "code": "INVALID_ACTION",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            order = SellerOrder.objects.select_for_update().filter(pk=pk).first()
+            if not order:
+                return Response({"error": "Order not found.", "code": "ORDER_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+            if target_status == SellerOrder.Status.HANDED_OVER:
+                if order.status not in [SellerOrder.Status.READY_FOR_PICKUP, SellerOrder.Status.ASSIGNED]:
+                    return Response(
+                        {"error": f"Cannot override handover for order in status '{order.status}'. Expected READY_FOR_PICKUP or ASSIGNED."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            elif target_status == SellerOrder.Status.DELIVERED:
+                if order.status not in [SellerOrder.Status.READY_FOR_PICKUP, SellerOrder.Status.ASSIGNED, SellerOrder.Status.HANDED_OVER]:
+                    return Response(
+                        {"error": f"Cannot override delivery for order in status '{order.status}'."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+            from_st = order.status
+            now = timezone.now()
+            order.status = target_status
+
+            transition_view = SellerOrderStatusTransitionView()
+            if target_status == SellerOrder.Status.HANDED_OVER:
+                order.handed_over_at = now
+                transition_view._deduct_inventory_for_order(
+                    order, user, f"Admin override handover by {user.username}. Reason: {reason}"
+                )
+                if order.dispatch_job:
+                    from service_requests.models import ServiceRequest
+                    order.dispatch_job.status = "in_progress"
+                    order.dispatch_job.logistics_leg = ServiceRequest.LogisticsLeg.EN_ROUTE_DROP
+                    order.dispatch_job.save(update_fields=["status", "logistics_leg"])
+            elif target_status == SellerOrder.Status.DELIVERED:
+                order.delivered_at = now
+                if not order.handed_over_at:
+                    order.handed_over_at = now
+                transition_view._deduct_inventory_for_order(
+                    order, user, f"Admin override delivery by {user.username}. Reason: {reason}"
+                )
+                if order.dispatch_job:
+                    from service_requests.models import ServiceRequest
+                    from service_requests.state_machine import apply_transition
+                    order.dispatch_job.logistics_leg = ServiceRequest.LogisticsLeg.DELIVERED
+                    try:
+                        apply_transition(order.dispatch_job, "completed", actor=user)
+                    except Exception:
+                        order.dispatch_job.status = "completed"
+                        order.dispatch_job.save(update_fields=["status", "logistics_leg"])
+
+                # Release rider availability
+                if order.handling_technician:
+                    from workforce_api.services.workload import reconcile_employee_availability
+                    reconcile_employee_availability(order.handling_technician)
+
+            order.save()
+
+            action_label = "Admin Override Handover" if target_status == SellerOrder.Status.HANDED_OVER else "Admin Override Delivery"
+            notes_text = f"Admin override by {user.username} ({user.email}). Reason: {reason}"
+
+            SellerOrderAuditLog.objects.create(
+                order=order,
+                from_status=from_st,
+                to_status=target_status,
+                action=action_label,
+                actor=user,
+                notes=notes_text,
+            )
+
+            record_seller_order_status_event(
+                order=order,
+                previous_status=from_st,
+                new_status=target_status,
+                event_type="seller_order.status_updated",
                 actor=user,
             )
+
+        detail_serializer = SellerOrderDetailSerializer(order)
+        return Response(
+            {
+                "message": f"Admin override successfully updated order #{order.order_number} to '{target_status}'.",
+                "order": detail_serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class SellerOrderItemPickView(APIView):
@@ -3754,6 +4350,44 @@ class SellerOrderPackingSlipView(APIView):
         }
 
         return Response(packing_slip_data, status=status.HTTP_200_OK)
+
+
+class SellerOrderPackingSlipPdfView(APIView):
+    """
+    GET /api/workforce/seller-hub/orders/<int:pk>/packing-slip/pdf/ –
+    Downloadable shipping-label PDF (4x6, thermal-printer friendly) with a
+    scannable Code128 barcode encoding the order number.
+
+    Sibling to SellerOrderPackingSlipView, which still serves the JSON
+    dataset for the quick on-screen preview. This is what a seller actually
+    prints and tapes to the package.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        from django.http import HttpResponse
+        from workforce_api.services.packing_slip_pdf import render_packing_slip_pdf
+
+        user = request.user
+        company_id = _resolve_user_company_id(user)
+        is_super = is_platform_reviewer(user)
+
+        order_qs = SellerOrder.objects.filter(pk=pk).select_related("company").prefetch_related("items")
+        if not is_super:
+            if not company_id:
+                return Response({"error": "Merchant company not found."}, status=status.HTTP_403_FORBIDDEN)
+            order_qs = order_qs.filter(company_id=company_id)
+
+        order = order_qs.first()
+        if not order:
+            return Response({"error": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        pdf = render_packing_slip_pdf(order)
+        response = HttpResponse(pdf, content_type="application/pdf")
+        response["Content-Disposition"] = (
+            f'inline; filename="packing-slip-{order.source_order_id}.pdf"'
+        )
+        return response
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -5123,6 +5757,7 @@ class SellerReportsSummaryView(APIView):
                 SellerOrder.Status.PICKING,
                 SellerOrder.Status.PACKED,
                 SellerOrder.Status.READY_FOR_PICKUP,
+                SellerOrder.Status.ASSIGNED,
             ]
         ).count()
         pending_orders = order_qs_period.filter(status=SellerOrder.Status.NEW).count()

@@ -32,7 +32,12 @@ import {
   Ban,
   Layers,
   Store,
+  Loader2,
+  Navigation,
+  ShieldAlert,
+  Barcode,
 } from 'lucide-react';
+import { CustomerLiveTrackingModal } from '../../components/common/CustomerLiveTrackingModal.jsx';
 
 export function SellerOrdersPage() {
   const { user, token, isPlatformAdmin } = useAuth();
@@ -70,11 +75,14 @@ export function SellerOrdersPage() {
 
   // Packing Slip Modal
   const [packingSlipData, setPackingSlipData] = useState(null);
+  const [packingSlipOrderId, setPackingSlipOrderId] = useState(null);
   const [isPackingSlipOpen, setIsPackingSlipOpen] = useState(false);
 
   // Transition & Action State
   const [actionLoading, setActionLoading] = useState(false);
   const [cancellationModal, setCancellationModal] = useState({ isOpen: false, orderId: null, reason: '' });
+  const [adminOverrideModal, setAdminOverrideModal] = useState({ isOpen: false, orderId: null, action: '', reason: '' });
+  const [trackingJobId, setTrackingJobId] = useState(null);
 
   // Debounce search
   useEffect(() => {
@@ -173,7 +181,7 @@ export function SellerOrdersPage() {
     }
   };
 
-  // Open Packing Slip
+  // Open Packing Slip (quick on-screen preview)
   const openPackingSlip = async (orderId) => {
     try {
       const res = await fetch(`/api/workforce/seller-hub/orders/${orderId}/packing-slip/`, {
@@ -182,10 +190,38 @@ export function SellerOrdersPage() {
       if (res.ok) {
         const data = await res.json();
         setPackingSlipData(data);
+        setPackingSlipOrderId(orderId);
         setIsPackingSlipOpen(true);
       }
     } catch (err) {
       console.error('Error loading packing slip:', err);
+    }
+  };
+
+  // Download / open the real shipping-label PDF (4x6, scannable barcode) --
+  // this is what actually gets printed and taped to the package. Fetched as a
+  // blob (rather than a plain window.open navigation) so the Authorization
+  // header reaches the API.
+  const [labelDownloadingId, setLabelDownloadingId] = useState(null);
+  const downloadPackingSlipPdf = async (orderId) => {
+    setLabelDownloadingId(orderId);
+    try {
+      const res = await fetch(`/api/workforce/seller-hub/orders/${orderId}/packing-slip/pdf/`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        window.open(blobUrl, '_blank');
+        // Release the object URL once the new tab has had a chance to load it.
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
+      } else {
+        console.error('Error generating shipping label PDF:', res.status);
+      }
+    } catch (err) {
+      console.error('Error generating shipping label PDF:', err);
+    } finally {
+      setLabelDownloadingId(null);
     }
   };
 
@@ -225,8 +261,50 @@ export function SellerOrdersPage() {
         setCancellationModal({ isOpen: false, orderId: null, reason: '' });
       }
     } catch (err) {
-      console.error('Transition error:', err);
-      alert('Error updating order state. Please try again.');
+      console.error('Error executing transition:', err);
+      alert('Network error transitioning order.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Execute Platform Admin Manual Override
+  const handleAdminOverride = async () => {
+    const { orderId, action, reason } = adminOverrideModal;
+    if (!orderId || !action) return;
+    if (!reason.trim()) {
+      alert('A mandatory justification reason is required for platform admin override.');
+      return;
+    }
+    try {
+      setActionLoading(true);
+      const res = await fetch(`/api/workforce/seller-hub/orders/${orderId}/admin-override/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          action,
+          reason: reason.trim(),
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || 'Failed to execute admin override.');
+        return;
+      }
+
+      loadOrders();
+      loadMetrics();
+      if (selectedOrderId === orderId) {
+        setSelectedOrderDetail(data.order);
+      }
+      setAdminOverrideModal({ isOpen: false, orderId: null, action: '', reason: '' });
+    } catch (err) {
+      console.error('Error executing admin override:', err);
+      alert('Network error executing admin override.');
     } finally {
       setActionLoading(false);
     }
@@ -301,11 +379,18 @@ export function SellerOrdersPage() {
             <span>Ready for Pickup</span>
           </span>
         );
+      case 'ASSIGNED':
+        return (
+          <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
+            <Truck className="w-3 h-3" />
+            <span>Rider Assigned</span>
+          </span>
+        );
       case 'HANDED_OVER':
         return (
-          <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+          <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full bg-purple-50 text-purple-700 border border-purple-200">
             <Truck className="w-3 h-3" />
-            <span>Handed Over</span>
+            <span>Out for Delivery</span>
           </span>
         );
       case 'DELIVERED':
@@ -651,29 +736,46 @@ export function SellerOrdersPage() {
                               <button
                                 onClick={() => handleTransition(ord.id, 'mark_ready')}
                                 disabled={actionLoading}
-                                className="px-2.5 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-semibold transition-colors shadow-xs"
+                                className="px-2.5 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-semibold transition-colors shadow-xs flex items-center gap-1"
                               >
-                                Ready for Pickup
+                                <Truck className="w-3.5 h-3.5" />
+                                <span>Dispatch Rider</span>
                               </button>
                             )}
 
-                            {ord.status === 'READY_FOR_PICKUP' && (
-                              <button
-                                onClick={() => handleTransition(ord.id, 'handover')}
-                                disabled={actionLoading}
-                                className="px-2.5 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-semibold transition-colors shadow-xs"
-                              >
-                                Handover
-                              </button>
+                            {['READY_FOR_PICKUP', 'ASSIGNED'].includes(ord.status) && (
+                              <div className="flex items-center gap-1.5">
+                                {ord.handling_technician_name ? (
+                                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                    <Truck className="w-3 h-3" />
+                                    <span>{ord.handling_technician_name}</span>
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded bg-amber-50 text-amber-700 animate-pulse border border-amber-200">
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                    <span>Assigning Rider...</span>
+                                  </span>
+                                )}
+                                {ord.dispatch_job_id && (
+                                  <button
+                                    onClick={() => setTrackingJobId(ord.dispatch_job_id)}
+                                    className="p-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg transition-colors border border-indigo-200"
+                                    title="Live Track Delivery Rider"
+                                  >
+                                    <Navigation className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </div>
                             )}
 
-                            {ord.status === 'HANDED_OVER' && (
+                            {ord.status === 'HANDED_OVER' && ord.dispatch_job_id && (
                               <button
-                                onClick={() => handleTransition(ord.id, 'deliver')}
-                                disabled={actionLoading}
-                                className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold transition-colors shadow-xs"
+                                onClick={() => setTrackingJobId(ord.dispatch_job_id)}
+                                className="px-2.5 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg text-xs font-semibold transition-colors border border-purple-200 flex items-center gap-1"
+                                title="Live Track Delivery Partner"
                               >
-                                Deliver
+                                <Navigation className="w-3.5 h-3.5" />
+                                <span>Track Rider</span>
                               </button>
                             )}
 
@@ -686,13 +788,27 @@ export function SellerOrdersPage() {
                               <Eye className="w-4 h-4" />
                             </button>
 
-                            {/* Packing Slip */}
+                            {/* Packing Slip (quick preview) */}
                             <button
                               onClick={() => openPackingSlip(ord.id)}
                               className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors"
-                              title="Print Packing Slip"
+                              title="Preview Packing Slip"
                             >
                               <Printer className="w-4 h-4" />
+                            </button>
+
+                            {/* Shipping Label PDF (barcode, primary print target) */}
+                            <button
+                              onClick={() => downloadPackingSlipPdf(ord.id)}
+                              disabled={labelDownloadingId === ord.id}
+                              className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors disabled:opacity-50"
+                              title="Download Shipping Label (PDF, scannable barcode)"
+                            >
+                              {labelDownloadingId === ord.id ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Barcode className="w-4 h-4" />
+                              )}
                             </button>
                           </div>
                         </td>
@@ -829,6 +945,45 @@ export function SellerOrdersPage() {
                     </div>
                   </div>
 
+                  {/* Rider Assignment & Pickup OTP Banner */}
+                  {['READY_FOR_PICKUP', 'ASSIGNED', 'HANDED_OVER'].includes(selectedOrderDetail.status) && (
+                    <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div className="p-2 bg-indigo-100 rounded-lg text-indigo-700">
+                            <Truck className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <div className="text-xs font-bold text-slate-900">
+                              {selectedOrderDetail.handling_technician_name ? `Assigned Rider: ${selectedOrderDetail.handling_technician_name}` : '2-Wheeler Rider Dispatch'}
+                            </div>
+                            <div className="text-[11px] text-slate-500">
+                              {selectedOrderDetail.handling_technician_phone ? `Contact: ${selectedOrderDetail.handling_technician_phone}` : 'Dispatching to nearest available 2-wheeler rider'}
+                            </div>
+                          </div>
+                        </div>
+                        {selectedOrderDetail.dispatch_job_id && (
+                          <button
+                            onClick={() => setTrackingJobId(selectedOrderDetail.dispatch_job_id)}
+                            className="px-2.5 py-1 bg-white hover:bg-slate-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-semibold flex items-center gap-1 shadow-2xs"
+                          >
+                            <Navigation className="w-3 h-3" />
+                            <span>Track</span>
+                          </button>
+                        )}
+                      </div>
+                      {selectedOrderDetail.pickup_otp && (
+                        <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg flex items-center justify-between">
+                          <div className="text-xs text-amber-900">
+                            <span className="font-bold">Pickup Verification OTP: </span>
+                            <span className="font-mono text-sm font-black text-amber-950 bg-amber-200/80 px-2 py-0.5 rounded ml-1 tracking-widest">{selectedOrderDetail.pickup_otp}</span>
+                          </div>
+                          <span className="text-[10px] text-amber-700 font-medium">Share with Rider at Handover</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Workflow Action Buttons */}
                   <div className="p-4 bg-blue-50/50 border border-blue-200 rounded-xl space-y-3">
                     <span className="text-[10px] font-bold text-blue-700 uppercase tracking-wider block">
@@ -869,29 +1024,20 @@ export function SellerOrdersPage() {
                         <button
                           onClick={() => handleTransition(selectedOrderDetail.id, 'mark_ready')}
                           disabled={actionLoading}
-                          className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors"
+                          className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors flex items-center gap-1.5"
                         >
-                          Ready for Pickup / Driver
+                          <Truck className="w-3.5 h-3.5" />
+                          <span>Dispatch 2-Wheeler Rider</span>
                         </button>
                       )}
 
-                      {selectedOrderDetail.status === 'READY_FOR_PICKUP' && (
+                      {['READY_FOR_PICKUP', 'ASSIGNED', 'HANDED_OVER'].includes(selectedOrderDetail.status) && selectedOrderDetail.dispatch_job_id && (
                         <button
-                          onClick={() => handleTransition(selectedOrderDetail.id, 'handover')}
-                          disabled={actionLoading}
-                          className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors"
+                          onClick={() => setTrackingJobId(selectedOrderDetail.dispatch_job_id)}
+                          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors flex items-center gap-1.5"
                         >
-                          Handover to Driver / Customer
-                        </button>
-                      )}
-
-                      {selectedOrderDetail.status === 'HANDED_OVER' && (
-                        <button
-                          onClick={() => handleTransition(selectedOrderDetail.id, 'deliver')}
-                          disabled={actionLoading}
-                          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors"
-                        >
-                          Mark as Delivered
+                          <Navigation className="w-3.5 h-3.5" />
+                          <span>Live Track Rider</span>
                         </button>
                       )}
 
@@ -906,6 +1052,51 @@ export function SellerOrdersPage() {
                       )}
                     </div>
                   </div>
+
+                  {/* Platform Admin Manual Override Controls (Superusers / Platform Admins Only) */}
+                  {isSuperAdmin && !['DELIVERED', 'CANCELLED'].includes(selectedOrderDetail.status) && (
+                    <div className="p-4 bg-amber-50/70 border border-amber-300 rounded-xl space-y-2.5">
+                      <div className="flex items-center gap-2 text-amber-900">
+                        <ShieldAlert className="w-4 h-4 text-amber-700" />
+                        <span className="text-xs font-bold uppercase tracking-wider">
+                          Platform Admin Manual Override
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-amber-800">
+                        Emergency bypass for stuck orders (rider device died, OTP delivery failure, unreachable customer). Reason is required and logged in immutable audit history.
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        {['READY_FOR_PICKUP', 'ASSIGNED'].includes(selectedOrderDetail.status) && (
+                          <button
+                            onClick={() => setAdminOverrideModal({
+                              isOpen: true,
+                              orderId: selectedOrderDetail.id,
+                              action: 'admin_override_handover',
+                              reason: '',
+                            })}
+                            disabled={actionLoading}
+                            className="px-3.5 py-1.5 bg-amber-700 hover:bg-amber-800 text-white rounded-lg text-xs font-bold shadow-xs transition-colors"
+                          >
+                            Override: Force Handover
+                          </button>
+                        )}
+                        {['READY_FOR_PICKUP', 'ASSIGNED', 'HANDED_OVER'].includes(selectedOrderDetail.status) && (
+                          <button
+                            onClick={() => setAdminOverrideModal({
+                              isOpen: true,
+                              orderId: selectedOrderDetail.id,
+                              action: 'admin_override_deliver',
+                              reason: '',
+                            })}
+                            disabled={actionLoading}
+                            className="px-3.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold shadow-xs transition-colors"
+                          >
+                            Override: Force Deliver
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Immutable Audit Trail Timeline */}
                   <div className="space-y-3">
@@ -942,13 +1133,28 @@ export function SellerOrdersPage() {
 
             {/* Drawer Footer */}
             <div className="p-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
-              <button
-                onClick={() => selectedOrderDetail && openPackingSlip(selectedOrderDetail.id)}
-                className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-semibold rounded-lg transition-colors"
-              >
-                <Printer className="w-4 h-4" />
-                <span>Print Packing Slip</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => selectedOrderDetail && downloadPackingSlipPdf(selectedOrderDetail.id)}
+                  disabled={labelDownloadingId === selectedOrderDetail?.id}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition-colors shadow-xs disabled:opacity-50"
+                >
+                  {labelDownloadingId === selectedOrderDetail?.id ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Barcode className="w-4 h-4" />
+                  )}
+                  <span>Shipping Label (PDF)</span>
+                </button>
+                <button
+                  onClick={() => selectedOrderDetail && openPackingSlip(selectedOrderDetail.id)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-semibold rounded-lg transition-colors"
+                  title="Quick on-screen preview"
+                >
+                  <Printer className="w-4 h-4" />
+                  <span>Preview</span>
+                </button>
+              </div>
               <button
                 onClick={() => setIsDrawerOpen(false)}
                 className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-lg transition-colors"
@@ -1014,14 +1220,27 @@ export function SellerOrdersPage() {
               <div>
                 <h2 className="text-lg font-black text-slate-900 tracking-tight">PACKING SLIP</h2>
                 <p className="text-xs font-mono text-slate-500 font-bold">Order #{packingSlipData.order_number}</p>
+                <p className="text-[10px] text-slate-400 mt-0.5">On-screen preview &mdash; use "Shipping Label (PDF)" to print the actual barcode label</p>
               </div>
               <div className="flex items-center gap-2">
                 <button
+                  onClick={() => packingSlipOrderId && downloadPackingSlipPdf(packingSlipOrderId)}
+                  disabled={labelDownloadingId === packingSlipOrderId}
+                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 shadow-xs disabled:opacity-50"
+                >
+                  {labelDownloadingId === packingSlipOrderId ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Barcode className="w-3.5 h-3.5" />
+                  )}
+                  <span>Shipping Label (PDF)</span>
+                </button>
+                <button
                   onClick={() => window.print()}
-                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 shadow-xs"
+                  className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold rounded-lg flex items-center gap-1.5"
+                  title="Print this on-screen preview"
                 >
                   <Printer className="w-3.5 h-3.5" />
-                  <span>Print Slip</span>
                 </button>
                 <button
                   onClick={() => setIsPackingSlipOpen(false)}
@@ -1102,6 +1321,75 @@ export function SellerOrdersPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Platform Admin Override Modal */}
+      {adminOverrideModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-amber-200 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-2.5 text-amber-900 border-b border-amber-100 pb-3">
+              <span className="p-2 bg-amber-100 text-amber-800 rounded-xl">
+                <ShieldAlert className="w-5 h-5" />
+              </span>
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  {adminOverrideModal.action === 'admin_override_handover' ? 'Admin Override Handover' : 'Admin Override Delivery'}
+                </h3>
+                <p className="text-[11px] text-slate-500">Bypass OTP verification for order #{selectedOrderDetail?.order_number}</p>
+              </div>
+            </div>
+
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 space-y-1">
+              <p className="font-semibold">Important Notice:</p>
+              <p className="text-[11px] text-amber-800">
+                This action forcefully advances the order status without requiring rider OTP entry. Your username, timestamp, and mandatory justification reason will be recorded in the immutable audit trail.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                Justification Reason <span className="text-rose-500">*</span>
+              </label>
+              <textarea
+                value={adminOverrideModal.reason}
+                onChange={(e) => setAdminOverrideModal(prev => ({ ...prev, reason: e.target.value }))}
+                placeholder="e.g. Rider device battery failed at store; physical package handover confirmed by store manager via phone."
+                rows={3}
+                className="w-full text-xs p-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-amber-500 focus:outline-hidden"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setAdminOverrideModal({ isOpen: false, orderId: null, action: '', reason: '' })}
+                disabled={actionLoading}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleAdminOverride}
+                disabled={actionLoading || !adminOverrideModal.reason.trim()}
+                className="px-4 py-2 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 disabled:opacity-50 rounded-xl shadow-xs transition-colors flex items-center gap-1.5"
+              >
+                {actionLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>Confirm Override</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Customer / Rider Live Tracking Modal */}
+      {trackingJobId && (
+        <CustomerLiveTrackingModal
+          jobId={trackingJobId}
+          isOpen={Boolean(trackingJobId)}
+          onClose={() => setTrackingJobId(null)}
+          viewRole="admin"
+        />
       )}
     </div>
   );

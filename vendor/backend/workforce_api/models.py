@@ -4201,6 +4201,7 @@ class SellerOrder(models.Model):
         PICKING = "PICKING", "Picking in Progress"
         PACKED = "PACKED", "Packed & Ready"
         READY_FOR_PICKUP = "READY_FOR_PICKUP", "Ready for Pickup"
+        ASSIGNED = "ASSIGNED", "Rider Assigned"
         HANDED_OVER = "HANDED_OVER", "Handed Over"
         DELIVERED = "DELIVERED", "Delivered"
         CANCELLED = "CANCELLED", "Cancelled"
@@ -4238,7 +4239,7 @@ class SellerOrder(models.Model):
     customer_phone = models.CharField(max_length=50, blank=True, default="")
     delivery_address = models.TextField(blank=True, default="")
 
-    # Fulfilment details
+    # Fulfilment & Dispatch details
     fulfillment_type = models.CharField(
         max_length=30,
         choices=FulfillmentType.choices,
@@ -4246,8 +4247,45 @@ class SellerOrder(models.Model):
     )
     delivery_slot = models.CharField(max_length=100, blank=True, default="")
     delivery_notes = models.TextField(blank=True, default="")
+
+    # Dispatch job & Assigned 2-Wheeler Rider
+    dispatch_job = models.ForeignKey(
+        "service_requests.ServiceRequest",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="seller_orders",
+        help_text="Linked dispatchable delivery ServiceRequest job for automatic rider routing.",
+    )
+    handling_technician = models.ForeignKey(
+        "employees.Employee",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="seller_orders",
+        help_text="2-Wheeler delivery rider assigned to pick up and deliver this order.",
+    )
+
+    # 2-Step OTP Verification Checkpoints (Hashed with Django make_password / check_password)
+    # Checkpoint 1: Pickup OTP (Generated on rider arrival at store -> Entered by rider to confirm HANDED_OVER)
     handover_otp_hash = models.CharField(max_length=256, blank=True, null=True)
+    handover_otp_expires_at = models.DateTimeField(null=True, blank=True)
+    handover_otp_attempts = models.IntegerField(default=0)
+    handover_otp_used_at = models.DateTimeField(null=True, blank=True)
     handover_ref = models.CharField(max_length=100, blank=True, default="")
+
+    # Checkpoint 2: Delivery OTP (Generated on rider arrival at customer -> Entered by rider to confirm DELIVERED)
+    delivery_otp_hash = models.CharField(max_length=256, blank=True, null=True)
+    delivery_otp_expires_at = models.DateTimeField(null=True, blank=True)
+    delivery_otp_attempts = models.IntegerField(default=0)
+    delivery_otp_used_at = models.DateTimeField(null=True, blank=True)
+
+    # Physical stock deduction idempotent guard
+    inventory_deducted = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Guarantees stock deduction happens exactly once during handover.",
+    )
 
     # Payment & pricing snapshot (Read-only for merchant)
     payment_method = models.CharField(max_length=50, default="ONLINE")
@@ -4287,6 +4325,7 @@ class SellerOrder(models.Model):
     picking_at = models.DateTimeField(null=True, blank=True)
     packed_at = models.DateTimeField(null=True, blank=True)
     ready_at = models.DateTimeField(null=True, blank=True)
+    assigned_at = models.DateTimeField(null=True, blank=True)
     handed_over_at = models.DateTimeField(null=True, blank=True)
     delivered_at = models.DateTimeField(null=True, blank=True)
     cancelled_at = models.DateTimeField(null=True, blank=True)
@@ -4301,6 +4340,7 @@ class SellerOrder(models.Model):
             models.Index(fields=["company", "status"], name="wf_seller_ord_comp_st_idx"),
             models.Index(fields=["company", "created_at"], name="wf_seller_ord_comp_dt_idx"),
             models.Index(fields=["source_order_id"], name="wf_seller_ord_src_idx"),
+            models.Index(fields=["handling_technician", "status"], name="wf_seller_ord_tech_st_idx"),
         ]
 
     def __str__(self):
@@ -4311,7 +4351,8 @@ class SellerOrder(models.Model):
         Status.ACCEPTED: [Status.PICKING, Status.CANCELLED],
         Status.PICKING: [Status.PACKED, Status.CANCELLED],
         Status.PACKED: [Status.READY_FOR_PICKUP, Status.CANCELLED],
-        Status.READY_FOR_PICKUP: [Status.HANDED_OVER, Status.CANCELLED],
+        Status.READY_FOR_PICKUP: [Status.ASSIGNED, Status.HANDED_OVER, Status.CANCELLED],
+        Status.ASSIGNED: [Status.HANDED_OVER, Status.CANCELLED],
         Status.HANDED_OVER: [Status.DELIVERED],
         Status.DELIVERED: [],
         Status.CANCELLED: [],
