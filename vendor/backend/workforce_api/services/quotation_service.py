@@ -71,12 +71,26 @@ def _emit(event_type, quote, **extra):
 
 def can_create_quote(job, psv=None):
     """
-    Authoritative backend gate determining if an employee can create/draft/send a quotation for a job.
-    Enforces all 4 mandatory pre-service verification gates:
-      1. GPS Auto-Verification (geofence_passed)
-      2. Customer OTP Verification (otp_verified)
-      3. Employee Presence Selfie (presence_photo uploaded)
-      4. Required Inspection Photos (min photos uploaded per service type)
+    Authoritative backend gate determining if an employee can create/draft/send
+    a quotation for an estimation job.
+
+    For estimation / quotation-mode jobs the PSV requirements are deliberately
+    lighter than for standard direct-service jobs:
+
+    REQUIRED (both must pass):
+        1. GPS Auto-Verification (geofence_passed) — proves the technician is
+           physically at the customer's premises.
+        2. Customer OTP Verification (otp_verified) — proves the customer
+           acknowledged the technician's arrival.
+
+    NOT required for quote creation:
+        • Employee Presence Selfie — the standard job clock-in flow handles
+          this; estimation jobs capture inspection photos inside the Quote
+          Builder itself.
+        • Work-area / appliance photos — these live inside the Quote Builder
+          inspection form (PaintingInspectionForm / MasonInspectionForm).
+          Requiring them here creates a chicken-and-egg: the technician cannot
+          open the quote to take photos until the quote is created.
     """
     if not job:
         return False, {"code": "JOB_NOT_FOUND", "message": "Job not found", "missing": ["JOB"]}
@@ -99,10 +113,16 @@ def can_create_quote(job, psv=None):
     if psv is None:
         psv = PreServiceVerification.objects.filter(job=job).first()
     if not psv:
+        # No PSV record means the GPS arrival flow was never completed.
+        # Block until the technician uses 'Verify Arrival' on the job card.
         return False, {
             "code": "ESTIMATION_VERIFICATION_INCOMPLETE",
-            "message": "Pre-service verification record has not been initialized for this job.",
-            "missing": ["GPS", "CUSTOMER_OTP", "EMPLOYEE_SELFIE", "REQUIRED_PHOTOS"],
+            "message": (
+                "GPS check-in has not been completed for this job. "
+                "Please tap \"Verify Arrival\" on the job card to confirm your location "
+                "before starting the estimate."
+            ),
+            "missing": ["GPS", "CUSTOMER_OTP"],
             "checks": {
                 "gps_verified": False,
                 "otp_verified": False,
@@ -113,35 +133,49 @@ def can_create_quote(job, psv=None):
 
     gps_ok = bool(psv.geofence_passed)
     otp_ok = bool(psv.otp_verified or job.otp_verified)
-    selfie_ok = bool(psv.presence_photo and str(psv.presence_photo).strip())
 
-    # Required photos check
-    min_photos = 2
-    photo_count = (1 if (psv.work_area_photo and str(psv.work_area_photo).strip()) else 0) + (1 if (psv.appliance_photo and str(psv.appliance_photo).strip()) else 0)
+    # Selfie and photos are informational only for estimation jobs (see docstring).
+    selfie_ok = bool(psv.presence_photo and str(psv.presence_photo).strip())
+    photo_count = (
+        (1 if (psv.work_area_photo and str(psv.work_area_photo).strip()) else 0)
+        + (1 if (psv.appliance_photo and str(psv.appliance_photo).strip()) else 0)
+    )
     photos_ok = bool(psv.is_complete or photo_count > 0)
 
+    # Only GPS and OTP are hard requirements for estimation quote creation.
     missing = []
     if not gps_ok:
         missing.append("GPS")
     if not otp_ok:
         missing.append("CUSTOMER_OTP")
-    if not selfie_ok:
-        missing.append("EMPLOYEE_SELFIE")
-    if not photos_ok:
-        missing.append("REQUIRED_PHOTOS")
 
     is_allowed = len(missing) == 0
+
+    if is_allowed:
+        message = "All required checks passed. You may now create the estimate."
+    else:
+        label_map = {
+            "GPS": "GPS location check",
+            "CUSTOMER_OTP": "customer OTP verification",
+        }
+        labels = [label_map.get(m, m) for m in missing]
+        message = (
+            f"Cannot start estimate — {' and '.join(labels)} "
+            f"{'has' if len(labels) == 1 else 'have'} not been completed. "
+            "Please complete these steps on the job card before creating the estimate."
+        )
+
     details = {
         "code": "ESTIMATION_VERIFICATION_COMPLETE" if is_allowed else "ESTIMATION_VERIFICATION_INCOMPLETE",
-        "message": "All estimation verification checks passed." if is_allowed else f"Missing required verification checks: {', '.join(missing)}",
+        "message": message,
         "missing": missing,
         "checks": {
             "gps_verified": gps_ok,
             "otp_verified": otp_ok,
+            # Informational only — not required for quote creation:
             "selfie_verified": selfie_ok,
             "photos_verified": photos_ok,
-            "min_photos_required": min_photos,
-            "photos_uploaded_count": photo_count,
+            "photo_count": photo_count,
         }
     }
     return is_allowed, details
@@ -296,22 +330,31 @@ def record_customer_decision(quote_id, action, notes="", reason="", token=None, 
 
     with transaction.atomic():
         query = WorkforceQuote.objects.select_for_update().filter(id=quote_id)
-        if token:
-            query = query.filter(decision_token=token)
 
         quote = query.first()
         if not quote:
-            raise ValidationError("Quotation not found or invalid token.")
+            raise ValidationError("Quotation not found.")
+
+        if token:
+            if not isinstance(token, str) or len(str(token).strip()) < 16:
+                raise ValidationError("Invalid decision token.")
+            import hmac
+            clean_token = str(token).strip()
+            if not quote.decision_token or not hmac.compare_digest(clean_token, str(quote.decision_token)):
+                raise ValidationError("Invalid decision token.")
 
         # Check expiration
         now = timezone.now()
         if quote.valid_until and quote.valid_until < now:
             quote.status = WorkforceQuote.Status.EXPIRED
-            quote.save(update_fields=["status", "updated_at"])
+            quote.decision_token = None
+            quote.save(update_fields=["status", "decision_token", "updated_at"])
             raise ValidationError("This quotation has expired and can no longer be decided upon.")
 
         if quote.status in [WorkforceQuote.Status.SUPERSEDED, WorkforceQuote.Status.CANCELLED]:
             raise ValidationError(f"This quote version ({quote.quote_version}) is no longer active ({quote.status}).")
+
+        quote.decision_token = None
 
         if clean_action == "ACCEPT":
             quote.customer_decision = "ACCEPTED"
@@ -328,6 +371,7 @@ def record_customer_decision(quote_id, action, notes="", reason="", token=None, 
                 quote.save(update_fields=[
                     "status", "customer_decision", "customer_decided_at",
                     "customer_notes", "submitted_for_approval_at", "updated_at",
+                    "decision_token",
                 ])
                 logger.info(
                     "Quote %s v%s accepted by customer; awaiting SEVO admin approval.",
@@ -338,7 +382,7 @@ def record_customer_decision(quote_id, action, notes="", reason="", token=None, 
                 return quote, None
 
             quote.status = WorkforceQuote.Status.CUSTOMER_ACCEPTED
-            quote.save(update_fields=["status", "customer_decision", "customer_decided_at", "customer_notes", "updated_at"])
+            quote.save(update_fields=["status", "customer_decision", "customer_decided_at", "customer_notes", "updated_at", "decision_token"])
 
             # Admin approval disabled for this deployment -- convert directly.
             work_job = convert_accepted_quote_to_work_booking(quote, actor=actor)
@@ -351,7 +395,7 @@ def record_customer_decision(quote_id, action, notes="", reason="", token=None, 
             quote.customer_decision = "DECLINED"
             quote.customer_decline_reason = reason or notes
             quote.customer_decided_at = now
-            quote.save(update_fields=["status", "customer_decision", "customer_decline_reason", "customer_decided_at", "updated_at"])
+            quote.save(update_fields=["status", "customer_decision", "customer_decline_reason", "customer_decided_at", "updated_at", "decision_token"])
             _emit("QUOTATION_DECLINED", quote, reason=quote.customer_decline_reason)
             _project(quote)
             return quote, None
@@ -361,7 +405,7 @@ def record_customer_decision(quote_id, action, notes="", reason="", token=None, 
             quote.customer_decision = "CHANGES_REQUESTED"
             quote.customer_notes = notes or reason
             quote.customer_decided_at = now
-            quote.save(update_fields=["status", "customer_decision", "customer_notes", "customer_decided_at", "updated_at"])
+            quote.save(update_fields=["status", "customer_decision", "customer_notes", "customer_decided_at", "updated_at", "decision_token"])
 
             # Create revised version (V2 draft)
             new_quote = create_revised_quote_version(quote, notes=notes)

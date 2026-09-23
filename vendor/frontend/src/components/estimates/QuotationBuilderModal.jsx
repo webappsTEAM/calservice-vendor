@@ -97,9 +97,26 @@ export default function QuotationBuilderModal({
     job?.issue_title?.toLowerCase().includes('brick') ||
     job?.issue_title?.toLowerCase().includes('plaster');
 
-  // Load existing quote or initialize from job
+  // Load existing quote or initialize from job.
+  //
+  // Dependency note: we depend on `quoteId` (the externally-supplied prop) and
+  // `job?.id` rather than the full `job` object and `activeQuoteId` state.
+  //
+  // Why not `job`? The parent dashboard polls pre-service status every 4 s and
+  // calls setSelectedJob() which creates a new object reference even when only
+  // `status` changed. That caused this effect to re-run mid-session, wiping all
+  // unsaved inspection data, measurements, and line items the technician had
+  // just entered. `job.id` never changes for the same job.
+  //
+  // Why not `activeQuoteId`? That is internal state we set inside handleSaveDraft
+  // after a draft is created. If we included it here, the effect would reload
+  // from the backend while handleSaveDraft is still in the middle of saving bulk
+  // items — overwriting in-memory state with the not-yet-saved backend data.
   useEffect(() => {
     if (!isOpen) return;
+    // quoteId is the prop value captured at the time this effect runs.
+    // It represents the externally-known quote (if any) to load on open.
+    const propsQuoteId = quoteId;
 
     const loadData = async () => {
       setLoading(true);
@@ -110,8 +127,9 @@ export default function QuotationBuilderModal({
         const rCards = await apiGetRateCards(categoryParam);
         setRateCards(rCards || []);
 
-        if (activeQuoteId) {
-          const detail = await apiGetQuoteDetail(activeQuoteId);
+        if (propsQuoteId) {
+          const detail = await apiGetQuoteDetail(propsQuoteId);
+          setActiveQuoteId(propsQuoteId);
           setQuoteNumber(detail.quote_number || '');
           setQuoteVersion(detail.quote_version || 1);
           setQuoteStatus(detail.status || 'DRAFT');
@@ -146,7 +164,10 @@ export default function QuotationBuilderModal({
     };
 
     loadData();
-  }, [isOpen, activeQuoteId, job]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, quoteId, job?.id]);
+  // isPainting / isMason are intentionally omitted: they derive from
+  // job.service_category / job.issue_title which never change mid-session.
 
   // Live total calculations
   const calculateTotals = () => {

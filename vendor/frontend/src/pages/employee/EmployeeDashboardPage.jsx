@@ -49,6 +49,7 @@ import { PortalCockpitLayout } from '../../components/employee/dashboard/PortalC
 import { AppShell } from '../../components/common/AppShell.jsx';
 import { StatusBadge } from '../../components/enterprise/StatusBadge.jsx';
 import { ErrorState } from '../../components/enterprise/ErrorState.jsx';
+import { PromptDialog } from '../../components/enterprise/PromptDialog.jsx';
 import { Modal } from '../../components/enterprise/Modal.jsx';
 import { LiveCameraCaptureModal } from '../../components/common/LiveCameraCaptureModal.jsx';
 import { classifyApiError } from '../../utils/apiErrorHandler.js';
@@ -95,6 +96,7 @@ import {
   Calculator,
   Power,
   Loader2,
+  RotateCw,
 } from 'lucide-react';
 import QuotationBuilderModal from '../../components/estimates/QuotationBuilderModal.jsx';
 
@@ -260,6 +262,11 @@ export function EmployeeDashboardPage() {
     }
   });
   const [actionLoading, setActionLoading] = useState(null);
+  // A decline reason recorded against a customer's decision was being typed
+  // into a native browser input box, which cannot be validated, cannot show
+  // what is being declined, and quietly substituted a canned reason when the
+  // technician dismissed it.
+  const [promptConfig, setPromptConfig] = useState(null);
   const [isTogglingOnline, setIsTogglingOnline] = useState(false);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
@@ -316,6 +323,8 @@ export function EmployeeDashboardPage() {
     is_complete: false,
   });
   const [otpInput, setOtpInput] = useState('');
+  const [otpError, setOtpError] = useState('');
+  const [otpSuccessMsg, setOtpSuccessMsg] = useState('');
   const [paymentOtpInput, setPaymentOtpInput] = useState('');
   const [isVerifyingPaymentOtp, setIsVerifyingPaymentOtp] = useState(false);
 
@@ -486,8 +495,12 @@ export function EmployeeDashboardPage() {
     if (!targetJob || !otpInput.trim()) return;
     try {
       setActionLoading(targetJob.id);
+      setOtpError('');
+      setOtpSuccessMsg('');
       const res = await apiVerifyOTP(targetJob.id, otpInput.trim());
-      setSuccessMsg(res.message || 'Customer OTP verified!');
+      const msg = res.message || 'Customer OTP verified!';
+      setOtpSuccessMsg(msg);
+      setSuccessMsg(msg);
       const updatedState = { ...preServiceState, otp_verified: true, is_complete: res.is_complete };
       setPreServiceState(updatedState);
       await loadDashboard();
@@ -496,9 +509,14 @@ export function EmployeeDashboardPage() {
         console.info('[EmployeeDashboard] Mandatory pre-checks complete after OTP verification. Triggering auto clock-in...');
         await handleDirectJobClockIn(targetJob);
       }
-      setTimeout(() => setSuccessMsg(''), 4000);
+      setTimeout(() => {
+        setSuccessMsg('');
+        setOtpSuccessMsg('');
+      }, 4000);
     } catch (err) {
-      setError(err.message || 'Invalid Customer OTP code.');
+      const msg = err.message || 'Invalid Customer OTP code.';
+      setOtpError(msg);
+      setError(msg);
     } finally {
       setActionLoading(null);
     }
@@ -509,11 +527,19 @@ export function EmployeeDashboardPage() {
     if (!targetJob) return;
     try {
       setActionLoading(targetJob.id);
+      setOtpError('');
       const res = await apiResendOTP(targetJob.id);
-      setSuccessMsg(res.message || 'Fresh OTP generated and sent to customer!');
-      setTimeout(() => setSuccessMsg(''), 4000);
+      const msg = res.message || 'Fresh OTP generated and sent to customer!';
+      setOtpSuccessMsg(msg);
+      setSuccessMsg(msg);
+      setTimeout(() => {
+        setSuccessMsg('');
+        setOtpSuccessMsg('');
+      }, 6000);
     } catch (err) {
-      setError(err.message || 'Failed to resend OTP.');
+      const msg = err.message || 'Failed to resend OTP.';
+      setOtpError(msg);
+      setError(msg);
     } finally {
       setActionLoading(null);
     }
@@ -1231,13 +1257,26 @@ export function EmployeeDashboardPage() {
       }
     };
 
-    const handleCustomerDecideExtensionAction = async (jobId, extId, action) => {
+    const handleCustomerDecideExtensionAction = (jobId, extId, action) => {
+      if (action === 'DECLINE') {
+        setPromptConfig({
+          title: 'Record the customer\u2019s decline',
+          message: 'The extra work will not be carried out or billed. This reason is recorded against the job.',
+          label: 'Reason given by the customer',
+          placeholder: 'e.g. Customer will arrange this separately',
+          confirmText: 'Record decline',
+          confirmVariant: 'danger',
+          onSubmit: (reason) => submitCustomerExtensionDecision(jobId, extId, action, reason),
+        });
+        return;
+      }
+      submitCustomerExtensionDecision(jobId, extId, action, '');
+    };
+
+    const submitCustomerExtensionDecision = async (jobId, extId, action, reason) => {
+      setPromptConfig(null);
       try {
         setActionLoading(`ext-${extId}`);
-        let reason = '';
-        if (action === 'DECLINE') {
-          reason = prompt('Enter reason for customer decline:') || 'Customer declined additional scope';
-        }
         const res = await apiCustomerDecideExtension(jobId, extId, action, reason);
         setSuccessMsg(res.message || 'Customer decision recorded.');
         await loadDashboard();
@@ -1325,6 +1364,9 @@ export function EmployeeDashboardPage() {
             preServiceState={preServiceState}
             otpInput={otpInput}
             setOtpInput={setOtpInput}
+            otpError={otpError}
+            setOtpError={setOtpError}
+            otpSuccessMsg={otpSuccessMsg}
             handleVerifyOtpSubmit={handleVerifyOtpSubmit}
             handleResendOtp={handleResendOtp}
             paymentOtpInput={paymentOtpInput}
@@ -1360,9 +1402,20 @@ export function EmployeeDashboardPage() {
               job={selectedJob}
               quoteId={selectedJob.active_quote_id}
               isOpen={isQuotationModalOpen}
-              onClose={() => setIsQuotationModalOpen(false)}
-              onQuoteSaved={() => {
+              onClose={() => {
+                setIsQuotationModalOpen(false);
+                // Refresh the dashboard after the modal is dismissed so the
+                // job card shows the updated quote number / status. We do this
+                // on close (not inside onQuoteSaved) to avoid triggering a
+                // selectedJob refresh while the technician is still editing.
                 loadDashboard({ silent: true });
+              }}
+              onQuoteSaved={() => {
+                // Intentionally a no-op here. Refreshing the dashboard while the
+                // modal is open would update selectedJob, re-render this tree,
+                // and previously caused the modal to reload its state from the
+                // backend (erasing unsaved items/measurements). The refresh
+                // happens in onClose above once the technician is done.
               }}
             />
           )}
@@ -2490,6 +2543,9 @@ export function EmployeeDashboardPage() {
               preServiceState={preServiceState}
               otpInput={otpInput}
               setOtpInput={setOtpInput}
+              otpError={otpError}
+              setOtpError={setOtpError}
+              otpSuccessMsg={otpSuccessMsg}
               handleVerifyOtpSubmit={handleVerifyOtpSubmit}
               handleResendOtp={handleResendOtp}
               approvedServices={approvedServices}
@@ -4388,13 +4444,29 @@ export function EmployeeDashboardPage() {
             job={selectedJob}
             quoteId={selectedJob.active_quote_id}
             isOpen={isQuotationModalOpen}
-            onClose={() => setIsQuotationModalOpen(false)}
-            onQuoteSaved={() => {
+            onClose={() => {
+              setIsQuotationModalOpen(false);
+              // Refresh after close, not during editing — see comment above.
               loadDashboard({ silent: true });
+            }}
+            onQuoteSaved={() => {
+              // Intentionally a no-op. See the comment in the first instance.
             }}
           />
         )}
       </div>
+
+      <PromptDialog
+        isOpen={Boolean(promptConfig)}
+        onClose={() => setPromptConfig(null)}
+        onSubmit={promptConfig?.onSubmit || (() => {})}
+        title={promptConfig?.title || ''}
+        message={promptConfig?.message || ''}
+        label={promptConfig?.label || ''}
+        placeholder={promptConfig?.placeholder || ''}
+        confirmText={promptConfig?.confirmText || 'Confirm'}
+        confirmVariant={promptConfig?.confirmVariant || 'primary'}
+      />
     </AppShell >
   );
 }
