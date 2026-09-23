@@ -5,6 +5,7 @@ State machine logic for Service Request status transitions.
 import logging
 from rest_framework.exceptions import ValidationError
 from django.utils import timezone
+from django.db import transaction
 
 logger = logging.getLogger("workforce.state_machine")
 
@@ -37,7 +38,7 @@ ALLOWED_TRANSITIONS = {
     "confirmed": ["offering", "dispatching", "assigned", "unassigned", "accepted", "cancelled"],
     "assigned": ["received", "accepted", "reassigned", "redispatching", "cancelled"],
     "received": ["accepted", "reassigned", "redispatching", "cancelled"],
-    "accepted": ["on_the_way", "en_route", "arrived", "redispatching", "cancelled", "unable_to_complete"],
+    "accepted": ["on_the_way", "en_route", "redispatching", "cancelled", "unable_to_complete"],
     "on_the_way": ["arrived", "redispatching", "cancelled", "unable_to_complete"],
     "en_route": ["arrived", "redispatching", "cancelled", "unable_to_complete"],
     "arrived": ["service_started", "in_progress", "cancelled", "unable_to_complete"],
@@ -79,12 +80,19 @@ def _technician_dict(emp):
     }
 
 
+@transaction.atomic
 def apply_transition(service_request, target_status: str, actor=None) -> str:
     """
     Authoritative state machine transition executor for ServiceRequest.
     Validates state transitions, enforces business invariants/gates, persists changes,
     and coordinates downstream side effects (EmployeeJob, JobTrackingSession, Availability).
     """
+    # Serialize lifecycle actions with cancellation and assignment. Evaluate
+    # persisted state, not a stale object loaded before another request commits.
+    type(service_request).objects.select_for_update().get(pk=service_request.pk)
+    # Callers may carry a just-verified payment_status to persist after this
+    # transition. Do not discard their non-lifecycle updates.
+    service_request.refresh_from_db(fields=['status', 'assigned_employee'])
     current = str(service_request.status).lower()
     target = str(target_status).lower()
 
@@ -106,8 +114,13 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
             if not verification or not verification.geofence_passed:
                 raise ValidationError("Transition rejected: Real GPS Arrival geofence check has not passed.")
 
-        # 2. Gate: IN_PROGRESS requires active TimeLog clock-in
+        # 2. Gate: IN_PROGRESS requires active TimeLog clock-in and completed PreServiceVerification
         if target == "in_progress":
+            from workforce_api.models import PreServiceVerification
+            verification = PreServiceVerification.objects.filter(job=service_request).first()
+            if not verification or not verification.is_complete:
+                raise ValidationError("Transition rejected: Customer OTP and Pre-service evidence must be verified before IN_PROGRESS.")
+
             from time_tracking.models import TimeLog
             eval_emp = emp or service_request.assigned_employee
             if eval_emp:
@@ -169,20 +182,62 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
         # in this function's own try/except, so a settlement failure logs
         # loudly but never blocks the job from actually completing.
         if target == "completed":
-            # Auto-close open TimeLogs for the assigned employee
+            # Auto-close open TimeLogs for the assigned employee.
+            #
+            # This was a bulk queryset .update(), which set clock_out/status/
+            # submitted_at directly in SQL and therefore never ran save() --
+            # so an open BREAK was left open. A technician on a tea break when
+            # their job completed kept a break with no end time, permanently,
+            # and every worked-hours figure derived from it (TimeLog.hours
+            # subtracts break time) was wrong from that point on. Nothing ever
+            # closed it, because the shift it belonged to was already closed.
+            #
+            # close_employee_active_timelog() ends open breaks, takes a row
+            # lock, and is idempotent -- and its default notes read "Auto
+            # clock-out upon job completion", which is precisely this.
             if service_request.assigned_employee:
                 try:
-                    from time_tracking.models import TimeLog
-                    TimeLog.objects.filter(
-                        employee=service_request.assigned_employee,
-                        clock_out__isnull=True
-                    ).update(
-                        clock_out=now,
-                        status="submitted",
-                        submitted_at=now
-                    )
+                    from time_tracking.services import close_employee_active_timelog
+
+                    # One open log per employee is the norm; loop bounded so a
+                    # surprise can never spin here.
+                    for _ in range(5):
+                        _tl, _tl_closed = close_employee_active_timelog(
+                            service_request.assigned_employee,
+                            address=service_request.address or "",
+                            notes="Auto clock-out on job completion",
+                        )
+                        if not _tl_closed:
+                            break
                 except Exception as _tl_err:
                     logger.warning("Could not auto-close TimeLog on job completion: %s", _tl_err)
+
+            # JOB_COMPLETED is listed in publish_workforce_event()'s own
+            # docstring as an event it publishes, but nothing ever emitted it,
+            # so the realtime stream had no completion signal at all. Emit it
+            # here for the same reason settlement lives here: this is the one
+            # authoritative moment a job becomes completed, whichever endpoint
+            # triggered it.
+            try:
+                from workforce_api.services.realtime import publish_workforce_event
+
+                publish_workforce_event(
+                    "JOB_COMPLETED",
+                    {
+                        "job_id": service_request.pk,
+                        "request_id": getattr(service_request, "request_id", ""),
+                        "employee_id": getattr(service_request.assigned_employee, "id", None),
+                        "payment_status": service_request.payment_status,
+                        "total_amount": str(service_request.total_amount or ""),
+                    },
+                    user=getattr(getattr(service_request, "assigned_employee", None), "user", None),
+                    company=service_request.company,
+                )
+            except Exception as _evt_err:
+                logger.warning(
+                    "Could not publish JOB_COMPLETED for job %s: %s",
+                    service_request.pk, _evt_err,
+                )
 
             try:
                 from workforce_api.services.commission import settle_completed_job
@@ -254,18 +309,37 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
                 # TimeLog outlives the job, and because a DB constraint allows
                 # only one open log per employee, the technician's NEXT job can
                 # never clock in -- and this job's hours never finalise.
+                # Delegate to time_tracking.services.close_employee_active_timelog
+                # rather than closing the row here.
+                #
+                # This used to set clock_out inline, which left two things
+                # undone. Open BREAKS were never ended, so a technician who was
+                # on a tea break when the job completed kept a break with no
+                # end time -- and every shift-hours figure derived from it
+                # (worked time minus break time) was wrong from then on, with
+                # nothing to close it later. It also never set status/
+                # submitted_at, so the shift was clocked out but never
+                # submitted, and sat in draft outside the approval flow.
+                #
+                # The service does both, takes a row lock, and is idempotent.
+                # Its default notes argument is even "Auto clock-out upon job
+                # completion" -- it was written for this call site and simply
+                # was not wired to it.
                 try:
-                    from time_tracking.models import TimeLog
-                    for _log in TimeLog.objects.filter(
-                        employee=service_request.assigned_employee,
-                        clock_out__isnull=True,
-                    ):
-                        _log.clock_out = now
-                        _log.clock_out_address = service_request.address or ""
-                        _log.clock_out_notes = f"Auto clock-out on job {target}"
-                        _log.save(update_fields=[
-                            "clock_out", "clock_out_address", "clock_out_notes", "updated_at",
-                        ])
+                    from time_tracking.services import close_employee_active_timelog
+
+                    # One open log per employee is the norm (a DB constraint
+                    # enforces it), but the previous code looped, so keep
+                    # closing until none remain -- bounded, so a surprise can
+                    # never spin here.
+                    for _ in range(5):
+                        _log, _was_closed = close_employee_active_timelog(
+                            service_request.assigned_employee,
+                            address=service_request.address or "",
+                            notes=f"Auto clock-out on job {target}",
+                        )
+                        if not _was_closed:
+                            break
                         logger.info(
                             "[CLOCK_OUT] employee=%s job=%s timelog=%s target_state=%s",
                             service_request.assigned_employee.id, service_request.id,
@@ -286,5 +360,3 @@ def apply_transition(service_request, target_status: str, actor=None) -> str:
 
 
 transition = apply_transition
-
-

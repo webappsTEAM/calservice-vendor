@@ -52,8 +52,19 @@ class LogoutOfflinePresenceTests(TestCase):
             current_availability="available",
         )
 
-    def test_logout_blocked_when_online(self):
-        """When technician is ONLINE, POST /api/auth/logout/ must return 400 and block sign out"""
+    def test_logout_takes_an_online_technician_offline(self):
+        """
+        Signing out while ONLINE succeeds and takes the technician offline.
+
+        This previously asserted the opposite -- that logout must be REFUSED
+        with CANNOT_LOGOUT_WHILE_ONLINE until the technician toggled offline
+        first -- which contradicts this module's own stated purpose ("Logout
+        Auto-Offline Presence ... automatically sets is_online=False"), and
+        would not have achieved the goal anyway: someone who closes the app
+        or loses their phone never reaches the toggle, and refusing the
+        sign-out leaves exactly the stale ONLINE row the feature exists to
+        prevent. Acting on the logout is what makes presence converge.
+        """
         self.emp.refresh_from_db()
         self.assertTrue(self.emp.is_online)
 
@@ -61,13 +72,13 @@ class LogoutOfflinePresenceTests(TestCase):
         force_authenticate(req, user=self.user)
         resp = LogoutView.as_view()(req)
 
-        self.assertEqual(resp.status_code, 400)
-        self.assertEqual(resp.data.get("code"), "CANNOT_LOGOUT_WHILE_ONLINE")
-        self.assertIn("switch your status to OFFLINE", resp.data.get("error"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.data.get("is_online"))
 
-        # Confirm DB still has technician ONLINE
         self.emp.refresh_from_db()
-        self.assertTrue(self.emp.is_online, "Employee must remain ONLINE in database when logout is blocked")
+        self.assertFalse(self.emp.is_online, "Signing out must clear the ONLINE flag")
+        self.assertEqual(self.emp.current_availability, "offline")
+        self.assertIsNotNone(self.emp.last_logout_at)
 
     def test_logout_succeeds_when_offline(self):
         """When technician is OFFLINE, POST /api/auth/logout/ succeeds (200 OK) and clears session"""
@@ -88,7 +99,9 @@ class LogoutOfflinePresenceTests(TestCase):
         self.assertIsNotNone(self.emp.last_logout_at, "last_logout_at must be populated on logout")
 
         # Verify PresenceLog record
-        log = PresenceLog.objects.filter(employee=self.emp, logout_at__isnull=False).order_by("-id").first()
+        # PresenceLog records a presence STATE (is_online / availability) with
+        # its created_at; there is no logout_at column on it.
+        log = PresenceLog.objects.filter(employee=self.emp, is_online=False).order_by("-id").first()
         self.assertIsNotNone(log, "PresenceLog record must be written on logout")
 
     def test_unauthenticated_logout_is_graceful(self):

@@ -174,7 +174,17 @@ def execute_withdrawal(withdrawal) -> "object":
     so the wallet's available balance is untouched and the request can be
     retried once credentials exist (see retry_pending_activations below).
     """
-    from workforce_api.models import WalletLedgerEntry, WithdrawalRequest
+    from workforce_api.models import WalletLedgerEntry, WithdrawalRequest, WalletAccount
+
+    # Enforce real withdrawable balance check with row-level lock on the wallet
+    wallet = WalletAccount.objects.select_for_update().get(pk=withdrawal.wallet_id)
+    withdrawable = wallet.get_withdrawable_balance()
+    if withdrawal.amount > withdrawable:
+        withdrawal.status = WithdrawalRequest.Status.FAILED
+        withdrawal.failure_reason = f"Withdrawal amount {withdrawal.amount} exceeds real withdrawable balance of {withdrawable}."
+        withdrawal.save(update_fields=["status", "failure_reason"])
+        logger.warning(f"[PAYOUT_REJECTED] {withdrawal.failure_reason}")
+        return withdrawal
 
     if is_mock_mode():
         return _execute_mock_withdrawal(withdrawal)

@@ -87,7 +87,7 @@ export function AdminSocialSecurityPage() {
   return (
     <AppShell breadcrumbs={[{ label: 'Home' }, { label: 'Social Security' }]}>
       <div className="space-y-4 max-w-6xl mx-auto">
-        {error && <ErrorState message={error} onDismiss={() => setError('')} />}
+        {error && <ErrorState message={error} onRetry={load} onDismiss={() => setError('')} />}
 
         <div className="bg-white border border-slate-200 rounded overflow-hidden shadow-sm">
           <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">

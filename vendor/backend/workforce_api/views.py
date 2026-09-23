@@ -6,6 +6,7 @@ import uuid
 import os
 import json
 import time
+import hmac
 import datetime
 from datetime import timedelta
 import logging
@@ -1063,7 +1064,7 @@ class WorkforceCatalogListView(APIView):
     def get(self, request):
         """
         Returns the single source of truth database service catalog from PostgreSQL (shared with Customer app).
-        Strictly reads from database tables (CatalogCategory & Service, falling back to WorkforceServiceCatalog if unseeded).
+        Strictly reads shared CatalogCategory and Service IDs. Empty means no active services.
         """
         try:
             from service_requests.models import CatalogCategory, Service
@@ -1094,33 +1095,6 @@ class WorkforceCatalogListView(APIView):
                         "description": cat.description or "",
                         "icon": cat.icon or "Wrench",
                         "services": cat_services,
-                    })
-
-            if not catalog_data:
-                from workforce_api.models import WorkforceServiceCatalog
-                wf_services = WorkforceServiceCatalog.objects.filter(is_active=True).order_by("category", "name")
-                cat_map = {}
-                for s in wf_services:
-                    cat_name = s.category or "General Services"
-                    if cat_name not in cat_map:
-                        cat_map[cat_name] = []
-                    cat_map[cat_name].append({
-                        "id": s.id,
-                        "name": s.name,
-                        "slug": s.name.lower().replace(" ", "-"),
-                        "description": f"Standard {s.name} ({s.duration_minutes} mins)",
-                        "icon": "Wrench",
-                        "category_id": hash(cat_name) % 10000,
-                        "category_name": cat_name,
-                    })
-                for c_idx, (cat_name, svcs) in enumerate(cat_map.items(), start=1):
-                    catalog_data.append({
-                        "id": c_idx,
-                        "name": cat_name,
-                        "slug": cat_name.lower().replace(" ", "-"),
-                        "description": f"All {cat_name} services",
-                        "icon": "Wrench",
-                        "services": svcs,
                     })
 
             return Response(catalog_data, status=status.HTTP_200_OK)
@@ -2057,6 +2031,13 @@ class WorkforcePresenceToggleView(APIView):
         reconcile_employee_availability(emp)
         emp.refresh_from_db(fields=["current_availability", "is_online"])
 
+        if emp.is_online and emp.current_availability == "available":
+            try:
+                import threading
+                from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
+                transaction.on_commit(lambda employee_id=emp.id: threading.Thread(target=reconsider_jobs_for_employee, args=(employee_id,), daemon=True).start())
+            except Exception as e:
+                logger.debug(f"[PRESENCE_TOGGLE_DISPATCH_ERR] {e}")
 
         try:
             PresenceLog.objects.create(
@@ -2140,7 +2121,8 @@ def is_employee_authorized_for_job(emp, job) -> bool:
     Validates tenant compatibility between an employee and a job:
     - Solo technician (emp.company_id is None) can handle platform jobs (job.company_id in (None, 1)).
     - Platform technician (emp.company_id == 1) can handle platform jobs (job.company_id in (None, 1)).
-    - Vendor technician (emp.company_id > 1) can only handle jobs belonging to their own company (job.company_id == emp.company_id).
+    - Vendor technician (emp.company_id > 1) can handle jobs belonging to their company (job.company_id == emp.company_id)
+      as well as platform/marketplace jobs (job.company_id in (None, 1)).
     """
     if not emp or not job:
         return False
@@ -2148,7 +2130,7 @@ def is_employee_authorized_for_job(emp, job) -> bool:
     emp_cid = getattr(emp, "company_id", None)
     if emp_cid is None or emp_cid == 1:
         return job_cid is None or job_cid == 1
-    return job_cid == emp_cid
+    return job_cid == emp_cid or job_cid is None or job_cid == 1
 
 
 class WorkforceJobListView(APIView):
@@ -2189,8 +2171,16 @@ class WorkforceJobListView(APIView):
             now = timezone.now()
             from workforce_api.models import WorkforceJobOffer, WorkforceJobLifecycleEvent, WorkforceWorkExtension, JobPayment
             from workforce_api.services.workload import ACTIVE_QUEUE_STATUSES, WORKLOAD_OCCUPIED_STATUSES
+            from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee, expire_and_reassign_offers
 
-            # 1. Hard Single Active Job Invariant: Check if technician already has an active assignment
+            # 1. Sweep expired offers asynchronously so response returns instantly
+            try:
+                import threading
+                threading.Thread(target=expire_and_reassign_offers, daemon=True).start()
+            except Exception:
+                pass
+
+            # 2. Hard Single Active Job Invariant: Check if technician already has an active assignment
             from workforce_api.services.workload import get_employee_active_job
             active_job = get_employee_active_job(emp.id)
             has_active_job = bool(active_job)
@@ -2205,14 +2195,19 @@ class WorkforceJobListView(APIView):
             if has_active_job:
                 offered_job_ids_qs = ServiceRequest.objects.none().values("id")
             else:
-                today = timezone.localdate()
+                # Reconsider pending customer bookings in Supabase for this available technician
+                if emp.is_active and emp.is_online and emp.current_availability == "available":
+                    try:
+                        import threading
+                        from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
+                        transaction.on_commit(lambda employee_id=emp.id: threading.Thread(target=reconsider_jobs_for_employee, args=(employee_id,), daemon=True).start())
+                    except Exception as e:
+                        logger.debug(f"[DISPATCH_RECONSIDER_ERROR] {e}")
+
                 offered_job_ids_qs = WorkforceJobOffer.objects.filter(
                     employee=emp,
                     status="OFFERED",
-                    expires_at__gt=now,
-                ).filter(
-                    Q(job__preferred_date=today) |
-                    Q(job__preferred_date__isnull=True, job__created_at__date=today)
+                    expires_at__gt=now
                 ).values("job_id")
 
             emp_job_sr_ids_qs = EmployeeJob.objects.filter(
@@ -2265,29 +2260,22 @@ class WorkforceJobListView(APIView):
 
             qs = qs.select_related("customer", "assigned_employee", "assigned_employee__user", "company")
             qs = qs.distinct().order_by("-updated_at", "-created_at")
-            jobs = list(qs[:100])
-        else:
-            jobs = []
+            job_list = list(qs[:100])
 
-        job_ids = [j.id for j in jobs]
-        emp_offers_map = {}
-        active_offers_map = {}
-        lifecycle_events_map = {}
-        extensions_map = {}
-        active_extensions_map = {}
-        payments_map = {}
-        quotes_map = {}
-        psvs_map = {}
-        trip_stops_map = {}
-        emp_jobs_map = {}
-        wallets_map = {}
+            job_ids = [j.id for j in job_list]
+            emp_offers_map = {}
+            active_offers_map = {}
+            lifecycle_events_map = {}
+            extensions_map = {}
+            active_extensions_map = {}
+            payments_map = {}
+            quotes_map = {}
+            psvs_map = {}
+            trip_stops_map = {}
+            emp_jobs_map = {}
 
-        if job_ids:
-            now = timezone.now()
-            from workforce_api.models import WorkforceJobOffer, WorkforceJobLifecycleEvent, WorkforceWorkExtension, JobPayment, WorkforceQuote, PreServiceVerification, WalletAccount, VendorTechnicianRelationship
-
-            # 1. Bulk fetch employee job offers (for employee)
-            if emp:
+            if job_ids:
+                # 1. Bulk fetch employee job offers
                 offers = list(WorkforceJobOffer.objects.filter(job_id__in=job_ids, employee=emp).order_by("offered_at"))
                 for o in offers:
                     emp_offers_map[o.job_id] = o
@@ -2303,7 +2291,49 @@ class WorkforceJobListView(APIView):
                 for ev in events:
                     lifecycle_events_map[ev.job_id] = ev
 
-                # 3. Bulk fetch EmployeeJob records for cancellation deadline & status
+                # 3. Bulk fetch work extensions
+                exts = list(WorkforceWorkExtension.objects.filter(job_id__in=job_ids).select_related("technician", "technician__user").order_by("-created_at"))
+                for ext in exts:
+                    extensions_map.setdefault(ext.job_id, []).append(ext)
+                    if ext.status in ["REQUESTED", "ADMIN_APPROVED", "CUSTOMER_ACCEPTED", "IN_PROGRESS"] and ext.job_id not in active_extensions_map:
+                        active_extensions_map[ext.job_id] = ext
+
+                # 4. Bulk fetch payments
+                payments = list(JobPayment.objects.filter(job_id__in=job_ids))
+                for p in payments:
+                    payments_map[p.job_id] = p
+
+                # 5. Bulk fetch active quotes for estimation jobs
+                from .models import WorkforceQuote, PreServiceVerification
+                quotes_map = {}
+                quotes = list(
+                    WorkforceQuote.objects.filter(job_id__in=job_ids)
+                    .exclude(status__in=[WorkforceQuote.Status.SUPERSEDED, WorkforceQuote.Status.CANCELLED])
+                    .order_by("job_id", "-quote_version")
+                )
+                for q in quotes:
+                    if q.job_id not in quotes_map:
+                        quotes_map[q.job_id] = q
+
+                # 6. Bulk fetch pre-service verifications
+                psvs_map = {}
+                psvs = list(PreServiceVerification.objects.filter(job_id__in=job_ids))
+                for psv in psvs:
+                    psvs_map[psv.job_id] = psv
+
+                # 7. Bulk fetch trip stop counts
+                trip_stops_map = {}
+                try:
+                    from service_requests.models import TripStop
+                    from django.db.models import Count
+                    ts_counts = TripStop.objects.filter(booking_id__in=job_ids).values("booking_id").annotate(cnt=Count("id"))
+                    for ts in ts_counts:
+                        trip_stops_map[ts["booking_id"]] = ts["cnt"]
+                except Exception:
+                    pass
+
+                # 8. Bulk fetch EmployeeJob records for cancellation deadline & status
+                emp_jobs_map = {}
                 try:
                     from service_requests.models import EmployeeJob
                     emp_jobs = list(EmployeeJob.objects.filter(service_request_id__in=job_ids, employee=emp))
@@ -2312,92 +2342,23 @@ class WorkforceJobListView(APIView):
                 except Exception:
                     pass
 
-            # 4. Bulk fetch work extensions (for both admin and technician)
-            exts = list(WorkforceWorkExtension.objects.filter(job_id__in=job_ids).select_related("technician", "technician__user").order_by("-created_at"))
-            for ext in exts:
-                extensions_map.setdefault(ext.job_id, []).append(ext)
-                if ext.status in ["REQUESTED", "ADMIN_APPROVED", "CUSTOMER_ACCEPTED", "IN_PROGRESS"] and ext.job_id not in active_extensions_map:
-                    active_extensions_map[ext.job_id] = ext
-
-            # 5. Bulk fetch payments (for both admin and technician)
-            payments = list(JobPayment.objects.filter(job_id__in=job_ids))
-            for p in payments:
-                payments_map[p.job_id] = p
-
-            # 6. Bulk fetch active quotes for estimation jobs
-            quotes = list(
-                WorkforceQuote.objects.filter(job_id__in=job_ids)
-                .exclude(status__in=[WorkforceQuote.Status.SUPERSEDED, WorkforceQuote.Status.CANCELLED])
-                .order_by("job_id", "-quote_version")
-            )
-            for q in quotes:
-                if q.job_id not in quotes_map:
-                    quotes_map[q.job_id] = q
-
-            # 7. Bulk fetch pre-service verifications
-            psvs = list(PreServiceVerification.objects.filter(job_id__in=job_ids))
-            for psv in psvs:
-                psvs_map[psv.job_id] = psv
-
-            # 8. Bulk fetch trip stop counts
-            try:
-                from service_requests.models import TripStop
-                from django.db.models import Count
-                ts_counts = TripStop.objects.filter(booking_id__in=job_ids).values("booking_id").annotate(cnt=Count("id"))
-                for ts in ts_counts:
-                    trip_stops_map[ts["booking_id"]] = ts["cnt"]
-            except Exception:
-                pass
-
-            # 9. Bulk resolve wallets for assigned employees to avoid per-row queries
-            emp_ids = {j.assigned_employee_id for j in jobs if j.assigned_employee_id}
-            if emp_ids:
-                rels = {r.technician_id: r for r in VendorTechnicianRelationship.objects.filter(
-                    technician_id__in=emp_ids, status=VendorTechnicianRelationship.Status.ACTIVE
-                ).select_related("vendor")}
-                emp_map = {j.assigned_employee.id: j.assigned_employee for j in jobs if j.assigned_employee}
-                comp_ids = set()
-                solo_emp_ids = set()
-                for eid in emp_ids:
-                    rel = rels.get(eid)
-                    e = emp_map.get(eid)
-                    if rel and rel.vendor_id:
-                        comp_ids.add(rel.vendor_id)
-                    elif e and e.company_id:
-                        comp_ids.add(e.company_id)
-                    else:
-                        solo_emp_ids.add(eid)
-
-                head_wallets = {w.company_id: w for w in WalletAccount.objects.filter(
-                    company_id__in=comp_ids, account_type=WalletAccount.AccountType.PROVIDER_HEAD
-                ).select_related("company")}
-                ind_wallets = {w.employee_id: w for w in WalletAccount.objects.filter(
-                    employee_id__in=solo_emp_ids, account_type=WalletAccount.AccountType.INDIVIDUAL_WORKER
-                ).select_related("employee", "employee__user")}
-
-                for eid in emp_ids:
-                    rel = rels.get(eid)
-                    e = emp_map.get(eid)
-                    cid = rel.vendor_id if (rel and rel.vendor_id) else (e.company_id if e else None)
-                    if cid and cid in head_wallets:
-                        wallets_map[eid] = (head_wallets[cid], "PROVIDER_HEAD")
-                    elif eid in ind_wallets:
-                        wallets_map[eid] = (ind_wallets[eid], "INDIVIDUAL_WORKER")
-
-        context = {
-            "request": request,
-            "emp_offers_map": emp_offers_map,
-            "active_offers_map": active_offers_map,
-            "lifecycle_events_map": lifecycle_events_map,
-            "extensions_map": extensions_map,
-            "active_extensions_map": active_extensions_map,
-            "payments_map": payments_map,
-            "quotes_map": quotes_map,
-            "psvs_map": psvs_map,
-            "trip_stops_map": trip_stops_map,
-            "emp_jobs_map": emp_jobs_map,
-            "wallets_map": wallets_map,
-        }
+            context = {
+                "request": request,
+                "emp_offers_map": emp_offers_map,
+                "active_offers_map": active_offers_map,
+                "lifecycle_events_map": lifecycle_events_map,
+                "extensions_map": extensions_map,
+                "active_extensions_map": active_extensions_map,
+                "payments_map": payments_map,
+                "quotes_map": quotes_map,
+                "psvs_map": psvs_map,
+                "trip_stops_map": trip_stops_map,
+                "emp_jobs_map": emp_jobs_map,
+            }
+            jobs = job_list
+        else:
+            jobs = []
+            context = {"request": request}
 
         serializer = WorkforceJobSerializer(jobs, many=True, context=context)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -2926,6 +2887,9 @@ class WorkforceJobCashCollectView(APIView):
                 return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         with transaction.atomic():
+            job = ServiceRequest.objects.select_for_update().get(pk=job.pk)
+            if str(job.payment_method).upper() == 'ONLINE':
+                return Response({'error': 'Cannot collect cash for online payment booking.', 'code': 'ONLINE_PAYMENT_REQUIRED'}, status=400)
             pmt, created = JobPayment.objects.select_for_update().get_or_create(
                 job=job,
                 defaults={
@@ -3662,13 +3626,13 @@ class WorkforceDispatchAssignView(APIView):
 
 # ─── Automatic Dispatch Engine ────────────────────────────────────────────────
 
-def run_automatic_dispatch(job, excluded_employee_ids=None):
+def run_automatic_dispatch(job, excluded_employee_ids=None, allow_legacy_override=False):
     """
     Delegates to authoritative automatic dispatch service:
     workforce_api.services.automatic_dispatch.dispatch_job
     """
     from workforce_api.services.automatic_dispatch import dispatch_job
-    return dispatch_job(job, exclude_employee_ids=excluded_employee_ids)
+    return dispatch_job(job, exclude_employee_ids=excluded_employee_ids, allow_legacy_override=allow_legacy_override)
 
 
 from workforce_api.services.workload import ACTIVE_WORKLOAD_STATUSES, supersede_other_offers_for_employee
@@ -3741,6 +3705,9 @@ class WorkforceJobAcceptOfferView(APIView):
             now = timezone.now()
             cancellation_deadline = now + timedelta(minutes=5)
 
+            if job_obj.status not in ('offering', 'dispatching', 'confirmed', 'assigned', 'received', 'unassigned', 'redispatching'):
+                return Response({'error': 'This job is no longer accepting offers.', 'code': 'INVALID_JOB_STATE'}, status=409)
+
             if offer and offer.status == WorkforceJobOffer.Status.OFFERED:
                 if offer.expires_at < now:
                     offer.status = WorkforceJobOffer.Status.EXPIRED
@@ -3750,8 +3717,6 @@ class WorkforceJobAcceptOfferView(APIView):
                         "error": "Job offer has expired.",
                         "code": "OFFER_EXPIRED"
                     }, status=status.HTTP_409_CONFLICT)
-                offer.status = "ACCEPTED"
-                offer.save()
 
             # Hard Single Active Job Rule: Check if employee has a conflicting active job
             conflicting = ServiceRequest.objects.filter(
@@ -3768,16 +3733,26 @@ class WorkforceJobAcceptOfferView(APIView):
                     "code": "EMPLOYEE_ALREADY_BUSY"
                 }, status=status.HTTP_409_CONFLICT)
 
-            # Verify technician eligibility if accepting without an existing vetted offer
-            if not offer:
-                is_eligible, reason, _ = check_technician_eligibility(emp_obj, job_obj.service_category)
-                if not is_eligible and job_obj.issue_title:
-                    is_eligible, reason, _ = check_technician_eligibility(emp_obj, job_obj.issue_title)
-                if not is_eligible:
-                    return Response({"error": f"Cannot accept offer: {reason}", "code": "INELIGIBLE_TECHNICIAN"}, status=status.HTTP_400_BAD_REQUEST)
+            # Approval, attendance and availability may change while an offer is
+            # pending. Re-evaluate under the assignment locks, before consuming it.
+            from workforce_api.services.automatic_dispatch import check_candidate_eligibility
+            is_eligible, reason, _ = check_candidate_eligibility(emp_obj, job_obj.service_category, job=job_obj)
+            if not is_eligible and job_obj.issue_title:
+                is_eligible, reason, _ = check_candidate_eligibility(emp_obj, job_obj.issue_title, job=job_obj)
+            if not is_eligible:
+                return Response({"error": f"Cannot accept offer: {reason}", "code": "INELIGIBLE_TECHNICIAN"}, status=status.HTTP_400_BAD_REQUEST)
+
+            if offer and offer.status == WorkforceJobOffer.Status.OFFERED:
+                offer.status = WorkforceJobOffer.Status.ACCEPTED
+                offer.save(update_fields=['status'])
 
             job_obj.assigned_employee = emp_obj
-            job_obj.save(update_fields=["assigned_employee"])
+            # Bind marketplace work to the accepting vendor before tracking and
+            # customer notifications resolve its tenant. Existing platform jobs
+            # use company 1; company-owned bookings retain their owner.
+            if job_obj.company_id in (None, 1):
+                job_obj.company_id = emp_obj.company_id
+            job_obj.save(update_fields=["assigned_employee", "company"])
             apply_transition(job_obj, "accepted", actor=request.user)
 
             # Atomically mark employee availability as BUSY
@@ -3806,12 +3781,20 @@ class WorkforceJobAcceptOfferView(APIView):
                             "message": "Another professional accepted this request. Offer closed automatically."
                         }
                     )
-                    WorkforceNotification.objects.filter(
-                        recipient=c_off.employee.user,
-                        notification_type="JOB_OFFER",
-                        related_object_id=str(job_obj.id),
-                        is_read=False,
-                    ).update(is_read=True, read_at=now)
+
+            # A marketplace booking becomes the accepting vendor's once taken.
+            #
+            # Bookings created with no company are open marketplace work. The
+            # moment a partner's technician accepts one it stops being
+            # unowned: it is that vendor's job for tenancy, billing and
+            # reporting, and every cross-tenant check downstream reads
+            # job.company_id to decide who may touch it. Leaving it NULL left
+            # an accepted job that belonged to nobody.
+            if not job_obj.company_id:
+                accepting_company_id = getattr(emp_obj, "company_id", None)
+                if accepting_company_id:
+                    job_obj.company_id = accepting_company_id
+                    job_obj.save(update_fields=["company_id"])
 
             # Supersede all other pending OFFERED jobs for this winning employee
             supersede_other_offers_for_employee(emp_obj, job_obj)
@@ -3829,11 +3812,20 @@ class WorkforceJobAcceptOfferView(APIView):
                 }
             )
 
-            # Activate JobTrackingSession
+            # Activate JobTrackingSession.
+            #
+            # company falls back to the technician's own: a marketplace
+            # booking legitimately carries no company, and
+            # workforce_job_tracking_session.company_id is NOT NULL, so
+            # accepting one of those offers failed outright on the insert.
+            # The session records who is doing the work, so the accepting
+            # technician's company is the right answer when the booking
+            # itself has none. (The location-ping path already resolved it
+            # this way; this one did not.)
             JobTrackingSession.objects.update_or_create(
                 job=job_obj,
                 employee=emp_obj,
-                company=job_obj.company,
+                company=job_obj.company or getattr(emp_obj, "company", None),
                 defaults={
                     "status": JobTrackingSession.SessionStatus.ACTIVE,
                     "ended_at": None,
@@ -4557,7 +4549,8 @@ class WorkforceAutoDispatchTriggerView(APIView):
         if not _is_admin_authorized_for_company(request, job.company):
             return Response({"error": "Unauthorized access to job belonging to another company.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
-        success, msg = run_automatic_dispatch(job)
+        allow_legacy_override = bool(request.data.get("allow_legacy_override") or request.data.get("operational_override"))
+        success, msg = run_automatic_dispatch(job, allow_legacy_override=allow_legacy_override)
         return Response({"message": msg, "success": success, "status": job.status}, status=status.HTTP_200_OK)
 
 
@@ -4585,7 +4578,8 @@ class WorkforceCrossServiceDispatchView(APIView):
         if not job:
             return Response({"error": "Booking not found", "code": "BOOKING_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
-        success, msg = run_automatic_dispatch(job)
+        allow_legacy_override = bool(request.data.get("allow_legacy_override") or request.data.get("operational_override"))
+        success, msg = run_automatic_dispatch(job, allow_legacy_override=allow_legacy_override)
         return Response({
             "success": success,
             "workforce_job_id": str(job.id),
@@ -4599,7 +4593,7 @@ class WorkforceCustomerBookingQuoteView(APIView):
     Customer / integration endpoint to retrieve estimation quotation for a booking.
     GET /api/workforce/customer/bookings/<str:booking_id>/quote/
     """
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticated | IsInternalWorkforceCaller]
 
     def get(self, request, booking_id):
         from service_requests.models import Estimation, EstimationQuotation
@@ -4612,6 +4606,16 @@ class WorkforceCustomerBookingQuoteView(APIView):
 
         if not job:
             return Response({"error": "Booking not found", "code": "BOOKING_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        user = request.user
+        company = resolve_actor_company(request) if user.is_authenticated else None
+        internal = IsInternalWorkforceCaller().has_permission(request, self)
+        owner = user.is_authenticated and job.customer_id == user.pk
+        assigned = user.is_authenticated and job.assigned_employee_id and job.assigned_employee.user_id == user.pk
+        admin = user.is_authenticated and (user.is_superuser or (
+            is_admin_role(user) and company and company.pk == job.company_id))
+        if not (internal or owner or assigned or admin):
+            return Response({'error': 'Unauthorized to view this booking quote.', 'code': 'CROSS_TENANT_FORBIDDEN'}, status=403)
 
         est = Estimation.objects.filter(service_request=job).first()
         if not est:
@@ -4929,17 +4933,20 @@ class WorkforceCustomerExtensionDetailView(APIView):
         if not job:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        token = request.query_params.get("token") or request.headers.get("X-Decision-Token")
+        raw_token = request.query_params.get("token") or request.headers.get("X-Decision-Token")
+        token = str(raw_token).strip() if (raw_token and isinstance(raw_token, str)) else None
 
         if ext_id:
             extension = WorkforceWorkExtension.objects.filter(pk=ext_id, job=job).first()
         else:
+            if not token or len(token) < 16:
+                return Response({"error": "Work extension not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
             extension = WorkforceWorkExtension.objects.filter(job=job, decision_token=token).first()
 
-        if not extension:
-            return Response({"error": "Work extension not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not extension or extension.job_id != job.id:
+            return Response({"error": "Work extension not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
-        # Authorization: Must be authenticated customer/admin OR match decision_token
+        # Security Authorization: Must be authenticated customer/admin OR match decision_token
         is_auth_customer = (
             request.user.is_authenticated
             and (
@@ -4949,11 +4956,13 @@ class WorkforceCustomerExtensionDetailView(APIView):
                 or _is_admin_authorized_for_company(request, job.company)
             )
         )
-        is_valid_token = bool(token and extension.decision_token and token == extension.decision_token)
+        import hmac
+        is_valid_token = bool(token and extension.decision_token and hmac.compare_digest(token, str(extension.decision_token)))
 
         if not (is_auth_customer or is_valid_token):
             return Response({
-                "error": "Unauthorized: Valid customer authentication or decision token is required."
+                "error": "Unauthorized: Valid customer authentication or decision token is required.",
+                "code": "UNAUTHORIZED"
             }, status=status.HTTP_403_FORBIDDEN)
 
         serializer = CustomerWorkforceExtensionSerializer(extension)
@@ -4970,15 +4979,19 @@ class WorkforceCustomerExtensionDecideView(APIView):
     def post(self, request, pk, ext_id):
         job = ServiceRequest.objects.filter(pk=pk).first()
         if not job:
-            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Job not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
-        token = request.data.get("token") or request.query_params.get("token") or request.headers.get("X-Decision-Token")
+        if not isinstance(request.data, dict):
+            return Response({"error": "Invalid request payload. Expected JSON object.", "code": "INVALID_PAYLOAD"}, status=status.HTTP_400_BAD_REQUEST)
 
-        action = str(request.data.get("action", "")).upper()
+        raw_token = request.data.get("token") or request.query_params.get("token") or request.headers.get("X-Decision-Token")
+        token = str(raw_token).strip() if (raw_token and isinstance(raw_token, str)) else None
+
+        action = str(request.data.get("action", "")).upper().strip()
         reason = str(request.data.get("reason", "")).strip()
 
         if action not in ["ACCEPT", "ACCEPTED", "DECLINE", "DECLINED"]:
-            return Response({"error": "Action must be ACCEPT or DECLINE."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Action must be ACCEPT or DECLINE.", "code": "INVALID_ACTION"}, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
             extension = (
@@ -4987,8 +5000,8 @@ class WorkforceCustomerExtensionDecideView(APIView):
                 .filter(pk=ext_id, job=job)
                 .first()
             )
-            if not extension:
-                return Response({"error": "Work extension not found."}, status=status.HTTP_404_NOT_FOUND)
+            if not extension or extension.job_id != job.id:
+                return Response({"error": "Work extension not found.", "code": "EXTENSION_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
             # Security Authorization: authenticated customer or decision token
             is_auth_customer = (
@@ -5000,11 +5013,13 @@ class WorkforceCustomerExtensionDecideView(APIView):
                     or _is_admin_authorized_for_company(request, job.company)
                 )
             )
-            is_valid_token = bool(token and extension.decision_token and token == extension.decision_token)
+            import hmac
+            is_valid_token = bool(token and extension.decision_token and hmac.compare_digest(token, str(extension.decision_token)))
 
             if not (is_auth_customer or is_valid_token):
                 return Response({
-                    "error": "Unauthorized: Valid customer authentication or decision token is required."
+                    "error": "Unauthorized: Valid customer authentication or decision token is required.",
+                    "code": "UNAUTHORIZED"
                 }, status=status.HTTP_403_FORBIDDEN)
 
             # Idempotency & One-Time Rule
@@ -5028,18 +5043,22 @@ class WorkforceCustomerExtensionDecideView(APIView):
                     "code": "INVALID_EXTENSION_STATE"
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            # Expiry validation
+            # Expiry validation: immediately revoke expired token
             now = timezone.now()
             if extension.decision_expires_at and now > extension.decision_expires_at:
+                extension.decision_token = None
+                extension.save(update_fields=["decision_token"])
                 return Response({
                     "error": "Decision window has expired for this work extension. Please request an updated estimate.",
                     "code": "DECISION_EXPIRED",
                     "expired_at": extension.decision_expires_at.isoformat(),
                 }, status=status.HTTP_400_BAD_REQUEST)
 
+            # Revoke decision token permanently upon terminal decision
+            extension.decision_token = None
+
             if action in ["ACCEPT", "ACCEPTED"]:
                 add_amt = Decimal(str(extension.approved_amount if extension.approved_amount is not None else extension.requested_amount))
-
 
                 if extension.requires_specialist:
                     # Specialist workflow: PENDING_ASSIGNMENT & FOLLOW_UP_REQUIRED
@@ -5048,7 +5067,6 @@ class WorkforceCustomerExtensionDecideView(APIView):
                     extension.save()
 
                     apply_transition(job, "follow_up_required", actor=request.user)
-
                     msg = f"Work extension #{extension.id} accepted. Job marked FOLLOW_UP_REQUIRED for specialist technician assignment."
                 else:
                     # Same-technician continuation
@@ -5058,15 +5076,16 @@ class WorkforceCustomerExtensionDecideView(APIView):
 
                     job.total_amount += add_amt
                     job.save()
-
                     msg = f"Work extension #{extension.id} accepted by customer. ₹{add_amt} added to job total."
 
-                # Mirror update to cart_data
+                # Mirror update to cart_data and clear decision_token
                 cart_data = list(job.cart_data or [])
                 for c in cart_data:
                     if str(c.get("id")) == str(extension.id) and c.get("type") == "work_extension":
                         c["status"] = extension.status
                         c["customer_decided_at"] = extension.customer_decided_at.isoformat()
+                        c["decision_token"] = None
+                        c.pop("decision_token", None)
                 job.cart_data = cart_data
                 job.save()
 
@@ -5083,13 +5102,15 @@ class WorkforceCustomerExtensionDecideView(APIView):
                 extension.customer_decline_reason = reason or "Customer declined additional work."
                 extension.save()
 
-                # Mirror update to cart_data
+                # Mirror update to cart_data and clear decision_token
                 cart_data = list(job.cart_data or [])
                 for c in cart_data:
                     if str(c.get("id")) == str(extension.id) and c.get("type") == "work_extension":
                         c["status"] = extension.status
                         c["customer_decline_reason"] = extension.customer_decline_reason
                         c["customer_decided_at"] = extension.customer_decided_at.isoformat()
+                        c["decision_token"] = None
+                        c.pop("decision_token", None)
                 job.cart_data = cart_data
                 job.save()
 
@@ -5125,12 +5146,19 @@ class WorkforceTokenExtensionDecideView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request, token):
-        extension = WorkforceWorkExtension.objects.filter(decision_token=token).first()
-        if not extension:
-            return Response({"error": "Invalid or expired decision token."}, status=status.HTTP_404_NOT_FOUND)
+        if not token or not isinstance(token, str) or len(token.strip()) < 16:
+            return Response({"error": "Invalid or expired decision token.", "code": "INVALID_TOKEN"}, status=status.HTTP_404_NOT_FOUND)
+
+        clean_token = token.strip()
+        extension = WorkforceWorkExtension.objects.filter(decision_token=clean_token).first()
+        if not extension or not extension.decision_token or not hmac.compare_digest(clean_token, str(extension.decision_token)):
+            return Response({"error": "Invalid or expired decision token.", "code": "INVALID_TOKEN"}, status=status.HTTP_404_NOT_FOUND)
 
         view = WorkforceCustomerExtensionDecideView()
-        request.data["token"] = token
+        if not isinstance(request.data, dict):
+            request._full_data = {"token": clean_token}
+        else:
+            request.data["token"] = clean_token
         return view.post(request, pk=extension.job_id, ext_id=extension.id)
 
 
@@ -6107,6 +6135,18 @@ class WorkforceLocationUpdateView(APIView):
         heading = request.data.get("heading")
         captured_at_str = request.data.get("captured_at")
 
+        # Reject malformed optional telemetry before saving any location state.
+        import math
+        try:
+            accuracy = float(accuracy) if accuracy is not None else None
+            speed = float(speed) if speed is not None else None
+            heading = float(heading) if heading is not None else None
+            if any(value is not None and (not math.isfinite(value) or value < 0)
+                   for value in (accuracy, speed, heading)) or (heading is not None and heading >= 360):
+                raise ValueError
+        except (TypeError, ValueError, OverflowError):
+            return Response({'error': 'Invalid GPS accuracy, speed or heading.', 'code': 'INVALID_GPS_TELEMETRY'}, status=400)
+
         if lat is None or lng is None:
             return Response(
                 {"error": "latitude and longitude are required.", "code": "GPS_REQUIRED"},
@@ -6441,6 +6481,13 @@ class WorkforceLocationUpdateView(APIView):
             except Exception as e:
                 logger.error(f"[LOCATION_UPDATE_ERROR] Error evaluating Job #{job.id}: {e}", exc_info=True)
 
+        # Reconsider pending dispatchable customer jobs upon fresh GPS update asynchronously
+        try:
+            import threading
+            from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
+            transaction.on_commit(lambda employee_id=emp.id: threading.Thread(target=reconsider_jobs_for_employee, args=(employee_id,), daemon=True).start())
+        except Exception:
+            pass
 
         return Response({
             "message": "Live GPS coordinates updated.",
@@ -6475,13 +6522,7 @@ class WorkforceJobLiveTrackingView(APIView):
             return Response({"error": "Job not found.", "code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
         is_internal = IsInternalWorkforceCaller().has_permission(request, self)
-        is_owner_customer = bool(
-            user.is_authenticated and (
-                job.customer == user
-                or str(getattr(job, "customer_name", "")).lower() == user.username.lower()
-                or getattr(job, "phone", "") == getattr(user, "username", "")
-            )
-        )
+        is_owner_customer = bool(user.is_authenticated and job.customer_id == user.pk)
         is_assigned_tech = bool(user.is_authenticated and job.assigned_employee and job.assigned_employee.user == user)
         is_platform_admin = bool(user.is_authenticated and getattr(user, "is_superuser", False))
         user_company = resolve_actor_company(request) if user.is_authenticated else None
@@ -6498,12 +6539,12 @@ class WorkforceJobLiveTrackingView(APIView):
             return Response({"error": "Unauthorized: Cross-company access forbidden.", "code": "CROSS_TENANT_FORBIDDEN"}, status=status.HTTP_403_FORBIDDEN)
 
         now = timezone.now()
-        cust_lat = float(job.latitude) if job.latitude else None
-        cust_lon = float(job.longitude) if job.longitude else None
+        cust_lat = float(job.latitude) if job.latitude is not None else None
+        cust_lon = float(job.longitude) if job.longitude is not None else None
         tech = job.assigned_employee
 
         # Privacy Guard: If job is completed/cancelled/closed/redispatching, or has no assigned technician
-        if job.status in ["completed", "cancelled", "closed", "redispatching"] or not job.assigned_employee:
+        if job.status in ["completed", "cancelled", "closed", "unable_to_complete", "redispatching", "unassigned"] or not job.assigned_employee:
             logger.info(f"[MAP_RECONCILIATION] job_id={job.id} status={job.status} technician_masked=True")
             return Response({
                 "job_id": job.id,
@@ -6530,6 +6571,7 @@ class WorkforceJobLiveTrackingView(APIView):
         from workforce_api.models import JobTrackingSession
         active_session = JobTrackingSession.objects.filter(
             job=job,
+            employee=job.assigned_employee,
             status=JobTrackingSession.SessionStatus.ACTIVE
         ).first()
 
@@ -7038,7 +7080,9 @@ class WorkforceEmployeeSkillAssignView(APIView):
         proficiency = request.data.get("proficiency_level", "INTERMEDIATE")
         action = request.data.get("action", "assign").lower()
 
-        skill = WorkforceSkill.objects.filter(pk=skill_id).first()
+        if not str(skill_id or '').isdigit() or proficiency not in WorkforceEmployeeSkill.ProficiencyLevel.values or action not in ('assign', 'remove'):
+            return Response({'error': 'Invalid skill assignment.', 'code': 'INVALID_INPUT'}, status=400)
+        skill = WorkforceSkill.objects.filter(pk=skill_id, company_id=emp.company_id, is_active=True).first()
         if not skill:
             return Response({"error": "Skill not found.", "code": "NOT_FOUND", "details": {}}, status=status.HTTP_404_NOT_FOUND)
 
@@ -7381,6 +7425,18 @@ class WorkforceRealtimeStreamView(APIView):
                         logger.debug("[Realtime SSE HEARTBEAT] Sending keepalive ping to user_id=%s.", user_id_val)
                         yield f": heartbeat\n\n"
 
+                    # Periodic Discovery / Reconciliation for connected technician (every 10s)
+                    if not is_admin and (loop_now - last_reconcile_time >= 10):
+                        last_reconcile_time = loop_now
+                        try:
+                            emp_obj = getattr(user, "employee_profile", None)
+                            if emp_obj and emp_obj.is_online and emp_obj.current_availability == "available":
+                                from workforce_api.services.automatic_dispatch import reconsider_jobs_for_employee
+                                reconsider_jobs_for_employee(emp_obj)
+                        except Exception as rec_err:
+                            logger.debug(f"[Realtime SSE RECONCILE ERR] {rec_err}")
+                        finally:
+                            connection.close()
 
                     # Fetch newly emitted events using pure dictionary projection
                     try:
@@ -7969,13 +8025,28 @@ class WorkforceJobArriveView(APIView):
 
         now = timezone.now()
 
+        # Look up by `job` alone. PreServiceVerification.job is a OneToOne, so
+        # the job IS the key, and every other value here is assigned a few
+        # lines below anyway.
+        #
+        # This used to pass lat/lon/is_automatic/actor as lookup kwargs. None
+        # of those are fields on the model (the real names are arrival_lat,
+        # arrival_lon, geofence_passed), so the query raised
+        # FieldError: Cannot resolve keyword 'actor' into field -- meaning
+        # POST /api/workforce/jobs/<id>/arrive/ returned a 500 every single
+        # time it was called, and the vendor frontend calls it from
+        # workforceService.js. A technician could never mark arrival, so no
+        # job could reach 'arrived', which is the state the service-start OTP
+        # flow and completion both depend on. The whole job lifecycle stopped
+        # dead at "on the way".
+        #
+        # Keying on job alone also makes reassignment work: if the job moves
+        # to a different technician, the existing row is found and its
+        # employee updated below, rather than a second row being attempted
+        # against a OneToOne column.
         verification, _ = PreServiceVerification.objects.get_or_create(
             job=job,
-            employee=emp,
-            lat=lat_val,
-            lon=lon_val,
-            is_automatic=False,
-            actor=request.user
+            defaults={"employee": emp},
         )
 
         # ── Authoritative Single OTP Resolution ──────────────────────────────
@@ -12751,8 +12822,6 @@ class VendorInventoryLedgerView(APIView):
 
         txs = InventoryTransaction.objects.filter(inventory_item__company_id=company_id).select_related("inventory_item").order_by("-created_at")[:100]
         return Response(InventoryTransactionSerializer(txs, many=True).data)
-
-
 
 
 

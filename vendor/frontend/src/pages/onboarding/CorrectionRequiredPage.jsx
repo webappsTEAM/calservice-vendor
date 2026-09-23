@@ -89,7 +89,7 @@ export function CorrectionRequiredPage() {
             </p>
           </div>
 
-          {error && <ErrorState message={error} onDismiss={() => setError('')} />}
+          {error && <ErrorState message={error} onRetry={fetchProfile} onDismiss={() => setError('')} />}
           {successMsg && (
             <div className="p-3.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 text-xs font-semibold flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />

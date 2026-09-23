@@ -78,7 +78,7 @@ export function WalletWithdrawalsPage() {
       setTimeout(() => setSuccessMsg(''), 4000);
       loadWithdrawals();
     } catch (err) {
-      alert(err?.message || 'Failed to mark as processing.');
+      setError(err?.message || 'Could not mark this withdrawal as processing.');
     }
   };
 
@@ -96,7 +96,7 @@ export function WalletWithdrawalsPage() {
       setTimeout(() => setSuccessMsg(''), 4500);
       loadWithdrawals();
     } catch (err) {
-      alert(err?.message || 'Failed to complete withdrawal.');
+      setError(err?.message || 'Could not complete this withdrawal.');
     } finally {
       setCompleteSubmitting(false);
     }
@@ -114,7 +114,7 @@ export function WalletWithdrawalsPage() {
       setTimeout(() => setSuccessMsg(''), 4500);
       loadWithdrawals();
     } catch (err) {
-      alert(err?.message || 'Failed to mark as failed.');
+      setError(err?.message || 'Could not mark this withdrawal as failed.');
     } finally {
       setFailSubmitting(false);
     }

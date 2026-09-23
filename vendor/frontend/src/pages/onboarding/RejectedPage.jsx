@@ -6,17 +6,29 @@ import { AppShell } from '../../components/common/AppShell.jsx';
 export function RejectedPage() {
   const [rejectionReason, setRejectionReason] = useState('');
   const [supportContact, setSupportContact] = useState(null);
+  // The failure was swallowed, which on this page means the applicant is told
+  // they were declined and shown no reason -- indistinguishable from an
+  // admin who gave none. Worth saying which of the two it is.
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
+
+  const load = async () => {
+    setIsRetrying(true);
+    try {
+      const data = await apiGetOnboardingProfile();
+      setRejectionReason(data?.onboarding_data?.rejection_reason || data?.rejection_reason || '');
+      // Load support contact from profile/company data if available
+      const contact = data?.company_support_contact || data?.support_contact || null;
+      setSupportContact(contact);
+      setLoadFailed(false);
+    } catch (_) {
+      setLoadFailed(true);
+    } finally {
+      setIsRetrying(false);
+    }
+  };
 
   useEffect(() => {
-    async function load() {
-      try {
-        const data = await apiGetOnboardingProfile();
-        setRejectionReason(data?.onboarding_data?.rejection_reason || data?.rejection_reason || '');
-        // Load support contact from profile/company data if available
-        const contact = data?.company_support_contact || data?.support_contact || null;
-        setSupportContact(contact);
-      } catch (_) {}
-    }
     load();
   }, []);
 
@@ -36,6 +48,22 @@ export function RejectedPage() {
               Registration Not Approved
             </h1>
           </div>
+
+          {loadFailed && !rejectionReason && (
+            <div className="p-3 rounded-lg border border-amber-200 bg-amber-50 text-left text-xs flex items-start gap-2">
+              <p className="flex-1 text-amber-900 leading-relaxed">
+                We could not load the reason for this decision. It may still be available.
+              </p>
+              <button
+                type="button"
+                onClick={load}
+                disabled={isRetrying}
+                className="shrink-0 rounded-md border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+              >
+                {isRetrying ? 'Retrying' : 'Try again'}
+              </button>
+            </div>
+          )}
 
           {rejectionReason ? (
             <div className="p-4 bg-zinc-50 border border-zinc-200 rounded-lg text-left text-xs">

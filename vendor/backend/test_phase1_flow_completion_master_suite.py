@@ -88,7 +88,7 @@ from workforce_api.services.automatic_dispatch import (
     dispatch_job,
     dispatch_pending_jobs,
     expire_and_reassign_offers,
-    sweep_job_expired_offers,
+    expire_and_reassign_offers,
     DEFAULT_OFFER_DURATION_MINUTES,
 )
 from workforce_api.services.workload import (

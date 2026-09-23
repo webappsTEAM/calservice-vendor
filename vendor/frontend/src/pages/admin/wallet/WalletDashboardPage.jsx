@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { ConfirmDialog } from '../../../components/enterprise/ConfirmDialog.jsx';
 import { Link } from 'react-router-dom';
 import { AppShell } from '../../../components/common/AppShell.jsx';
 import {
@@ -29,6 +30,7 @@ function fmt(value) {
 
 export function WalletDashboardPage() {
   const [wallets, setWallets] = useState([]);
+  const [confirmWallet, setConfirmWallet] = useState(null);
   const [withdrawals, setWithdrawals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -56,18 +58,18 @@ export function WalletDashboardPage() {
     loadData();
   }, [loadData]);
 
-  const handleToggleFreeze = async (wallet) => {
-    const isCurrentlyActive = wallet.status === 'ACTIVE';
-    const nextStatus = isCurrentlyActive ? 'LOCKED' : 'ACTIVE';
-    const actionDesc = isCurrentlyActive ? 'Lock (pause payouts & credits)' : 'Unlock (restore normal operations)';
-    
-    if (!window.confirm(`Are you sure you want to ${actionDesc} for ${wallet.employee_name || 'this technician'}?`)) return;
+  // Locking a wallet stops a technician being paid. Asked in the app's own
+  // dialog, which can state that consequence; a native popup cannot, and its
+  // failure was reported by another popup that left no trace on the page.
+  const handleToggleFreeze = (wallet) => setConfirmWallet(wallet);
 
+  const handleToggleFreezeConfirmed = async (wallet) => {
+    const nextStatus = wallet.status === 'ACTIVE' ? 'LOCKED' : 'ACTIVE';
     try {
       await apiAdminFreezeWallet(wallet.employee_id, nextStatus, `Admin toggle ${nextStatus}`);
       loadData();
     } catch (err) {
-      alert(err?.message || 'Failed to update wallet status.');
+      setError(err?.message || 'Could not update this wallet\u2019s status.');
     }
   };
 
@@ -308,6 +310,19 @@ export function WalletDashboardPage() {
           </div>
         </div>
       </div>
+      <ConfirmDialog
+        isOpen={Boolean(confirmWallet)}
+        onClose={() => setConfirmWallet(null)}
+        onConfirm={() => { const w = confirmWallet; setConfirmWallet(null); handleToggleFreezeConfirmed(w); }}
+        title={confirmWallet?.status === 'ACTIVE' ? 'Lock wallet' : 'Unlock wallet'}
+        message={
+          confirmWallet?.status === 'ACTIVE'
+            ? `Lock ${confirmWallet?.employee_name || 'this technician'}\u2019s wallet? Payouts and credits pause until it is unlocked.`
+            : `Unlock ${confirmWallet?.employee_name || 'this technician'}\u2019s wallet? Normal payouts and credits resume.`
+        }
+        confirmText={confirmWallet?.status === 'ACTIVE' ? 'Lock wallet' : 'Unlock wallet'}
+        confirmVariant={confirmWallet?.status === 'ACTIVE' ? 'danger' : 'primary'}
+      />
     </AppShell>
   );
 }

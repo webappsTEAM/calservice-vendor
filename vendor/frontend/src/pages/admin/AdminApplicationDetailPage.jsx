@@ -16,6 +16,7 @@ import { Tabs } from '../../components/enterprise/Tabs.jsx';
 import { StatusBadge } from '../../components/enterprise/StatusBadge.jsx';
 import { Modal } from '../../components/enterprise/Modal.jsx';
 import { ConfirmDialog } from '../../components/enterprise/ConfirmDialog.jsx';
+import { PromptDialog } from '../../components/enterprise/PromptDialog.jsx';
 import { ErrorState } from '../../components/enterprise/ErrorState.jsx';
 import { LoadingState } from '../../components/enterprise/LoadingState.jsx';
 import {
@@ -46,6 +47,11 @@ export function AdminApplicationDetailPage() {
   const [activeTab, setActiveTab] = useState('overview');
   const [isLoading, setIsLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
+  // Document rejection reasons are shown to the applicant and kept against the
+  // dossier, so they were the last thing that should have been collected in a
+  // native browser input box -- unvalidated, unstyled, and silently discarded
+  // if the admin typed nothing.
+  const [promptConfig, setPromptConfig] = useState(null);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
@@ -116,12 +122,23 @@ export function AdminApplicationDetailPage() {
       return;
     }
 
-    let reason = '';
     if (action === 'reject') {
-      reason = prompt('Enter specific reason for rejecting selected document(s):') || '';
-      if (!reason.trim()) return;
+      setPromptConfig({
+        title: allPending ? 'Reject all pending documents?' : `Reject ${categoriesToDecide.length} document(s)?`,
+        message: 'The applicant is shown this reason and asked to re-upload.',
+        label: 'Rejection reason',
+        placeholder: 'e.g. ID photo is blurred and the number cannot be read',
+        confirmText: 'Reject documents',
+        confirmVariant: 'danger',
+        onSubmit: (reason) => runBulkDocumentAction(action, allPending, categoriesToDecide, reason),
+      });
+      return;
     }
+    runBulkDocumentAction(action, allPending, categoriesToDecide, '');
+  };
 
+  const runBulkDocumentAction = async (action, allPending, categoriesToDecide, reason) => {
+    setPromptConfig(null);
     try {
       setActionLoading(true);
       setError('');
@@ -137,13 +154,24 @@ export function AdminApplicationDetailPage() {
     }
   };
 
-  const handleDocAction = async (docCategory, action) => {
-    let reason = '';
+  const handleDocAction = (docCategory, action) => {
     if (action === 'reject') {
-      reason = prompt('Enter specific reason for rejecting this document:') || '';
-      if (!reason.trim()) return;
+      setPromptConfig({
+        title: 'Reject this document?',
+        message: 'The applicant is shown this reason and asked to re-upload.',
+        label: 'Rejection reason',
+        placeholder: 'e.g. ID photo is blurred and the number cannot be read',
+        confirmText: 'Reject document',
+        confirmVariant: 'danger',
+        onSubmit: (reason) => runDocAction(docCategory, action, reason),
+      });
+      return;
     }
+    runDocAction(docCategory, action, '');
+  };
 
+  const runDocAction = async (docCategory, action, reason) => {
+    setPromptConfig(null);
     try {
       setActionLoading(true);
       setError('');
@@ -370,7 +398,7 @@ export function AdminApplicationDetailPage() {
 
 
         {/* Notifications */}
-        {error && <ErrorState message={error} onDismiss={() => setError('')} />}
+        {error && <ErrorState message={error} onRetry={loadDetail} onDismiss={() => setError('')} />}
         {successMsg && (
           <div className="p-3 rounded border border-emerald-200 bg-emerald-50 text-emerald-800 text-xs font-semibold flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
@@ -1024,6 +1052,19 @@ export function AdminApplicationDetailPage() {
           message={`Are you sure you want to approve ${application?.first_name} ${application?.last_name}? They will be authorized to receive job assignments for all approved services.`}
           confirmText="Approve Technician"
           confirmVariant="primary"
+          isLoading={actionLoading}
+        />
+
+        <PromptDialog
+          isOpen={Boolean(promptConfig)}
+          onClose={() => setPromptConfig(null)}
+          onSubmit={promptConfig?.onSubmit || (() => {})}
+          title={promptConfig?.title || ''}
+          message={promptConfig?.message || ''}
+          label={promptConfig?.label || ''}
+          placeholder={promptConfig?.placeholder || ''}
+          confirmText={promptConfig?.confirmText || 'Confirm'}
+          confirmVariant={promptConfig?.confirmVariant || 'primary'}
           isLoading={actionLoading}
         />
       </div>

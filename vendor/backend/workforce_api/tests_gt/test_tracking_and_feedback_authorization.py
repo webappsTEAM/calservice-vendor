@@ -23,10 +23,10 @@ class TrackingAndFeedbackAuthorizationTests(SimpleTestCase):
             req = self.rf.get("/api/workforce/jobs/1/live-tracking/", HTTP_AUTHORIZATION="Bearer wf_integration_key_default")
             self.assertTrue(self.perm.has_permission(req, None))
 
-    def test_internal_caller_accepts_calservices_source_header_in_debug(self):
+    def test_internal_caller_rejects_source_header_without_secret_even_in_debug(self):
         with override_settings(DEBUG=True):
             req = self.rf.get("/api/workforce/jobs/1/live-tracking/", HTTP_X_CALSERVICES_SOURCE="calservices-platform")
-            self.assertTrue(self.perm.has_permission(req, None))
+            self.assertFalse(self.perm.has_permission(req, None))
 
     def test_internal_caller_rejects_invalid_token_without_source(self):
         with override_settings(WORKFORCE_WEBHOOK_SECRET="secret", WORKFORCE_API_KEY="key", DEBUG=False):

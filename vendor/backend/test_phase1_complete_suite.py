@@ -53,7 +53,7 @@ from workforce_api.services.geo_spatial import (
 )
 from workforce_api.services.automatic_dispatch import (
     canonical_service_match,
-    normalize_service_name,
+    normalize_service_category,
     check_candidate_eligibility,
     get_eligible_candidates,
     dispatch_job,

@@ -24,6 +24,8 @@ import {
   XCircle,
 } from 'lucide-react';
 import { apiRequest } from '../../api/client.js';
+import { Modal } from '../../components/enterprise/Modal.jsx';
+import { Button } from '../../components/enterprise/Button.jsx';
 
 function money(value) {
   return Number(value || 0).toLocaleString('en-IN', {
@@ -61,6 +63,7 @@ export function AdminQuotationApprovalsPage() {
   const [error, setError] = useState(null);
   const [busyId, setBusyId] = useState(null);
   const [flash, setFlash] = useState(null);
+  const [pending, setPending] = useState(null);
 
   const active = useMemo(() => TABS.find((t) => t.key === tab), [tab]);
 
@@ -80,22 +83,24 @@ export function AdminQuotationApprovalsPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  async function decide(quote, approve) {
+  // Approving spends money and schedules people; rejecting ends a quote the
+  // customer already accepted. Both keep a deliberate second step -- but in the
+  // app's own dialog rather than a native browser one. A native dialog cannot
+  // show the amount at stake, cannot be styled, freezes the whole tab while it
+  // is open, and gave the rejection reason -- which lands in a permanent audit
+  // trail -- a single unvalidated line.
+  function askToDecide(quote, approve) {
+    setPending({ quote, approve, notes: '' });
+  }
+
+  async function confirmDecision() {
+    if (!pending) return;
+    const { quote, approve, notes } = pending;
     const verb = tab === 'presend'
       ? (approve ? 'release and send' : 'reject')
       : (approve ? 'approve' : 'reject');
 
-    // Approving spends money and schedules people. Rejecting ends a quote the
-    // customer already said yes to. Both deserve a deliberate second press.
-    if (!window.confirm(`${verb.charAt(0).toUpperCase() + verb.slice(1)} ${quote.quote_number}?`)) {
-      return;
-    }
-
-    let notes = '';
-    if (!approve) {
-      notes = window.prompt('Reason (shown in the audit trail):') || '';
-      if (!notes.trim()) return;
-    }
+    if (!approve && !notes.trim()) return;
 
     setBusyId(quote.id);
     try {
@@ -120,6 +125,7 @@ export function AdminQuotationApprovalsPage() {
       setError(err?.message || `Could not ${verb} ${quote.quote_number}.`);
     } finally {
       setBusyId(null);
+      setPending(null);
     }
   }
 
@@ -223,7 +229,7 @@ export function AdminQuotationApprovalsPage() {
                 <button
                   type="button"
                   disabled={busyId === q.id}
-                  onClick={() => decide(q, true)}
+                  onClick={() => askToDecide(q, true)}
                   className="inline-flex items-center gap-2 rounded-lg bg-slate-900 text-white text-sm font-medium px-4 py-2 disabled:opacity-40"
                 >
                   {busyId === q.id
@@ -234,7 +240,7 @@ export function AdminQuotationApprovalsPage() {
                 <button
                   type="button"
                   disabled={busyId === q.id}
-                  onClick={() => decide(q, false)}
+                  onClick={() => askToDecide(q, false)}
                   className="inline-flex items-center gap-2 rounded-lg border border-slate-300 text-slate-700 text-sm font-medium px-4 py-2 disabled:opacity-40"
                 >
                   <XCircle className="w-4 h-4" />
@@ -245,6 +251,65 @@ export function AdminQuotationApprovalsPage() {
           ))}
         </div>
       )}
+
+      <Modal
+        isOpen={Boolean(pending)}
+        onClose={() => setPending(null)}
+        title={
+          pending
+            ? `${pending.approve ? (tab === 'presend' ? 'Release and send' : 'Approve') : 'Reject'} ${pending.quote.quote_number}`
+            : ''
+        }
+        maxWidth="max-w-md"
+        footer={
+          <>
+            <Button variant="outline" size="sm" onClick={() => setPending(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant={pending?.approve ? 'primary' : 'danger'}
+              size="sm"
+              onClick={confirmDecision}
+              isLoading={Boolean(pending && busyId === pending.quote.id)}
+              disabled={Boolean(pending && !pending.approve && !pending.notes.trim())}
+            >
+              {pending?.approve
+                ? tab === 'presend' ? 'Release & send' : 'Approve'
+                : 'Reject'}
+            </Button>
+          </>
+        }
+      >
+        {pending && (
+          <div className="space-y-3">
+            <p className="text-xs text-slate-600 leading-relaxed">
+              {pending.approve
+                ? tab === 'presend'
+                  ? `This sends ${pending.quote.quote_number} to ${pending.quote.customer_name || 'the customer'} for ${money(pending.quote.net_payable || pending.quote.total_amount)}.`
+                  : `This creates the work booking and issues an invoice for ${money(pending.quote.net_payable || pending.quote.total_amount)}.`
+                : `This ends ${pending.quote.quote_number}. No work booking or invoice will be created.`}
+            </p>
+
+            <label className="block">
+              <span className="block text-[11px] font-semibold text-slate-700 mb-1">
+                {pending.approve ? 'Note (optional)' : 'Reason, recorded in the audit trail'}
+              </span>
+              <textarea
+                autoFocus
+                rows={3}
+                value={pending.notes}
+                onChange={(e) => setPending({ ...pending, notes: e.target.value })}
+                placeholder={pending.approve ? 'Anything worth recording' : 'Why is this being rejected?'}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-slate-900/10"
+              />
+            </label>
+
+            {!pending.approve && !pending.notes.trim() && (
+              <p className="text-[11px] text-slate-500">A reason is required to reject.</p>
+            )}
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

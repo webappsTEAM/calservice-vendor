@@ -98,6 +98,9 @@ export function PortalCockpitLayout({
   preServiceState = {},
   otpInput = '',
   setOtpInput,
+  otpError = '',
+  setOtpError,
+  otpSuccessMsg = '',
   handleVerifyOtpSubmit,
   handleResendOtp,
   paymentOtpInput = '',
@@ -697,23 +700,48 @@ export function PortalCockpitLayout({
                           Customer start code verified successfully.
                         </p>
                       ) : (
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="text"
-                            maxLength={6}
-                            value={otpInput || ''}
-                            onChange={(e) => setOtpInput(e.target.value)}
-                            placeholder="4-digit OTP *"
-                            className="flex-1 px-3 py-2 bg-slate-100/90 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-900 outline-none focus:bg-white focus:border-slate-400"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => handleVerifyOtpSubmit(job)}
-                            disabled={actionLoading || !otpInput}
-                            className="px-5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold text-xs rounded-lg transition-all cursor-pointer disabled:opacity-50"
-                          >
-                            Verify
-                          </button>
+                        <div className="space-y-1.5">
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              maxLength={6}
+                              value={otpInput || ''}
+                              onChange={(e) => {
+                                setOtpInput(e.target.value);
+                                if (otpError && setOtpError) setOtpError('');
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && !actionLoading && otpInput.trim()) {
+                                  e.preventDefault();
+                                  handleVerifyOtpSubmit(job);
+                                }
+                              }}
+                              placeholder="6-digit OTP *"
+                              className={`flex-1 px-3 py-2 bg-slate-100/90 border rounded-lg text-xs font-mono font-bold text-slate-900 outline-none focus:bg-white ${
+                                otpError ? 'border-rose-400 focus:border-rose-500 bg-rose-50/40' : 'border-slate-200 focus:border-slate-400'
+                              }`}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleVerifyOtpSubmit(job)}
+                              disabled={actionLoading || !otpInput.trim()}
+                              className="px-5 py-2 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs rounded-lg transition-all cursor-pointer disabled:opacity-50"
+                            >
+                              {actionLoading ? 'Verifying...' : 'Verify'}
+                            </button>
+                          </div>
+                          {otpError && (
+                            <p className="text-[11px] text-rose-600 font-bold flex items-start gap-1 leading-tight">
+                              <span className="shrink-0">⚠️</span>
+                              <span>{otpError}</span>
+                            </p>
+                          )}
+                          {otpSuccessMsg && (
+                            <p className="text-[11px] text-emerald-600 font-bold flex items-center gap-1 leading-tight">
+                              <span>✓</span>
+                              <span>{otpSuccessMsg}</span>
+                            </p>
+                          )}
                         </div>
                       )}
                     </div>

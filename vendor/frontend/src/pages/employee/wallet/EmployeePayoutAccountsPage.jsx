@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { ConfirmDialog } from '../../../components/enterprise/ConfirmDialog.jsx';
 import { Link } from 'react-router-dom';
 import { AppShell } from '../../../components/common/AppShell.jsx';
 import {
@@ -21,6 +22,7 @@ import {
 
 export function EmployeePayoutAccountsPage() {
   const [accounts, setAccounts] = useState([]);
+  const [confirmAction, setConfirmAction] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
@@ -83,8 +85,12 @@ export function EmployeePayoutAccountsPage() {
     }
   };
 
-  const handleDelete = async (id) => {
-    if (!window.confirm('Are you sure you want to remove this bank account?')) return;
+  // Asked in the app's own dialog rather than a native popup: this action
+  // moves money or removes a payout destination, and a native box cannot be
+  // styled, states no consequence, and freezes the tab while it is open.
+  const handleDelete = (id) => setConfirmAction({ args: [id] });
+
+  const handleDeleteConfirmed = async (id) => {
     try {
       await apiDeletePayoutAccount(id);
       setSuccessMsg('Bank account removed.');
@@ -354,6 +360,15 @@ export function EmployeePayoutAccountsPage() {
           </div>
         )}
       </div>
+      <ConfirmDialog
+        isOpen={Boolean(confirmAction)}
+        onClose={() => setConfirmAction(null)}
+        onConfirm={() => { const a = confirmAction; setConfirmAction(null); handleDeleteConfirmed(...a.args); }}
+        title="Remove bank account"
+        message="Remove this bank account? It will no longer be available for withdrawals."
+        confirmText="Remove"
+        confirmVariant="danger"
+      />
     </AppShell>
   );
 }

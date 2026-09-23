@@ -471,7 +471,9 @@ const CACHED_COMPLETED_JOBS_KEY = 'calservice_workforce_cached_completed_jobs';
           })
         );
       }
-    } catch (_) {
+    } catch (err) {
+      setLocationError(err?.message || 'Location could not be sent. Check your connection; customers may see an older location.');
+      setPresenceState(prev => prev === 'OFFLINE' ? prev : 'ONLINE_LOCATION_PENDING');
     } finally {
       isUpdatingLocationRef.current = false;
     }

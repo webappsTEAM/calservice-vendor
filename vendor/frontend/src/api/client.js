@@ -13,6 +13,43 @@ import { classifyApiError } from '../utils/apiErrors.js';
 
 let inFlightRefreshPromise = null;
 
+/**
+ * Announce a failed request to the application.
+ *
+ * Fourteen pages across this app call `.catch(() => [])` on their loaders, in
+ * 56 places. That is a reasonable instinct -- one optional widget failing
+ * should not blank a whole screen -- but the effect is that a dead API renders
+ * as legitimately empty data. The admin dashboard shows "0 applications, 0
+ * jobs"; the technician dashboard shows an empty day. The user is told
+ * something false, confidently.
+ *
+ * Fixing that page by page would mean editing 56 call sites and inventing an
+ * error surface for each. Every request already passes through this function,
+ * so announcing the failure once here lets a single listener tell the user that
+ * what they are looking at is incomplete -- regardless of which page swallowed
+ * it. 401 is excluded: the auth flow already handles it, and a redirect to
+ * login is not a data-integrity problem.
+ */
+function announceApiFailure(error, path) {
+  if (typeof window === 'undefined') return;
+  if (error && error.status === 401) return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent('workforce:api-error', {
+        detail: {
+          status: error?.status ?? 0,
+          code: error?.code || 'UNKNOWN',
+          message: error?.message || 'Request failed',
+          path,
+        },
+      })
+    );
+  } catch {
+    // A notification must never be the reason a request fails.
+  }
+}
+
+
 function getCookie(name) {
   if (typeof document === 'undefined' || !document.cookie) return null;
   const cookies = document.cookie.split(';');
@@ -120,6 +157,7 @@ export async function apiRequest(path, options = {}) {
     error.status = 0;
     error.code = 'NETWORK_ERROR';
     error.originalError = netErr;
+    announceApiFailure(error, path);
     throw error;
   }
 
@@ -137,6 +175,7 @@ export async function apiRequest(path, options = {}) {
           error.status = 0;
           error.code = 'NETWORK_ERROR';
           error.originalError = retryNetErr;
+          announceApiFailure(error, path);
           throw error;
         }
       }
@@ -172,6 +211,7 @@ export async function apiRequest(path, options = {}) {
     error.status = response.status;
     error.code = (data && data.code) || classifyApiError(response.status, data);
     error.data = data;
+    announceApiFailure(error, path);
     throw error;
   }
 

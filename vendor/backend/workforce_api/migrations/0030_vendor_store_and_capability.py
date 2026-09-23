@@ -12,6 +12,31 @@ import django.db.models.deletion
 from django.db import migrations, models
 
 
+def _add_company_business_type(apps, schema_editor):
+    """
+    companies_company is managed=False here (shared DB, owned by the Customer
+    app -- see companies/models.py), so the table never exists on SQLite's
+    fresh `manage.py test` database, and `ADD COLUMN IF NOT EXISTS` is
+    Postgres-only syntax besides. Skipping on other backends is correct and
+    matches the guards already in 0017 / 0019 / 0027. Without it the whole
+    vendor test suite dies here with "no such table: companies_company".
+    """
+    if schema_editor.connection.vendor != "postgresql":
+        return
+    schema_editor.execute(
+        "ALTER TABLE companies_company "
+        "ADD COLUMN IF NOT EXISTS business_type VARCHAR(50) DEFAULT 'service_provider';"
+    )
+
+
+def _drop_company_business_type(apps, schema_editor):
+    if schema_editor.connection.vendor != "postgresql":
+        return
+    schema_editor.execute(
+        "ALTER TABLE companies_company DROP COLUMN IF EXISTS business_type;"
+    )
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -19,9 +44,9 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunSQL(
-            sql="ALTER TABLE companies_company ADD COLUMN IF NOT EXISTS business_type VARCHAR(50) DEFAULT 'service_provider';",
-            reverse_sql="ALTER TABLE companies_company DROP COLUMN IF EXISTS business_type;",
+        migrations.RunPython(
+            _add_company_business_type,
+            _drop_company_business_type,
         ),
         migrations.AddField(
             model_name="inventoryitem",

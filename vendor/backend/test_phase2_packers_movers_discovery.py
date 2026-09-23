@@ -15,9 +15,23 @@ H. Completed job is removed from Active Jobs.
 I. No unrelated service categories regress.
 """
 
+# NOTE: bookings in this module deliberately carry NO preferred_time.
+#
+# A same-day booking that names a slot is held by
+# get_scheduled_dispatch_window() until its pre-service lead time opens --
+# 45 minutes before the slot, 120 minutes for packers & movers. Every
+# booking here used to be hardcoded to "10:00 AM", which meant these tests
+# asserted that a job dispatches while the dispatcher was correctly holding
+# it: they failed every run before ~08:00-09:15 local and passed for the
+# rest of the day. Omitting preferred_time takes the same-day immediate
+# branch, so dispatch is due the moment the booking is created, whatever
+# time the suite runs. A test that wants the scheduled-hold behaviour should
+# set a slot time explicitly and assert the hold.
+
 import os
 import sys
 import uuid
+from datetime import timedelta
 from decimal import Decimal
 
 import django
@@ -27,6 +41,7 @@ django.setup()
 from django.test import TestCase
 from django.utils import timezone
 from django.contrib.auth import get_user_model
+from django.contrib.auth.hashers import make_password
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 User = get_user_model()
@@ -35,6 +50,7 @@ from employees.models import Employee
 from companies.models import Company
 from service_requests.models import ServiceRequest, EmployeeJob
 from workforce_api.models import (
+    Vehicle,
     WorkforceJobOffer,
     PreServiceVerification,
     PostServiceProof,
@@ -43,7 +59,7 @@ from workforce_api.models import (
 )
 from time_tracking.models import TimeLog
 from workforce_api.services.automatic_dispatch import (
-    normalize_service_name,
+    normalize_service_category,
     canonical_service_match,
     dispatch_job,
     dispatch_pending_jobs,
@@ -54,6 +70,7 @@ from workforce_api.services.workload import (
     reconcile_employee_availability,
 )
 from workforce_api.views import (
+    WorkforceJobPaymentVerifyOTPView,
     WorkforceJobListView,
     WorkforceJobAcceptOfferView,
     WorkforceJobCashCollectView,
@@ -100,6 +117,22 @@ class Phase2PackersMoversDiscoveryTests(TestCase):
             },
         )
 
+        # Packers & Movers and Goods & Transport are logistics categories, and
+        # dispatch requires a logistics technician to hold at least one active
+        # vehicle whose insurance, permit and PUC are current (Gate 3). A real
+        # mover has one; without it these jobs are correctly undispatchable and
+        # every assertion below would fail for that reason rather than for
+        # anything to do with category naming.
+        Vehicle.objects.create(
+            employee=self.emp,
+            company=self.company,
+            registration_number=f"KA01AB{self.uid[:4].upper()}",
+            is_active=True,
+            insurance_expiry=timezone.localdate() + timedelta(days=180),
+            permit_expiry=timezone.localdate() + timedelta(days=180),
+            puc_expiry=timezone.localdate() + timedelta(days=180),
+        )
+
     def test_A_packers_and_movers_booking_discovered(self):
         """A. Packers & Movers standard booking is discovered and dispatched"""
         job = ServiceRequest.objects.create(
@@ -108,7 +141,6 @@ class Phase2PackersMoversDiscoveryTests(TestCase):
             service_category="Packers & Movers",
             issue_title="2BHK House Relocation",
             preferred_date=timezone.localdate(),
-            preferred_time="10:00 AM",
             latitude=Decimal("12.9720"),
             longitude=Decimal("77.5950"),
             total_amount=Decimal("4500.00"),
@@ -126,6 +158,28 @@ class Phase2PackersMoversDiscoveryTests(TestCase):
         resp = WorkforceJobListView.as_view()(req)
         self.assertEqual(resp.status_code, 200)
         self.assertIn(job.id, [j["id"] for j in resp.data])
+
+    def _release_technician(self, job):
+        """
+        Hand the offer back so the next loop iteration starts from a free
+        technician.
+
+        A technician may hold only ONE live offer at a time: dispatch
+        excludes anyone with an unexpired OFFERED row (see
+        _employees_with_live_offers in automatic_dispatch) and the
+        unique_active_job_offer_per_employee constraint is the backstop.
+        These loops dispatch several jobs to the SAME single technician, so
+        without this every variant after the first fails with "no eligible
+        technicians" -- which says nothing about whether the naming variant
+        under test was recognised, the thing these tests exist to check.
+
+        Deleted rather than marked EXPIRED: dispatch ranks candidates partly
+        on a rolling 30-day offer-outcome history, so expiring each offer
+        would make this technician look progressively less reliable as the
+        loop went on, and they would rank out partway through -- again for a
+        reason that has nothing to do with the naming variant under test.
+        """
+        WorkforceJobOffer.objects.filter(job=job, employee=self.emp).delete()
 
     def test_B_packers_and_movers_naming_variants_discovered(self):
         """B. Packers and Movers naming variants (casing, whitespace, ampersand, slashes, slugs) are discovered"""
@@ -146,7 +200,6 @@ class Phase2PackersMoversDiscoveryTests(TestCase):
                 service_category=cat,
                 issue_title=title,
                 preferred_date=timezone.localdate(),
-                preferred_time="10:00 AM",
                 latitude=Decimal("12.9720"),
                 longitude=Decimal("77.5950"),
                 total_amount=Decimal("3500.00"),
@@ -157,6 +210,7 @@ class Phase2PackersMoversDiscoveryTests(TestCase):
             self.assertTrue(success, f"Failed to dispatch variant '{cat}': {msg}")
             offer = WorkforceJobOffer.objects.filter(job=job, employee=self.emp, status=WorkforceJobOffer.Status.OFFERED).first()
             self.assertIsNotNone(offer, f"Expected offer for variant '{cat}'")
+            self._release_technician(job)
 
     def test_C_goods_and_transport_still_discovered(self):
         """C. Goods & Transport category and variants continue working seamlessly"""
@@ -173,7 +227,6 @@ class Phase2PackersMoversDiscoveryTests(TestCase):
                 service_category=cat,
                 issue_title=title,
                 preferred_date=timezone.localdate(),
-                preferred_time="10:00 AM",
                 latitude=Decimal("12.9720"),
                 longitude=Decimal("77.5950"),
                 total_amount=Decimal("2000.00"),
@@ -184,6 +237,7 @@ class Phase2PackersMoversDiscoveryTests(TestCase):
             self.assertTrue(success, f"Failed to dispatch Goods & Transport variant '{cat}': {msg}")
             offer = WorkforceJobOffer.objects.filter(job=job, employee=self.emp, status=WorkforceJobOffer.Status.OFFERED).first()
             self.assertIsNotNone(offer, f"Expected offer for GT variant '{cat}'")
+            self._release_technician(job)
 
     def test_D_repeated_reconciliation_creates_no_duplicates(self):
         """D. Running reconciliation multiple times creates no duplicate offers or jobs"""
@@ -193,7 +247,6 @@ class Phase2PackersMoversDiscoveryTests(TestCase):
             service_category="Packers & Movers",
             issue_title="Duplication Test Shifting",
             preferred_date=timezone.localdate(),
-            preferred_time="10:00 AM",
             latitude=Decimal("12.9720"),
             longitude=Decimal("77.5950"),
             total_amount=Decimal("4000.00"),
@@ -216,7 +269,6 @@ class Phase2PackersMoversDiscoveryTests(TestCase):
             service_category="Packers & Movers",
             issue_title="Late Night Booking Recovery",
             preferred_date=timezone.localdate(),
-            preferred_time="10:00 AM",
             latitude=Decimal("12.9720"),
             longitude=Decimal("77.5950"),
             total_amount=Decimal("5000.00"),
@@ -241,7 +293,6 @@ class Phase2PackersMoversDiscoveryTests(TestCase):
             service_category="Packers & Movers",
             issue_title="House Relocation Accept Test",
             preferred_date=timezone.localdate(),
-            preferred_time="10:00 AM",
             latitude=Decimal("12.9720"),
             longitude=Decimal("77.5950"),
             total_amount=Decimal("4200.00"),
@@ -273,7 +324,6 @@ class Phase2PackersMoversDiscoveryTests(TestCase):
             service_category="Packers & Movers",
             issue_title="Zero Refresh Visibility Job",
             preferred_date=timezone.localdate(),
-            preferred_time="10:00 AM",
             latitude=Decimal("12.9720"),
             longitude=Decimal("77.5950"),
             total_amount=Decimal("3800.00"),
@@ -305,7 +355,6 @@ class Phase2PackersMoversDiscoveryTests(TestCase):
             service_category="Packers & Movers",
             issue_title="Full Cycle Shifting Job",
             preferred_date=timezone.localdate(),
-            preferred_time="10:00 AM",
             latitude=Decimal("12.9720"),
             longitude=Decimal("77.5950"),
             total_amount=Decimal("6000.00"),
@@ -350,6 +399,11 @@ class Phase2PackersMoversDiscoveryTests(TestCase):
             is_submitted=True,
             submitted_at=now,
         )
+        # The job's own status has to follow the proof: completion is gated on
+        # proof_submitted, so leaving it at in_progress makes the collection
+        # below unable to close the job whatever else is correct.
+        job.status = "proof_submitted"
+        job.save(update_fields=["status"])
 
         # Collect cash
         req_cash = self.factory.post(
@@ -360,6 +414,22 @@ class Phase2PackersMoversDiscoveryTests(TestCase):
         force_authenticate(req_cash, user=self.user)
         resp_cash = WorkforceJobCashCollectView.as_view()(req_cash, pk=job.id)
         self.assertEqual(resp_cash.status_code, 200)
+
+        # Reporting the cash parks it at CASH_PENDING; the customer's OTP is
+        # what actually completes the job, so the job only leaves the active
+        # queue after this step.
+        pmt = JobPayment.objects.get(job=job)
+        pmt.payment_confirmation_otp_hash = make_password("123456")
+        pmt.save(update_fields=["payment_confirmation_otp_hash"])
+        req_otp = self.factory.post(
+            f"/api/workforce/jobs/{job.id}/payment/verify-otp/",
+            {"otp": "123456"},
+            format="json",
+        )
+        force_authenticate(req_otp, user=self.user)
+        self.assertEqual(
+            WorkforceJobPaymentVerifyOTPView.as_view()(req_otp, pk=job.id).status_code, 200
+        )
 
         # Verify active jobs excludes completed job
         req_active = self.factory.get("/api/workforce/jobs/?status=active")
@@ -385,7 +455,6 @@ class Phase2PackersMoversDiscoveryTests(TestCase):
                 service_category=cat,
                 issue_title=title,
                 preferred_date=timezone.localdate(),
-                preferred_time="10:00 AM",
                 latitude=Decimal("12.9720"),
                 longitude=Decimal("77.5950"),
                 total_amount=Decimal("1200.00"),
@@ -396,3 +465,4 @@ class Phase2PackersMoversDiscoveryTests(TestCase):
             self.assertTrue(success, f"Failed to dispatch category '{cat}': {msg}")
             offer = WorkforceJobOffer.objects.filter(job=job, employee=self.emp, status=WorkforceJobOffer.Status.OFFERED).first()
             self.assertIsNotNone(offer, f"Expected offer for category '{cat}'")
+            self._release_technician(job)

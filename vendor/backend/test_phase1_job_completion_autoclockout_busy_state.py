@@ -29,6 +29,7 @@ django.setup()
 from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from django.contrib.auth import get_user_model
+from django.contrib.auth.hashers import make_password
 from django.db import connection, transaction
 from rest_framework.test import APIRequestFactory, force_authenticate
 from rest_framework.exceptions import ValidationError
@@ -46,6 +47,7 @@ from workforce_api.models import (
     JobTrackingSession,
     WorkforceEventLog,
 )
+from workforce_api.views import WorkforceJobPaymentVerifyOTPView
 from time_tracking.models import TimeLog, Break
 from time_tracking.services import close_employee_active_timelog
 from time_tracking.views import ClockOutView
@@ -207,6 +209,26 @@ class Phase1JobCompletionAutoClockoutBusyStateTests(TestCase):
         self.assertEqual(resp_pres.status_code, 200)
         self.assertEqual(resp_pres.data["availability"], "available")
 
+
+    # Cash reaches PAID only when the customer confirms it, so every test that
+    # needs a *completed* cash job has to walk both halves of the flow. The OTP
+    # is hashed on write and sent to the customer, so a test can never read the
+    # real one back -- planting a known hash exercises the same check_password()
+    # comparison the view performs.
+    _KNOWN_OTP = "123456"
+
+    def _confirm_cash_with_customer_otp(self, job):
+        pmt = JobPayment.objects.get(job=job)
+        pmt.payment_confirmation_otp_hash = make_password(self._KNOWN_OTP)
+        pmt.save(update_fields=["payment_confirmation_otp_hash"])
+        req = self.factory.post(
+            f"/workforce/jobs/{job.id}/payment/verify-otp/",
+            {"otp": self._KNOWN_OTP},
+            format="json",
+        )
+        force_authenticate(req, user=self.user)
+        return WorkforceJobPaymentVerifyOTPView.as_view()(req, pk=job.id)
+
     # ── TEST D: Cash not received -> completion/clock-out blocked ────────────
     def test_D_cash_not_received_blocks_completion_and_clockout(self):
         job = self._create_cash_job(status="proof_submitted")
@@ -238,7 +260,21 @@ class Phase1JobCompletionAutoClockoutBusyStateTests(TestCase):
 
     # ── TEST E, F, H, I: Cash received -> completion succeeds, closes TimeLog, closes TrackingSession, releases Employee ──
     def test_E_F_H_I_cash_received_lifecycle(self):
-        job = self._create_cash_job(status="in_progress")
+        # proof_submitted, not in_progress: the job closes on the after-service
+        # proof plus confirmed payment, and WorkforceJobPaymentVerifyOTPView
+        # only completes a job that has reached proof_submitted. Money changing
+        # hands is not evidence that the work is finished.
+        job = self._create_cash_job(status="proof_submitted")
+        # A technician holding an active job is busy -- that is what happens
+        # when one is accepted in production, and it is the state completion
+        # releases them from. Without it this employee sits "available"
+        # throughout, so finishing the job changes nothing and no
+        # EMPLOYEE_AVAILABILITY_CHANGED is emitted (the event fires on an
+        # actual transition, not on every completion).
+        reconcile_employee_availability(self.emp)
+        self.emp.refresh_from_db()
+        self.assertEqual(self.emp.current_availability, "busy")
+
         log = self._create_open_timelog()
         tracking_session = JobTrackingSession.objects.filter(job=job).first()
         self.assertEqual(tracking_session.status, JobTrackingSession.SessionStatus.ACTIVE)
@@ -252,10 +288,17 @@ class Phase1JobCompletionAutoClockoutBusyStateTests(TestCase):
         force_authenticate(req, user=self.user)
         resp = WorkforceJobCashCollectView.as_view()(req, pk=job.id)
 
-        # Test E: Completion succeeds
+        # Reporting the cash parks the payment awaiting customer confirmation;
+        # it must NOT complete the job on the technician's word alone.
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data["payment_status"], "PAID")
-        self.assertEqual(resp.data["job_status"], "completed")
+        self.assertEqual(resp.data["payment_status"], "CASH_PENDING")
+
+        job.refresh_from_db()
+        self.assertNotEqual(job.status, "completed")
+
+        # Test E: the customer's OTP is what completes the job.
+        resp_otp = self._confirm_cash_with_customer_otp(job)
+        self.assertEqual(resp_otp.status_code, 200)
 
         job.refresh_from_db()
         self.assertEqual(job.status, "completed")
@@ -263,8 +306,9 @@ class Phase1JobCompletionAutoClockoutBusyStateTests(TestCase):
 
         pmt = JobPayment.objects.get(job=job)
         self.assertEqual(pmt.payment_status, JobPayment.PaymentStatus.PAID)
-        self.assertEqual(pmt.amount_paid, Decimal("1200.00"))
+        self.assertEqual(pmt.amount_paid, pmt.amount_due)
         self.assertIsNotNone(pmt.cash_collected_at)
+        self.assertIsNotNone(pmt.customer_confirmed_at)
 
         # Test F: Auto clock-out closed TimeLog and open breaks
         log.refresh_from_db()
@@ -291,7 +335,8 @@ class Phase1JobCompletionAutoClockoutBusyStateTests(TestCase):
 
     # ── TEST G: Completed job disappears from Active Jobs without refresh ────
     def test_G_completed_job_disappears_from_active_jobs(self):
-        job = self._create_cash_job(status="in_progress")
+        # See test_E: completion requires proof_submitted, not just payment.
+        job = self._create_cash_job(status="proof_submitted")
         
         # Verify active jobs returns the job
         req_active = self.factory.get("/api/workforce/jobs/?status=active")
@@ -310,6 +355,9 @@ class Phase1JobCompletionAutoClockoutBusyStateTests(TestCase):
         force_authenticate(req_collect, user=self.user)
         resp_collect = WorkforceJobCashCollectView.as_view()(req_collect, pk=job.id)
         self.assertEqual(resp_collect.status_code, 200)
+
+        # Reporting cash alone does not complete the job -- the customer's OTP does.
+        self.assertEqual(self._confirm_cash_with_customer_otp(job).status_code, 200)
 
         # Query active jobs again -> completed job MUST NOT be in active queue
         req_active_after = self.factory.get("/api/workforce/jobs/?status=active")
@@ -402,7 +450,11 @@ class Phase1ConcurrentCompletionTests(TestCase):
         self.job = ServiceRequest.objects.create(
             company=self.company,
             assigned_employee=self.emp,
-            status="in_progress",
+            # proof_submitted, not in_progress: a PostServiceProof is created
+            # below, and completion is gated on the job having reached that
+            # state. Leaving it in_progress made this test fail for a reason
+            # unrelated to the concurrency it exists to check.
+            status="proof_submitted",
             total_amount=Decimal("1500.00"),
             payment_method="cash",
             payment_status="pending",
@@ -468,6 +520,32 @@ class Phase1ConcurrentCompletionTests(TestCase):
         self.assertEqual(resp1.status_code, 200)
         self.assertEqual(resp2.status_code, 200)
         self.assertEqual(resp3.status_code, 200)
+
+        # The point of the race: three submissions of the same collection
+        # must leave exactly ONE payment, parked awaiting customer
+        # confirmation -- not three, and not a job completed three times.
+        self.assertEqual(JobPayment.objects.filter(job=self.job).count(), 1)
+        pmt = JobPayment.objects.get(job=self.job)
+        self.assertEqual(pmt.payment_status, JobPayment.PaymentStatus.CASH_PENDING)
+        for resp in (resp1, resp2, resp3):
+            self.assertEqual(resp.data["payment_status"], "CASH_PENDING")
+
+        self.job.refresh_from_db()
+        self.assertNotEqual(self.job.status, "completed")
+
+        # The customer's OTP is what completes it, exactly once.
+        pmt.payment_confirmation_otp_hash = make_password("123456")
+        pmt.save(update_fields=["payment_confirmation_otp_hash"])
+        req_otp = factory.post(
+            f"/workforce/jobs/{self.job.id}/payment/verify-otp/",
+            {"otp": "123456"},
+            format="json",
+        )
+        force_authenticate(req_otp, user=self.user)
+        self.assertEqual(
+            WorkforceJobPaymentVerifyOTPView.as_view()(req_otp, pk=self.job.id).status_code,
+            200,
+        )
 
         self.job.refresh_from_db()
         self.assertEqual(self.job.status, "completed")

@@ -63,7 +63,7 @@ export function EmployeeEarningsPage() {
   return (
     <AppShell breadcrumbs={[{ label: 'Home' }, { label: 'Earnings' }]}>
       <div className="space-y-4 max-w-6xl mx-auto">
-        {error && <ErrorState message={error} onDismiss={() => setError('')} />}
+        {error && <ErrorState message={error} onRetry={loadPayslips} onDismiss={() => setError('')} />}
 
         {/* Summary strip */}
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">

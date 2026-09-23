@@ -15,6 +15,7 @@ from .serializers import (
     LocationZoneSerializer, EmployeeLocationSerializer, TimeLogPhotoSerializer
 )
 from .geo import evaluate
+from .services import close_employee_active_timelog
 from .utils import generate_shift_summary_pdf
 
 
@@ -425,9 +426,54 @@ class ClockInView(APIView):
 
 
 
+# Job states in which a technician is still on the job. Mirrors
+# workforce_api.views._TERMINAL_STATUSES -- anything not terminal is live work.
+_JOB_TERMINAL_STATUSES = {"completed", "cancelled", "unable_to_complete"}
+
+
+def _uncollected_cash_job(emp):
+    """
+    The job (if any) stopping this technician from ending their shift.
+
+    Pay-after-service means the cash IS the revenue, and a shift that ends
+    with money never reported is the point at which it stops being
+    recoverable: the job sits open, the wallet has nothing to settle, and
+    there is no record anyone can chase. The completion path already fails
+    closed on this (ServiceRequest.is_ready_to_complete); clock-out was the
+    other way out of an active job and had no gate at all.
+
+    Deliberately keyed on cash never having been REPORTED (PENDING), not on
+    the payment being fully PAID. Once the technician reports collection the
+    money is on record and they are free to go -- waiting on the customer's
+    confirmation OTP would strand them at the door of a customer who is slow
+    or unwilling to read a code back.
+    """
+    from workforce_api.models import JobPayment
+
+    return (
+        JobPayment.objects
+        .filter(
+            job__assigned_employee=emp,
+            payment_method=JobPayment.PaymentMethod.CASH_ON_SERVICE,
+            payment_status=JobPayment.PaymentStatus.PENDING,
+            cash_collected_at__isnull=True,
+        )
+        .exclude(job__status__in=_JOB_TERMINAL_STATUSES)
+        .select_related("job")
+        .first()
+    )
+
+
 class ClockOutView(APIView):
     """
     Authoritative Clock-Out API View.
+
+    Idempotent: a repeat call after the shift is already closed -- which
+    happens routinely, because completing a job auto-clocks the technician
+    out and their app may still send its own clock-out afterwards -- answers
+    200 with is_clocked_in False rather than an error. Only a technician who
+    never clocked in at all gets NOT_CLOCKED_IN. This matches how
+    WorkforceJobCashCollectView already answers a repeated submission.
     """
     permission_classes = [IsApprovedTechnician]
 
@@ -439,51 +485,45 @@ class ClockOutView(APIView):
                 "code": "EMPLOYEE_NOT_FOUND"
             }, status=status.HTTP_404_NOT_FOUND)
 
-        with db_transaction.atomic():
-            open_log = (
-                TimeLog.objects
-                .select_for_update()
-                .filter(employee=emp, clock_out__isnull=True)
-                .first()
-            )
-            if not open_log:
-                return Response({
-                    "error": "Cannot clock out: No active clocked-in session found.",
-                    "code": "NOT_CLOCKED_IN"
-                }, status=status.HTTP_400_BAD_REQUEST)
+        blocking_payment = _uncollected_cash_job(emp)
+        if blocking_payment is not None:
+            job = blocking_payment.job
+            return Response({
+                "error": (
+                    f"Cannot clock out: cash for job {getattr(job, 'request_id', job.pk)} "
+                    f"(Rs.{blocking_payment.amount_due}) has not been recorded yet. "
+                    "Report the collection first, or mark the job unable to complete."
+                ),
+                "code": "CASH_NOT_RECEIVED",
+                "job_id": job.pk,
+                "amount_due": str(blocking_payment.amount_due),
+            }, status=status.HTTP_400_BAD_REQUEST)
 
-            # Close any open breaks
-            open_breaks = open_log.breaks.filter(break_end__isnull=True)
-            for b in open_breaks:
-                b.break_end = timezone.now()
-                b.save()
+        lat = request.data.get("lat")
+        lon = request.data.get("lon")
+        time_log, was_closed = close_employee_active_timelog(
+            emp,
+            lat=lat if lat not in (None, "") else None,
+            lon=lon if lon not in (None, "") else None,
+            address=request.data.get("address", ""),
+            notes=request.data.get("notes", "") or "Clock-out requested by technician",
+        )
 
-            now = timezone.now()
-            open_log.clock_out = now
-            if request.data.get("lat") not in (None, ""):
-                try:
-                    open_log.clock_out_lat = float(request.data["lat"])
-                except (ValueError, TypeError):
-                    pass
-            if request.data.get("lon") not in (None, ""):
-                try:
-                    open_log.clock_out_lon = float(request.data["lon"])
-                except (ValueError, TypeError):
-                    pass
-            open_log.clock_out_address = request.data.get("address", "")
-            open_log.clock_out_notes = request.data.get("notes", "")
-            if request.FILES.get("photo"):
-                open_log.clock_out_photo = request.FILES.get("photo")
+        if time_log is None:
+            return Response({
+                "error": "Cannot clock out: No active clocked-in session found.",
+                "code": "NOT_CLOCKED_IN"
+            }, status=status.HTTP_400_BAD_REQUEST)
 
-            open_log.status = "submitted"
-            open_log.submitted_at = now
-            open_log.save()
+        if was_closed and request.FILES.get("photo"):
+            time_log.clock_out_photo = request.FILES.get("photo")
+            time_log.save(update_fields=["clock_out_photo"])
 
         return Response({
-            "message": "Clock-out successful.",
+            "message": "Clock-out successful." if was_closed else "Already clocked out.",
             "is_clocked_in": False,
             "shift_status": "clocked_out",
-            "time_log": TimeLogSerializer(open_log).data
+            "time_log": TimeLogSerializer(time_log).data
         }, status=status.HTTP_200_OK)
 
 

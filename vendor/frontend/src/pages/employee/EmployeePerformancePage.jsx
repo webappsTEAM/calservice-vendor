@@ -115,7 +115,7 @@ export function EmployeePerformancePage() {
   return (
     <AppShell breadcrumbs={[{ label: 'Home', to: '/workforce/employee/dashboard' }, { label: 'Performance' }]}>
       <div className="space-y-4 max-w-6xl mx-auto text-xs">
-        {error && <ErrorState message={error} onDismiss={() => setError('')} />}
+        {error && <ErrorState message={error} onRetry={loadPerformance} onDismiss={() => setError('')} />}
 
         {/* Top Metric Strip */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">

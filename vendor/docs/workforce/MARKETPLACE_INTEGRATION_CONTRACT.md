@@ -53,3 +53,15 @@ Marketplace Reads Final Status & Financial Settlement
 1. **Duplicate Booking Prevention:** Workforce never creates duplicate `ServiceRequest` rows. The shared `ServiceRequest` ID is the single canonical reference across Marketplace and Workforce.
 2. **Workforce Mutation Safeguards:** Workforce API write handlers inspect target attributes prior to saving and explicitly reject any attempt to modify Marketplace-owned customer identity, address, or initial booking parameters.
 3. **Concurrency Safeguards:** Job offer acceptance and dispatch execution use database row locking (`select_for_update`) to prevent double-assignment or duplicate acceptances under concurrent HTTP requests.
+
+## 4. AC qualification and tracking contract (23 September 2026)
+
+- Customer checkout owns and validates every AC cart line's `catalog_service_id`, `package_id`, `package_version` and price. Workforce consumes these stable IDs from the same ServiceRequest; service and package IDs are different namespaces.
+- Workforce requires approved capability for every selected AC service and every company-defined mandatory skill to be verified and active. Skill requirements use the existing WorkforceServiceSkillRequirement relation, managed through `/api/workforce/skills/requirements/` by tenant-authorized administrators.
+- AC offers require an active company, approved eligible technician, open attendance shift without an active break, online availability, no conflicting work and recent geographic location. Acceptance rechecks eligibility. An unowned/platform booking acquires the accepting technician's company; no duplicate booking is created.
+- Online payment must be paid before dispatch. An ONLINE booking cannot create a cash collection. COD cash recording is CASH_PENDING until customer confirmation; recording cash alone is not payment settlement.
+- Lifecycle changes lock and refresh the shared booking. Webhooks and eligibility-triggered background work begin after commit. The current vendor webhook sender remains best effort; REST/shared database state remains authoritative.
+- Location and booking-quote reads require the owning customer ID, assigned technician, authorized tenant/platform admin or authenticated internal caller. A source header is not authentication. Terminal jobs mask technician GPS, and active sessions must match the current assignee.
+- Both sides must configure matching internal secrets. Customer outbox retry processing and the existing Workforce dispatch reconciliation worker are operational prerequisites.
+- Verification scope and outstanding PostgreSQL/browser gates are recorded in the root `docs/workforce/AC_VENDOR_WORKFLOW_VERIFICATION.md`; this contract does not imply production sign-off.
+

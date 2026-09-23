@@ -127,14 +127,12 @@ class IsInternalWorkforceCaller(BasePermission):
             provided = ""
 
         expected_secret = getattr(settings, "WORKFORCE_WEBHOOK_SECRET", "") or ""
-        expected_api_key = getattr(settings, "WORKFORCE_API_KEY", "") or os.getenv("WORKFORCE_API_KEY", "wf_integration_key_default")
+        expected_api_key = getattr(settings, "WORKFORCE_API_KEY", "") or os.getenv("WORKFORCE_API_KEY", "")
 
         valid_secret = bool(provided and expected_secret and hmac.compare_digest(provided, expected_secret))
         valid_api_key = bool(provided and expected_api_key and hmac.compare_digest(provided, expected_api_key))
-        source_header = request.META.get("HTTP_X_CALSERVICES_SOURCE", "")
-        valid_source = bool(getattr(settings, "DEBUG", False) and source_header == "calservices-platform")
-
-        return valid_secret or valid_api_key or valid_source
+        # A public source header identifies a caller; it cannot authenticate one.
+        return valid_secret or valid_api_key
 
 
 class IsApprovedTechnician(BasePermission):

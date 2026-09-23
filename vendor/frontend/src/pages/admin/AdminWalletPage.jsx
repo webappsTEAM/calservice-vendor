@@ -234,7 +234,7 @@ export function AdminWalletPage() {
   return (
     <AppShell breadcrumbs={[{ label: 'Home' }, { label: 'Wallet' }]}>
       <div className="space-y-4 max-w-3xl mx-auto">
-        {error && <ErrorState message={error} onDismiss={() => setError('')} />}
+        {error && <ErrorState message={error} onRetry={load} onDismiss={() => setError('')} />}
 
         {notFound ? (
           <div className="bg-white border border-slate-200 rounded p-6 text-center text-xs text-slate-500">

@@ -5,6 +5,7 @@ Route registrations for Workforce API (/api/workforce/*).
 from django.urls import include, path
 from . import quote_views
 from . import invoice_views
+from .skill_requirement_views import ServiceSkillRequirementsView
 from .views import (
     WorkforceDispatchHealthView,
     WorkforceSignupView,
@@ -329,6 +330,7 @@ urlpatterns = [
 
     # Skills Management (Phase 23)
     path("skills/", WorkforceSkillManageView.as_view(), name="workforce-skills"),
+    path("skills/requirements/", ServiceSkillRequirementsView.as_view(), name="workforce-service-skill-requirements"),
     path("skills/employee/<int:emp_id>/", WorkforceEmployeeSkillAssignView.as_view(), name="workforce-skills-assign"),
     path("skills/me/", WorkforceMySkillsView.as_view(), name="workforce-skills-me"),
 

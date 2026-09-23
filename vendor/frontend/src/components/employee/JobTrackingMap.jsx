@@ -62,6 +62,20 @@ export const ROUTE_MIN_MOVEMENT_METERS = 50;
 export const ROUTE_MIN_REFRESH_SECONDS = 30;
 export const ROUTE_REQUEST_TIMEOUT_MS = 8000;
 
+// Router component: picks the view, and holds no hooks of its own.
+//
+// The customer map's ~37 hooks used to live directly below the
+// `viewRole === 'technician'` early return inside this function. React
+// matches hooks by call order across renders, so the moment a mounted
+// JobTrackingMap saw viewRole change -- technician to customer or back --
+// it rendered a different number of hooks than the render before it and
+// React threw "Rendered more hooks than during the previous render",
+// blanking the live tracking map mid-job.
+//
+// An early return is only safe in a component with no hooks after it, so
+// the hooks moved wholesale into CustomerTrackingMap below. Mounting or
+// unmounting a whole child component across a viewRole change is exactly
+// what React expects; skipping half a component's hooks is not.
 export function JobTrackingMap({
   job,
   technicianLocation,
@@ -80,6 +94,27 @@ export function JobTrackingMap({
     );
   }
 
+  return (
+    <CustomerTrackingMap
+      job={job}
+      technicianLocation={technicianLocation}
+      preServiceState={preServiceState}
+      geofenceRadius={geofenceRadius}
+      viewRole={viewRole}
+    />
+  );
+}
+
+function CustomerTrackingMap({
+  job,
+  technicianLocation,
+  preServiceState = {},
+  geofenceRadius = 300,
+  // Passed through rather than hardcoded to 'customer': the body below reads
+  // it for marker titles and info-window copy, and forwarding it keeps this
+  // split a pure refactor of where the hooks live.
+  viewRole = 'customer',
+}) {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
   const techMarkerRef = useRef(null);

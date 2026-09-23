@@ -53,6 +53,7 @@ export default function AdminInventoryPage() {
   const [showAdd, setShowAdd]         = useState(false);
   const [editItem, setEditItem]       = useState(null);
   const [deleteItem, setDeleteItem]   = useState(null);
+  const [actionError, setActionError] = useState(null);
   const initialized = useRef(false);
   const debounce    = useRef(null);
 
@@ -92,8 +93,17 @@ export default function AdminInventoryPage() {
 
   const handleDelete = async () => {
     if (!deleteItem) return;
-    try { await apiDeleteInventoryItem(deleteItem.id); setDeleteItem(null); loadItems(); }
-    catch (e) { alert(e?.message || 'Delete failed.'); }
+    try {
+      setActionError(null);
+      await apiDeleteInventoryItem(deleteItem.id);
+      setDeleteItem(null);
+      loadItems();
+    } catch (e) {
+      // Reported on the page rather than in a native popup, and the item is
+      // left selected so the user can see what failed and try again.
+      setActionError(e?.message || `${deleteItem.name || 'That item'} could not be deleted.`);
+      setDeleteItem(null);
+    }
   };
 
   const inStock    = items.filter(i => i.stock_status === 'IN_STOCK').length;
@@ -158,6 +168,16 @@ export default function AdminInventoryPage() {
           </button>
         </div>
       </div>
+
+      {actionError && (
+        <div role="alert" className="flex items-start gap-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2">
+          <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
+          <p className="flex-1 text-xs text-rose-900">{actionError}</p>
+          <button type="button" aria-label="Dismiss" onClick={() => setActionError(null)} className="shrink-0 rounded-md p-0.5 text-rose-600 hover:bg-rose-100">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {syncMsg && (
         <div className="flex items-center gap-2 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">

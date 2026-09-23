@@ -7,6 +7,7 @@ import { Toolbar } from '../../components/enterprise/Toolbar.jsx';
 import { DataTable } from '../../components/enterprise/DataTable.jsx';
 import { StatusBadge } from '../../components/enterprise/StatusBadge.jsx';
 import { Pagination } from '../../components/enterprise/Pagination.jsx';
+import { LoadFailure } from '../../components/enterprise/LoadFailure.jsx';
 import { CustomerLiveTrackingModal } from '../../components/common/CustomerLiveTrackingModal.jsx';
 import { Briefcase, ArrowRight, User, Send, MapPin, Calendar, Navigation } from 'lucide-react';
 
@@ -19,19 +20,41 @@ export function AdminJobsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [liveTrackingJobId, setLiveTrackingJobId] = useState(null);
 
-  const loadJobs = async () => {
+  const [loadError, setLoadError] = useState(null);
+
+  // This page polls every five seconds, so a swallowed failure was especially
+  // costly: the board silently froze on stale data, or showed an empty job
+  // list, with nothing to tell dispatch that it had stopped hearing from the
+  // server. A background failure now says so without discarding the jobs
+  // already on screen.
+  const loadJobs = async (showLoading = true) => {
     try {
-      setIsLoading(true);
+      if (showLoading) setIsLoading(true);
       const data = await apiGetWorkforceJobs();
       setJobs(data || []);
-    } catch (_) {
+      setLoadError(null);
+    } catch (err) {
+      setLoadError(err?.message || 'The job list could not be loaded.');
     } finally {
-      setIsLoading(false);
+      if (showLoading) setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    loadJobs();
+    loadJobs(true);
+
+    // Active real-time polling: refresh jobs every 5s so newly created customer bookings appear automatically
+    const interval = setInterval(() => {
+      loadJobs(false);
+    }, 5000);
+
+    const onFocus = () => loadJobs(false);
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+    };
   }, []);
 
   const filteredData = useMemo(() => {
@@ -196,12 +219,27 @@ export function AdminJobsPage() {
         />
 
         {/* Dense Table */}
-        <DataTable
-          columns={columns}
-          data={paginatedData}
-          isLoading={isLoading}
-          emptyMessage="No customer job orders match the selected filters."
-        />
+        {loadError && !isLoading ? (
+          <LoadFailure
+            variant={jobs.length > 0 ? 'partial' : 'full'}
+            message={
+              jobs.length > 0
+                ? `${loadError} New jobs may not be appearing — this board is no longer live.`
+                : loadError
+            }
+            onRetry={() => loadJobs(true)}
+            isRetrying={isLoading}
+          />
+        ) : null}
+
+        {(!loadError || jobs.length > 0) && (
+          <DataTable
+            columns={columns}
+            data={paginatedData}
+            isLoading={isLoading}
+            emptyMessage="No customer job orders match the selected filters."
+          />
+        )}
 
         {/* Pagination */}
         {filteredData.length > pageSize && (

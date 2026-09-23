@@ -16,6 +16,7 @@ import { AppShell } from '../../components/common/AppShell.jsx';
 import { LoadingState } from '../../components/enterprise/LoadingState.jsx';
 import { ErrorState } from '../../components/enterprise/ErrorState.jsx';
 import { Modal } from '../../components/enterprise/Modal.jsx';
+import { ConfirmDialog } from '../../components/enterprise/ConfirmDialog.jsx';
 import {
   Search,
   MapPin,
@@ -45,6 +46,7 @@ import {
   Eye,
   Check,
   Copy,
+  Camera,
 } from 'lucide-react';
 
 /**
@@ -376,6 +378,7 @@ export function EmployeeJobsPage() {
   // Per-job inline action errors — replaces alert() entirely.
   // Maps jobId → { code, message, isExpired, isAlreadyAccepted }
   const [actionErrors, setActionErrors] = useState({});
+  const [confirmAction, setConfirmAction] = useState(null);
 
   const clearJobError = (jobId) =>
     setActionErrors(prev => { const n = { ...prev }; delete n[jobId]; return n; });
@@ -473,9 +476,25 @@ export function EmployeeJobsPage() {
     }
   };
 
-  const handleRejectOffer = async (jobId, e) => {
+  // Declining hands the job to someone else and cannot be taken back, so it
+  // keeps a confirmation -- in the app's own dialog. A native one is especially
+  // poor here: technicians are on phones, often outdoors, and a browser-chrome
+  // popup over the job card gives no sense of which job is being declined.
+  const handleRejectOffer = (jobId, e) => {
     e?.stopPropagation?.();
-    if (!window.confirm('Decline this job offer? It will be reassigned to another nearby technician.')) return;
+    const job = jobs.find((j) => j.id === jobId);
+    setConfirmAction({
+      title: 'Decline this job?',
+      message: job
+        ? `${job.service_name || 'This job'} will be offered to another nearby technician. You will not be able to take it back.`
+        : 'This job will be offered to another nearby technician. You will not be able to take it back.',
+      confirmText: 'Decline job',
+      onConfirm: () => handleRejectOfferConfirmed(jobId),
+    });
+  };
+
+  const handleRejectOfferConfirmed = async (jobId) => {
+    setConfirmAction(null);
     clearJobError(jobId);
     try {
       setActionLoadingId(jobId);
@@ -713,7 +732,7 @@ export function EmployeeJobsPage() {
           </div>
         </div>
 
-        {error && <ErrorState message={error} onDismiss={() => setError('')} />}
+        {error && <ErrorState message={error} onRetry={loadJobs} onDismiss={() => setError('')} />}
 
         {/* ── SEGMENTED TAB SELECTOR (Swiggy Partner Style) ── */}
         <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
@@ -1321,6 +1340,16 @@ export function EmployeeJobsPage() {
           </Modal>
         )}
       </div>
+
+      <ConfirmDialog
+        isOpen={Boolean(confirmAction)}
+        onClose={() => setConfirmAction(null)}
+        onConfirm={confirmAction?.onConfirm || (() => {})}
+        title={confirmAction?.title || ''}
+        message={confirmAction?.message || ''}
+        confirmText={confirmAction?.confirmText || 'Confirm'}
+        confirmVariant="danger"
+      />
     </AppShell>
   );
 }

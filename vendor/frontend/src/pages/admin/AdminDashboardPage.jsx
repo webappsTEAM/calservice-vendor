@@ -12,6 +12,7 @@ import { ActionCenter } from '../../components/enterprise/ActionCenter.jsx';
 import { DataTable } from '../../components/enterprise/DataTable.jsx';
 import { StatusBadge } from '../../components/enterprise/StatusBadge.jsx';
 import { LoadingState } from '../../components/enterprise/LoadingState.jsx';
+import { LoadFailure } from '../../components/enterprise/LoadFailure.jsx';
 import {
   Users,
   CheckCircle2,
@@ -33,19 +34,25 @@ export function AdminDashboardPage() {
 
   const fetchedRef = React.useRef(false);
 
+  const [failed, setFailed] = useState([]);
+
+  // Both requests used to fall back to [] on failure, so a dead API was drawn
+  // as a real, empty operations centre: "0 applications, 0 jobs" when the truth
+  // was "we could not ask". allSettled keeps the one-widget-fails-alone
+  // behaviour but remembers which half is missing, so the page can say so.
   const loadData = async () => {
-    try {
-      setIsLoading(true);
-      const [appsData, jobsData] = await Promise.all([
-        apiGetAdminApplications().catch(() => []),
-        apiGetWorkforceJobs().catch(() => []),
-      ]);
-      setApplications(appsData || []);
-      setJobs(jobsData || []);
-    } catch (_) {
-    } finally {
-      setIsLoading(false);
-    }
+    setIsLoading(true);
+    const [apps, jobs] = await Promise.allSettled([
+      apiGetAdminApplications(),
+      apiGetWorkforceJobs(),
+    ]);
+    const missing = [];
+    if (apps.status === 'fulfilled') setApplications(apps.value || []);
+    else missing.push('Applications');
+    if (jobs.status === 'fulfilled') setJobs(jobs.value || []);
+    else missing.push('Jobs');
+    setFailed(missing);
+    setIsLoading(false);
   };
 
   useEffect(() => {
@@ -189,6 +196,15 @@ export function AdminDashboardPage() {
             </div>
           }
         />
+
+        {failed.length > 0 && (
+          <LoadFailure
+            variant="partial"
+            message={`${failed.join(' and ')} could not be loaded, so the counts below are incomplete.`}
+            onRetry={loadData}
+            isRetrying={isLoading}
+          />
+        )}
 
         {/* Action Center */}
         <ActionCenter items={actionItems} />

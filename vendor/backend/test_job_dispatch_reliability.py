@@ -29,9 +29,11 @@ Requirements:
 """
 import threading
 import uuid
+from unittest import skipUnless
 from datetime import timedelta
 
-from django.test import TestCase, Client
+from django.test import TestCase, TransactionTestCase, Client
+from django.db import connection
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 
@@ -39,6 +41,7 @@ from service_requests.models import ServiceRequest
 from employees.models import Employee
 from companies.models import Company
 from workforce_api.models import (
+    Vehicle,
     WorkforceJobOffer,
     WorkforceEmployeeSchedule,
     WorkforceSkill,
@@ -160,15 +163,49 @@ def _make_employee(company, services=None, lat=EMP_LAT, lon=EMP_LON, with_gps=Tr
             proficiency_level="EXPERT",
         )
 
+    # Gate 3 (logistics): a technician offered a Goods & Transport or Packers &
+    # Movers job must hold at least one active vehicle whose insurance, permit
+    # and PUC are current. Give every technician built here a compliant one --
+    # it is what a real transport technician has on file, and it is inert for
+    # the non-logistics categories this helper is also used for.
+    Vehicle.objects.create(
+        employee=emp,
+        company=company,
+        registration_number=f"KA05{uuid.uuid4().hex[:6].upper()}",
+        is_active=True,
+        insurance_expiry=timezone.localdate() + timedelta(days=365),
+        permit_expiry=timezone.localdate() + timedelta(days=365),
+        puc_expiry=timezone.localdate() + timedelta(days=365),
+    )
+
     return emp
 
 
 def _make_booking_raw(company=None, status="new_request",
                        service_category="HVAC", issue_title="Test Job",
-                       lat=BOOKING_LAT, lon=BOOKING_LON):
+                       lat=BOOKING_LAT, lon=BOOKING_LON,
+                       preferred_time=None):
     """
     Creates a ServiceRequest via bulk_create to bypass the save() on_commit hook.
     This gives each test full control over WHEN dispatch is triggered.
+
+    preferred_time defaults to None, meaning "as soon as possible".
+
+    It used to be hardcoded to "10:00 AM", which quietly made this whole
+    module depend on the wall clock. A same-day booking with a slot time is
+    held by get_scheduled_dispatch_window() until its pre-service lead time
+    opens (45 minutes before the slot, 120 for packers & movers), so between
+    midnight and 09:15 local every dispatch here was correctly HELD and no
+    offer was ever created -- 27 tests in this file failed for the entire
+    morning and passed for the rest of the day. dispatch_job() returns
+    success=True for a held job, so `assertTrue(success)` sailed through and
+    only the offer assertion failed, which made it look like a dispatch bug
+    rather than a scheduling one.
+
+    A booking with no slot time takes the same-day immediate branch, so
+    dispatch is due the moment it is created no matter when the suite runs.
+    Tests that specifically want the scheduled-hold behaviour pass a slot
+    time explicitly.
     """
     job = ServiceRequest(
         status=status,
@@ -178,7 +215,7 @@ def _make_booking_raw(company=None, status="new_request",
         latitude=lat,
         longitude=lon,
         preferred_date=timezone.now().date(),
-        preferred_time="10:00 AM",
+        preferred_time=preferred_time,
         company=company,
         customer_name="Dispatch Test Customer",
         phone="9000000000",
@@ -379,11 +416,28 @@ class TestG_IdempotentDispatch(TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 # H. Concurrent reconciliation -> exactly one active offer
 # ═══════════════════════════════════════════════════════════════════════════════
-class TestH_ConcurrentDispatch(TestCase):
+class TestH_ConcurrentDispatch(TransactionTestCase):
+    """
+    TransactionTestCase, not TestCase.
+
+    TestCase wraps each test in a transaction that is rolled back and never
+    committed, and the threads below each run on their own database
+    connection -- so they could not see the job the main thread had just
+    created, found nothing to dispatch, and the test asserted against zero
+    offers. Threads need really-committed data.
+    """
     def setUp(self):
         self.company = _make_company("H")
         self.emp = _make_employee(self.company, services=["Carpentry"])
 
+    @skipUnless(
+        connection.vendor == "postgresql",
+        "Concurrent dispatch cannot be expressed on SQLite: it takes a single "
+        "database-wide write lock, so threads racing for the same row surface "
+        "as 'database table is locked' instead of the row-level contention "
+        "select_for_update() exists to arbitrate. Run with "
+        "--settings=workforce_core.test_settings_pg to exercise it.",
+    )
     def test_h1_concurrent_dispatch_one_offer(self):
         job = _make_booking_raw(company=self.company, service_category="Carpentry",
                                  issue_title="Door Repair")
@@ -394,6 +448,13 @@ class TestH_ConcurrentDispatch(TestCase):
                 reconcile_booking_for_dispatch(job)
             except Exception as exc:
                 errors.append(str(exc))
+            finally:
+                # Each thread gets its own database connection, and Django does
+                # not close it when the thread ends. Left open, they hold the
+                # test database and teardown fails with "database is being
+                # accessed by other users" -- the test's own result is fine, but
+                # the run dies on the way out.
+                connection.close()
 
         threads = [threading.Thread(target=_run) for _ in range(4)]
         for t in threads:

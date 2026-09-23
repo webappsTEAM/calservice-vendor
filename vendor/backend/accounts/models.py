@@ -41,7 +41,7 @@ class User(AbstractBaseUser):
     )
     first_name = models.CharField(max_length=150, blank=True)
     last_name = models.CharField(max_length=150, blank=True)
-    email = models.EmailField(blank=True)
+    email = models.EmailField(null=True, blank=True, unique=True)
     is_staff = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     is_superuser = models.BooleanField(default=False)
@@ -55,6 +55,18 @@ class User(AbstractBaseUser):
         CUSTOMER = "customer", "Customer"
 
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.EMPLOYEE)
+    # Mirrors accounts.User.custom_permissions in the Customer app, which owns
+    # this table. The column is NOT NULL with no database-level default, so
+    # leaving it off this mirror meant Django omitted it from every INSERT the
+    # vendor side makes -- and the vendor creates users in three production
+    # paths (technician registration, vendor signup, and
+    # provider_service.create_service_provider). All three failed with
+    # "null value in column custom_permissions violates not-null constraint".
+    #
+    # The vendor test suite could not see this: its runner builds the mirror
+    # tables FROM these mirror models, so a column missing here simply does
+    # not exist while the tests run.
+    custom_permissions = models.JSONField(default=dict, blank=True)
     bio = models.TextField(blank=True, default="")
     phone = models.CharField(max_length=30, unique=True, null=True, blank=True)
     mobile_number = models.CharField(max_length=15, unique=True, null=True, blank=True, db_index=True)
@@ -85,6 +97,8 @@ class User(AbstractBaseUser):
             self.phone = None
         if not self.mobile_number:
             self.mobile_number = None
+        if not self.email:
+            self.email = None
         super().save(*args, **kwargs)
 
     def __str__(self):

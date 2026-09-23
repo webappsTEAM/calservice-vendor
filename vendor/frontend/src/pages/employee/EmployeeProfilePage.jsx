@@ -174,7 +174,7 @@ export function EmployeeProfilePage() {
     <AppShell breadcrumbs={[{ label: 'Home' }, { label: 'My Profile' }]}>
       <div className="space-y-4 max-w-5xl mx-auto">
         {/* Header Notification Banner */}
-        {error && <ErrorState message={error} onDismiss={() => setError('')} />}
+        {error && <ErrorState message={error} onRetry={loadData} onDismiss={() => setError('')} />}
         {successMsg && (
           <div className="p-3 rounded border border-emerald-200 bg-emerald-50 text-emerald-800 text-xs font-semibold flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />

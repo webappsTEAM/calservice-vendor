@@ -1,78 +1,72 @@
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthProvider.jsx';
 import { ThemeProvider } from './context/ThemeContext.jsx';
 import { EmployeeRuntimeProvider } from './context/EmployeeRuntimeProvider.jsx';
 import { AdminRoute, EmployeeRoute, PlatformAdminRoute, AuthenticatedRoute } from './components/common/ProtectedRoute.jsx';
 
-import { LoginPage } from './pages/auth/LoginPage.jsx';
-import { SignupPage } from './pages/auth/SignupPage.jsx';
-import { ProviderSignupPage } from './pages/auth/ProviderSignupPage.jsx';
-
-import { TermsAndConditionsPage } from './pages/public/TermsAndConditionsPage.jsx';
-import { PrivacyPolicyPage } from './pages/public/PrivacyPolicyPage.jsx';
-import { SupportAndContactPage } from './pages/public/SupportAndContactPage.jsx';
-import { CancellationRefundsPage } from './pages/public/CancellationRefundsPage.jsx';
-import { ShippingPolicyPage } from './pages/public/ShippingPolicyPage.jsx';
-
-import { OnboardingWizardPage } from './pages/onboarding/OnboardingWizardPage.jsx';
-import { PendingReviewPage } from './pages/onboarding/PendingReviewPage.jsx';
-import { CorrectionRequiredPage } from './pages/onboarding/CorrectionRequiredPage.jsx';
-import { RejectedPage } from './pages/onboarding/RejectedPage.jsx';
-
-import { EmployeeDashboardPage } from './pages/employee/EmployeeDashboardPage.jsx';
-import { EmployeeJobsPage } from './pages/employee/EmployeeJobsPage.jsx';
-import { EmployeeProfilePage } from './pages/employee/EmployeeProfilePage.jsx';
-import { EmployeeDocumentsPage } from './pages/employee/EmployeeDocumentsPage.jsx';
-import { EmployeeServicesPage } from './pages/employee/EmployeeServicesPage.jsx';
-import { EmployeeSettingsPage } from './pages/employee/EmployeeSettingsPage.jsx';
-import { EmployeePerformancePage } from './pages/employee/EmployeePerformancePage.jsx';
-import { EmployeeEarningsPage } from './pages/employee/EmployeeEarningsPage.jsx';
-import { EmployeeLocationPage } from './pages/employee/EmployeeLocationPage.jsx';
-import EmployeeEstimatesPage from './pages/employee/estimates/EmployeeEstimatesPage.jsx';
-import VendorEstimationsPage from './pages/vendor/estimations/VendorEstimationsPage.jsx';
-import { MyVendorNetworkPage } from './pages/employee/MyVendorNetworkPage.jsx';
-import { TechnicianInvitationsPage } from './pages/employee/TechnicianInvitationsPage.jsx';
-
-import { AdminDashboardPage } from './pages/admin/AdminDashboardPage.jsx';
-import { AdminApplicationsPage } from './pages/admin/AdminApplicationsPage.jsx';
-import { AdminApplicationDetailPage } from './pages/admin/AdminApplicationDetailPage.jsx';
-import { AdminEmployeesPage } from './pages/admin/AdminEmployeesPage.jsx';
-import { AdminJobsPage } from './pages/admin/AdminJobsPage.jsx';
-import { AdminOperationsPage } from './pages/admin/AdminOperationsPage.jsx';
-import { AdminWalletPage } from './pages/admin/AdminWalletPage.jsx';
-import { AdminScorecardsPage } from './pages/admin/AdminScorecardsPage.jsx';
-import { AdminSocialSecurityPage } from './pages/admin/AdminSocialSecurityPage.jsx';
-import { AdminReportsPage } from './pages/admin/AdminReportsPage.jsx';
-import { AdminSkillsPage } from './pages/admin/AdminSkillsPage.jsx';
-import { AdminServiceProvidersPage } from './pages/admin/AdminServiceProvidersPage.jsx';
-import { ProviderProfilePage } from './pages/admin/ProviderProfilePage.jsx';
-import { VendorTechnicianNetworkPage } from './pages/admin/VendorTechnicianNetworkPage.jsx';
-import { VendorInvitationsPage } from './pages/admin/VendorInvitationsPage.jsx';
-import { PlatformVendorsPage } from './pages/platform/PlatformVendorsPage.jsx';
-import { PlatformWorkforcePage } from './pages/platform/PlatformWorkforcePage.jsx';
-import { CustomerTrackingPage } from './pages/customer/CustomerTrackingPage.jsx';
-import { CustomerQuotationDecisionPage } from './pages/customer/CustomerQuotationDecisionPage.jsx';
-import { AdminQuotationApprovalsPage } from './pages/admin/AdminQuotationApprovalsPage.jsx';
-import { AdminPricingPolicyPage } from './pages/admin/AdminPricingPolicyPage.jsx';
-import { AdminStockManagementPage } from './pages/admin/AdminStockManagementPage.jsx';
-import { InvoicesPage } from './pages/admin/InvoicesPage.jsx';
+const LoginPage = lazy(() => import('./pages/auth/LoginPage.jsx').then(m => ({ default: m.LoginPage || m.default })));
+const SignupPage = lazy(() => import('./pages/auth/SignupPage.jsx').then(m => ({ default: m.SignupPage || m.default })));
+const ProviderSignupPage = lazy(() => import('./pages/auth/ProviderSignupPage.jsx').then(m => ({ default: m.ProviderSignupPage || m.default })));
+const TermsAndConditionsPage = lazy(() => import('./pages/public/TermsAndConditionsPage.jsx').then(m => ({ default: m.TermsAndConditionsPage || m.default })));
+const PrivacyPolicyPage = lazy(() => import('./pages/public/PrivacyPolicyPage.jsx').then(m => ({ default: m.PrivacyPolicyPage || m.default })));
+const SupportAndContactPage = lazy(() => import('./pages/public/SupportAndContactPage.jsx').then(m => ({ default: m.SupportAndContactPage || m.default })));
+const CancellationRefundsPage = lazy(() => import('./pages/public/CancellationRefundsPage.jsx').then(m => ({ default: m.CancellationRefundsPage || m.default })));
+const ShippingPolicyPage = lazy(() => import('./pages/public/ShippingPolicyPage.jsx').then(m => ({ default: m.ShippingPolicyPage || m.default })));
+const OnboardingWizardPage = lazy(() => import('./pages/onboarding/OnboardingWizardPage.jsx').then(m => ({ default: m.OnboardingWizardPage || m.default })));
+const PendingReviewPage = lazy(() => import('./pages/onboarding/PendingReviewPage.jsx').then(m => ({ default: m.PendingReviewPage || m.default })));
+const CorrectionRequiredPage = lazy(() => import('./pages/onboarding/CorrectionRequiredPage.jsx').then(m => ({ default: m.CorrectionRequiredPage || m.default })));
+const RejectedPage = lazy(() => import('./pages/onboarding/RejectedPage.jsx').then(m => ({ default: m.RejectedPage || m.default })));
+const EmployeeDashboardPage = lazy(() => import('./pages/employee/EmployeeDashboardPage.jsx').then(m => ({ default: m.EmployeeDashboardPage || m.default })));
+const EmployeeJobsPage = lazy(() => import('./pages/employee/EmployeeJobsPage.jsx').then(m => ({ default: m.EmployeeJobsPage || m.default })));
+const EmployeeProfilePage = lazy(() => import('./pages/employee/EmployeeProfilePage.jsx').then(m => ({ default: m.EmployeeProfilePage || m.default })));
+const EmployeeDocumentsPage = lazy(() => import('./pages/employee/EmployeeDocumentsPage.jsx').then(m => ({ default: m.EmployeeDocumentsPage || m.default })));
+const EmployeeServicesPage = lazy(() => import('./pages/employee/EmployeeServicesPage.jsx').then(m => ({ default: m.EmployeeServicesPage || m.default })));
+const EmployeeSettingsPage = lazy(() => import('./pages/employee/EmployeeSettingsPage.jsx').then(m => ({ default: m.EmployeeSettingsPage || m.default })));
+const EmployeePerformancePage = lazy(() => import('./pages/employee/EmployeePerformancePage.jsx').then(m => ({ default: m.EmployeePerformancePage || m.default })));
+const EmployeeEarningsPage = lazy(() => import('./pages/employee/EmployeeEarningsPage.jsx').then(m => ({ default: m.EmployeeEarningsPage || m.default })));
+const EmployeeLocationPage = lazy(() => import('./pages/employee/EmployeeLocationPage.jsx').then(m => ({ default: m.EmployeeLocationPage || m.default })));
+const EmployeeEstimatesPage = lazy(() => import('./pages/employee/estimates/EmployeeEstimatesPage.jsx'));
+const VendorEstimationsPage = lazy(() => import('./pages/vendor/estimations/VendorEstimationsPage.jsx'));
+const MyVendorNetworkPage = lazy(() => import('./pages/employee/MyVendorNetworkPage.jsx').then(m => ({ default: m.MyVendorNetworkPage || m.default })));
+const TechnicianInvitationsPage = lazy(() => import('./pages/employee/TechnicianInvitationsPage.jsx').then(m => ({ default: m.TechnicianInvitationsPage || m.default })));
+const AdminDashboardPage = lazy(() => import('./pages/admin/AdminDashboardPage.jsx').then(m => ({ default: m.AdminDashboardPage || m.default })));
+const AdminApplicationsPage = lazy(() => import('./pages/admin/AdminApplicationsPage.jsx').then(m => ({ default: m.AdminApplicationsPage || m.default })));
+const AdminApplicationDetailPage = lazy(() => import('./pages/admin/AdminApplicationDetailPage.jsx').then(m => ({ default: m.AdminApplicationDetailPage || m.default })));
+const AdminEmployeesPage = lazy(() => import('./pages/admin/AdminEmployeesPage.jsx').then(m => ({ default: m.AdminEmployeesPage || m.default })));
+const AdminJobsPage = lazy(() => import('./pages/admin/AdminJobsPage.jsx').then(m => ({ default: m.AdminJobsPage || m.default })));
+const AdminOperationsPage = lazy(() => import('./pages/admin/AdminOperationsPage.jsx').then(m => ({ default: m.AdminOperationsPage || m.default })));
+const AdminWalletPage = lazy(() => import('./pages/admin/AdminWalletPage.jsx').then(m => ({ default: m.AdminWalletPage || m.default })));
+const AdminScorecardsPage = lazy(() => import('./pages/admin/AdminScorecardsPage.jsx').then(m => ({ default: m.AdminScorecardsPage || m.default })));
+const AdminSocialSecurityPage = lazy(() => import('./pages/admin/AdminSocialSecurityPage.jsx').then(m => ({ default: m.AdminSocialSecurityPage || m.default })));
+const AdminReportsPage = lazy(() => import('./pages/admin/AdminReportsPage.jsx').then(m => ({ default: m.AdminReportsPage || m.default })));
+const AdminSkillsPage = lazy(() => import('./pages/admin/AdminSkillsPage.jsx').then(m => ({ default: m.AdminSkillsPage || m.default })));
+const AdminServiceProvidersPage = lazy(() => import('./pages/admin/AdminServiceProvidersPage.jsx').then(m => ({ default: m.AdminServiceProvidersPage || m.default })));
+const ProviderProfilePage = lazy(() => import('./pages/admin/ProviderProfilePage.jsx').then(m => ({ default: m.ProviderProfilePage || m.default })));
+const VendorTechnicianNetworkPage = lazy(() => import('./pages/admin/VendorTechnicianNetworkPage.jsx').then(m => ({ default: m.VendorTechnicianNetworkPage || m.default })));
+const VendorInvitationsPage = lazy(() => import('./pages/admin/VendorInvitationsPage.jsx').then(m => ({ default: m.VendorInvitationsPage || m.default })));
+const PlatformVendorsPage = lazy(() => import('./pages/platform/PlatformVendorsPage.jsx').then(m => ({ default: m.PlatformVendorsPage || m.default })));
+const PlatformWorkforcePage = lazy(() => import('./pages/platform/PlatformWorkforcePage.jsx').then(m => ({ default: m.PlatformWorkforcePage || m.default })));
+const CustomerTrackingPage = lazy(() => import('./pages/customer/CustomerTrackingPage.jsx').then(m => ({ default: m.CustomerTrackingPage || m.default })));
+const CustomerQuotationDecisionPage = lazy(() => import('./pages/customer/CustomerQuotationDecisionPage.jsx').then(m => ({ default: m.CustomerQuotationDecisionPage || m.default })));
+const AdminQuotationApprovalsPage = lazy(() => import('./pages/admin/AdminQuotationApprovalsPage.jsx').then(m => ({ default: m.AdminQuotationApprovalsPage || m.default })));
+const AdminPricingPolicyPage = lazy(() => import('./pages/admin/AdminPricingPolicyPage.jsx').then(m => ({ default: m.AdminPricingPolicyPage || m.default })));
+const AdminStockManagementPage = lazy(() => import('./pages/admin/AdminStockManagementPage.jsx').then(m => ({ default: m.AdminStockManagementPage || m.default })));
+const InvoicesPage = lazy(() => import('./pages/admin/InvoicesPage.jsx').then(m => ({ default: m.InvoicesPage || m.default })));
 import { SuperadminRoute } from './components/common/SuperadminRoute.jsx';
-import { WalletDashboardPage } from './pages/admin/wallet/WalletDashboardPage.jsx';
-import { WalletPayoutAccountsPage } from './pages/admin/wallet/WalletPayoutAccountsPage.jsx';
-import { WalletTransactionsPage } from './pages/admin/wallet/WalletTransactionsPage.jsx';
-import { WalletWithdrawalsPage } from './pages/admin/wallet/WalletWithdrawalsPage.jsx';
-import { EmployeeWalletDashboardPage } from './pages/employee/wallet/EmployeeWalletDashboardPage.jsx';
-import { EmployeeWalletTransactionsPage } from './pages/employee/wallet/EmployeeWalletTransactionsPage.jsx';
-import { EmployeeWalletWithdrawalsPage } from './pages/employee/wallet/EmployeeWalletWithdrawalsPage.jsx';
-import { EmployeePayoutAccountsPage } from './pages/employee/wallet/EmployeePayoutAccountsPage.jsx';
-import AdminInventoryPage from './pages/admin/AdminInventoryPage.jsx';
-import AdminStoreProfilePage from './pages/admin/AdminStoreProfilePage.jsx';
-import AdminPromotionsPage from './pages/admin/AdminPromotionsPage.jsx';
-import AdminGroceryOrdersPage from './pages/admin/AdminGroceryOrdersPage.jsx';
-import AdminGrocerySettlementsPage from './pages/admin/AdminGrocerySettlementsPage.jsx';
-
-
+const WalletDashboardPage = lazy(() => import('./pages/admin/wallet/WalletDashboardPage.jsx').then(m => ({ default: m.WalletDashboardPage || m.default })));
+const WalletPayoutAccountsPage = lazy(() => import('./pages/admin/wallet/WalletPayoutAccountsPage.jsx').then(m => ({ default: m.WalletPayoutAccountsPage || m.default })));
+const WalletTransactionsPage = lazy(() => import('./pages/admin/wallet/WalletTransactionsPage.jsx').then(m => ({ default: m.WalletTransactionsPage || m.default })));
+const WalletWithdrawalsPage = lazy(() => import('./pages/admin/wallet/WalletWithdrawalsPage.jsx').then(m => ({ default: m.WalletWithdrawalsPage || m.default })));
+const EmployeeWalletDashboardPage = lazy(() => import('./pages/employee/wallet/EmployeeWalletDashboardPage.jsx').then(m => ({ default: m.EmployeeWalletDashboardPage || m.default })));
+const EmployeeWalletTransactionsPage = lazy(() => import('./pages/employee/wallet/EmployeeWalletTransactionsPage.jsx').then(m => ({ default: m.EmployeeWalletTransactionsPage || m.default })));
+const EmployeeWalletWithdrawalsPage = lazy(() => import('./pages/employee/wallet/EmployeeWalletWithdrawalsPage.jsx').then(m => ({ default: m.EmployeeWalletWithdrawalsPage || m.default })));
+const EmployeePayoutAccountsPage = lazy(() => import('./pages/employee/wallet/EmployeePayoutAccountsPage.jsx').then(m => ({ default: m.EmployeePayoutAccountsPage || m.default })));
+const AdminInventoryPage = lazy(() => import('./pages/admin/AdminInventoryPage.jsx'));
+const AdminStoreProfilePage = lazy(() => import('./pages/admin/AdminStoreProfilePage.jsx'));
+const AdminPromotionsPage = lazy(() => import('./pages/admin/AdminPromotionsPage.jsx'));
+const AdminGroceryOrdersPage = lazy(() => import('./pages/admin/AdminGroceryOrdersPage.jsx'));
+const AdminGrocerySettlementsPage = lazy(() => import('./pages/admin/AdminGrocerySettlementsPage.jsx'));
 function EmployeeWorkspaceLayout() {
   return (
     <EmployeeRoute>
@@ -120,6 +114,16 @@ export function App() {
     <ThemeProvider>
       <AuthProvider>
         <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          {/* One Suspense boundary covering every lazily-loaded route. Without
+              it, a route whose chunk is still downloading renders nothing at
+              all; with it the user sees the app's own spinner. */}
+          <Suspense
+            fallback={
+              <div className="min-h-screen flex items-center justify-center bg-slate-50">
+                <div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+              </div>
+            }
+          >
           <Routes>
             {/* Root */}
             <Route path="/" element={<RootRedirect />} />
@@ -588,6 +592,7 @@ export function App() {
           {/* Fallback */}
           <Route path="*" element={<Navigate to="/workforce/login" replace />} />
         </Routes>
+          </Suspense>
       </BrowserRouter>
     </AuthProvider>
     </ThemeProvider>

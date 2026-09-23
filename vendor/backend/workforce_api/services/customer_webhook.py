@@ -78,6 +78,8 @@ def notify_customer_app(event_type, service_request, **extra_payload):
     "service_started", "service_completed", "technician.location_updated",
     "payment.collected", "technician.assigned".
     """
+    if not getattr(settings, 'CUSTOMER_WEBHOOKS_ENABLED', True):
+        return
     try:
         booking_id = getattr(service_request, "request_id", None) or str(getattr(service_request, "id", ""))
         if not booking_id:
@@ -94,6 +96,8 @@ def notify_customer_app(event_type, service_request, **extra_payload):
             args=(event_type, booking_id, payload, sequence),
             daemon=True,
         )
-        thread.start()
+        # Never publish a transition before its database transaction commits.
+        from django.db import transaction
+        transaction.on_commit(thread.start)
     except Exception as exc:
         logger.info("Could not start customer webhook thread for event '%s': %s", event_type, exc)

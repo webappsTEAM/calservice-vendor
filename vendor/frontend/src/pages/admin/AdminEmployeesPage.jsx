@@ -8,6 +8,7 @@ import { DataTable } from '../../components/enterprise/DataTable.jsx';
 import { StatusBadge } from '../../components/enterprise/StatusBadge.jsx';
 import { Drawer } from '../../components/enterprise/Drawer.jsx';
 import { Pagination } from '../../components/enterprise/Pagination.jsx';
+import { LoadFailure } from '../../components/enterprise/LoadFailure.jsx';
 import { Users, Phone, Mail, MapPin, Wrench, ShieldCheck, ArrowRight } from 'lucide-react';
 
 export function AdminEmployeesPage() {
@@ -21,12 +22,20 @@ export function AdminEmployeesPage() {
   const [pageSize] = useState(12);
   const [isLoading, setIsLoading] = useState(true);
 
+  const [loadError, setLoadError] = useState(null);
+
+  // The failure used to be swallowed twice over -- an inner .catch(() => [])
+  // and an outer empty catch -- so an unreachable API rendered as "no
+  // technicians match the current filter", which is a different and much more
+  // misleading statement than "we could not load your technicians".
   const loadEmployees = async () => {
+    setIsLoading(true);
     try {
-      setIsLoading(true);
-      const techs = await apiGetAdminApplications().catch(() => []);
+      const techs = await apiGetAdminApplications();
       setTechnicians(techs || []);
-    } catch (_) {
+      setLoadError(null);
+    } catch (err) {
+      setLoadError(err?.message || 'The technician list could not be loaded.');
     } finally {
       setIsLoading(false);
     }
@@ -195,13 +204,28 @@ export function AdminEmployeesPage() {
         />
 
         {/* Dense Table */}
-        <DataTable
-          columns={columns}
-          data={paginatedData}
-          isLoading={isLoading}
-          onRowClick={(row) => setSelectedTech(row)}
-          emptyMessage="No technicians match the current filter parameters."
-        />
+        {loadError && !isLoading ? (
+          <LoadFailure
+            variant={technicians.length > 0 ? 'partial' : 'full'}
+            message={
+              technicians.length > 0
+                ? `${loadError} You are looking at the previously loaded list.`
+                : loadError
+            }
+            onRetry={loadEmployees}
+            isRetrying={isLoading}
+          />
+        ) : null}
+
+        {(!loadError || technicians.length > 0) && (
+          <DataTable
+            columns={columns}
+            data={paginatedData}
+            isLoading={isLoading}
+            onRowClick={(row) => setSelectedTech(row)}
+            emptyMessage="No technicians match the current filter parameters."
+          />
+        )}
 
         {/* Pagination */}
         {filteredData.length > pageSize && (

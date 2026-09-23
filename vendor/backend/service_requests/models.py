@@ -252,6 +252,10 @@ class ServiceRequest(models.Model):
     customer_code = models.CharField(max_length=30, blank=True, null=True, db_index=True)
 
     service_category = models.CharField(max_length=150)
+    catalog_service_id = models.CharField(max_length=100, blank=True, default="", db_index=True)
+    package_id = models.CharField(max_length=100, blank=True, default="", db_index=True)
+    package_version = models.CharField(max_length=50, blank=True, default="")
+    package_display = models.JSONField(default=dict, blank=True)
     issue_title = models.CharField(max_length=300)
     description = models.TextField(blank=True, default="")
     address = models.TextField()
@@ -263,7 +267,7 @@ class ServiceRequest(models.Model):
     # migration, and no existing location data is touched.
     latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    preferred_date = models.DateField(null=True, blank=True)
+    preferred_date = models.DateField(default='2026-01-01', null=True, blank=True)
     preferred_time = models.CharField(max_length=50, blank=True, null=True)
     photo = models.ImageField(upload_to="service_requests/photos/", null=True, blank=True)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -285,6 +289,12 @@ class ServiceRequest(models.Model):
     # and safe to apply on its own ahead of the rest.
     drop_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     drop_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    # Same story as accounts_user.custom_permissions: NOT NULL with no
+    # database default, absent from this mirror, so every ServiceRequest the
+    # vendor creates -- the quoted work order in
+    # quotation_service.create_work_order and the secondary job in
+    # workforce_api.views -- failed to insert against the real shared schema.
+    fare_breakdown = models.JSONField(default=dict, blank=True)
     # X-04: these were all missing from this mirror even though they exist
     # on the shared table -- a technician handling a logistics job had no
     # way, via this app's ORM, to see who they're actually handing goods to
@@ -301,16 +311,12 @@ class ServiceRequest(models.Model):
     logistics_leg_updated_at = models.DateTimeField(null=True, blank=True)
     logistics_leg_history = models.JSONField(default=list, blank=True)
     payment_method = models.CharField(
-        max_length=20,
-        choices=PaymentMethod.choices,
-        default=PaymentMethod.COD,
-        blank=True,
+        max_length=10, null=True, blank=True,
+        choices=PaymentMethod.choices, default='COD'
     )
     payment_status = models.CharField(
-        max_length=30,
-        choices=PaymentStatus.choices,
-        default=PaymentStatus.PENDING,
-        blank=True,
+        max_length=30, null=True, blank=True,
+        choices=PaymentStatus.choices, default='pending'
     )
     transaction_id = models.CharField(max_length=200, blank=True, null=True)
     payment_gateway = models.CharField(max_length=50, blank=True, null=True)

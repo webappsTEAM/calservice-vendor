@@ -121,7 +121,7 @@ export function EmployeeDocumentsPage() {
           </button>
         </div>
 
-        {error && <ErrorState message={error} onDismiss={() => setError('')} />}
+        {error && <ErrorState message={error} onRetry={loadDocuments} onDismiss={() => setError('')} />}
 
         {successMsg && (
           <div className="p-3.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 text-xs font-semibold flex items-center gap-2">

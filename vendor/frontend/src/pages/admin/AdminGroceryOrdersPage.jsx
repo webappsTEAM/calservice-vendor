@@ -13,14 +13,20 @@ export default function AdminGroceryOrdersPage() {
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [rejectModalOpen, setRejectModalOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
+  // Accept / reject / status changes used to report failure through a native
+  // browser popup; and a failed order load was only written to the console, so
+  // the store saw an empty board and assumed no orders had come in. Both now
+  // surface on the page itself.
+  const [banner, setBanner] = useState(null);
 
   const fetchOrders = async () => {
     try {
       setLoading(true);
       const res = await workforceService.getGroceryOrders(filterStatus === 'ALL' ? null : filterStatus);
       setOrders(res || []);
+      setBanner(null);
     } catch (err) {
-      console.error('Failed to load orders:', err);
+      setBanner(err?.response?.data?.error || err?.message || 'Orders could not be loaded. This list may be out of date.');
     } finally {
       setLoading(false);
     }
@@ -36,7 +42,7 @@ export default function AdminGroceryOrdersPage() {
       await workforceService.acceptGroceryOrder(orderId);
       await fetchOrders();
     } catch (err) {
-      alert(err.response?.data?.error || 'Failed to accept order.');
+      setBanner(err.response?.data?.error || 'Failed to accept order.');
     } finally {
       setActionLoading(null);
     }
@@ -52,7 +58,7 @@ export default function AdminGroceryOrdersPage() {
       setSelectedOrder(null);
       await fetchOrders();
     } catch (err) {
-      alert(err.response?.data?.error || 'Failed to reject order.');
+      setBanner(err.response?.data?.error || 'Failed to reject order.');
     } finally {
       setActionLoading(null);
     }
@@ -64,7 +70,7 @@ export default function AdminGroceryOrdersPage() {
       await workforceService.updateGroceryOrderStatus(orderId, nextStatus);
       await fetchOrders();
     } catch (err) {
-      alert(err.response?.data?.error || 'Failed to update order status.');
+      setBanner(err.response?.data?.error || 'Failed to update order status.');
     } finally {
       setActionLoading(null);
     }
@@ -105,6 +111,28 @@ export default function AdminGroceryOrdersPage() {
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
+      {banner && (
+        <div role="alert" className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3">
+          <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+          <p className="flex-1 text-xs text-rose-900">{banner}</p>
+          <button
+            type="button"
+            onClick={fetchOrders}
+            className="shrink-0 rounded-lg border border-rose-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-rose-800 hover:bg-rose-100"
+          >
+            Retry
+          </button>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setBanner(null)}
+            className="shrink-0 rounded-md p-1 text-rose-600 hover:bg-rose-100"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 pb-5">
         <div>

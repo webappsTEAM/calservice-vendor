@@ -1203,6 +1203,11 @@ class JobPayment(models.Model):
         default=PaymentStatus.PENDING,
         db_index=True,
     )
+    is_mock = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="True if originated from a mock/test payment provider. Mock jobs never generate real earnings.",
+    )
     amount_due = models.DecimalField(
         max_digits=10,
         decimal_places=2,
@@ -1583,14 +1588,20 @@ class WalletAccount(models.Model):
         return f"{self.get_account_type_display()} - {owner}"
 
     def current_balance(self):
-        """Sum of RELEASED ledger entries only -- HELD entries (pending
-        dispute window, see WalletLedgerEntry.status) are not withdrawable
-        yet and must not appear in the balance the owner can act on."""
+        """Sum of RELEASED, NON-MOCK ledger entries only -- HELD entries and mock entries
+        are not withdrawable yet and must not appear in the balance the owner can act on."""
         from django.db.models import Sum
-        result = self.ledger_entries.filter(status=WalletLedgerEntry.Status.RELEASED).aggregate(
+        result = self.ledger_entries.filter(
+            status=WalletLedgerEntry.Status.RELEASED,
+            is_mock=False,
+        ).aggregate(
             total=Sum("signed_amount")
         )
         return result["total"] or 0
+
+    def get_withdrawable_balance(self):
+        """Alias for current_balance returning strictly non-mock released funds."""
+        return self.current_balance()
 
     def withdrawal_limit_for_tier(self):
         """Daily withdrawal ceiling by KYC tier (Section 1 table). This is
@@ -1657,6 +1668,11 @@ class WalletLedgerEntry(models.Model):
         help_text="JOB_CREDIT entries are held until this timestamp (dispute window) before counting toward balance.",
     )
 
+    is_mock = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="True for mock transactions. Mock entries are never released to withdrawable balance.",
+    )
     notes = models.CharField(max_length=255, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 

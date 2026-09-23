@@ -24,6 +24,8 @@ ACTIVE_QUEUE_STATUSES: List[str] = [
     "en_route",
     "arrived",
     "in_progress",
+    "on_hold",
+    "service_started",
     "proof_submitted",
 ]
 
@@ -34,6 +36,8 @@ ACTIVE_WORKLOAD_STATUSES: List[str] = [
     "en_route",
     "arrived",
     "in_progress",
+    "on_hold",
+    "service_started",
     "proof_submitted",
 ]
 
@@ -45,6 +49,8 @@ WORKLOAD_OCCUPIED_STATUSES: List[str] = [
     "en_route",
     "arrived",
     "in_progress",
+    "on_hold",
+    "service_started",
     "proof_submitted",
 ]
 
@@ -98,7 +104,7 @@ def get_employee_active_job(employee_or_id, for_update: bool = False, statuses: 
             from service_requests.models import EmployeeJob
             emp_job_qs = EmployeeJob.objects.filter(
                 employee_id=emp_id,
-                status__in=["ASSIGNED", "ACCEPTED", "ON_THE_WAY", "EN_ROUTE", "ARRIVED", "IN_PROGRESS", "PROOF_SUBMITTED"],
+                status__in=["ASSIGNED", "ACCEPTED", "ON_THE_WAY", "EN_ROUTE", "ARRIVED", "IN_PROGRESS", "ON_HOLD", "SERVICE_STARTED", "PROOF_SUBMITTED"],
             )
             if for_update:
                 emp_job_qs = emp_job_qs.select_for_update()
@@ -153,12 +159,42 @@ def reconcile_employee_availability(employee_or_id) -> str:
     else:
         new_avail = "available"
 
-    if emp.current_availability != new_avail:
+    previous_avail = emp.current_availability
+    availability_changed = previous_avail != new_avail
+    if availability_changed:
         emp.current_availability = new_avail
         update_fields.append("current_availability")
 
     if update_fields:
         emp.save(update_fields=update_fields)
+
+    # publish_workforce_event() documents EMPLOYEE_AVAILABILITY_CHANGED as one
+    # of the events it publishes, but nothing emitted it -- so anything
+    # watching the realtime stream (admin dashboards, dispatch) never learned
+    # that a technician had freed up, and only saw it on the next poll. Emit
+    # it here, where the change actually happens, rather than at each of the
+    # many call sites that can cause one.
+    if availability_changed:
+        try:
+            from workforce_api.services.realtime import publish_workforce_event
+
+            publish_workforce_event(
+                "EMPLOYEE_AVAILABILITY_CHANGED",
+                {
+                    "employee_id": emp.id,
+                    "previous_availability": previous_avail,
+                    "availability": new_avail,
+                    "active_job_id": active_job.id if active_job else None,
+                    "is_online": emp.is_online,
+                },
+                user=getattr(emp, "user", None),
+                company=getattr(emp, "company", None),
+            )
+        except Exception as _evt_err:
+            logger.warning(
+                "Could not publish EMPLOYEE_AVAILABILITY_CHANGED for employee %s: %s",
+                emp.id, _evt_err,
+            )
 
     logger.info(
         f"[EMPLOYEE_WORKLOAD] employee={emp.id} active_job={active_job.id if active_job else 'null'} "

@@ -7,6 +7,8 @@ export const ACTIVE_QUEUE_STATUSES = [
   'en_route',
   'arrived',
   'in_progress',
+  'on_hold',
+  'service_started',
   'proof_submitted',
 ];
 

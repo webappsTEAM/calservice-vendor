@@ -10,7 +10,7 @@
         body { background: #0f172a; color: #f8fafc; min-height: 100vh; display: flex; flex-direction: column; justify-content: space-between; align-items: center; text-align: center; padding: 32px 20px; }
         .main-content { max-width: 800px; width: 100%; display: flex; flex-direction: column; align-items: center; margin-top: 40px; }
         .badge { background: #1e293b; color: #38bdf8; padding: 6px 18px; border-radius: 9999px; font-size: 13px; font-weight: 600; margin-bottom: 24px; border: 1px solid #334155; }
-        h1 { font-size: clamp(2.2rem, 6vw, 3.8rem); font-weight: 800; letter-spacing: -0.02em; margin-bottom: 16px; background: linear-gradient(to right, #38bdf8, #818cf8, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        h1 { font-size: clamp(2.2rem, 6vw, 3.8rem); font-weight: 800; letter-spacing: -0.02em; margin-bottom: 16px; background: linear-gradient(to right, #38bdf8, #818cf8, #a855f7); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
         p.subtitle { color: #94a3b8; font-size: 1.125rem; max-width: 620px; line-height: 1.6; margin-bottom: 40px; }
         .grid { display: grid; grid-template-columns: 1fr; gap: 20px; width: 100%; max-width: 640px; margin-bottom: 40px; }
         @media(min-width: 640px) { .grid { grid-template-columns: 1fr 1fr; } }
@@ -24,6 +24,7 @@
         .legal-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; font-size: 13px; margin-bottom: 12px; }
         .legal-links a { color: #94a3b8; text-decoration: none; transition: color 0.2s; }
         .legal-links a:hover { color: #38bdf8; text-decoration: underline; }
+        .divider { color: #334155; }
         footer { color: #64748b; font-size: 0.85rem; margin-top: 20px; }
     </style>
 </head>
@@ -54,9 +55,9 @@
         <div class="legal-section">
             <div class="legal-links">
                 <a href="/sevo-privacy.html">Privacy Policy (Sevo App)</a>
-                <span style="color:#334155;">&bull;</span>
+                <span class="divider">&bull;</span>
                 <a href="/sevo-partner-privacy.html">Privacy Policy (Sevo Partner)</a>
-                <span style="color:#334155;">&bull;</span>
+                <span class="divider">&bull;</span>
                 <a href="/account-deletion.html">Account & Data Deletion</a>
             </div>
         </div>

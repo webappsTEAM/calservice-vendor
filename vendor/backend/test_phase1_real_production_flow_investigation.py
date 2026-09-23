@@ -8,6 +8,19 @@ B. Packers & Movers
 C. Goods & Transport
 D. Completed Cash Job Lifecycle (End-to-End)
 """
+# NOTE: bookings in this module deliberately carry NO preferred_time.
+#
+# A same-day booking that names a slot is held by
+# get_scheduled_dispatch_window() until its pre-service lead time opens --
+# 45 minutes before the slot, 120 minutes for packers & movers. Every
+# booking here used to be hardcoded to "10:00 AM", which meant these tests
+# asserted that a job dispatches while the dispatcher was correctly holding
+# it: they failed every run before ~08:00-09:15 local and passed for the
+# rest of the day. Omitting preferred_time takes the same-day immediate
+# branch, so dispatch is due the moment the booking is created, whatever
+# time the suite runs. A test that wants the scheduled-hold behaviour should
+# set a slot time explicitly and assert the hold.
+
 import os
 import sys
 import uuid
@@ -21,14 +34,17 @@ django.setup()
 from django.test import TestCase
 from django.utils import timezone
 from django.contrib.auth import get_user_model
+from django.contrib.auth.hashers import make_password
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 User = get_user_model()
 
 from employees.models import Employee
 from companies.models import Company
+from service_requests.state_machine import apply_transition
 from service_requests.models import ServiceRequest, EmployeeJob
 from workforce_api.models import (
+    Vehicle,
     WorkforceJobOffer,
     PreServiceVerification,
     PostServiceProof,
@@ -49,6 +65,7 @@ from workforce_api.services.automatic_dispatch import (
     dispatch_pending_jobs,
 )
 from workforce_api.views import (
+    WorkforceJobPaymentVerifyOTPView,
     WorkforceJobListView,
     WorkforceJobAcceptOfferView,
     WorkforceJobCashCollectView,
@@ -96,6 +113,19 @@ class Phase1RealProductionFlowInvestigationTests(TestCase):
             },
         )
 
+        # Goods & Transport is a logistics category, and a technician offered
+        # logistics work must hold an active vehicle with current insurance,
+        # permit and PUC (Gate 3). A real transport technician has one.
+        Vehicle.objects.create(
+            employee=self.emp,
+            company=self.company,
+            registration_number=f"KA09{self.uid[:6].upper()}",
+            is_active=True,
+            insurance_expiry=timezone.localdate() + timedelta(days=365),
+            permit_expiry=timezone.localdate() + timedelta(days=365),
+            puc_expiry=timezone.localdate() + timedelta(days=365),
+        )
+
     def test_A_normal_service_discovery_dispatch_and_queue(self):
         """A. Normal Service discovery, dispatch, and appearance in active jobs API"""
         job = ServiceRequest.objects.create(
@@ -104,7 +134,6 @@ class Phase1RealProductionFlowInvestigationTests(TestCase):
             service_category="Appliances",
             issue_title="Refrigerator Repair",
             preferred_date=timezone.localdate(),
-            preferred_time="10:00 AM",
             latitude=Decimal("12.9720"),
             longitude=Decimal("77.5950"),
             total_amount=Decimal("850.00"),
@@ -132,7 +161,6 @@ class Phase1RealProductionFlowInvestigationTests(TestCase):
             service_category="Packers & Movers",
             issue_title="House Shifting 2BHK",
             preferred_date=timezone.localdate(),
-            preferred_time="10:00 AM",
             latitude=Decimal("12.9720"),
             longitude=Decimal("77.5950"),
             total_amount=Decimal("4500.00"),
@@ -160,7 +188,6 @@ class Phase1RealProductionFlowInvestigationTests(TestCase):
             service_category="Goods & Transport",
             issue_title="Commercial Cargo Delivery",
             preferred_date=timezone.localdate(),
-            preferred_time="10:00 AM",
             latitude=Decimal("12.9720"),
             longitude=Decimal("77.5950"),
             total_amount=Decimal("2200.00"),
@@ -193,7 +220,6 @@ class Phase1RealProductionFlowInvestigationTests(TestCase):
             service_category="Appliances",
             issue_title="Microwave Oven Diagnostics",
             preferred_date=timezone.localdate(),
-            preferred_time="10:00 AM",
             latitude=Decimal("12.9720"),
             longitude=Decimal("77.5950"),
             total_amount=Decimal("950.00"),
@@ -226,6 +252,18 @@ class Phase1RealProductionFlowInvestigationTests(TestCase):
             completed_at=now,
         )
 
+        # 3b. Travel to site. The technician does not teleport from ACCEPTED to
+        # IN_PROGRESS: the state machine routes accepted -> on_the_way ->
+        # arrived, and clock-in (which moves the job to IN_PROGRESS) is
+        # refused from ACCEPTED. Walking the real sequence here rather than
+        # loosening the state machine, which is right to insist on it -- the
+        # arrival leg is what customer tracking and the geofence check hang
+        # off.
+        apply_transition(job, "on_the_way", actor=self.user)
+        apply_transition(job, "arrived", actor=self.user)
+        job.refresh_from_db()
+        self.assertEqual(job.status, "arrived")
+
         # 4. Auto Clock-In Execution
         req_clockin = self.factory.post(
             "/api/workforce/time/clock-in/",
@@ -240,7 +278,7 @@ class Phase1RealProductionFlowInvestigationTests(TestCase):
         )
         force_authenticate(req_clockin, user=self.user)
         resp_clockin = ClockInView.as_view()(req_clockin)
-        self.assertIn(resp_clockin.status_code, [200, 201])
+        self.assertIn(resp_clockin.status_code, [200, 201], getattr(resp_clockin, "data", None))
         self.assertTrue(resp_clockin.data["is_clocked_in"])
 
         # 5. Verify Employee is Authoritatively BUSY
@@ -265,6 +303,18 @@ class Phase1RealProductionFlowInvestigationTests(TestCase):
             is_submitted=True,
             submitted_at=now,
         )
+        # The job's status has to follow the proof. Completion is gated on
+        # proof_submitted, so a job left at in_progress cannot be closed by the
+        # payment confirmation below however correct everything else is.
+        job.refresh_from_db()
+        if job.status != "in_progress":
+            # Clocking in records the shift; it does not by itself advance the
+            # booking past ARRIVED. Move it along the real path before
+            # submitting proof.
+            apply_transition(job, "in_progress", actor=self.user)
+        apply_transition(job, "proof_submitted", actor=self.user)
+        job.refresh_from_db()
+        self.assertEqual(job.status, "proof_submitted")
 
         # 7. Collect Cash
         req_cash = self.factory.post(
@@ -275,8 +325,22 @@ class Phase1RealProductionFlowInvestigationTests(TestCase):
         force_authenticate(req_cash, user=self.user)
         resp_cash = WorkforceJobCashCollectView.as_view()(req_cash, pk=job.id)
         self.assertEqual(resp_cash.status_code, 200)
-        self.assertEqual(resp_cash.data["payment_status"], "PAID")
-        self.assertEqual(resp_cash.data["job_status"], "completed")
+        # Reporting the cash parks it awaiting customer confirmation; the
+        # customer's OTP is what marks it PAID and completes the job.
+        self.assertEqual(resp_cash.data["payment_status"], "CASH_PENDING")
+
+        pmt_pending = JobPayment.objects.get(job=job)
+        pmt_pending.payment_confirmation_otp_hash = make_password("123456")
+        pmt_pending.save(update_fields=["payment_confirmation_otp_hash"])
+        req_otp = self.factory.post(
+            f"/api/workforce/jobs/{job.id}/payment/verify-otp/",
+            {"otp": "123456"},
+            format="json",
+        )
+        force_authenticate(req_otp, user=self.user)
+        self.assertEqual(
+            WorkforceJobPaymentVerifyOTPView.as_view()(req_otp, pk=job.id).status_code, 200
+        )
 
         # 8. Verify Database State Post-Completion
         job.refresh_from_db()

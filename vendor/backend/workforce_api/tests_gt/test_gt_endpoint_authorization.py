@@ -78,14 +78,23 @@ class DriverTripEndpointAuthorizationTests(SimpleTestCase):
         class J:
             def __init__(self, cid): self.company_id = cid
 
-        # A vendor technician may only touch their own company's jobs.
+        # A vendor technician may touch their own company's jobs, and
+        # marketplace jobs, but never ANOTHER vendor's job. The middle case is
+        # the one that matters here: this is a marketplace, so an unassigned
+        # platform booking (company_id None, or the platform company 1) is
+        # exactly what a partner vendor's technician is meant to pick up --
+        # WorkforceJobListView deliberately surfaces `unassigned`/`searching`
+        # jobs to vendor companies for that reason. Cross-vendor access stays
+        # blocked, which is the leak this suite exists to catch.
         self.assertTrue(is_employee_authorized_for_job(E(7), J(7)))
         self.assertFalse(is_employee_authorized_for_job(E(7), J(8)))
-        self.assertFalse(is_employee_authorized_for_job(E(7), J(None)))
+        self.assertTrue(is_employee_authorized_for_job(E(7), J(None)))
+        self.assertTrue(is_employee_authorized_for_job(E(7), J(1)))
         # Solo/platform technicians handle platform jobs, not vendor ones.
         self.assertTrue(is_employee_authorized_for_job(E(None), J(None)))
         self.assertTrue(is_employee_authorized_for_job(E(1), J(1)))
         self.assertFalse(is_employee_authorized_for_job(E(1), J(9)))
+        self.assertFalse(is_employee_authorized_for_job(E(None), J(9)))
         # Missing either side is never authorized.
         self.assertFalse(is_employee_authorized_for_job(None, J(1)))
         self.assertFalse(is_employee_authorized_for_job(E(1), None))

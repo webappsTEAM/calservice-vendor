@@ -33,6 +33,17 @@ def _reverse_relax_employee_company_and_role_column(apps, schema_editor):
 
 
 def migrate_platform_superadmins(apps, schema_editor):
+    """
+    Same reasoning as _relax_employee_company_and_role_column above:
+    accounts_user is managed=False (shared DB, owned by the Customer app), so
+    it never exists on SQLite's fresh `manage.py test` database. Without this
+    guard the query below raises "no such table: accounts_user", which breaks
+    the surrounding atomic block and takes the entire vendor test suite down
+    with a cascade of TransactionManagementError. The guard above was added
+    for exactly this reason; this function was missed.
+    """
+    if schema_editor.connection.vendor != "postgresql":
+        return
     from django.contrib.auth import get_user_model
     User = get_user_model()
     # Update existing platform superusers or explicit super_admin accounts to canonical 'superadmin'

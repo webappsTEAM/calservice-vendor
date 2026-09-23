@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { ConfirmDialog } from '../../../components/enterprise/ConfirmDialog.jsx';
 import { Link } from 'react-router-dom';
 import { AppShell } from '../../../components/common/AppShell.jsx';
 import { LoadingState } from '../../../components/enterprise/LoadingState.jsx';
@@ -63,6 +64,7 @@ export function EmployeeWalletDashboardPage() {
   const { user, employee, registrationStatus } = useAuth();
 
   const [summary, setSummary] = useState(null);
+  const [confirmAction, setConfirmAction] = useState(null);
   const [transactions, setTransactions] = useState([]);
   const [withdrawals, setWithdrawals] = useState([]);
   const [payoutAccounts, setPayoutAccounts] = useState([]);
@@ -177,8 +179,12 @@ export function EmployeeWalletDashboardPage() {
     }
   };
 
-  const handleCancelWithdrawal = async (id) => {
-    if (!window.confirm('Are you sure you want to cancel this withdrawal request? The funds will return to your available balance.')) return;
+  // Asked in the app's own dialog rather than a native popup: this action
+  // moves money or removes a payout destination, and a native box cannot be
+  // styled, states no consequence, and freezes the tab while it is open.
+  const handleCancelWithdrawal = (id) => setConfirmAction({ args: [id] });
+
+  const handleCancelWithdrawalConfirmed = async (id) => {
     try {
       await apiCancelWithdrawal(id);
       setSuccessMsg('Withdrawal request cancelled.');
@@ -680,6 +686,15 @@ export function EmployeeWalletDashboardPage() {
           </div>
         )}
       </div>
+      <ConfirmDialog
+        isOpen={Boolean(confirmAction)}
+        onClose={() => setConfirmAction(null)}
+        onConfirm={() => { const a = confirmAction; setConfirmAction(null); handleCancelWithdrawalConfirmed(...a.args); }}
+        title="Cancel withdrawal"
+        message="Cancel this withdrawal request? The funds return to your available balance."
+        confirmText="Cancel withdrawal"
+        confirmVariant="warning"
+      />
     </AppShell>
   );
 }

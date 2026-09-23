@@ -42,6 +42,10 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
   const employeeRuntime = useContext(EmployeeRuntimeContext);
   const navigate = useNavigate();
   const [isToggling, setIsToggling] = useState(false);
+  // Going online/offline used to report refusals and failures through a native
+  // browser popup. This header is on every screen, including a technician's
+  // phone mid-job, where a popup blocks the whole app until it is dismissed.
+  const [presenceError, setPresenceError] = useState('');
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showHelpModal, setShowHelpModal] = useState(false);
   const [showNotifMenu, setShowNotifMenu] = useState(false);
@@ -344,18 +348,19 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
   const handlePresenceToggle = async () => {
     if (registrationStatus !== 'approved') return;
     if (user?.availability === 'busy') {
-      alert('Cannot change availability or go offline while actively working on an assigned job.');
+      setPresenceError('You cannot go offline while working on an assigned job. Complete or hand over the job first.');
       return;
     }
     try {
       setIsToggling(true);
+      setPresenceError('');
       if (employeeRuntime?.togglePresence) {
         await employeeRuntime.togglePresence();
       } else {
         await togglePresence();
       }
     } catch (err) {
-      alert(err.message || 'Failed to toggle availability status');
+      setPresenceError(err.message || 'Your availability could not be changed. Please try again.');
     } finally {
       setIsToggling(false);
     }
@@ -793,6 +798,25 @@ export function TopHeader({ onToggleSidebar = () => {} }) {
           </p>
         </div>
       </Modal>
+
+      {presenceError && (
+        <div
+          role="alert"
+          className="fixed top-16 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-sm"
+        >
+          <div className="flex items-start gap-2.5 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2.5 shadow-lg">
+            <p className="flex-1 text-xs text-amber-900 leading-relaxed">{presenceError}</p>
+            <button
+              type="button"
+              aria-label="Dismiss"
+              onClick={() => setPresenceError('')}
+              className="shrink-0 rounded-md px-1.5 text-amber-800 hover:bg-amber-100 font-bold"
+            >
+              &times;
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 }
